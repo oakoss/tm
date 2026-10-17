@@ -1,0 +1,13 @@
+[package]
+name = "tm-sync"
+version = "0.0.0"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+repository.workspace = true
+rust-version.workspace = true
+description = "Operation exchange with `tm serve`. Empty until sync is built."
+
+[lints]
+workspace = true

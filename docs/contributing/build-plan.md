@@ -17,6 +17,7 @@ Ordered phases for building what [design.md](../specs/design.md) describes. Each
 - Bare `tm` without a terminal prints help.
 
 Done when:
+
 - a rebuild-from-log property test shows the tables match the log
 - an export → import round trip loses nothing
 - the 50-writer test (`BEGIN IMMEDIATE`, 5 s busy timeout) writes 500 of 500 rows on macOS and Linux CI
@@ -47,6 +48,7 @@ Done when daily triage and planning for this project happen in the TUI.
 - `tm setup claude` and `tm setup codex`, showing a diff before writing.
 
 Done when:
+
 - the agent-usability evaluation passes: Claude and Codex, given only `tm --help`, complete a scripted set of tasks (claim the next ready Issue, hand it off, comment, record a Finding once Phase 5 lands), and every stumble is either fixed or logged as an Issue
 - two agents working at once never both hold a Claim
 

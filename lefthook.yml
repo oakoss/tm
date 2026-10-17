@@ -1,0 +1,69 @@
+output:
+  - failure
+  - execution_out
+  # Without this, a glob that matches nothing is indistinguishable from a check
+  # that passed.
+  - skips
+
+# `core.hooksPath` must stay unset: beads sets it on init, which makes git
+# bypass lefthook entirely and silently. Beads' own hook shims are not
+# installed here.
+#
+# Lefthook compiles globs with no path separator, so a bare `*.md` matches at
+# any depth.
+#
+# One writer per file type, so `parallel: true` is safe: rustfmt owns .rs,
+# rumdl owns .md, dprint owns the rest.
+
+pre-commit:
+  parallel: true
+  commands:
+    fmt-rust:
+      glob: '*.rs'
+      # rustfmt over `cargo fmt --all` so only staged files are touched;
+      # `skip_children` stops rustfmt following `mod` declarations into unstaged
+      # siblings. The bare `--skip-children` flag is rejected on stable.
+      #
+      # rustfmt reads no manifest, so the edition comes from Cargo.toml's
+      # `[workspace.package]`; the pattern is anchored so it skips
+      # `edition.workspace = true`.
+      run: >
+        ed=$(grep -m1 '^edition = "' Cargo.toml | cut -d'"' -f2);
+        [ -n "$ed" ] || { echo 'fmt-rust: no edition = "..." line in Cargo.toml [workspace.package]' >&2; exit 1; };
+        rustfmt --config=skip_children=true --edition "$ed" {staged_files}
+      stage_fixed: true
+    fmt-md:
+      glob: '*.md'
+      run: rumdl fmt {staged_files}
+      stage_fixed: true
+    fmt-data:
+      glob: '*.{json,toml,yaml,yml}'
+      # Exclusions live in dprint.json. `--allow-no-files` because when every
+      # staged path is excluded, bare `dprint fmt` exits 14 and blocks the commit.
+      run: dprint fmt --allow-no-files {staged_files}
+      stage_fixed: true
+    shellcheck:
+      glob: '*.sh'
+      # Experiment records, kept as they ran.
+      exclude:
+        - 'docs/research/**'
+      # No --shell override: shellcheck reads each shebang.
+      run: shellcheck {staged_files}
+    gitleaks:
+      # Every commit, not a file type: CI's scan only fires after a secret is
+      # already pushed.
+      run: gitleaks git --staged --redact --no-banner
+
+commit-msg:
+  commands:
+    conventional-commit:
+      # Exemptions live in cog.toml so this and CI's `cog check` share them.
+      run: cog verify --file {1}
+
+pre-push:
+  commands:
+    signed-commits:
+      # `use_stdin` is required: lefthook's default pty leaves `while read`
+      # hanging.
+      use_stdin: true
+      run: scripts/require-signed-commits.sh {1}

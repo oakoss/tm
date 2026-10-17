@@ -1,0 +1,13 @@
+[package]
+name = "tm-server"
+version = "0.0.0"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+repository.workspace = true
+rust-version.workspace = true
+description = "`tm serve`: the local JSON API and change stream. Empty until the web UI is built."
+
+[lints]
+workspace = true

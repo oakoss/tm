@@ -15,7 +15,7 @@ Work is tracked in beads (`bd`, embedded Dolt) until the switch milestone in [bu
 
 To sync with the private Dolt remote, put its URL in `.beads/.env` (gitignored), never in `config.yaml`:
 
-```
+```text
 BD_SYNC_REMOTE=ssh://user@host/srv/dolt/task-management
 ```
 

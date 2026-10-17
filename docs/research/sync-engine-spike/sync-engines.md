@@ -56,7 +56,7 @@ Linux (Codex uses Landlock/seccomp or bubblewrap there, per [developers.openai.c
 
 Recommended layout (`.tracker/` or `$XDG_DATA_HOME/...`, name TBD):
 
-```
+```text
 store.db            live store, WAL; writers only
 store.db-wal/-shm   managed by SQLite
 snapshot.db         rollback-mode copy, replaced atomically by rename after each write batch
@@ -73,7 +73,7 @@ Experiment (`conc_test.sh`, `conc_test_split.sh`): 50 parallel shells × 10 `sql
 
 Single-statement transaction (`INSERT ... SELECT max(n)+1`):
 
-```
+```text
 BEGIN DEFERRED, busy_timeout=0    : rows=286 of 500, errors=214 e.g. 'database is locked'
 BEGIN DEFERRED, busy_timeout=5000 : rows=500 of 500, errors=0
 BEGIN IMMEDIATE, busy_timeout=0   : rows=228 of 500, errors=272
@@ -82,7 +82,7 @@ BEGIN IMMEDIATE, busy_timeout=5000: rows=500 of 500, errors=0
 
 Read-then-write transaction (`SELECT max(n)` then `INSERT`), the shape of "read issue, then update it":
 
-```
+```text
 BEGIN DEFERRED, busy_timeout=0    : rows=289 of 500, errors=211
 BEGIN DEFERRED, busy_timeout=5000 : rows=313 of 500, errors=187 e.g. 'database is locked'
 BEGIN IMMEDIATE, busy_timeout=0   : rows=232 of 500, errors=268

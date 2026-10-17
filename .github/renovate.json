@@ -1,0 +1,84 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "automerge": true,
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigestsToSemver",
+    "schedule:monthly",
+    ":maintainLockFilesMonthly",
+    ":semanticCommits",
+    ":semanticCommitTypeAll(chore)"
+  ],
+  "labels": [
+    "dependencies"
+  ],
+  "packageRules": [
+    {
+      "description": "Reimplements group:allNonMajor plus digest updates, since the preset's minor/patch match misses digests",
+      "groupName": "all non-major dependencies",
+      "groupSlug": "all-minor-patch",
+      "matchPackageNames": [
+        "*"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "digest",
+        "pinDigest"
+      ]
+    },
+    {
+      "automerge": false,
+      "matchUpdateTypes": [
+        "major"
+      ]
+    },
+    {
+      "automerge": false,
+      "description": "A minor bump on a 0.x cargo dep is a breaking change under semver, so it gets its own PR and a human reviewer. Must stay ordered after the grouping rule above, since later packageRules win.",
+      "groupName": null,
+      "matchCurrentVersion": "<1.0.0",
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchUpdateTypes": [
+        "minor"
+      ]
+    },
+    {
+      "automerge": false,
+      "description": "The .mise.toml pin, Cargo.toml's rust-version and rust-toolchain.toml's channel stay equal, so they move in one grouped PR with a human reviewer. The regex manager below covers rust-version, which no native manager reads.",
+      "groupName": "rust toolchain pin",
+      "matchManagers": [
+        "mise",
+        "rust-toolchain",
+        "custom.regex"
+      ],
+      "matchPackageNames": [
+        "rust"
+      ]
+    }
+  ],
+  "platformAutomerge": false,
+  "platformCommit": "enabled",
+  "prConcurrentLimit": 5,
+  "vulnerabilityAlerts": {
+    "labels": [
+      "security"
+    ]
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Cargo.toml's rust-version is the toolchain pin's third copy; Renovate's cargo manager does not read it.",
+      "managerFilePatterns": [
+        "/(^|/)Cargo\\.toml$/"
+      ],
+      "matchStrings": [
+        "rust-version\\s*=\\s*\"(?<currentValue>[^\"]+)\""
+      ],
+      "depNameTemplate": "rust",
+      "datasourceTemplate": "rust-version"
+    }
+  ]
+}

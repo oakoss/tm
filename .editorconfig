@@ -1,0 +1,22 @@
+# EditorConfig is awesome: https://EditorConfig.org
+
+root = true
+
+# Trailing newline matches rustfmt, rumdl MD047 and dprint; this key and git
+# eol=lf keep the tree on LF.
+[*]
+indent_style = space
+indent_size = 2
+end_of_line = lf
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+# rustfmt default (tab_spaces = 4). No rustfmt.toml.
+[*.rs]
+indent_size = 4
+
+# rumdl MD009 keeps two-space hard breaks, an exception EditorConfig cannot
+# express.
+[*.md]
+trim_trailing_whitespace = false
