@@ -130,7 +130,7 @@ pub struct Op {
     pub replica_id: Uuid,
     pub actor: String,
     pub project: ProjectId,
-    pub issue_id: Uuid,
+    pub subject: Uuid,
     pub kind: String,
     pub hlc: Hlc,
     pub base_seq: u64,
@@ -175,7 +175,7 @@ impl Op {
         buf.extend_from_slice(self.replica_id.as_bytes());
         put_bytes(&mut buf, self.actor.as_bytes());
         put_bytes(&mut buf, self.project.to_string().as_bytes());
-        buf.extend_from_slice(self.issue_id.as_bytes());
+        buf.extend_from_slice(self.subject.as_bytes());
         put_bytes(&mut buf, self.kind.as_bytes());
         buf.extend_from_slice(&self.hlc.raw().to_be_bytes());
         buf.extend_from_slice(&self.base_seq.to_be_bytes());
@@ -224,7 +224,7 @@ mod tests {
             replica_id: Uuid::from_u128(2),
             actor: "jace".into(),
             project: ProjectId::from_uuid(Uuid::from_u128(4)),
-            issue_id: Uuid::from_u128(3),
+            subject: Uuid::from_u128(3),
             kind: change.kind().into(),
             hlc: Hlc::new(1_000, 0),
             base_seq: 0,
@@ -248,7 +248,7 @@ mod tests {
             Box::new(|o| o.replica_id = Uuid::from_u128(9)),
             Box::new(|o| o.actor = "codex".into()),
             Box::new(|o| o.project = ProjectId::from_uuid(Uuid::from_u128(9))),
-            Box::new(|o| o.issue_id = Uuid::from_u128(9)),
+            Box::new(|o| o.subject = Uuid::from_u128(9)),
             Box::new(|o| o.kind = "add".into()),
             Box::new(|o| o.hlc = Hlc::new(1_000, 1)),
             Box::new(|o| o.base_seq = 1),

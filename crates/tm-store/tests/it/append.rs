@@ -380,7 +380,7 @@ fn a_draft_may_name_any_project_for_a_new_issue() {
     let draft = Draft {
         actor: "jace".into(),
         project: OTHER,
-        issue_id: issue,
+        subject: issue,
         change: set_field("title", json!("u")),
     };
     store.append(draft).unwrap();

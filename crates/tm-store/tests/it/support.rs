@@ -77,7 +77,7 @@ pub(crate) fn remote_op(
         replica_id: Uuid::from_u128(replica),
         actor: "codex".into(),
         project: PROJECT,
-        issue_id,
+        subject: issue_id,
         kind: change.kind().into(),
         hlc,
         base_seq,
@@ -106,7 +106,7 @@ pub(crate) fn insert_acked(store: &Store, op: &Op, server_seq: i64, received_ms:
                 op.replica_id.as_bytes(),
                 op.actor,
                 op.project.to_string(),
-                op.issue_id.as_bytes(),
+                op.subject.as_bytes(),
                 change.field(),
                 change.elem(),
                 i64::try_from(op.hlc.raw()).unwrap(),
@@ -194,7 +194,7 @@ pub(crate) fn draft(issue_id: Uuid, change: Change) -> Draft {
     Draft {
         actor: "jace".into(),
         project: PROJECT,
-        issue_id,
+        subject: issue_id,
         change,
     }
 }

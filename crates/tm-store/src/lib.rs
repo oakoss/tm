@@ -136,7 +136,7 @@ pub struct Unapplied {
 pub struct Draft {
     pub actor: String,
     pub project: ProjectId,
-    pub issue_id: Uuid,
+    pub subject: Uuid,
     pub change: Change,
 }
 
@@ -339,7 +339,7 @@ impl Store {
             .map(|change| Draft {
                 actor: actor.to_owned(),
                 project,
-                issue_id,
+                subject: issue_id,
                 change,
             })
             .collect();
@@ -391,13 +391,13 @@ impl Store {
         // or inconsistent stays editable.
         let mut before = BTreeMap::new();
         for draft in drafts {
-            if let Entry::Vacant(entry) = before.entry(draft.issue_id) {
+            if let Entry::Vacant(entry) = before.entry(draft.subject) {
                 entry.insert((
-                    validate::missing_fields(&tx, &self.scheme, draft.issue_id)?,
-                    validate::status_fits_type(&tx, &self.scheme, draft.issue_id)?,
+                    validate::missing_fields(&tx, &self.scheme, draft.subject)?,
+                    validate::status_fits_type(&tx, &self.scheme, draft.subject)?,
                 ));
             }
-            let change = validate::check(&tx, &self.scheme, draft.issue_id, draft.change)?;
+            let change = validate::check(&tx, &self.scheme, draft.subject, draft.change)?;
             hlc = hlc.tick(now_ms);
             let base_seq: i64 = tx.query_row(
                 "SELECT coalesce(max(server_seq), 0) FROM ops WHERE project = ?1",
@@ -410,7 +410,7 @@ impl Store {
                 replica_id,
                 actor: draft.actor,
                 project: draft.project,
-                issue_id: draft.issue_id,
+                subject: draft.subject,
                 kind: change.kind().to_owned(),
                 hlc,
                 base_seq: rust_int(base_seq)?,
@@ -608,7 +608,7 @@ fn insert_op(tx: &Transaction<'_>, op: &Op, change: &Change) -> Result<(), Store
             op.replica_id.as_bytes(),
             op.actor,
             op.project.to_string(),
-            op.issue_id.as_bytes(),
+            op.subject.as_bytes(),
             change.field(),
             change.elem(),
             sql_int(op.hlc.raw())?,
@@ -672,7 +672,7 @@ impl StoredOp {
             replica_id: uuid_from(&self.replica_id)?,
             actor: self.actor.clone(),
             project: project_from(&self.project)?,
-            issue_id: uuid_from(&self.issue_id)?,
+            subject: uuid_from(&self.issue_id)?,
             kind: self.kind.clone(),
             hlc: Hlc::from_raw(rust_int(self.hlc)?),
             base_seq: rust_int(self.base_seq)?,
