@@ -26,7 +26,7 @@
 - **Operation log is the source of truth** ([ADR 0005](../decisions/0005-operation-log-is-the-source-of-truth.md)): every change is an append-only operation from v1, written in the same transaction as the tables it updates. The tables are projections that `tm rebuild` regenerates from the log; undo, history and sync all read the log.
 - **Invariants**: every operation has a unique ID; a take succeeds only on an unclaimed Issue, never on "already has that value"; links have deterministic keys; a Key is never reused, even after `tm purge`.
 - **`tm undo`** reverts the caller's last operation by appending its inverse.
-- **Sync** (experimental before v1): clients exchange operations with `tm serve`, which orders them and assigns Keys. `tm sync status` compares state hashes with the server, so "synced" means the server agrees. The server runs on SQLite first; Postgres comes later for hosted or multi-user use.
+- **Sync** (experimental before v1): Replicas exchange operations with `tm serve`, which orders them and assigns Keys. Synced operations form a hash chain, so `tm sync status` reports synced, pending, behind or forked by comparing chain heads with the server; merge, ordering and versioning rules are in [ADR 0006](../decisions/0006-operation-merge-ordering-and-versioning.md). The server runs on SQLite first; Postgres comes later for hosted or multi-user use.
 - **Releases**: oakum bump files and changelogs, with cargo-dist building the binaries for crates.io, Homebrew and the npm wrapper, as oakum itself ships.
 - **Schema-version guard**: an older binary refuses a store written by a newer one.
 - **Watch list**: Turso DB, re-tested at each minor release against the multi-process and sync tests in [turso-deep-dive.md](../research/sync-engine-spike/turso-deep-dive.md) (scripts in `docs/research/sync-engine-spike/scripts/`).
@@ -126,7 +126,7 @@ Everything is soft-deleted: archived, hidden and restorable. `tm purge` is the o
 
 - `tm start CPL-42` claims the Issue for the Agent and keeps the human as Assignee. Its side effects (moving to the first active status, setting the Assignee, creating a branch named after the Key) are each configurable and opt-in.
 - A Claim protects the work: status, description, Checks and the Agent. Another Actor is refused with the claimant and expiry, unless it passes `--force`, which is recorded and notifies the claimant. Comments, links, Findings, attachments and fields such as priority stay open to anyone, and the claimant is notified of changes.
-- Every write carries the version it was based on; a conflicting change to the same field is refused with the current value.
+- Within a Replica, every write carries the version it was based on; a conflicting change to the same field is refused with the current value. Changes that meet during sync merge by [ADR 0006](../decisions/0006-operation-merge-ordering-and-versioning.md) instead.
 - Claims expire after 2 hours by default (configurable, or disabled per Workspace). Any write renews them, as does `tm heartbeat` from a hook; `--for <duration>` and `--no-expiry` cover long jobs. Expiry clears the Agent, leaves the status alone and sends a Notification.
 - `tm handoff CPL-42 --to <agent> "<note>"` transfers a Claim with context.
 - **Path Claims** (`--paths`, or the Issue's file-path field) warn, not block, when another agent is about to edit the same files.
