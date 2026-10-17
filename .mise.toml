@@ -8,7 +8,7 @@
 # This version, Cargo.toml's `rust-version`, and `rust-toolchain.toml`'s
 # channel are the same number: release runners resolve through the toolchain
 # file where mise is absent. Move all three together.
-rust = { version = "1.98.1", components = "clippy,rustfmt,rust-src,rust-analyzer" }
+rust = { version = "1.99.1", components = "clippy,rustfmt,rust-src,rust-analyzer" }
 lefthook = "2.2.2"
 dprint = "0.63.0"
 rumdl = "0.2.79"
