@@ -58,5 +58,5 @@ fn scheme_show_json_lists_the_default_types_fields_and_statuses() {
 fn an_unknown_command_prints_usage_and_fails() {
     let output = tm(&["scheme", "edit"]);
     assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("usage: tm"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Usage: tm scheme"));
 }
