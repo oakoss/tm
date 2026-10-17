@@ -1,0 +1,4 @@
+# Standalone: not a member of the tm workspace.
+[workspace]
+resolver = "2"
+members = ["ast", "chumsky", "hand", "logos", "suggest", "winnow"]
