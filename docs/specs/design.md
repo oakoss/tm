@@ -50,7 +50,7 @@
 
 ### Built-in fields
 
-Key, type, title, description, status, Assignee, reporter, Agent and Claim, parent, labels, priority, created and updated times, and history. Priority uses five levels (none, urgent, high, medium, low) with renameable labels. Everything else is a Scheme field.
+Key, type, title, description, status, Assignee, reporter, Agent and Claim, parent, labels, priority, archived, created and updated times, and history. Priority uses five levels (none, urgent, high, medium, low) with renameable labels. Labels compare without case and keep the spelling they were added with. Everything else is a Scheme field.
 
 ### Schemes, types and fields
 
@@ -65,7 +65,8 @@ Key, type, title, description, status, Assignee, reporter, Agent and Claim, pare
 ### Workflows
 
 - Each type has a **Workflow**: statuses, allowed transitions and a configurable starting status.
-- Every status belongs to one **Status category**: triage, todo, active or done. Cross-type features (Triage, ready queue, release notes) read categories, never status names.
+- Every status belongs to one **Status category**: triage, todo, active, done or cancelled. Cross-type features (Triage, ready queue, release notes) read categories, never status names, so cancelled work never counts as shipped. Categories come from the Scheme when read; a status the Scheme does not define reads as triage ([ADR 0007](../decisions/0007-the-projection-does-not-depend-on-the-scheme.md)).
+- Workflow rules and required fields are checked when this Replica writes, never on replay: a merge can produce a state no single write allowed, and it is kept rather than refused.
 - **Requirements attach to statuses**: "required to enter X", with creation counting as entering the starting status. Agents can file quickly into Triage while work cannot start until fields are complete.
 - **Definition of Done**: a Project can define acceptance criteria added to every new Issue, on top of per-type templates.
 - Triage Issues are left out of default Views.
@@ -177,6 +178,7 @@ Off by default. An Issue can carry **Checks**: commands with an expected result.
 ## Search and filters
 
 - One filter language everywhere (CLI, Views, Board columns, Swimlanes, TUI and web UI), in the style of GitHub qualifiers: `key:value` for any built-in or Scheme field, lists (`status:review,testing`), negation (`-type:spike`), comparisons (`priority:>=high`, `created:>2026-10-01`), `OR` and parentheses when needed, functions (`@me`, `@agent`, `@next-release(review-cycle)`, `@today-7d`), `sort:` and bare words for full-text search. Unknown fields or values fail with the valid options.
+- Qualifiers: a repeated qualifier means all of them and a comma list means any of them; `-field:a,b` means none of them and also matches Issues with no value. `no:field` and `has:field` test for a value (priority `none` counts as unset), `category:` filters by Status category, `@me` is the human the filter runs for, and `sort:field` takes the field's natural direction (priority highest first, dates newest first) unless suffixed `-asc` or `-desc`, with unset values last; with no `sort:`, results come most recently updated first. Archived Issues are left out unless the filter names `archived`. Names, enumerated values and people ignore case. Labels and people are free-form: one no Issue holds matches nothing rather than failing. A date field matches one exact day; text search and timestamp comparisons are not supported yet. Syntax not supported yet is refused with a structured error rather than read some other way, so nothing accepted today changes meaning later; error spans count bytes.
 - The UIs offer filter chips that stay in sync with the text.
 - A search-as-you-type palette (`/` or `Ctrl-K`, `tm find` in the CLI) covers Issues, comments, Findings, file paths, attachment names, Views and Projects. It combines fuzzy matching on Keys and titles (a Rust fuzzy matcher such as `nucleo`, to be evaluated), SQLite FTS5 on bodies and comments, and frecency ranking.
 

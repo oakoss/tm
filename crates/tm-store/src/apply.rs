@@ -6,7 +6,10 @@
 //! operations after the ones it pulls, because `Version::beats` is decided
 //! pairwise and is not guaranteed to commute.
 
+use rusqlite::types::Value as SqlValue;
 use rusqlite::{OptionalExtension, Transaction, params};
+use serde_json::Value as Json;
+use tm_core::scheme::priority_rank;
 use tm_core::{Change, Hlc, Op};
 use uuid::Uuid;
 
@@ -84,19 +87,36 @@ pub(crate) fn apply(
     }
     let version = Version::of(op, server_seq, server_received_ms);
     match change {
-        Change::Create => create(tx, op),
+        Change::Create => return create(tx, op),
         Change::SetField { field, value, .. } => {
+            // Checked before anything is written, so a value that does not fit
+            // leaves the projection untouched.
+            let target = target(&field, &value)?;
             if wins(tx, op.issue_id, &field, "", &version)? {
                 record(tx, op.issue_id, &field, "", true, &version)?;
-                set_value(tx, op.issue_id, &field, &value)?;
+                write_target(tx, op.issue_id, &field, target)?;
             }
-            Ok(())
         }
-        Change::Add { field, elem, .. } => {
-            set_member(tx, op.issue_id, &field, &elem, true, &version)
+        Change::Add {
+            field,
+            elem,
+            elem_label,
+            ..
+        } => {
+            let (elem, display) = label_key(&field, &elem, elem_label);
+            set_member(
+                tx,
+                op.issue_id,
+                &field,
+                &elem,
+                true,
+                display.as_deref(),
+                &version,
+            )?;
         }
         Change::Remove { field, elem, .. } => {
-            set_member(tx, op.issue_id, &field, &elem, false, &version)
+            let (elem, _) = label_key(&field, &elem, None);
+            set_member(tx, op.issue_id, &field, &elem, false, None, &version)?;
         }
         Change::Comment { body } => {
             tx.execute(
@@ -112,9 +132,26 @@ pub(crate) fn apply(
                     op.offset_min,
                 ],
             )?;
-            Ok(())
         }
     }
+    // Every operation counts as activity, comments included.
+    tx.execute(
+        "UPDATE issues SET updated_ms = max(updated_ms, ?1) WHERE id = ?2",
+        params![op.utc_ms, op.issue_id.as_bytes()],
+    )?;
+    Ok(())
+}
+
+/// Labels compare without case. Writes already store them lowercased; this
+/// applies the same rule to an operation logged before that rule, keeping the
+/// spelling it was written with as its display form.
+fn label_key(field: &str, elem: &str, display: Option<String>) -> (String, Option<String>) {
+    if field != "labels" {
+        return (elem.to_owned(), display);
+    }
+    let key = elem.trim().to_lowercase();
+    let display = display.or_else(|| (key != elem).then(|| elem.trim().to_owned()));
+    (key, display)
 }
 
 fn create(tx: &Transaction<'_>, op: &Op) -> Result<(), StoreError> {
@@ -122,18 +159,27 @@ fn create(tx: &Transaction<'_>, op: &Op) -> Result<(), StoreError> {
         return Err(StoreError::DuplicateIssue(op.issue_id));
     }
     tx.execute(
-        "INSERT INTO issues (id, project, created_hlc) VALUES (?1, ?2, ?3)",
-        params![op.issue_id.as_bytes(), op.project, sql_int(op.hlc.raw())?],
+        "INSERT INTO issues (id, project, created_hlc, reporter, created_ms, updated_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+        params![
+            op.issue_id.as_bytes(),
+            op.project,
+            sql_int(op.hlc.raw())?,
+            op.actor,
+            op.utc_ms,
+        ],
     )?;
     Ok(())
 }
 
+/// `display` is how the element shows when it differs from `elem`.
 fn set_member(
     tx: &Transaction<'_>,
     issue_id: Uuid,
     field: &str,
     elem: &str,
     present: bool,
+    display: Option<&str>,
     version: &Version,
 ) -> Result<(), StoreError> {
     if !wins(tx, issue_id, field, elem, version)? {
@@ -142,8 +188,9 @@ fn set_member(
     record(tx, issue_id, field, elem, present, version)?;
     if present {
         tx.execute(
-            "INSERT OR IGNORE INTO set_members (issue_id, field, elem) VALUES (?1, ?2, ?3)",
-            params![issue_id.as_bytes(), field, elem],
+            "INSERT OR REPLACE INTO set_members (issue_id, field, elem, display)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![issue_id.as_bytes(), field, elem, display],
         )?;
     } else {
         tx.execute(
@@ -154,24 +201,116 @@ fn set_member(
     Ok(())
 }
 
-fn set_value(
+/// Where a `set_field` value lands.
+enum Target {
+    Column(&'static str, SqlValue),
+    SchemeValue(Option<String>, Option<f64>),
+    ClearSchemeValue,
+}
+
+/// The largest integer an `f64` holds exactly.
+const MAX_EXACT: u64 = 1 << 53;
+
+/// Built-in fields are columns; every other field is a Scheme field. Values
+/// were checked against the Scheme when written, so this only checks that
+/// each fits where it is stored.
+fn target(field: &str, value: &Json) -> Result<Target, StoreError> {
+    let invalid = |reason: &str| StoreError::Invalid {
+        field: field.to_owned(),
+        reason: reason.to_owned(),
+        valid: Vec::new(),
+    };
+    let text_column = |name: &str| match name {
+        "type" => Some("type"),
+        "title" => Some("title"),
+        "description" => Some("description"),
+        "status" => Some("status"),
+        "assignee" => Some("assignee"),
+        _ => None,
+    };
+    Ok(match (field, value) {
+        (name, Json::String(text)) if text_column(name).is_some() => Target::Column(
+            text_column(name).unwrap_or_default(),
+            SqlValue::Text(text.clone()),
+        ),
+        (name, Json::Null) if text_column(name).is_some() => {
+            Target::Column(text_column(name).unwrap_or_default(), SqlValue::Null)
+        }
+        ("priority", Json::String(level)) => {
+            let rank = priority_rank(level).ok_or_else(|| invalid("is not a priority level"))?;
+            Target::Column("priority", SqlValue::Integer(rank))
+        }
+        ("priority", Json::Null) => Target::Column("priority", SqlValue::Integer(0)),
+        ("parent", Json::String(id)) => {
+            let parent = Uuid::parse_str(id).map_err(|_| invalid("is not an Issue id"))?;
+            Target::Column("parent_id", SqlValue::Blob(parent.as_bytes().to_vec()))
+        }
+        ("parent", Json::Null) => Target::Column("parent_id", SqlValue::Null),
+        ("archived", Json::Bool(archived)) => {
+            Target::Column("archived", SqlValue::Integer(i64::from(*archived)))
+        }
+        ("archived", Json::Null) => Target::Column("archived", SqlValue::Integer(0)),
+        (
+            "type" | "title" | "description" | "status" | "assignee" | "priority" | "parent"
+            | "archived",
+            _,
+        ) => return Err(invalid("has the wrong value type")),
+        ("key" | "reporter" | "agent" | "claim" | "labels" | "created" | "updated", _) => {
+            return Err(invalid("is computed and cannot be set"));
+        }
+        (_, Json::Null) => Target::ClearSchemeValue,
+        (_, Json::String(text)) => Target::SchemeValue(Some(text.clone()), None),
+        (_, Json::Number(number)) => {
+            let exact = number
+                .as_u64()
+                .or_else(|| number.as_i64().map(i64::unsigned_abs))
+                .is_none_or(|magnitude| magnitude <= MAX_EXACT);
+            // A float was already rounded when parsed, so one that reaches 2^53
+            // may have been larger.
+            #[allow(clippy::cast_precision_loss)]
+            let limit = MAX_EXACT as f64;
+            let whole_in_range = |n: f64| {
+                n.fract() != 0.0
+                    || if number.is_f64() {
+                        n.abs() < limit
+                    } else {
+                        n.abs() <= limit
+                    }
+            };
+            let number = number
+                .as_f64()
+                .filter(|n| exact && whole_in_range(*n))
+                .ok_or_else(|| invalid("is too large to store exactly"))?;
+            Target::SchemeValue(None, Some(number))
+        }
+        (_, Json::Bool(flag)) => Target::SchemeValue(None, Some(f64::from(u8::from(*flag)))),
+        (_, Json::Array(_) | Json::Object(_)) => {
+            return Err(invalid("cannot hold a list or an object"));
+        }
+    })
+}
+
+fn write_target(
     tx: &Transaction<'_>,
     issue_id: Uuid,
     field: &str,
-    value: &serde_json::Value,
+    target: Target,
 ) -> Result<(), StoreError> {
-    let path = format!("$.{field}");
-    if value.is_null() {
-        tx.execute(
-            "UPDATE issues SET fields = json_remove(fields, ?1) WHERE id = ?2",
-            params![path, issue_id.as_bytes()],
-        )?;
-    } else {
-        tx.execute(
-            "UPDATE issues SET fields = json_set(fields, ?1, json(?2)) WHERE id = ?3",
-            params![path, value.to_string(), issue_id.as_bytes()],
-        )?;
-    }
+    match target {
+        Target::Column(column, value) => tx.execute(
+            &format!("UPDATE issues SET {column} = ?1 WHERE id = ?2"),
+            params![value, issue_id.as_bytes()],
+        )?,
+        Target::SchemeValue(txt, num) => tx.execute(
+            "INSERT OR REPLACE INTO field_values (issue_id, field, txt, num)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![issue_id.as_bytes(), field, txt, num],
+        )?,
+        Target::ClearSchemeValue => tx.execute(
+            "DELETE FROM field_values WHERE issue_id = ?1 AND field = ?2",
+            params![issue_id.as_bytes(), field],
+        )?,
+    };
     Ok(())
 }
 

@@ -25,10 +25,9 @@ fn fifty_processes_write_without_losing_operations() {
     }
 
     let dir = TempDir::new();
-    let issue = Uuid::now_v7();
-    Store::open(&dir.db())
+    let (issue, created) = Store::open(&dir.db())
         .unwrap()
-        .append(draft(issue, Change::Create))
+        .create_issue("jace", "CPL", "task", "t")
         .unwrap();
 
     let exe = std::env::current_exe().unwrap();
@@ -53,7 +52,7 @@ fn fifty_processes_write_without_losing_operations() {
 
     let store = Store::open(&dir.db()).unwrap();
     let conn = store.connection();
-    let expected = i64::try_from(1 + PROCESSES * WRITES_EACH).unwrap();
+    let expected = i64::try_from(created.len() + PROCESSES * WRITES_EACH).unwrap();
     let (ops, distinct_hlc): (i64, i64) = conn
         .query_row("SELECT count(*), count(DISTINCT hlc) FROM ops", [], |r| {
             Ok((r.get(0)?, r.get(1)?))
@@ -74,7 +73,7 @@ fn write_as_child(db: &std::path::Path, issue: Uuid) {
     let mut store = Store::open(db).unwrap();
     for i in 0..WRITES_EACH {
         let change = if i % 2 == 0 {
-            set_field("counter", json!(i))
+            set_field("title", json!(format!("write {i}")))
         } else {
             Change::Comment {
                 body: format!("write {i}"),

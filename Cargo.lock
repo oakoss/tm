@@ -759,11 +759,16 @@ dependencies = [
 [[package]]
 name = "tm-cli"
 version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "tm-core",
+]
 
 [[package]]
 name = "tm-core"
 version = "0.0.0"
 dependencies = [
+ "jiff",
  "proptest",
  "serde",
  "serde_json",
@@ -783,6 +788,7 @@ dependencies = [
  "jiff",
  "proptest",
  "rusqlite",
+ "serde",
  "serde_json",
  "thiserror",
  "tm-core",
@@ -853,6 +859,7 @@ checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
 dependencies = [
  "getrandom",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 

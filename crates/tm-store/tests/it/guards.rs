@@ -6,14 +6,19 @@ use tm_core::{Change, Hlc};
 use tm_store::{Clock, Store, StoreError, WallTime};
 use uuid::Uuid;
 
-use crate::support::{ManualClock, TempDir, draft, insert_acked, open, remote_op, set_field};
+use crate::support::{
+    ManualClock, TempDir, draft, field, insert_acked, new_issue, open, remote_op, set_field,
+};
 
-fn store_with_one_op(dir: &TempDir) -> (Store, Uuid) {
+/// Log position of the edit `store_with_an_edit` makes after the four
+/// operations that create the Issue.
+const EDIT_SEQ: i64 = 5;
+
+fn store_with_an_edit(dir: &TempDir) -> (Store, Uuid) {
     let mut store = open(&dir.db(), &ManualClock::at(50_000));
-    let issue = Uuid::now_v7();
-    store.append(draft(issue, Change::Create)).unwrap();
+    let issue = new_issue(&mut store);
     store
-        .append(draft(issue, set_field("status", json!("a"))))
+        .append(draft(issue, set_field("title", json!("a"))))
         .unwrap();
     (store, issue)
 }
@@ -27,7 +32,7 @@ fn reopen_err(dir: &TempDir) -> StoreError {
 #[test]
 fn stored_operations_cannot_be_edited_or_deleted() {
     let dir = TempDir::new();
-    let (store, _) = store_with_one_op(&dir);
+    let (store, _) = store_with_an_edit(&dir);
     let conn = store.connection();
     for position in ["seq", "rowid", "oid", "_rowid_"] {
         assert!(
@@ -73,14 +78,14 @@ fn stored_operations_cannot_be_edited_or_deleted() {
             []
         )
         .unwrap(),
-        2
+        usize::try_from(EDIT_SEQ).unwrap()
     );
 }
 
 #[test]
 fn rebuild_names_an_operation_whose_content_no_longer_matches_its_hash() {
     let dir = TempDir::new();
-    let (mut store, _) = store_with_one_op(&dir);
+    let (mut store, _) = store_with_an_edit(&dir);
     store
         .connection()
         .execute_batch(
@@ -89,14 +94,17 @@ fn rebuild_names_an_operation_whose_content_no_longer_matches_its_hash() {
         )
         .unwrap();
     let err = store.rebuild().unwrap_err();
-    assert!(matches!(err, StoreError::Replay { seq: 2, .. }), "{err}");
+    assert!(
+        matches!(err, StoreError::Replay { seq: EDIT_SEQ, .. }),
+        "{err}"
+    );
 }
 
 #[test]
 fn rebuild_names_the_position_of_a_row_that_cannot_be_read() {
     for damage in ["v = 70000", "offset_min = 99999", "op_id = x'01'"] {
         let dir = TempDir::new();
-        let (mut store, _) = store_with_one_op(&dir);
+        let (mut store, _) = store_with_an_edit(&dir);
         store
             .connection()
             .execute_batch(&format!(
@@ -126,27 +134,21 @@ fn a_lost_or_stale_clock_state_is_recovered_from_the_log() {
         let dir = TempDir::new();
         let clock = ManualClock::at(50_000);
         let issue = {
-            let (store, issue) = store_with_one_op(&dir);
+            let (store, issue) = store_with_an_edit(&dir);
             store.connection().execute(damage, []).unwrap();
             issue
         };
         clock.set(10_000);
         let mut store = open(&dir.db(), &clock);
         let op = store
-            .append(draft(issue, set_field("status", json!("b"))))
+            .append(draft(issue, set_field("title", json!("b"))))
             .unwrap();
         assert!(
             op.hlc.ms() >= 50_000,
             "{damage}: clock moved back to {}",
             op.hlc.ms()
         );
-        assert_eq!(
-            tm_store::issue_fields(store.connection(), issue)
-                .unwrap()
-                .unwrap(),
-            r#"{"status":"b"}"#,
-            "{damage}"
-        );
+        assert_eq!(field(&store, issue, "title"), Some(json!("b")), "{damage}");
     }
 }
 
@@ -156,7 +158,7 @@ fn a_clock_state_ahead_of_the_log_is_kept() {
     let clock = ManualClock::at(50_000);
     let ahead = Hlc::new(9_000_000, 3);
     let issue = {
-        let (store, issue) = store_with_one_op(&dir);
+        let (store, issue) = store_with_an_edit(&dir);
         store
             .connection()
             .execute(
@@ -168,7 +170,7 @@ fn a_clock_state_ahead_of_the_log_is_kept() {
     };
     let mut store = open(&dir.db(), &clock);
     let op = store
-        .append(draft(issue, set_field("status", json!("b"))))
+        .append(draft(issue, set_field("title", json!("b"))))
         .unwrap();
     assert!(op.hlc > ahead, "the clock moved back to {:?}", op.hlc);
 }
@@ -196,7 +198,7 @@ fn clock_recovery_does_not_adopt_another_replicas_clock() {
     let mut store = open(&dir.db(), &clock);
     store.rebuild().unwrap();
     let op = store
-        .append(draft(issue, set_field("status", json!("x"))))
+        .append(draft(issue, set_field("title", json!("x"))))
         .unwrap();
     assert_eq!(op.hlc, Hlc::new(1_000, 0));
 }
@@ -205,7 +207,7 @@ fn clock_recovery_does_not_adopt_another_replicas_clock() {
 fn a_lost_replica_identity_with_operations_is_corruption() {
     let dir = TempDir::new();
     {
-        let (store, _) = store_with_one_op(&dir);
+        let (store, _) = store_with_an_edit(&dir);
         store
             .connection()
             .execute("DELETE FROM meta WHERE k = 'replica_id'", [])
@@ -220,7 +222,7 @@ fn a_store_format_this_tm_never_wrote_is_refused() {
     for (format, newer) in [(2, true), (0, false)] {
         let dir = TempDir::new();
         {
-            let (store, _) = store_with_one_op(&dir);
+            let (store, _) = store_with_an_edit(&dir);
             store
                 .connection()
                 .execute("UPDATE meta SET v = ?1 WHERE k = 'format'", [format])
@@ -272,7 +274,7 @@ fn an_offset_no_time_zone_has_is_refused() {
         (i16::MIN, false),
     ] {
         let mut store = Store::open_with_clock(&dir.db(), Box::new(Offset(offset))).unwrap();
-        let result = store.append(draft(Uuid::now_v7(), Change::Create));
+        let result = store.create_issue("jace", "CPL", "task", "t");
         assert_eq!(result.is_ok(), ok, "{offset}: {result:?}");
     }
 }
@@ -280,8 +282,8 @@ fn an_offset_no_time_zone_has_is_refused() {
 #[test]
 fn an_operation_filed_under_another_project_is_refused() {
     let dir = TempDir::new();
-    let (mut store, issue) = store_with_one_op(&dir);
-    let mut wrong = draft(issue, set_field("status", json!("b")));
+    let (mut store, issue) = store_with_an_edit(&dir);
+    let mut wrong = draft(issue, set_field("title", json!("b")));
     wrong.project = "OTHER".into();
     let err = store.append(wrong).unwrap_err();
     assert!(

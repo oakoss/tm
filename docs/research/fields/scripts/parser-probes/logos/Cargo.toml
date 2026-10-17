@@ -1,0 +1,10 @@
+[package]
+name = "probe-logos"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+filter-ast = { path = "../ast" }
+logos = "=0.16.1"
