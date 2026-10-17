@@ -4,7 +4,8 @@ Ordered phases for building what [design.md](../specs/design.md) describes. Each
 
 ## Phase 1: core store and CLI
 
-- Monorepo scaffold: Cargo workspace with `tm-core`, `tm-store`, `tm-sync`, `tm-server`, `tm-tui` (internal, `publish = false`) and `tm-cli` (empty where not yet needed); bundled SQLite; mise tasks for check, build and test; lefthook; oakum initialised for releases.
+- Monorepo scaffold: Cargo workspace with `tm-core`, `tm-store`, `tm-sync`, `tm-server`, `tm-tui` (internal, `publish = false`) and `tm-cli` (empty where not yet needed); bundled SQLite; the repo infrastructure copied from oakum (mise tasks, pinned toolchain, lints, cargo-deny, formatters, lefthook, cog, CI with a CI Summary gate on macOS and Linux, Renovate, contributing pages). The full list is in the design notes of bead `tm-u8g.1`.
+- Snapshot tests (insta) for `--json` output, and a `clippy.toml` I/O tripwire keeping `tm-core` free of I/O, once those crates have code.
 - Operation log as the source of truth, table projections in the same transaction, `tm rebuild` ([ADR 0005](../decisions/0005-operation-log-is-the-source-of-truth.md)). Settle and document the per-field merge rule and operation versioning now, though sync comes later.
 - Invariants: unique operation IDs, deterministic link keys, Keys never reused, take-only-if-unclaimed.
 - Workspaces, repo mapping through `.config/tm.toml`, Key assignment by the local authority ([ADR 0004](../decisions/0004-one-authority-assigns-keys.md)).
@@ -73,10 +74,14 @@ The search palette (fuzzy, FTS5, frecency), the full filter language, attachment
 
 ## Phase 8: web UI
 
-`tm ui` on localhost with a token, TanStack DB over `tm serve`'s change stream, built on the UI component library, with shareable View URLs.
+`tm ui` on localhost with a token, TanStack DB over `tm serve`'s change stream, built on the UI component library, with shareable View URLs. Adds a dependency-review workflow (from claude-plugins) covering npm.
 
 ## Phase 9: sync (experimental)
 
 `tm serve` as the Key authority, operation exchange, provisional Keys, `tm sync status` verified against the server, and `detach`.
+
+## Release tooling (before the first published version)
+
+oakum config generated with `oakum init` (do not copy `tool-version` from ui or claude-plugins; it is deprecated), cargo-dist pinned through mise with macOS and Linux targets only, the oakum release workflow with a GitHub App token, and CodeQL.
 
 v1 is Phases 1 to 8 complete with sync still experimental.
