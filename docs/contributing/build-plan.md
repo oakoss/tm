@@ -84,6 +84,6 @@ The search palette (fuzzy, FTS5, frecency), the full filter language, attachment
 
 ## Release tooling (before the first published version)
 
-oakum config generated with `oakum init` (do not copy `tool-version` from ui or claude-plugins; it is deprecated), cargo-dist pinned through mise with macOS and Linux targets only, the oakum release workflow with a GitHub App token, and CodeQL.
+oakum config generated with `oakum init` (do not copy `tool-version` from ui or claude-plugins; it is deprecated), cargo-dist pinned through mise with macOS and Linux targets only, and the oakum release workflow with a GitHub App token.
 
 v1 is Phases 1 to 8 complete with sync still experimental.

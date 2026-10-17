@@ -1,0 +1,57 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # No cron: the pinned action fixes the query bundle, so a scheduled run would
+  # re-analyze unchanged code with identical queries. New queries arrive with a
+  # Renovate bump of the action.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      security-events: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, rust]
+    steps:
+      - name: Harden and checkout
+        uses: $/.github/actions/harden-checkout
+        with:
+          fetch-depth: 1
+
+      # `build-mode: none` extracts Rust through rust-analyzer, which reports
+      # zero alerts rather than failing when it cannot load the workspace; CI's
+      # clippy run fails first on a broken manifest.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+          # Integration tests are not shipped, and their assertion messages
+          # print UUID-derived values that the logging query reads as secrets.
+          config: |
+            paths-ignore:
+              - 'crates/*/tests/**'
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          category: /language:${{ matrix.language }}
