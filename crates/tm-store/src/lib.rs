@@ -10,6 +10,7 @@ mod query;
 mod read;
 mod schema;
 mod validate;
+pub mod workspace;
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -17,7 +18,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::{
-    Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params,
+    Connection, ErrorCode, MAIN_DB, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+    params,
 };
 use tm_core::filter::{Context, FilterError, parse, resolve};
 use tm_core::hlc::MAX_MS;
@@ -57,6 +59,10 @@ pub enum StoreError {
         "Project {key} can take no more Issues: operation {op_id} gave it the highest Key number"
     )]
     KeysExhausted { key: String, op_id: Uuid },
+    #[error("{} is not a tm store", .0.display())]
+    NotAStore(std::path::PathBuf),
+    #[error("the store is read-only; check the permissions of the file and its directory")]
+    ReadOnly,
     #[error("this store belongs to Workspace {stored}, not {given}")]
     WorkspaceMismatch { stored: Uuid, given: Uuid },
     #[error("unknown field {field:?}; valid fields: {}", valid.join(", "))]
@@ -160,12 +166,16 @@ pub struct Store {
     conn: Connection,
     clock: Box<dyn Clock + Send>,
     scheme: Scheme,
+    opened: bool,
 }
 
 impl Drop for Store {
     fn drop(&mut self) {
         // Best effort: a failed optimize costs query planning, never data.
-        let _ = self.conn.execute_batch("PRAGMA optimize");
+        // A store that failed to open is left as it was found.
+        if self.opened {
+            let _ = self.conn.execute_batch("PRAGMA optimize");
+        }
     }
 }
 
@@ -189,7 +199,137 @@ impl Store {
     ///
     /// As [`Store::open`].
     pub fn open_with_clock(path: &Path, clock: Box<dyn Clock + Send>) -> Result<Self, StoreError> {
-        let conn = Connection::open(path)?;
+        Self::setup(Connection::open(path)?, clock)
+    }
+
+    /// Opens Workspace `workspace`'s store, which must already exist. A
+    /// read-only look first refuses a file that is not a tm store, a store of
+    /// another Workspace and one whose format this tm cannot read, so none of
+    /// them is written to; reading a WAL database can still leave SQLite's
+    /// `-shm` beside it. A store with no Workspace recorded yet, as an
+    /// interrupted create leaves it, is given this one.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::NotAStore`] for a file that is not SQLite or holds no tm
+    /// metadata, [`StoreError::WorkspaceMismatch`], [`StoreError::NewerStore`],
+    /// [`StoreError::Corrupt`], [`StoreError::ReadOnly`], or as
+    /// [`Store::open`].
+    pub fn open_existing(path: &Path, workspace: Uuid) -> Result<Self, StoreError> {
+        // SQLite falls back to read-only when the file cannot be written, and
+        // fails once it needs a `-shm` or `-wal` the directory cannot hold. A
+        // file moved or deleted while open fails as read-only too, but is not
+        // a permissions problem.
+        const DBMOVED: std::ffi::c_int = 1032;
+        let read_only = |err: StoreError| match err {
+            StoreError::Sqlite(rusqlite::Error::SqliteFailure(ref failure, _))
+                if failure.code == ErrorCode::ReadOnly && failure.extended_code != DBMOVED =>
+            {
+                StoreError::ReadOnly
+            }
+            other => other,
+        };
+        Self::check_existing(path, workspace).map_err(read_only)?;
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        if conn.is_readonly(MAIN_DB)? {
+            return Err(StoreError::ReadOnly);
+        }
+        let mut store = Self::setup(conn, Box::new(SystemClock)).map_err(read_only)?;
+        store.set_workspace_id(workspace).map_err(read_only)?;
+        Ok(store)
+    }
+
+    fn check_existing(path: &Path, workspace: Uuid) -> Result<(), StoreError> {
+        let not_a_store = || StoreError::NotAStore(path.to_path_buf());
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        let has_meta: bool = match conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'meta')",
+            [],
+            |row| row.get(0),
+        ) {
+            Ok(found) => found,
+            Err(err) if err.sqlite_error_code() == Some(ErrorCode::NotADatabase) => {
+                return Err(not_a_store());
+            }
+            Err(err) => return Err(err.into()),
+        };
+        if !has_meta {
+            return Err(not_a_store());
+        }
+        let malformed = |what: &'static str| {
+            move |err: rusqlite::Error| match err {
+                rusqlite::Error::InvalidColumnType(..) => {
+                    StoreError::Corrupt(format!("the store's {what} is malformed"))
+                }
+                other => other.into(),
+            }
+        };
+        let format: Option<i64> = conn
+            .query_row("SELECT v FROM meta WHERE k = 'format'", [], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(malformed("format"))?;
+        let Some(format) = format else {
+            return Err(not_a_store());
+        };
+        if format > schema::STORE_FORMAT {
+            return Err(StoreError::NewerStore {
+                found: format,
+                supported: schema::STORE_FORMAT,
+            });
+        }
+        if format < 1 {
+            return Err(StoreError::Corrupt(format!(
+                "unknown store format {format}"
+            )));
+        }
+        // Every store tm has set up guards its log with these triggers; a view
+        // or virtual table cannot carry them. Without them this is another
+        // program's database, or a store that lost its source of truth, and
+        // setup would write to it.
+        let guarded_log: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_schema
+             WHERE type = 'trigger' AND tbl_name = 'ops'
+               AND name IN ('ops_immutable', 'ops_append_only')",
+            [],
+            |row| row.get(0),
+        )?;
+        if guarded_log != 2 {
+            return Err(StoreError::Corrupt(
+                "the store's operation log is missing or not tm's".into(),
+            ));
+        }
+        let stored: Option<Vec<u8>> = conn
+            .query_row("SELECT v FROM meta WHERE k = 'workspace_id'", [], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(malformed("Workspace id"))?;
+        if let Some(bytes) = stored {
+            let stored = uuid_from(&bytes)?;
+            if stored != workspace {
+                return Err(StoreError::WorkspaceMismatch {
+                    stored,
+                    given: workspace,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn setup(conn: Connection, clock: Box<dyn Clock + Send>) -> Result<Self, StoreError> {
         conn.busy_timeout(BUSY_TIMEOUT)?;
         // `synchronous=NORMAL` can lose the last writes on power loss but never
         // corrupts; the bundled build defaults to FULL and foreign keys on, so
@@ -213,8 +353,10 @@ impl Store {
             conn,
             clock,
             scheme: Scheme::built_in(),
+            opened: false,
         };
         store.init()?;
+        store.opened = true;
         Ok(store)
     }
 

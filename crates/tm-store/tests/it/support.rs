@@ -21,7 +21,12 @@ impl TempDir {
         let path =
             PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("tm-store-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&path).unwrap();
-        Self(path)
+        // Discovery returns real paths; macOS reaches /var through a symlink.
+        Self(std::fs::canonicalize(&path).unwrap())
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
     }
 
     pub(crate) fn db(&self) -> PathBuf {

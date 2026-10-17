@@ -9,3 +9,4 @@ mod merge;
 mod projects;
 mod rebuild;
 mod support;
+mod workspace;
