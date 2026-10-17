@@ -31,7 +31,7 @@ The statuses an issue type moves through, the allowed transitions between them, 
 _Avoid_: Lifecycle, process
 
 **Status category**:
-One of the fixed groups every status belongs to: triage, todo, active or done.
+One of the fixed groups every status belongs to: triage, todo, active, done or cancelled.
 _Avoid_: State, phase
 
 **Triage**:
@@ -71,6 +71,14 @@ _Avoid_: Defect
 **Sub-task**:
 A piece of another Issue, tracked separately.
 _Avoid_: Child task, checklist item
+
+**Spike**:
+An Issue for research or investigation whose outcome is knowledge, not shipped work.
+_Avoid_: Research task, investigation
+
+**Design**:
+An Issue whose outcome is a design, such as a mock-up or a written approach, rather than code.
+_Avoid_: Mock-up, RFC
 
 ### People and agents
 
@@ -141,7 +149,7 @@ A named bundle of Scheme, Workflows, Views and automation rules offered when a P
 _Avoid_: Template, profile
 
 **Scheme**:
-The named set of issue types, their fields and their allowed parents that a Project follows; child Projects inherit it unless they override it.
+The named set of issue types, their fields, their Workflows and their allowed parents that a Project follows; child Projects inherit it unless they override it.
 _Avoid_: Template, schema, config
 
 **Replica**:
