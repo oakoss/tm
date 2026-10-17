@@ -3,7 +3,7 @@
 
 /// Stamped into `PRAGMA user_version`; a store with a different value is
 /// rebuilt on open.
-pub(crate) const PROJECTION_VERSION: i64 = 1;
+pub(crate) const PROJECTION_VERSION: i64 = 2;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
 pub(crate) const STORE_FORMAT: i64 = 1;
@@ -68,21 +68,59 @@ END;
 pub(crate) const DROP_PROJECTIONS: &str = "
 DROP TABLE IF EXISTS comments;
 DROP TABLE IF EXISTS set_members;
+DROP TABLE IF EXISTS field_values;
+DROP TABLE IF EXISTS unapplied;
 DROP TABLE IF EXISTS field_versions;
 DROP TABLE IF EXISTS claims;
 DROP TABLE IF EXISTS keys;
 DROP TABLE IF EXISTS issues;
 ";
 
-/// Built-in typed columns arrive with the Scheme; until then every field value
-/// lives in `issues.fields`.
+/// Built-in fields are columns on `issues`; Scheme fields are rows in
+/// `field_values`. Nothing here depends on the Scheme: Status categories and
+/// labels are looked up when reading.
 pub(crate) const PROJECTIONS: &str = "
 CREATE TABLE issues (
   id BLOB PRIMARY KEY,
   project TEXT NOT NULL,
   created_hlc INTEGER NOT NULL,
-  fields TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(fields))
+  type TEXT,
+  title TEXT,
+  description TEXT,
+  status TEXT,
+  priority INTEGER NOT NULL DEFAULT 0,
+  assignee TEXT,
+  reporter TEXT NOT NULL,
+  parent_id BLOB,
+  archived INTEGER NOT NULL DEFAULT 0,
+  created_ms INTEGER NOT NULL,
+  updated_ms INTEGER NOT NULL
 ) STRICT;
+
+CREATE INDEX issues_by_status ON issues (type, status);
+CREATE INDEX issues_by_priority ON issues (priority);
+
+-- `issue_id` is NOT NULL here and in `set_members` because filters compile
+-- negation to `NOT IN`, which matches nothing once the subquery yields a NULL.
+CREATE TABLE field_values (
+  issue_id BLOB NOT NULL REFERENCES issues (id),
+  field TEXT NOT NULL,
+  txt TEXT,
+  num REAL,
+  PRIMARY KEY (issue_id, field)
+) STRICT, WITHOUT ROWID;
+
+-- Logged operations replay could not apply, such as a value another Replica
+-- wrote that does not fit; ADR 0006 has every pulled operation stay in the
+-- log, so they are recorded here instead of stopping the rebuild.
+CREATE TABLE unapplied (
+  seq INTEGER PRIMARY KEY,
+  op_id BLOB NOT NULL,
+  reason TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX field_values_by_txt ON field_values (field, txt, issue_id);
+CREATE INDEX field_values_by_num ON field_values (field, num, issue_id);
 
 -- The operation that currently wins each field or set element; `elem` is ''
 -- for single-value fields.
@@ -104,6 +142,7 @@ CREATE TABLE set_members (
   issue_id BLOB NOT NULL REFERENCES issues (id),
   field TEXT NOT NULL,
   elem TEXT NOT NULL,
+  display TEXT,
   PRIMARY KEY (issue_id, field, elem)
 ) STRICT, WITHOUT ROWID;
 

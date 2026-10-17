@@ -2,6 +2,8 @@
 
 pub mod hlc;
 pub mod op;
+pub mod scheme;
 
 pub use hlc::Hlc;
 pub use op::{Change, Op, OpError};
+pub use scheme::Scheme;

@@ -39,8 +39,9 @@ pub enum OpError {
     InvalidField(String),
 }
 
-/// One change to one Issue. Field changes carry the field's display label at
-/// the time, so history stays readable after a rename.
+/// One change to one Issue. Field changes carry the display labels of the
+/// field and of an enumerated value at the time, so history stays readable
+/// after a rename.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Change {
@@ -49,16 +50,22 @@ pub enum Change {
         field: String,
         label: String,
         value: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_label: Option<String>,
     },
     Add {
         field: String,
         label: String,
         elem: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        elem_label: Option<String>,
     },
     Remove {
         field: String,
         label: String,
         elem: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        elem_label: Option<String>,
     },
     Comment {
         body: String,
@@ -211,6 +218,7 @@ mod tests {
             field: "status".into(),
             label: "Status".into(),
             value: serde_json::json!("active"),
+            value_label: None,
         };
         Op {
             v: CURRENT_VERSION,
@@ -275,6 +283,19 @@ mod tests {
     }
 
     #[test]
+    fn value_labels_round_trip_and_are_omitted_when_absent() {
+        let labelled = Change::SetField {
+            field: "status".into(),
+            label: "Status".into(),
+            value: serde_json::json!("in_review"),
+            value_label: Some("In Review".into()),
+        };
+        let json = serde_json::to_string(&labelled).unwrap();
+        assert_eq!(serde_json::from_str::<Change>(&json).unwrap(), labelled);
+        assert!(!sample().payload.contains("value_label"));
+    }
+
+    #[test]
     fn newer_format_is_refused() {
         let mut op = sample();
         op.v = CURRENT_VERSION + 1;
@@ -327,16 +348,19 @@ mod tests {
                 field: "a".into(),
                 label: String::new(),
                 value: serde_json::Value::Null,
+                value_label: None,
             },
             Change::Add {
                 field: "a".into(),
                 label: String::new(),
                 elem: "x".into(),
+                elem_label: None,
             },
             Change::Remove {
                 field: "a".into(),
                 label: String::new(),
                 elem: "x".into(),
+                elem_label: None,
             },
             Change::Comment {
                 body: String::new(),
@@ -354,6 +378,7 @@ mod tests {
             field: "file_paths".into(),
             label: "Files".into(),
             elem: "a".into(),
+            elem_label: None,
         };
         assert!(ok.validate().is_ok());
         for bad in ["", "Status", "1x", "a.b", "a\"b", "a-b"] {
@@ -361,6 +386,7 @@ mod tests {
                 field: bad.into(),
                 label: String::new(),
                 value: serde_json::Value::Null,
+                value_label: None,
             };
             assert!(change.validate().is_err(), "{bad:?} accepted");
         }

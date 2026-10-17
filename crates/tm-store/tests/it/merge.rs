@@ -4,10 +4,12 @@
 use serde_json::json;
 use tm_core::hlc::MAX_DRIFT_MS;
 use tm_core::{Change, Hlc};
-use tm_store::{Store, issue_fields};
+use tm_store::Store;
 use uuid::Uuid;
 
-use crate::support::{ManualClock, TempDir, draft, insert_acked, open, remote_op, set_field};
+use crate::support::{
+    ManualClock, TempDir, draft, field, insert_acked, new_issue, open, remote_op, set_field,
+};
 
 const MINUTE: u64 = 60_000;
 
@@ -25,8 +27,8 @@ fn store_with_acked_issue(dir: &TempDir, clock: &ManualClock) -> (Store, Uuid) {
     (store, issue)
 }
 
-fn status(store: &Store, issue: Uuid) -> String {
-    issue_fields(store.connection(), issue).unwrap().unwrap()
+fn title(store: &Store, issue: Uuid) -> serde_json::Value {
+    field(store, issue, "title").unwrap()
 }
 
 #[test]
@@ -36,21 +38,21 @@ fn an_edit_that_saw_the_winner_replaces_it_despite_a_lower_clock() {
     let seen = remote_op(
         7,
         issue,
-        &set_field("status", json!("old")),
+        &set_field("title", json!("old")),
         Hlc::new(9 * MINUTE, 0),
         1,
     );
     let newer = remote_op(
         8,
         issue,
-        &set_field("status", json!("new")),
+        &set_field("title", json!("new")),
         Hlc::new(5 * MINUTE, 0),
         2,
     );
     insert_acked(&store, &seen, 2, i64::try_from(9 * MINUTE).unwrap());
     insert_acked(&store, &newer, 3, i64::try_from(9 * MINUTE).unwrap());
     store.rebuild().unwrap();
-    assert_eq!(status(&store, issue), r#"{"status":"new"}"#);
+    assert_eq!(title(&store, issue), json!("new"));
 }
 
 #[test]
@@ -60,21 +62,21 @@ fn concurrent_edits_go_to_the_later_clock() {
     let later = remote_op(
         7,
         issue,
-        &set_field("status", json!("later")),
+        &set_field("title", json!("later")),
         Hlc::new(6 * MINUTE, 0),
         1,
     );
     let earlier = remote_op(
         8,
         issue,
-        &set_field("status", json!("earlier")),
+        &set_field("title", json!("earlier")),
         Hlc::new(4 * MINUTE, 0),
         1,
     );
     insert_acked(&store, &later, 2, i64::try_from(6 * MINUTE).unwrap());
     insert_acked(&store, &earlier, 3, i64::try_from(6 * MINUTE).unwrap());
     store.rebuild().unwrap();
-    assert_eq!(status(&store, issue), r#"{"status":"later"}"#);
+    assert_eq!(title(&store, issue), json!("later"));
 }
 
 #[test]
@@ -85,14 +87,14 @@ fn a_fast_clock_is_capped_at_receipt_plus_drift() {
     let fast = remote_op(
         7,
         issue,
-        &set_field("status", json!("fast")),
+        &set_field("title", json!("fast")),
         Hlc::new(received + 600 * MINUTE, 0),
         1,
     );
     let honest = remote_op(
         8,
         issue,
-        &set_field("status", json!("honest")),
+        &set_field("title", json!("honest")),
         Hlc::new(received + MAX_DRIFT_MS + MINUTE, 0),
         1,
     );
@@ -104,7 +106,7 @@ fn a_fast_clock_is_capped_at_receipt_plus_drift() {
         i64::try_from(received + MAX_DRIFT_MS + MINUTE).unwrap(),
     );
     store.rebuild().unwrap();
-    assert_eq!(status(&store, issue), r#"{"status":"honest"}"#);
+    assert_eq!(title(&store, issue), json!("honest"));
 }
 
 #[test]
@@ -112,12 +114,12 @@ fn equal_clocks_are_tie_broken_by_replica() {
     let dir = TempDir::new();
     let (mut store, issue) = store_with_acked_issue(&dir, &ManualClock::at(1_000));
     let hlc = Hlc::new(5 * MINUTE, 3);
-    let high = remote_op(9, issue, &set_field("status", json!("high")), hlc, 1);
-    let low = remote_op(2, issue, &set_field("status", json!("low")), hlc, 1);
+    let high = remote_op(9, issue, &set_field("title", json!("high")), hlc, 1);
+    let low = remote_op(2, issue, &set_field("title", json!("low")), hlc, 1);
     insert_acked(&store, &high, 2, i64::try_from(5 * MINUTE).unwrap());
     insert_acked(&store, &low, 3, i64::try_from(5 * MINUTE).unwrap());
     store.rebuild().unwrap();
-    assert_eq!(status(&store, issue), r#"{"status":"high"}"#);
+    assert_eq!(title(&store, issue), json!("high"));
 }
 
 #[test]
@@ -126,18 +128,18 @@ fn a_pending_local_edit_shows_over_an_acknowledged_one() {
     let clock = ManualClock::at(1_000);
     let (mut store, issue) = store_with_acked_issue(&dir, &clock);
     store
-        .append(draft(issue, set_field("status", json!("mine"))))
+        .append(draft(issue, set_field("title", json!("mine"))))
         .unwrap();
     let theirs = remote_op(
         7,
         issue,
-        &set_field("status", json!("theirs")),
+        &set_field("title", json!("theirs")),
         Hlc::new(60 * MINUTE, 0),
         1,
     );
     insert_acked(&store, &theirs, 2, i64::try_from(60 * MINUTE).unwrap());
     store.rebuild().unwrap();
-    assert_eq!(status(&store, issue), r#"{"status":"mine"}"#);
+    assert_eq!(title(&store, issue), json!("mine"));
 }
 
 #[test]
@@ -145,8 +147,7 @@ fn set_elements_follow_their_last_add_or_remove() {
     let dir = TempDir::new();
     let clock = ManualClock::at(1_000);
     let mut store = open(&dir.db(), &clock);
-    let issue = Uuid::now_v7();
-    store.append(draft(issue, Change::Create)).unwrap();
+    let issue = new_issue(&mut store);
     for (add, elem) in [
         (true, "a"),
         (true, "b"),
@@ -161,12 +162,14 @@ fn set_elements_follow_their_last_add_or_remove() {
                 field: "labels".into(),
                 label: "Labels".into(),
                 elem: elem.into(),
+                elem_label: None,
             }
         } else {
             Change::Remove {
                 field: "labels".into(),
                 label: "Labels".into(),
                 elem: elem.into(),
+                elem_label: None,
             }
         };
         store.append(draft(issue, change)).unwrap();
@@ -192,7 +195,7 @@ fn base_seq_comes_from_the_drafts_own_project() {
     insert_acked(&store, &other, 100, 2_000);
     store.rebuild().unwrap();
     let op = store
-        .append(draft(issue, set_field("status", json!("x"))))
+        .append(draft(issue, set_field("title", json!("x"))))
         .unwrap();
     assert_eq!(op.base_seq, 1);
 }

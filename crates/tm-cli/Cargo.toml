@@ -9,6 +9,10 @@ repository.workspace = true
 rust-version.workspace = true
 description = "A local-first issue tracker for one human and their AI agents"
 
+[dependencies]
+serde_json.workspace = true
+tm-core.workspace = true
+
 [[bin]]
 name = "tm"
 path = "src/main.rs"
