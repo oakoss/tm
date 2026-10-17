@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use tm_core::Change;
 use tm_core::op::CURRENT_VERSION;
-use tm_core::{Hlc, Op};
+use tm_core::scheme::{Choice, Field, FieldType};
+use tm_core::{Hlc, Op, Scheme};
 use tm_store::{Clock, Draft, Store, WallTime};
 use uuid::Uuid;
 
@@ -116,8 +117,73 @@ pub(crate) fn insert_acked(store: &Store, op: &Op, server_seq: i64, received_ms:
         .unwrap();
 }
 
+/// The built-in Scheme plus Scheme fields of each kind the tests write.
+pub(crate) fn scheme() -> Scheme {
+    let mut scheme = Scheme::built_in();
+    let area = Field::custom("area", "Area", FieldType::Number, Vec::new());
+    let tier = Field::custom(
+        "tier",
+        "Tier",
+        FieldType::SingleSelect,
+        vec![
+            Choice {
+                id: "gold".into(),
+                label: "Gold".into(),
+            },
+            Choice {
+                id: "free".into(),
+                label: "Free".into(),
+            },
+        ],
+    );
+    let tags = Field::custom(
+        "tags",
+        "Tags",
+        FieldType::MultiSelect,
+        vec![
+            Choice {
+                id: "x".into(),
+                label: "Ex".into(),
+            },
+            Choice {
+                id: "y".into(),
+                label: "Why".into(),
+            },
+        ],
+    );
+    for field in [
+        area,
+        tier,
+        tags,
+        Field::custom("due", "Due", FieldType::Date, Vec::new()),
+        Field::custom("seen", "Seen", FieldType::Datetime, Vec::new()),
+        Field::custom("flag", "Flag", FieldType::Boolean, Vec::new()),
+    ] {
+        scheme.add_field(field).unwrap();
+    }
+    scheme
+}
+
 pub(crate) fn open(path: &Path, clock: &ManualClock) -> Store {
-    Store::open_with_clock(path, Box::new(clock.clone())).unwrap()
+    Store::open_with_clock(path, Box::new(clock.clone()))
+        .unwrap()
+        .with_scheme(scheme())
+}
+
+/// A new Task titled "t" in Project CPL.
+pub(crate) fn new_issue(store: &mut Store) -> Uuid {
+    store.create_issue("jace", "CPL", "task", "t").unwrap().0
+}
+
+/// One field of an Issue as it reads now.
+pub(crate) fn field(store: &Store, issue: Uuid, name: &str) -> Option<serde_json::Value> {
+    store
+        .issue(issue)
+        .unwrap()
+        .unwrap()
+        .fields
+        .get(name)
+        .cloned()
 }
 
 pub(crate) fn draft(issue_id: Uuid, change: Change) -> Draft {
@@ -134,6 +200,7 @@ pub(crate) fn set_field(field: &str, value: serde_json::Value) -> Change {
         field: field.into(),
         label: field.to_uppercase(),
         value,
+        value_label: None,
     }
 }
 
@@ -143,6 +210,7 @@ pub(crate) fn dump(store: &Store) -> Vec<String> {
     let mut out = Vec::new();
     for table in [
         "issues",
+        "field_values",
         "field_versions",
         "set_members",
         "comments",

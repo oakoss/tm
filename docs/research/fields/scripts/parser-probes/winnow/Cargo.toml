@@ -1,0 +1,10 @@
+[package]
+name = "probe-winnow"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+filter-ast = { path = "../ast" }
+winnow = "=1.0.4"

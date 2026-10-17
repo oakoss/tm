@@ -5,20 +5,28 @@
 //! transaction; `rebuild` regenerates the projections from the log.
 
 mod apply;
+mod query;
+mod read;
 mod schema;
+mod validate;
 
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::{
     Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params,
 };
+use tm_core::filter::{Context, FilterError, parse, resolve};
 use tm_core::hlc::MAX_MS;
 use tm_core::op::CURRENT_VERSION;
-use tm_core::{Change, Hlc, Op, OpError};
+use tm_core::{Change, Hlc, Op, OpError, Scheme};
 use uuid::Uuid;
 
 use apply::{apply, rust_int, sql_int, uuid_from};
+
+pub use read::IssueView;
 
 /// How long a writer waits for another writer before giving up.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -36,6 +44,17 @@ pub enum StoreError {
     UnknownIssue(Uuid),
     #[error("Issue {0} already exists")]
     DuplicateIssue(Uuid),
+    #[error("unknown field {field:?}; valid fields: {}", valid.join(", "))]
+    UnknownField { field: String, valid: Vec<String> },
+    #[error("{field} {reason}{}", if valid.is_empty() { String::new() } else { format!("; valid: {}", valid.join(", ")) })]
+    Invalid {
+        field: String,
+        reason: String,
+        /// The values that would be accepted, when they can be listed.
+        valid: Vec<String>,
+    },
+    #[error("Issue {issue} is missing required fields: {}", fields.join(", "))]
+    MissingFields { issue: Uuid, fields: Vec<String> },
     #[error("Issue {issue} belongs to Project {expected}, not {found}")]
     ProjectMismatch {
         issue: Uuid,
@@ -62,6 +81,8 @@ pub enum StoreError {
     Corrupt(String),
     #[error("SQLite error: {0}")]
     Sqlite(rusqlite::Error),
+    #[error(transparent)]
+    Filter(#[from] FilterError),
 }
 
 impl From<rusqlite::Error> for StoreError {
@@ -102,6 +123,14 @@ impl Clock for SystemClock {
     }
 }
 
+/// A logged operation replay skipped because its content did not fit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unapplied {
+    pub seq: i64,
+    pub op_id: Uuid,
+    pub reason: String,
+}
+
 /// A change to write, before the store stamps it with identity and time.
 #[derive(Debug, Clone)]
 pub struct Draft {
@@ -114,6 +143,7 @@ pub struct Draft {
 pub struct Store {
     conn: Connection,
     clock: Box<dyn Clock + Send>,
+    scheme: Scheme,
 }
 
 impl Drop for Store {
@@ -156,9 +186,33 @@ impl Store {
              PRAGMA foreign_keys = ON;
              PRAGMA recursive_triggers = ON;",
         )?;
-        let mut store = Self { conn, clock };
+        // People are typed by hand, so filters and sorts compare them ignoring
+        // case; SQLite's NOCASE folds only A to Z. Uppercasing first makes
+        // ß match SS and final sigma match sigma.
+        conn.create_collation(query::FOLD, |a, b| {
+            let fold = |s: &str| s.to_uppercase().to_lowercase();
+            fold(a).cmp(&fold(b))
+        })?;
+        let mut store = Self {
+            conn,
+            clock,
+            scheme: Scheme::built_in(),
+        };
         store.init()?;
         Ok(store)
+    }
+
+    /// Replaces the Scheme writes are checked against and reads are labelled
+    /// with. The projection does not depend on it, so no rebuild follows.
+    #[must_use]
+    pub fn with_scheme(mut self, scheme: Scheme) -> Self {
+        self.scheme = scheme;
+        self
+    }
+
+    #[must_use]
+    pub const fn scheme(&self) -> &Scheme {
+        &self.scheme
     }
 
     fn init(&mut self) -> Result<(), StoreError> {
@@ -245,17 +299,67 @@ impl Store {
         uuid_from(&bytes)
     }
 
-    /// Stamps `draft` as an operation, appends it to the log and applies it,
-    /// all in one `BEGIN IMMEDIATE` transaction.
+    /// [`Store::append_all`] for a single change.
     ///
     /// # Errors
     ///
-    /// [`StoreError::UnknownIssue`], [`StoreError::DuplicateIssue`] or
-    /// [`StoreError::ProjectMismatch`] when the change does not fit the Issue,
-    /// [`StoreError::Op`] when it breaks the
-    /// operation format, [`StoreError::Clock`], or [`StoreError::Busy`].
+    /// As [`Store::append_all`].
     pub fn append(&mut self, draft: Draft) -> Result<Op, StoreError> {
-        draft.change.validate()?;
+        let mut ops = self.append_all(vec![draft])?;
+        Ok(ops.remove(0))
+    }
+
+    /// Creates an Issue in its Workflow's starting Status.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::append_all`].
+    pub fn create_issue(
+        &mut self,
+        actor: &str,
+        project: &str,
+        issue_type: &str,
+        title: &str,
+    ) -> Result<(Uuid, Vec<Op>), StoreError> {
+        let issue_id = Uuid::now_v7();
+        let start = self
+            .scheme
+            .workflow(issue_type)
+            .map(|workflow| workflow.start.clone());
+        let mut changes = vec![
+            Change::Create,
+            set("type", serde_json::json!(issue_type)),
+            set("title", serde_json::json!(title)),
+        ];
+        if let Some(start) = start {
+            changes.push(set("status", serde_json::json!(start)));
+        }
+        let drafts = changes
+            .into_iter()
+            .map(|change| Draft {
+                actor: actor.to_owned(),
+                project: project.to_owned(),
+                issue_id,
+                change,
+            })
+            .collect();
+        Ok((issue_id, self.append_all(drafts)?))
+    }
+
+    /// Checks, stamps, logs and applies every draft in one `BEGIN IMMEDIATE`
+    /// transaction. Required fields are checked after the whole batch, so an
+    /// Issue's `create` and its required `set_field`s go in together.
+    ///
+    /// # Errors
+    ///
+    /// A Scheme error ([`StoreError::UnknownField`], [`StoreError::Invalid`],
+    /// [`StoreError::MissingFields`]), an Issue error, [`StoreError::Op`],
+    /// [`StoreError::Clock`] or [`StoreError::Busy`]; nothing is written
+    /// unless every draft succeeds.
+    pub fn append_all(&mut self, drafts: Vec<Draft>) -> Result<Vec<Op>, StoreError> {
+        for draft in &drafts {
+            draft.change.validate()?;
+        }
         let now = self.clock.now().map_err(StoreError::Clock)?;
         let now_ms = u64::try_from(now.utc_ms)
             .ok()
@@ -275,51 +379,143 @@ impl Store {
         let last: i64 = tx.query_row("SELECT v FROM meta WHERE k = 'last_hlc'", [], |row| {
             row.get(0)
         })?;
-        let hlc = Hlc::from_raw(rust_int(last)?).tick(now_ms);
-        let base_seq: i64 = tx.query_row(
-            "SELECT coalesce(max(server_seq), 0) FROM ops WHERE project = ?1",
-            [&draft.project],
-            |row| row.get(0),
-        )?;
+        let mut hlc = Hlc::from_raw(rust_int(last)?);
         let replica: Vec<u8> =
             tx.query_row("SELECT v FROM meta WHERE k = 'replica_id'", [], |row| {
                 row.get(0)
             })?;
-        let op = Op {
-            v: CURRENT_VERSION,
-            op_id: Uuid::now_v7(),
-            replica_id: uuid_from(&replica)?,
-            actor: draft.actor,
-            project: draft.project,
-            issue_id: draft.issue_id,
-            kind: draft.change.kind().to_owned(),
-            hlc,
-            base_seq: rust_int(base_seq)?,
-            utc_ms: now.utc_ms,
-            offset_min: now.offset_min,
-            payload: serde_json::to_string(&draft.change).map_err(OpError::from)?,
-        };
-        op.change()?;
-        insert_op(&tx, &op, &draft.change)?;
-        apply(&tx, &op, None, None)?;
+        let replica_id = uuid_from(&replica)?;
+        let mut ops = Vec::with_capacity(drafts.len());
+        // Each Issue's state before the batch is the bar it is held to after:
+        // a batch may not make it worse, but an Issue that arrived incomplete
+        // or inconsistent stays editable.
+        let mut before = BTreeMap::new();
+        for draft in drafts {
+            if let Entry::Vacant(entry) = before.entry(draft.issue_id) {
+                entry.insert((
+                    validate::missing_fields(&tx, &self.scheme, draft.issue_id)?,
+                    validate::status_fits_type(&tx, &self.scheme, draft.issue_id)?,
+                ));
+            }
+            let change = validate::check(&tx, &self.scheme, draft.issue_id, draft.change)?;
+            hlc = hlc.tick(now_ms);
+            let base_seq: i64 = tx.query_row(
+                "SELECT coalesce(max(server_seq), 0) FROM ops WHERE project = ?1",
+                [&draft.project],
+                |row| row.get(0),
+            )?;
+            let op = Op {
+                v: CURRENT_VERSION,
+                op_id: Uuid::now_v7(),
+                replica_id,
+                actor: draft.actor,
+                project: draft.project,
+                issue_id: draft.issue_id,
+                kind: change.kind().to_owned(),
+                hlc,
+                base_seq: rust_int(base_seq)?,
+                utc_ms: now.utc_ms,
+                offset_min: now.offset_min,
+                payload: serde_json::to_string(&change).map_err(OpError::from)?,
+            };
+            op.change()?;
+            insert_op(&tx, &op, &change)?;
+            apply(&tx, &op, None, None)?;
+            ops.push(op);
+        }
+        for (issue, (missing, fitted)) in before {
+            let fields: Vec<String> = validate::missing_fields(&tx, &self.scheme, issue)?
+                .into_iter()
+                .filter(|field| !missing.contains(field))
+                .collect();
+            if !fields.is_empty() {
+                return Err(StoreError::MissingFields { issue, fields });
+            }
+            if fitted && !validate::status_fits_type(&tx, &self.scheme, issue)? {
+                return Err(StoreError::Invalid {
+                    field: "status".into(),
+                    reason: "is not in the Workflow of the Issue's type".into(),
+                    valid: Vec::new(),
+                });
+            }
+        }
         tx.execute(
             "UPDATE meta SET v = ?1 WHERE k = 'last_hlc'",
             [sql_int(hlc.raw())?],
         )?;
         tx.commit()?;
-        Ok(op)
+        Ok(ops)
+    }
+
+    /// The ids of Issues matching `filter`, in its `sort:` order, else most
+    /// recently updated first. Archived Issues are left out unless the filter
+    /// names `archived`.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Filter`] when the filter does not parse or does not fit
+    /// the Scheme, or any SQLite failure.
+    pub fn find(&self, filter: &str, context: Context<'_>) -> Result<Vec<Uuid>, StoreError> {
+        let resolved = resolve(&parse(filter)?, &self.scheme, context)?;
+        let (sql, params) = query::compile(&resolved);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let ids = stmt.query_map(rusqlite::params_from_iter(params), |row| {
+            row.get::<_, Vec<u8>>(0)
+        })?;
+        ids.map(|id| uuid_from(&id?)).collect()
+    }
+
+    /// An Issue as it currently reads, labelled from the Scheme.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row;
+    /// `Ok(None)` when the Issue does not exist.
+    pub fn issue(&self, issue_id: Uuid) -> Result<Option<IssueView>, StoreError> {
+        // One read transaction, so the Issue never mixes two writers' commits.
+        let tx = self.conn.unchecked_transaction()?;
+        read::issue(&tx, &self.scheme, issue_id)
+    }
+
+    /// Logged operations the last rebuild could not apply, in log order.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
+    pub fn unapplied(&self) -> Result<Vec<Unapplied>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT seq, op_id, reason FROM unapplied ORDER BY seq")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (seq, op_id, reason) = row?;
+            Ok(Unapplied {
+                seq,
+                op_id: uuid_from(&op_id)?,
+                reason,
+            })
+        })
+        .collect()
     }
 
     /// Drops the projection tables and replays the whole log into fresh ones,
     /// in one transaction, stamping `PROJECTION_VERSION` last. Each operation's
-    /// stored hash is checked against its content before it is applied.
+    /// stored hash is checked against its content before it is applied; one
+    /// whose content does not fit is recorded and counted, see
+    /// [`Store::unapplied`].
     ///
     /// # Errors
     ///
-    /// [`StoreError::Replay`] naming the first operation that cannot be
-    /// replayed, which leaves the previous projections in place, or
+    /// [`StoreError::Replay`] naming the first operation that cannot be read
+    /// or fails its hash, which leaves the previous projections in place, or
     /// [`StoreError::Busy`].
-    pub fn rebuild(&mut self) -> Result<(), StoreError> {
+    pub fn rebuild(&mut self) -> Result<usize, StoreError> {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -335,19 +531,34 @@ impl Store {
             let rows = stmt.query_map([], StoredOp::read)?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
+        let mut unapplied = 0;
         for row in &rows {
-            replay(&tx, row)?;
+            if !replay(&tx, row)? {
+                unapplied += 1;
+            }
         }
         tx.execute_batch(&format!(
             "PRAGMA user_version = {}",
             schema::PROJECTION_VERSION
         ))?;
         tx.commit()?;
-        Ok(())
+        Ok(unapplied)
     }
 }
 
-fn replay(tx: &Transaction<'_>, row: &StoredOp) -> Result<(), StoreError> {
+/// A `set_field` whose labels the Scheme check fills in.
+fn set(field: &str, value: serde_json::Value) -> Change {
+    Change::SetField {
+        field: field.to_owned(),
+        label: String::new(),
+        value,
+        value_label: None,
+    }
+}
+
+/// Applies one logged operation, returning whether it fit; one that does not
+/// is recorded in `unapplied` rather than stopping the rebuild.
+fn replay(tx: &Transaction<'_>, row: &StoredOp) -> Result<bool, StoreError> {
     let wrap = |source: StoreError| StoreError::Replay {
         seq: row.seq,
         op_id: Uuid::from_slice(&row.op_id).ok(),
@@ -359,7 +570,29 @@ fn replay(tx: &Transaction<'_>, row: &StoredOp) -> Result<(), StoreError> {
             "its stored hash does not match its content".into(),
         )));
     }
-    apply(tx, &op, server_seq, received).map_err(wrap)
+    let sql = |result: rusqlite::Result<usize>| result.map_err(|err| wrap(err.into()));
+    sql(tx.execute("SAVEPOINT replay_op", []))?;
+    match apply(tx, &op, server_seq, received) {
+        Ok(()) => {
+            sql(tx.execute("RELEASE replay_op", []))?;
+            Ok(true)
+        }
+        Err(
+            err @ (StoreError::UnknownIssue(_)
+            | StoreError::DuplicateIssue(_)
+            | StoreError::ProjectMismatch { .. }
+            | StoreError::Invalid { .. }),
+        ) => {
+            sql(tx.execute("ROLLBACK TO replay_op", []))?;
+            sql(tx.execute("RELEASE replay_op", []))?;
+            sql(tx.execute(
+                "INSERT INTO unapplied (seq, op_id, reason) VALUES (?1, ?2, ?3)",
+                params![row.seq, op.op_id.as_bytes(), err.to_string()],
+            ))?;
+            Ok(false)
+        }
+        Err(err) => Err(wrap(err)),
+    }
 }
 
 fn insert_op(tx: &Transaction<'_>, op: &Op, change: &Change) -> Result<(), StoreError> {
@@ -452,19 +685,4 @@ impl StoredOp {
         let received = self.server_received_ms.map(rust_int).transpose()?;
         Ok((op, server_seq, received))
     }
-}
-
-/// Reads an Issue's current field values as a JSON object.
-///
-/// # Errors
-///
-/// Any SQLite failure; `Ok(None)` when the Issue does not exist.
-pub fn issue_fields(conn: &Connection, issue_id: Uuid) -> Result<Option<String>, StoreError> {
-    Ok(conn
-        .query_row(
-            "SELECT fields FROM issues WHERE id = ?1",
-            [issue_id.as_bytes()],
-            |row| row.get(0),
-        )
-        .optional()?)
 }

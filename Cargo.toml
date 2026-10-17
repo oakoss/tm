@@ -23,14 +23,14 @@ tm-tui = { path = "crates/tm-tui" }
 
 jiff = "0.2.38"
 proptest = "1.12.0"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "collation"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # 0.11 detects the SHA-2 instructions at run time; 0.10 needs its `asm`
 # feature to be fast on aarch64 (ADR 0006).
 sha2 = "0.11.1"
 thiserror = "2.0.21"
-uuid = { version = "1.28.0", features = ["v7"] }
+uuid = { version = "1.28.0", features = ["serde", "v7"] }
 
 [workspace.lints.rust]
 # `forbid` so no per-module `#[allow(unsafe_code)]` can reopen it.

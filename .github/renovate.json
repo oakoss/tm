@@ -57,6 +57,13 @@
       "matchPackageNames": [
         "rust"
       ]
+    },
+    {
+      "description": "Research probes record what was measured with the versions they name; bumping them would change the evidence.",
+      "enabled": false,
+      "matchFileNames": [
+        "docs/research/**"
+      ]
     }
   ],
   "platformAutomerge": false,
