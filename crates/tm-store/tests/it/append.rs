@@ -337,6 +337,24 @@ fn the_replica_id_is_stable_across_reopens() {
 }
 
 #[test]
+fn a_store_records_its_workspace_once() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    assert_eq!(store.workspace_id().unwrap(), None);
+    let id = Uuid::now_v7();
+    store.set_workspace_id(id).unwrap();
+    store.set_workspace_id(id).unwrap();
+    let other = Uuid::now_v7();
+    let err = store.set_workspace_id(other).unwrap_err();
+    assert!(
+        matches!(err, StoreError::WorkspaceMismatch { stored, given } if stored == id && given == other),
+        "{err}"
+    );
+    assert_eq!(open(&dir.db(), &clock).workspace_id().unwrap(), Some(id));
+}
+
+#[test]
 fn the_stored_hash_matches_the_operation() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));

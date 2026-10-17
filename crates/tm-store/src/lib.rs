@@ -57,6 +57,8 @@ pub enum StoreError {
         "Project {key} can take no more Issues: operation {op_id} gave it the highest Key number"
     )]
     KeysExhausted { key: String, op_id: Uuid },
+    #[error("this store belongs to Workspace {stored}, not {given}")]
+    WorkspaceMismatch { stored: Uuid, given: Uuid },
     #[error("unknown field {field:?}; valid fields: {}", valid.join(", "))]
     UnknownField { field: String, valid: Vec<String> },
     #[error("{field} {reason}{}", if valid.is_empty() { String::new() } else { format!("; valid: {}", valid.join(", ")) })]
@@ -311,6 +313,53 @@ impl Store {
                     row.get(0)
                 })?;
         uuid_from(&bytes)
+    }
+
+    /// The Workspace this store belongs to, once recorded. Every Replica of a
+    /// Workspace shares it, unlike [`Store::replica_id`].
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure, or [`StoreError::Corrupt`] if the stored id is malformed.
+    pub fn workspace_id(&self) -> Result<Option<Uuid>, StoreError> {
+        let bytes: Option<Vec<u8>> = self
+            .conn
+            .query_row("SELECT v FROM meta WHERE k = 'workspace_id'", [], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        bytes.map(|bytes| uuid_from(&bytes)).transpose()
+    }
+
+    /// Records the Workspace this store belongs to, once: a store never moves
+    /// between Workspaces.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::WorkspaceMismatch`] when another id is recorded,
+    /// [`StoreError::Corrupt`] if the stored id is malformed, any SQLite
+    /// failure, or [`StoreError::Busy`].
+    pub fn set_workspace_id(&mut self, id: Uuid) -> Result<(), StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let stored: Option<Vec<u8>> = tx
+            .query_row("SELECT v FROM meta WHERE k = 'workspace_id'", [], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        match stored.map(|bytes| uuid_from(&bytes)).transpose()? {
+            Some(stored) if stored == id => return Ok(()),
+            Some(stored) => return Err(StoreError::WorkspaceMismatch { stored, given: id }),
+            None => {
+                tx.execute(
+                    "INSERT INTO meta (k, v) VALUES ('workspace_id', ?1)",
+                    [id.as_bytes()],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// [`Store::append_all`] for a single change.
