@@ -6,5 +6,6 @@ mod fields;
 mod find;
 mod guards;
 mod merge;
+mod projects;
 mod rebuild;
 mod support;

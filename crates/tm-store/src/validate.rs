@@ -18,11 +18,17 @@ pub(crate) fn check(
     issue_id: Uuid,
     change: Change,
 ) -> Result<Change, StoreError> {
+    if change.is_project() {
+        return check_project(change);
+    }
     if !matches!(change, Change::Create) && !exists(tx, issue_id)? {
         return Err(StoreError::UnknownIssue(issue_id));
     }
     match change {
         Change::Create | Change::Comment { .. } => Ok(change),
+        Change::CreateProject { .. } | Change::RenameProject { .. } => {
+            unreachable!("Project operations return above")
+        }
         Change::SetField { field, value, .. } => {
             // A stored value can be cleared even when the Scheme lacks its field.
             if value.is_null() && scheme.field(&field).is_none() && has_value(tx, issue_id, &field)?
@@ -78,6 +84,35 @@ pub(crate) fn check(
                 elem_label,
             })
         }
+    }
+}
+
+/// Project names must not be blank. Key spelling is checked with the
+/// operation format, and whether a key is free when the operation applies.
+fn check_project(change: Change) -> Result<Change, StoreError> {
+    let invalid = |field: &str, reason: &str| StoreError::Invalid {
+        field: field.to_owned(),
+        reason: reason.to_owned(),
+        valid: Vec::new(),
+    };
+    let name_ok = |name: &str| !name.trim().is_empty();
+    match change {
+        Change::CreateProject { key, name } => {
+            if !name_ok(&name) {
+                return Err(invalid("name", "cannot be blank"));
+            }
+            Ok(Change::CreateProject { key, name })
+        }
+        Change::RenameProject { key, name } => {
+            if key.is_none() && name.is_none() {
+                return Err(invalid("key", "or a name is needed to rename a Project"));
+            }
+            if name.as_deref().is_some_and(|name| !name_ok(name)) {
+                return Err(invalid("name", "cannot be blank"));
+            }
+            Ok(Change::RenameProject { key, name })
+        }
+        _ => unreachable!("only Project kinds reach here"),
     }
 }
 

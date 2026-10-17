@@ -16,6 +16,9 @@ use crate::apply::uuid_from;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IssueView {
     pub id: Uuid,
+    /// `None` until the Issue's create carries a Key this Replica can record:
+    /// one from another Replica not yet given one, or one whose Key collided.
+    pub key: Option<String>,
     pub project: ProjectId,
     /// A Status the Scheme does not define reads as Triage, so the Issue comes
     /// back for attention.
@@ -126,8 +129,16 @@ fn built_in(
     fields.insert("archived".into(), json!(row.archived));
     fields.insert("created".into(), json!(row.created_ms));
     fields.insert("updated".into(), json!(row.updated_ms));
+    let key = conn
+        .query_row(
+            "SELECT key FROM keys WHERE issue_id = ?1 AND provisional = 0",
+            [issue_id.as_bytes()],
+            |row| row.get(0),
+        )
+        .optional()?;
     Ok(Some(IssueView {
         id: issue_id,
+        key,
         project: crate::apply::project_from(&row.project)?,
         category,
         fields,

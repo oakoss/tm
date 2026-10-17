@@ -38,6 +38,10 @@ pub enum OpError {
         "field name {0:?} must be lowercase letters, digits and underscores, starting with a letter"
     )]
     InvalidField(String),
+    #[error(
+        "Project key {0:?} must be an uppercase letter then 1 to 9 uppercase letters or digits"
+    )]
+    InvalidProjectKey(String),
 }
 
 /// One change to one Issue. Field changes carry the display labels of the
@@ -71,6 +75,18 @@ pub enum Change {
     Comment {
         body: String,
     },
+    /// A Project; the operation's subject and Project are both its id.
+    CreateProject {
+        key: String,
+        name: String,
+    },
+    /// A new key, name or both; the old key keeps resolving.
+    RenameProject {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
 }
 
 impl Change {
@@ -82,7 +98,18 @@ impl Change {
             Self::Add { .. } => "add",
             Self::Remove { .. } => "remove",
             Self::Comment { .. } => "comment",
+            Self::CreateProject { .. } => "create_project",
+            Self::RenameProject { .. } => "rename_project",
         }
+    }
+
+    /// Whether the subject is a Project rather than an Issue.
+    #[must_use]
+    pub const fn is_project(&self) -> bool {
+        matches!(
+            self,
+            Self::CreateProject { .. } | Self::RenameProject { .. }
+        )
     }
 
     /// The field this change targets, if any.
@@ -92,7 +119,10 @@ impl Change {
             Self::SetField { field, .. } | Self::Add { field, .. } | Self::Remove { field, .. } => {
                 Some(field)
             }
-            Self::Create | Self::Comment { .. } => None,
+            Self::Create
+            | Self::Comment { .. }
+            | Self::CreateProject { .. }
+            | Self::RenameProject { .. } => None,
         }
     }
 
@@ -101,21 +131,36 @@ impl Change {
     pub fn elem(&self) -> Option<&str> {
         match self {
             Self::Add { elem, .. } | Self::Remove { elem, .. } => Some(elem),
-            Self::Create | Self::SetField { .. } | Self::Comment { .. } => None,
+            Self::Create
+            | Self::SetField { .. }
+            | Self::Comment { .. }
+            | Self::CreateProject { .. }
+            | Self::RenameProject { .. } => None,
         }
     }
 
     /// Rejects field names that cannot be used safely as JSON object keys and
-    /// filter qualifiers.
+    /// filter qualifiers, and Project keys not in their stored form.
     ///
     /// # Errors
     ///
-    /// [`OpError::InvalidField`] when the field name is not `[a-z][a-z0-9_]*`.
+    /// [`OpError::InvalidField`] when the field name is not `[a-z][a-z0-9_]*`,
+    /// or [`OpError::InvalidProjectKey`].
     pub fn validate(&self) -> Result<(), OpError> {
         if let Some(field) = self.field()
             && !crate::scheme::is_id(field)
         {
             return Err(OpError::InvalidField(field.to_owned()));
+        }
+        let key = match self {
+            Self::CreateProject { key, .. } => Some(key),
+            Self::RenameProject { key, .. } => key.as_ref(),
+            _ => None,
+        };
+        if let Some(key) = key
+            && !crate::project::is_key(key)
+        {
+            return Err(OpError::InvalidProjectKey(key.clone()));
         }
         Ok(())
     }
@@ -130,6 +175,7 @@ pub struct Op {
     pub replica_id: Uuid,
     pub actor: String,
     pub project: ProjectId,
+    /// What the operation changes: an Issue, or a Project for Project kinds.
     pub subject: Uuid,
     pub kind: String,
     pub hlc: Hlc,
@@ -364,10 +410,37 @@ mod tests {
             Change::Comment {
                 body: String::new(),
             },
+            Change::CreateProject {
+                key: "CPL".into(),
+                name: "Core".into(),
+            },
+            Change::RenameProject {
+                key: None,
+                name: Some("Core".into()),
+            },
         ];
         for change in changes {
             let tag = serde_json::to_value(&change).unwrap()["kind"].clone();
             assert_eq!(tag, change.kind());
+        }
+    }
+
+    #[test]
+    fn project_keys_in_operations_must_be_stored_uppercase() {
+        let ok = Change::RenameProject {
+            key: Some("CORE".into()),
+            name: None,
+        };
+        assert!(ok.validate().is_ok());
+        for bad in ["cpl", "C", "CP-L"] {
+            let change = Change::CreateProject {
+                key: bad.into(),
+                name: "x".into(),
+            };
+            assert!(
+                matches!(change.validate(), Err(OpError::InvalidProjectKey(_))),
+                "{bad}"
+            );
         }
     }
 

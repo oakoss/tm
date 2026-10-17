@@ -5,6 +5,7 @@
 //! transaction; `rebuild` regenerates the projections from the log.
 
 mod apply;
+mod project;
 mod query;
 mod read;
 mod schema;
@@ -44,6 +45,18 @@ pub enum StoreError {
     UnknownIssue(Uuid),
     #[error("Issue {0} already exists")]
     DuplicateIssue(Uuid),
+    #[error("Project {0} does not exist")]
+    UnknownProject(ProjectId),
+    #[error("Project {0} already exists")]
+    DuplicateProject(ProjectId),
+    #[error("Project key {key} belongs to Project {project}")]
+    KeyTaken { key: String, project: ProjectId },
+    #[error("a Project operation's subject {subject} must be its own Project {project}")]
+    SubjectNotProject { subject: Uuid, project: ProjectId },
+    #[error(
+        "Project {key} can take no more Issues: operation {op_id} gave it the highest Key number"
+    )]
+    KeysExhausted { key: String, op_id: Uuid },
     #[error("unknown field {field:?}; valid fields: {}", valid.join(", "))]
     UnknownField { field: String, valid: Vec<String> },
     #[error("{field} {reason}{}", if valid.is_empty() { String::new() } else { format!("; valid: {}", valid.join(", ")) })]
@@ -123,7 +136,8 @@ impl Clock for SystemClock {
     }
 }
 
-/// A logged operation replay skipped because its content did not fit.
+/// A logged operation replay skipped because its content did not fit, or a
+/// create it applied without the Key it was assigned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unapplied {
     pub seq: i64,
@@ -309,6 +323,85 @@ impl Store {
         Ok(ops.remove(0))
     }
 
+    /// Creates a Project. Its key is accepted in any case and stored uppercase.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Op`] for a malformed key, [`StoreError::KeyTaken`] when
+    /// any Project holds or once held the key, or as [`Store::append_all`].
+    pub fn create_project(
+        &mut self,
+        actor: &str,
+        key: &str,
+        name: &str,
+    ) -> Result<(ProjectId, Op), StoreError> {
+        let project = ProjectId::new();
+        let op = self.append(Draft {
+            actor: actor.to_owned(),
+            project,
+            subject: project.uuid(),
+            change: Change::CreateProject {
+                key: key.to_ascii_uppercase(),
+                name: name.to_owned(),
+            },
+        })?;
+        Ok((project, op))
+    }
+
+    /// Gives a Project a new key, name or both. Its old key keeps resolving to
+    /// it and is never given to another Project.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::create_project`], or [`StoreError::UnknownProject`].
+    pub fn rename_project(
+        &mut self,
+        actor: &str,
+        project: ProjectId,
+        key: Option<&str>,
+        name: Option<&str>,
+    ) -> Result<Op, StoreError> {
+        self.append(Draft {
+            actor: actor.to_owned(),
+            project,
+            subject: project.uuid(),
+            change: Change::RenameProject {
+                key: key.map(str::to_ascii_uppercase),
+                name: name.map(str::to_owned),
+            },
+        })
+    }
+
+    /// The Project holding `key` now or in the past, matched without case.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
+    pub fn project_by_key(&self, key: &str) -> Result<Option<ProjectId>, StoreError> {
+        project::key_holder(&self.conn, &key.to_ascii_uppercase())
+    }
+
+    /// The Issue a Key names, matched without case. Any key its Project holds
+    /// or held finds it, so `CPL-42` still resolves after `CPL` becomes `KERN`.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Invalid`] when `key` is not written as a Key, any SQLite
+    /// failure, or [`StoreError::Corrupt`] for a malformed row.
+    pub fn issue_by_key(&self, key: &str) -> Result<Option<Uuid>, StoreError> {
+        let upper = key.to_ascii_uppercase();
+        let (prefix, number) =
+            tm_core::project::parse_issue_key(&upper).ok_or_else(|| StoreError::Invalid {
+                field: "key".into(),
+                reason: format!("{key:?} is not a Key such as CPL-42"),
+                valid: Vec::new(),
+            })?;
+        let Some(project) = project::key_holder(&self.conn, prefix)? else {
+            return Ok(None);
+        };
+        project::issue_by_number(&self.conn, project, number)
+    }
+
     /// Creates an Issue in its Workflow's starting Status.
     ///
     /// # Errors
@@ -419,8 +512,24 @@ impl Store {
                 payload: serde_json::to_string(&change).map_err(OpError::from)?,
             };
             op.change()?;
-            insert_op(&tx, &op, &change)?;
-            apply(&tx, &op, None, None)?;
+            // Inside the write transaction, so concurrent creates never share a Key.
+            let assigned_key = match change {
+                Change::Create => Some(project::next_key(&tx, op.project)?),
+                _ => None,
+            };
+            insert_op(&tx, &op, &change, assigned_key.as_deref())?;
+            let effects = apply::Effects {
+                assigned_key: assigned_key.as_deref(),
+                ..apply::Effects::default()
+            };
+            if let Some(reason) = apply(&tx, &op, effects)? {
+                return Err(StoreError::Corrupt(format!(
+                    "a Key this store chose: {reason}"
+                )));
+            }
+            if let Some(key) = &assigned_key {
+                project::count_key(&tx, key, op.project, op.op_id)?;
+            }
             ops.push(op);
         }
         for (issue, (missing, fitted)) in before {
@@ -507,8 +616,8 @@ impl Store {
     /// Drops the projection tables and replays the whole log into fresh ones,
     /// in one transaction, stamping `PROJECTION_VERSION` last. Each operation's
     /// stored hash is checked against its content before it is applied; one
-    /// whose content does not fit is recorded and counted, see
-    /// [`Store::unapplied`].
+    /// whose content does not fit, or a create whose Key cannot be recorded,
+    /// is recorded and counted, see [`Store::unapplied`].
     ///
     /// # Errors
     ///
@@ -524,7 +633,8 @@ impl Store {
         let rows = {
             let mut stmt = tx.prepare(
                 "SELECT seq, op_id, op_hash, v, replica_id, actor, project, issue_id, kind, hlc,
-                        base_seq, utc_ms, offset_min, payload, server_seq, server_received_ms
+                        base_seq, utc_ms, offset_min, payload, server_seq, server_received_ms,
+                        assigned_key
                  FROM ops
                  ORDER BY server_seq IS NULL, server_seq, hlc, replica_id, op_id",
             )?;
@@ -572,15 +682,37 @@ fn replay(tx: &Transaction<'_>, row: &StoredOp) -> Result<bool, StoreError> {
     }
     let sql = |result: rusqlite::Result<usize>| result.map_err(|err| wrap(err.into()));
     sql(tx.execute("SAVEPOINT replay_op", []))?;
-    match apply(tx, &op, server_seq, received) {
-        Ok(()) => {
+    let effects = apply::Effects {
+        server_seq,
+        server_received_ms: received,
+        assigned_key: row.assigned_key.as_deref(),
+    };
+    let applied = match apply(tx, &op, effects) {
+        Ok(None) => {
             sql(tx.execute("RELEASE replay_op", []))?;
-            Ok(true)
+            true
+        }
+        // The Issue stays; only its Key is set aside.
+        Ok(Some(reason)) => {
+            sql(tx.execute("RELEASE replay_op", []))?;
+            sql(tx.execute(
+                "INSERT INTO unapplied (seq, op_id, reason) VALUES (?1, ?2, ?3)",
+                params![
+                    row.seq,
+                    op.op_id.as_bytes(),
+                    format!("applied without its Key: {reason}")
+                ],
+            ))?;
+            false
         }
         Err(
             err @ (StoreError::UnknownIssue(_)
             | StoreError::DuplicateIssue(_)
+            | StoreError::UnknownProject(_)
+            | StoreError::DuplicateProject(_)
+            | StoreError::KeyTaken { .. }
             | StoreError::ProjectMismatch { .. }
+            | StoreError::SubjectNotProject { .. }
             | StoreError::Invalid { .. }),
         ) => {
             sql(tx.execute("ROLLBACK TO replay_op", []))?;
@@ -589,17 +721,26 @@ fn replay(tx: &Transaction<'_>, row: &StoredOp) -> Result<bool, StoreError> {
                 "INSERT INTO unapplied (seq, op_id, reason) VALUES (?1, ?2, ?3)",
                 params![row.seq, op.op_id.as_bytes(), err.to_string()],
             ))?;
-            Ok(false)
+            false
         }
-        Err(err) => Err(wrap(err)),
+        Err(err) => return Err(wrap(err)),
+    };
+    if let Some(key) = row.assigned_key.as_deref() {
+        project::count_key(tx, key, op.project, op.op_id).map_err(wrap)?;
     }
+    Ok(applied)
 }
 
-fn insert_op(tx: &Transaction<'_>, op: &Op, change: &Change) -> Result<(), StoreError> {
+fn insert_op(
+    tx: &Transaction<'_>,
+    op: &Op,
+    change: &Change,
+    assigned_key: Option<&str>,
+) -> Result<(), StoreError> {
     tx.execute(
         "INSERT INTO ops (op_id, op_hash, v, kind, replica_id, actor, project, issue_id, field, elem,
-                          hlc, base_seq, utc_ms, offset_min, payload)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                          hlc, base_seq, utc_ms, offset_min, payload, assigned_key)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
             op.op_id.as_bytes(),
             op.op_hash(),
@@ -616,6 +757,7 @@ fn insert_op(tx: &Transaction<'_>, op: &Op, change: &Change) -> Result<(), Store
             op.utc_ms,
             op.offset_min,
             op.payload,
+            assigned_key,
         ],
     )?;
     Ok(())
@@ -639,6 +781,7 @@ struct StoredOp {
     payload: String,
     server_seq: Option<i64>,
     server_received_ms: Option<i64>,
+    assigned_key: Option<String>,
 }
 
 impl StoredOp {
@@ -660,6 +803,7 @@ impl StoredOp {
             payload: row.get(13)?,
             server_seq: row.get(14)?,
             server_received_ms: row.get(15)?,
+            assigned_key: row.get(16)?,
         })
     }
 

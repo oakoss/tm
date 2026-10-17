@@ -56,6 +56,25 @@ impl fmt::Display for ProjectId {
     }
 }
 
+/// A Project key as stored: `^[A-Z][A-Z0-9]{1,9}$`, so `CPL-42` splits at the
+/// last dash and reads well in a Key.
+#[must_use]
+pub fn is_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    (2..=10).contains(&key.len())
+        && chars.next().is_some_and(|c| c.is_ascii_uppercase())
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+}
+
+/// The Project key and number of an Issue Key written the one way tm writes
+/// it (`CPL-42`), so each number has a single spelling.
+#[must_use]
+pub fn parse_issue_key(text: &str) -> Option<(&str, i64)> {
+    let (prefix, number) = text.rsplit_once('-')?;
+    let number: i64 = number.parse().ok().filter(|n| *n > 0)?;
+    (is_key(prefix) && format!("{prefix}-{number}") == text).then_some((prefix, number))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0:?} is not a Project id")]
 pub struct ParseProjectIdError(String);
@@ -85,6 +104,27 @@ mod tests {
         assert!(upper.parse::<ProjectId>().is_err());
         assert!(id.uuid().simple().to_string().parse::<ProjectId>().is_err());
         assert!("CPL".parse::<ProjectId>().is_err());
+    }
+
+    #[test]
+    fn project_keys_are_short_uppercase_words() {
+        for good in ["CP", "CPL", "TM2", "ABCDEFGHIJ"] {
+            assert!(is_key(good), "{good}");
+        }
+        for bad in ["C", "cpl", "2TM", "ABCDEFGHIJK", "CP-L", "CPÉ", ""] {
+            assert!(!is_key(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn issue_keys_have_one_spelling() {
+        assert_eq!(parse_issue_key("CPL-42"), Some(("CPL", 42)));
+        for bad in [
+            "CPL-007", "CPL-+3", "cpl-1", "CP-L-3", "CPL-0", "CPL-", "CPL", " CPL-1", "CPL-1 ",
+            "CPL--1",
+        ] {
+            assert_eq!(parse_issue_key(bad), None, "{bad}");
+        }
     }
 
     #[test]

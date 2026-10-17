@@ -13,7 +13,7 @@ use tm_core::scheme::priority_rank;
 use tm_core::{Change, Hlc, Op, ProjectId};
 use uuid::Uuid;
 
-use crate::StoreError;
+use crate::{StoreError, project};
 
 /// What decides a field: the winning operation's position and clock.
 struct Version {
@@ -65,16 +65,38 @@ impl Version {
     }
 }
 
+/// Where the operation sits: its server position, if acknowledged, and the
+/// Key its `create` was assigned, if any.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Effects<'a> {
+    pub(crate) server_seq: Option<u64>,
+    pub(crate) server_received_ms: Option<u64>,
+    pub(crate) assigned_key: Option<&'a str>,
+}
+
+/// Applies `op`. `Ok(Some(reason))` means it applied but its Key could not be
+/// recorded, which replay reports rather than dropping the Issue.
 pub(crate) fn apply(
     tx: &Transaction<'_>,
     op: &Op,
-    server_seq: Option<u64>,
-    server_received_ms: Option<u64>,
-) -> Result<(), StoreError> {
+    effects: Effects<'_>,
+) -> Result<Option<String>, StoreError> {
+    let Effects {
+        server_seq,
+        server_received_ms,
+        assigned_key,
+    } = effects;
     let change = op.change()?;
+    if change.is_project() {
+        return project::apply(tx, op, change).map(|()| None);
+    }
     // `base_seq` and `server_seq` are per Project, so an operation filed under
     // another Project would compare positions from different chains.
-    if !matches!(change, Change::Create) {
+    if matches!(change, Change::Create) {
+        if !project::exists(tx, op.project)? {
+            return Err(StoreError::UnknownProject(op.project));
+        }
+    } else {
         let expected =
             issue_project(tx, op.subject)?.ok_or(StoreError::UnknownIssue(op.subject))?;
         if expected != op.project {
@@ -87,7 +109,10 @@ pub(crate) fn apply(
     }
     let version = Version::of(op, server_seq, server_received_ms);
     match change {
-        Change::Create => return create(tx, op),
+        Change::Create => return create(tx, op, assigned_key),
+        Change::CreateProject { .. } | Change::RenameProject { .. } => {
+            unreachable!("Project operations return above")
+        }
         Change::SetField { field, value, .. } => {
             // Checked before anything is written, so a value that does not fit
             // leaves the projection untouched.
@@ -139,7 +164,7 @@ pub(crate) fn apply(
         "UPDATE issues SET updated_ms = max(updated_ms, ?1) WHERE id = ?2",
         params![op.utc_ms, op.subject.as_bytes()],
     )?;
-    Ok(())
+    Ok(None)
 }
 
 /// Labels compare without case. Writes already store them lowercased; this
@@ -154,7 +179,11 @@ fn label_key(field: &str, elem: &str, display: Option<String>) -> (String, Optio
     (key, display)
 }
 
-fn create(tx: &Transaction<'_>, op: &Op) -> Result<(), StoreError> {
+fn create(
+    tx: &Transaction<'_>,
+    op: &Op,
+    assigned_key: Option<&str>,
+) -> Result<Option<String>, StoreError> {
     if issue_project(tx, op.subject)?.is_some() {
         return Err(StoreError::DuplicateIssue(op.subject));
     }
@@ -169,7 +198,10 @@ fn create(tx: &Transaction<'_>, op: &Op) -> Result<(), StoreError> {
             op.utc_ms,
         ],
     )?;
-    Ok(())
+    match assigned_key {
+        Some(key) => project::record_key(tx, key, op.subject, op.project),
+        None => Ok(None),
+    }
 }
 
 /// `display` is how the element shows when it differs from `elem`.

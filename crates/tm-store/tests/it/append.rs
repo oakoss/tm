@@ -10,7 +10,11 @@ use crate::support::{OTHER, PROJECT};
 fn count_ops(store: &tm_store::Store) -> i64 {
     store
         .connection()
-        .query_row("SELECT count(*) FROM ops", [], |r| r.get(0))
+        .query_row(
+            "SELECT count(*) FROM ops WHERE kind NOT LIKE '%project'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap()
 }
 

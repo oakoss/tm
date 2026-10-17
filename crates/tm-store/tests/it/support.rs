@@ -169,9 +169,34 @@ pub(crate) fn scheme() -> Scheme {
 }
 
 pub(crate) fn open(path: &Path, clock: &ManualClock) -> Store {
-    Store::open_with_clock(path, Box::new(clock.clone()))
+    let mut store = Store::open_with_clock(path, Box::new(clock.clone()))
         .unwrap()
-        .with_scheme(scheme())
+        .with_scheme(scheme());
+    seed_projects(&mut store);
+    store
+}
+
+/// PROJECT (key CPL) and OTHER (key OPS), created as acknowledged
+/// operations from another Replica so their ids stay fixed across tests.
+pub(crate) fn seed_projects(store: &mut Store) {
+    let mut seeded = false;
+    for (n, (project, key)) in [(PROJECT, "CPL"), (OTHER, "OPS")].into_iter().enumerate() {
+        if store.project_by_key(key).unwrap().is_some() {
+            continue;
+        }
+        let change = Change::CreateProject {
+            key: key.into(),
+            name: key.into(),
+        };
+        let mut op = remote_op(9, project.uuid(), &change, Hlc::new(1, 0), 0);
+        op.project = project;
+        op.op_id = Uuid::from_u128(0xF000 + n as u128);
+        insert_acked(store, &op, 0, 1);
+        seeded = true;
+    }
+    if seeded {
+        store.rebuild().unwrap();
+    }
 }
 
 /// A new Task titled "t" in PROJECT.
@@ -220,6 +245,10 @@ pub(crate) fn dump(store: &Store) -> Vec<String> {
         "comments",
         "keys",
         "claims",
+        "projects",
+        "project_keys",
+        "key_numbers",
+        "unapplied",
     ] {
         let mut stmt = conn.prepare(&format!("SELECT * FROM {table}")).unwrap();
         let columns = stmt.column_count();
