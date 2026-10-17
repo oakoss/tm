@@ -21,6 +21,17 @@ tm-store = { path = "crates/tm-store" }
 tm-sync = { path = "crates/tm-sync" }
 tm-tui = { path = "crates/tm-tui" }
 
+jiff = "0.2.38"
+proptest = "1.12.0"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+# 0.11 detects the SHA-2 instructions at run time; 0.10 needs its `asm`
+# feature to be fast on aarch64 (ADR 0006).
+sha2 = "0.11.1"
+thiserror = "2.0.21"
+uuid = { version = "1.28.0", features = ["v7"] }
+
 [workspace.lints.rust]
 # `forbid` so no per-module `#[allow(unsafe_code)]` can reopen it.
 unsafe_code = "forbid"
@@ -29,9 +40,6 @@ unreachable_pub = "warn"
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
-# Counterpart to `unreachable_pub`: together they settle each item at its
-# tightest stable visibility.
-redundant_pub_crate = "warn"
 
 [profile.release]
 lto = "fat"
