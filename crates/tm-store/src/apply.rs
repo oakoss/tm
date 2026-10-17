@@ -10,7 +10,7 @@ use rusqlite::types::Value as SqlValue;
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::Value as Json;
 use tm_core::scheme::priority_rank;
-use tm_core::{Change, Hlc, Op};
+use tm_core::{Change, Hlc, Op, ProjectId};
 use uuid::Uuid;
 
 use crate::StoreError;
@@ -81,7 +81,7 @@ pub(crate) fn apply(
             return Err(StoreError::ProjectMismatch {
                 issue: op.issue_id,
                 expected,
-                found: op.project.clone(),
+                found: op.project,
             });
         }
     }
@@ -163,7 +163,7 @@ fn create(tx: &Transaction<'_>, op: &Op) -> Result<(), StoreError> {
          VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
         params![
             op.issue_id.as_bytes(),
-            op.project,
+            op.project.to_string(),
             sql_int(op.hlc.raw())?,
             op.actor,
             op.utc_ms,
@@ -380,14 +380,20 @@ fn record(
     Ok(())
 }
 
-fn issue_project(tx: &Transaction<'_>, issue_id: Uuid) -> Result<Option<String>, StoreError> {
-    Ok(tx
+fn issue_project(tx: &Transaction<'_>, issue_id: Uuid) -> Result<Option<ProjectId>, StoreError> {
+    let text: Option<String> = tx
         .query_row(
             "SELECT project FROM issues WHERE id = ?1",
             [issue_id.as_bytes()],
             |row| row.get(0),
         )
-        .optional()?)
+        .optional()?;
+    text.map(|text| project_from(&text)).transpose()
+}
+
+pub(crate) fn project_from(text: &str) -> Result<ProjectId, StoreError> {
+    text.parse()
+        .map_err(|_| StoreError::Corrupt(format!("{text:?} is not a Project id")))
 }
 
 pub(crate) fn sql_int(value: u64) -> Result<i64, StoreError> {

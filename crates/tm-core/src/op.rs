@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::Hlc;
+use crate::project::ProjectId;
 
 /// The operation format this binary writes and fully understands.
 pub const CURRENT_VERSION: u16 = 1;
@@ -128,7 +129,7 @@ pub struct Op {
     pub op_id: Uuid,
     pub replica_id: Uuid,
     pub actor: String,
-    pub project: String,
+    pub project: ProjectId,
     pub issue_id: Uuid,
     pub kind: String,
     pub hlc: Hlc,
@@ -173,7 +174,7 @@ impl Op {
         buf.extend_from_slice(self.op_id.as_bytes());
         buf.extend_from_slice(self.replica_id.as_bytes());
         put_bytes(&mut buf, self.actor.as_bytes());
-        put_bytes(&mut buf, self.project.as_bytes());
+        put_bytes(&mut buf, self.project.to_string().as_bytes());
         buf.extend_from_slice(self.issue_id.as_bytes());
         put_bytes(&mut buf, self.kind.as_bytes());
         buf.extend_from_slice(&self.hlc.raw().to_be_bytes());
@@ -208,7 +209,7 @@ mod tests {
 
     /// Changing the envelope layout or hash input changes every Replica's
     /// operation identities, so the value is pinned.
-    const PINNED_OP_HASH: &str = "9bf15d5f3946075af9b64db621653bff907e719dc14380bdcfaa5b3b0f165868";
+    const PINNED_OP_HASH: &str = "ee4e794fbfc682546be2fc037644bcbc28ab2809018acaeac0c84f5f5604acb6";
 
     fn sample() -> Op {
         let change = Change::SetField {
@@ -222,7 +223,7 @@ mod tests {
             op_id: Uuid::from_u128(1),
             replica_id: Uuid::from_u128(2),
             actor: "jace".into(),
-            project: "CPL".into(),
+            project: ProjectId::from_uuid(Uuid::from_u128(4)),
             issue_id: Uuid::from_u128(3),
             kind: change.kind().into(),
             hlc: Hlc::new(1_000, 0),
@@ -246,7 +247,7 @@ mod tests {
             Box::new(|o| o.op_id = Uuid::from_u128(9)),
             Box::new(|o| o.replica_id = Uuid::from_u128(9)),
             Box::new(|o| o.actor = "codex".into()),
-            Box::new(|o| o.project = "TM".into()),
+            Box::new(|o| o.project = ProjectId::from_uuid(Uuid::from_u128(9))),
             Box::new(|o| o.issue_id = Uuid::from_u128(9)),
             Box::new(|o| o.kind = "add".into()),
             Box::new(|o| o.hlc = Hlc::new(1_000, 1)),
@@ -264,13 +265,14 @@ mod tests {
 
     #[test]
     fn length_prefixes_keep_adjacent_fields_apart() {
-        let mut a = sample();
-        a.actor = "ab".into();
-        a.project = "c".into();
-        let mut b = sample();
-        b.actor = "a".into();
-        b.project = "bc".into();
-        assert_ne!(a.op_hash(), b.op_hash());
+        let encode = |fields: [&str; 2]| {
+            let mut buf = Vec::new();
+            for field in fields {
+                put_bytes(&mut buf, field.as_bytes());
+            }
+            buf
+        };
+        assert_ne!(encode(["ab", "c"]), encode(["a", "bc"]));
     }
 
     #[test]

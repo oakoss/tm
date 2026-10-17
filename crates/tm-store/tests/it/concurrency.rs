@@ -8,6 +8,7 @@ use tm_core::Change;
 use tm_store::Store;
 use uuid::Uuid;
 
+use crate::support::PROJECT;
 use crate::support::{TempDir, draft, set_field};
 
 /// Set in child processes: the store path to write to, and the shared Issue.
@@ -27,7 +28,7 @@ fn fifty_processes_write_without_losing_operations() {
     let dir = TempDir::new();
     let (issue, created) = Store::open(&dir.db())
         .unwrap()
-        .create_issue("jace", "CPL", "task", "t")
+        .create_issue("jace", PROJECT, "task", "t")
         .unwrap();
 
     let exe = std::env::current_exe().unwrap();

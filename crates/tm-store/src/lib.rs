@@ -21,10 +21,10 @@ use rusqlite::{
 use tm_core::filter::{Context, FilterError, parse, resolve};
 use tm_core::hlc::MAX_MS;
 use tm_core::op::CURRENT_VERSION;
-use tm_core::{Change, Hlc, Op, OpError, Scheme};
+use tm_core::{Change, Hlc, Op, OpError, ProjectId, Scheme};
 use uuid::Uuid;
 
-use apply::{apply, rust_int, sql_int, uuid_from};
+use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
 pub use read::IssueView;
 
@@ -58,8 +58,8 @@ pub enum StoreError {
     #[error("Issue {issue} belongs to Project {expected}, not {found}")]
     ProjectMismatch {
         issue: Uuid,
-        expected: String,
-        found: String,
+        expected: ProjectId,
+        found: ProjectId,
     },
     #[error(transparent)]
     Op(#[from] OpError),
@@ -135,7 +135,7 @@ pub struct Unapplied {
 #[derive(Debug, Clone)]
 pub struct Draft {
     pub actor: String,
-    pub project: String,
+    pub project: ProjectId,
     pub issue_id: Uuid,
     pub change: Change,
 }
@@ -317,7 +317,7 @@ impl Store {
     pub fn create_issue(
         &mut self,
         actor: &str,
-        project: &str,
+        project: ProjectId,
         issue_type: &str,
         title: &str,
     ) -> Result<(Uuid, Vec<Op>), StoreError> {
@@ -338,7 +338,7 @@ impl Store {
             .into_iter()
             .map(|change| Draft {
                 actor: actor.to_owned(),
-                project: project.to_owned(),
+                project,
                 issue_id,
                 change,
             })
@@ -401,7 +401,7 @@ impl Store {
             hlc = hlc.tick(now_ms);
             let base_seq: i64 = tx.query_row(
                 "SELECT coalesce(max(server_seq), 0) FROM ops WHERE project = ?1",
-                [&draft.project],
+                [draft.project.to_string()],
                 |row| row.get(0),
             )?;
             let op = Op {
@@ -607,7 +607,7 @@ fn insert_op(tx: &Transaction<'_>, op: &Op, change: &Change) -> Result<(), Store
             op.kind,
             op.replica_id.as_bytes(),
             op.actor,
-            op.project,
+            op.project.to_string(),
             op.issue_id.as_bytes(),
             change.field(),
             change.elem(),
@@ -671,7 +671,7 @@ impl StoredOp {
             op_id: uuid_from(&self.op_id)?,
             replica_id: uuid_from(&self.replica_id)?,
             actor: self.actor.clone(),
-            project: self.project.clone(),
+            project: project_from(&self.project)?,
             issue_id: uuid_from(&self.issue_id)?,
             kind: self.kind.clone(),
             hlc: Hlc::from_raw(rust_int(self.hlc)?),

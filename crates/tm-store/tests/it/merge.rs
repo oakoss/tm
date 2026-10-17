@@ -7,6 +7,7 @@ use tm_core::{Change, Hlc};
 use tm_store::Store;
 use uuid::Uuid;
 
+use crate::support::OTHER;
 use crate::support::{
     ManualClock, TempDir, draft, field, insert_acked, new_issue, open, remote_op, set_field,
 };
@@ -191,7 +192,7 @@ fn base_seq_comes_from_the_drafts_own_project() {
     let dir = TempDir::new();
     let (mut store, issue) = store_with_acked_issue(&dir, &ManualClock::at(1_000));
     let mut other = remote_op(7, Uuid::now_v7(), &Change::Create, Hlc::new(2_000, 0), 0);
-    other.project = "OTHER".into();
+    other.project = OTHER;
     insert_acked(&store, &other, 100, 2_000);
     store.rebuild().unwrap();
     let op = store

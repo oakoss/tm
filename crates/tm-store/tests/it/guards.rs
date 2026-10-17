@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::support::{
     ManualClock, TempDir, draft, field, insert_acked, new_issue, open, remote_op, set_field,
 };
+use crate::support::{OTHER, PROJECT};
 
 /// Log position of the edit `store_with_an_edit` makes after the four
 /// operations that create the Issue.
@@ -274,7 +275,7 @@ fn an_offset_no_time_zone_has_is_refused() {
         (i16::MIN, false),
     ] {
         let mut store = Store::open_with_clock(&dir.db(), Box::new(Offset(offset))).unwrap();
-        let result = store.create_issue("jace", "CPL", "task", "t");
+        let result = store.create_issue("jace", PROJECT, "task", "t");
         assert_eq!(result.is_ok(), ok, "{offset}: {result:?}");
     }
 }
@@ -284,10 +285,10 @@ fn an_operation_filed_under_another_project_is_refused() {
     let dir = TempDir::new();
     let (mut store, issue) = store_with_an_edit(&dir);
     let mut wrong = draft(issue, set_field("title", json!("b")));
-    wrong.project = "OTHER".into();
+    wrong.project = OTHER;
     let err = store.append(wrong).unwrap_err();
     assert!(
-        matches!(err, StoreError::ProjectMismatch { ref expected, .. } if expected == "CPL"),
+        matches!(err, StoreError::ProjectMismatch { ref expected, .. } if *expected == PROJECT),
         "{err}"
     );
 }

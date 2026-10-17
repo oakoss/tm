@@ -3,8 +3,10 @@
 pub mod filter;
 pub mod hlc;
 pub mod op;
+pub mod project;
 pub mod scheme;
 
 pub use hlc::Hlc;
 pub use op::{Change, Op, OpError};
+pub use project::ProjectId;
 pub use scheme::Scheme;

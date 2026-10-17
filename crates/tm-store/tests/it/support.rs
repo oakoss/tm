@@ -5,9 +5,13 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use tm_core::Change;
 use tm_core::op::CURRENT_VERSION;
 use tm_core::scheme::{Choice, Field, FieldType};
-use tm_core::{Hlc, Op, Scheme};
+use tm_core::{Hlc, Op, ProjectId, Scheme};
 use tm_store::{Clock, Draft, Store, WallTime};
 use uuid::Uuid;
+
+/// The Project the tests write to, and a second one.
+pub(crate) const PROJECT: ProjectId = ProjectId::from_uuid(Uuid::from_u128(1));
+pub(crate) const OTHER: ProjectId = ProjectId::from_uuid(Uuid::from_u128(2));
 
 /// A temporary directory under Cargo's target dir, removed on drop.
 pub(crate) struct TempDir(PathBuf);
@@ -72,7 +76,7 @@ pub(crate) fn remote_op(
         op_id: Uuid::now_v7(),
         replica_id: Uuid::from_u128(replica),
         actor: "codex".into(),
-        project: "CPL".into(),
+        project: PROJECT,
         issue_id,
         kind: change.kind().into(),
         hlc,
@@ -101,7 +105,7 @@ pub(crate) fn insert_acked(store: &Store, op: &Op, server_seq: i64, received_ms:
                 op.kind,
                 op.replica_id.as_bytes(),
                 op.actor,
-                op.project,
+                op.project.to_string(),
                 op.issue_id.as_bytes(),
                 change.field(),
                 change.elem(),
@@ -170,9 +174,9 @@ pub(crate) fn open(path: &Path, clock: &ManualClock) -> Store {
         .with_scheme(scheme())
 }
 
-/// A new Task titled "t" in Project CPL.
+/// A new Task titled "t" in PROJECT.
 pub(crate) fn new_issue(store: &mut Store) -> Uuid {
-    store.create_issue("jace", "CPL", "task", "t").unwrap().0
+    store.create_issue("jace", PROJECT, "task", "t").unwrap().0
 }
 
 /// One field of an Issue as it reads now.
@@ -189,7 +193,7 @@ pub(crate) fn field(store: &Store, issue: Uuid, name: &str) -> Option<serde_json
 pub(crate) fn draft(issue_id: Uuid, change: Change) -> Draft {
     Draft {
         actor: "jace".into(),
-        project: "CPL".into(),
+        project: PROJECT,
         issue_id,
         change,
     }

@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::support::{
     ManualClock, TempDir, draft, field, insert_acked, new_issue, open, remote_op, scheme, set_field,
 };
+use crate::support::{OTHER, PROJECT};
 
 fn add(field: &str, elem: &str) -> Change {
     Change::Add {
@@ -169,7 +170,9 @@ fn every_required_field_is_enforced() {
     team.required = true;
     required.add_field(team).unwrap();
     let mut store = open(&dir.db(), &ManualClock::at(1_000)).with_scheme(required);
-    let err = store.create_issue("jace", "CPL", "task", "t").unwrap_err();
+    let err = store
+        .create_issue("jace", PROJECT, "task", "t")
+        .unwrap_err();
     let StoreError::MissingFields { fields, .. } = err else {
         panic!("{err}");
     };
@@ -186,7 +189,9 @@ fn a_required_set_field_needs_an_element() {
         }
     }
     let mut store = open(&dir.db(), &ManualClock::at(1_000)).with_scheme(required);
-    let err = store.create_issue("jace", "CPL", "task", "t").unwrap_err();
+    let err = store
+        .create_issue("jace", PROJECT, "task", "t")
+        .unwrap_err();
     let StoreError::MissingFields { fields, .. } = err else {
         panic!("{err}");
     };
@@ -339,7 +344,7 @@ fn replay_records_operations_that_do_not_fit_instead_of_failing() {
 
     let at = |n| Hlc::new(2_000, n);
     let mut other_project = remote_op(7, issue, &set_field("title", json!("x")), at(4), 0);
-    other_project.project = "OTHER".into();
+    other_project.project = OTHER;
     let bad = [
         remote_op(7, issue, &set_field("reporter", json!("codex")), at(0), 0),
         remote_op(7, issue, &set_field("priority", json!("p0")), at(1), 0),
@@ -362,7 +367,7 @@ fn replay_records_operations_that_do_not_fit_instead_of_failing() {
         "is not a priority level",
         "has the wrong value type",
         "does not exist",
-        "belongs to Project CPL",
+        "belongs to Project 00000000-0000-0000-0000-000000000001",
     ];
     assert_eq!(reasons.len(), expected.len(), "{reasons:?}");
     for (reason, fragment) in reasons.iter().zip(expected) {

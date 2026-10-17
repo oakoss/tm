@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::{Value, json};
+use tm_core::ProjectId;
 use tm_core::scheme::{Category, FieldType, PRIORITY_RANKS, Scheme};
 use uuid::Uuid;
 
@@ -15,7 +16,7 @@ use crate::apply::uuid_from;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IssueView {
     pub id: Uuid,
-    pub project: String,
+    pub project: ProjectId,
     /// A Status the Scheme does not define reads as Triage, so the Issue comes
     /// back for attention.
     pub category: Option<Category>,
@@ -127,7 +128,7 @@ fn built_in(
     fields.insert("updated".into(), json!(row.updated_ms));
     Ok(Some(IssueView {
         id: issue_id,
-        project: row.project,
+        project: crate::apply::project_from(&row.project)?,
         category,
         fields,
         sets: BTreeMap::new(),
