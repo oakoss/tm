@@ -45,11 +45,15 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: none
           queries: security-extended
-          # Integration tests are not shipped, and their assertion messages
-          # print UUID-derived values that the logging query reads as secrets.
+          # Integration tests are not shipped. The cleartext-logging query reads
+          # UUIDs as secrets; tm holds no credentials until sync, whose phase
+          # in the build plan turns it back on.
           config: |
             paths-ignore:
               - 'crates/*/tests/**'
+            query-filters:
+              - exclude:
+                  id: rust/cleartext-logging
 
       - name: Analyze
         uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
