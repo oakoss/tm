@@ -217,10 +217,36 @@ pub struct IssueType {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SchemeError {
-    #[error("{0:?} is a built-in field name")]
+    #[error("{0:?} is reserved for a built-in field or filter qualifier")]
     ReservedField(String),
     #[error("field {0:?} already exists")]
     DuplicateField(String),
+    #[error("{0:?} must be lowercase letters, digits and underscores, starting with a letter")]
+    InvalidId(String),
+    #[error("option {0:?} appears twice")]
+    DuplicateOption(String),
+    #[error("{0:?} is only for built-in fields")]
+    BuiltInType(FieldType),
+}
+
+/// A real calendar date written `YYYY-MM-DD` with a four-digit year, the one
+/// spelling date fields store, so comparing the text compares the dates.
+#[must_use]
+pub fn is_date(text: &str) -> bool {
+    // Signed years are longer than ten characters, and sort out of order.
+    text.len() == 10
+        && text
+            .parse::<jiff::civil::Date>()
+            .is_ok_and(|date| date.to_string() == text)
+}
+
+/// The shape of every id: lowercase letters, digits and underscores, starting
+/// with a letter, as operation field names already are.
+#[must_use]
+pub fn is_id(id: &str) -> bool {
+    let mut chars = id.chars();
+    chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -314,6 +340,36 @@ impl Scheme {
     ///
     /// [`SchemeError`] when the name is built-in or already taken.
     pub fn add_field(&mut self, field: Field) -> Result<(), SchemeError> {
+        // Lowercase ids keep names and options unambiguous where filters
+        // match them without case.
+        for id in std::iter::once(&field.name).chain(field.options.iter().map(|o| &o.id)) {
+            if !is_id(id) {
+                return Err(SchemeError::InvalidId(id.clone()));
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(duplicate) = field.options.iter().find(|o| !seen.insert(&o.id)) {
+            return Err(SchemeError::DuplicateOption(duplicate.id.clone()));
+        }
+        if !matches!(
+            field.field_type,
+            FieldType::Text
+                | FieldType::RichText
+                | FieldType::Number
+                | FieldType::Date
+                | FieldType::Datetime
+                | FieldType::Boolean
+                | FieldType::SingleSelect
+                | FieldType::MultiSelect
+                | FieldType::Person
+        ) {
+            return Err(SchemeError::BuiltInType(field.field_type));
+        }
+        // Filter qualifiers that are not fields; a field by one of these names
+        // could never be filtered.
+        if ["sort", "no", "has", "category"].contains(&field.name.as_str()) {
+            return Err(SchemeError::ReservedField(field.name));
+        }
         if let Some(existing) = self.field(&field.name) {
             return Err(if existing.builtin {
                 SchemeError::ReservedField(field.name)
@@ -418,9 +474,48 @@ mod tests {
             scheme.add_field(area()),
             Err(SchemeError::DuplicateField("area".into()))
         );
+        for reserved in ["status", "sort", "category"] {
+            assert_eq!(
+                scheme.add_field(Field::custom(reserved, "S", FieldType::Text, Vec::new())),
+                Err(SchemeError::ReservedField(reserved.into()))
+            );
+        }
+    }
+
+    #[test]
+    fn scheme_field_ids_are_lowercase_unique_and_of_a_scheme_type() {
+        let mut scheme = Scheme::built_in();
+        let choice = |id: &str| Choice::new(id, id);
+        for bad in ["Status", "SORT", "story-points", "1st", ""] {
+            assert_eq!(
+                scheme.add_field(Field::custom(bad, "X", FieldType::Text, Vec::new())),
+                Err(SchemeError::InvalidId(bad.into())),
+                "{bad}"
+            );
+        }
+        let gold = vec![choice("gold"), choice("Gold")];
         assert_eq!(
-            scheme.add_field(Field::custom("status", "S", FieldType::Text, Vec::new())),
-            Err(SchemeError::ReservedField("status".into()))
+            scheme.add_field(Field::custom("tier", "T", FieldType::SingleSelect, gold)),
+            Err(SchemeError::InvalidId("Gold".into()))
+        );
+        let twice = vec![choice("gold"), choice("gold")];
+        assert_eq!(
+            scheme.add_field(Field::custom("tier", "T", FieldType::SingleSelect, twice)),
+            Err(SchemeError::DuplicateOption("gold".into()))
+        );
+        assert_eq!(
+            scheme.add_field(Field::custom("topics", "T", FieldType::Labels, Vec::new())),
+            Err(SchemeError::BuiltInType(FieldType::Labels))
+        );
+        assert!(
+            scheme
+                .add_field(Field::custom(
+                    "story_points",
+                    "SP",
+                    FieldType::Number,
+                    Vec::new()
+                ))
+                .is_ok()
         );
     }
 

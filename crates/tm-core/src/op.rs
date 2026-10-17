@@ -111,13 +111,10 @@ impl Change {
     ///
     /// [`OpError::InvalidField`] when the field name is not `[a-z][a-z0-9_]*`.
     pub fn validate(&self) -> Result<(), OpError> {
-        if let Some(field) = self.field() {
-            let mut chars = field.chars();
-            let valid = chars.next().is_some_and(|c| c.is_ascii_lowercase())
-                && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
-            if !valid {
-                return Err(OpError::InvalidField(field.to_owned()));
-            }
+        if let Some(field) = self.field()
+            && !crate::scheme::is_id(field)
+        {
+            return Err(OpError::InvalidField(field.to_owned()));
         }
         Ok(())
     }

@@ -5,7 +5,7 @@
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::Value;
 use tm_core::Change;
-use tm_core::scheme::{Field, FieldType, Scheme, priority_rank};
+use tm_core::scheme::{Field, FieldType, Scheme, is_date, priority_rank};
 use uuid::Uuid;
 
 use crate::StoreError;
@@ -328,10 +328,10 @@ fn check_value(
                 Err(StoreError::UnknownIssue(target))
             }
         }
-        (FieldType::Date, Value::String(date)) => date
-            .parse::<jiff::civil::Date>()
-            .map(|_| None)
-            .map_err(|_| invalid(def, "is not a date (YYYY-MM-DD)", [])),
+        (FieldType::Date, Value::String(date)) if is_date(date) => Ok(None),
+        (FieldType::Date, Value::String(_)) => {
+            Err(invalid(def, "is not a date written YYYY-MM-DD", []))
+        }
         (FieldType::Datetime, Value::String(time)) => time
             .parse::<jiff::Timestamp>()
             .map(|_| None)

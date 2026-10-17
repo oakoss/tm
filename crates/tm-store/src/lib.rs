@@ -5,6 +5,7 @@
 //! transaction; `rebuild` regenerates the projections from the log.
 
 mod apply;
+mod query;
 mod read;
 mod schema;
 mod validate;
@@ -17,6 +18,7 @@ use std::time::Duration;
 use rusqlite::{
     Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params,
 };
+use tm_core::filter::{Context, FilterError, parse, resolve};
 use tm_core::hlc::MAX_MS;
 use tm_core::op::CURRENT_VERSION;
 use tm_core::{Change, Hlc, Op, OpError, Scheme};
@@ -79,6 +81,8 @@ pub enum StoreError {
     Corrupt(String),
     #[error("SQLite error: {0}")]
     Sqlite(rusqlite::Error),
+    #[error(transparent)]
+    Filter(#[from] FilterError),
 }
 
 impl From<rusqlite::Error> for StoreError {
@@ -182,6 +186,13 @@ impl Store {
              PRAGMA foreign_keys = ON;
              PRAGMA recursive_triggers = ON;",
         )?;
+        // People are typed by hand, so filters and sorts compare them ignoring
+        // case; SQLite's NOCASE folds only A to Z. Uppercasing first makes
+        // ß match SS and final sigma match sigma.
+        conn.create_collation(query::FOLD, |a, b| {
+            let fold = |s: &str| s.to_uppercase().to_lowercase();
+            fold(a).cmp(&fold(b))
+        })?;
         let mut store = Self {
             conn,
             clock,
@@ -434,6 +445,24 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(ops)
+    }
+
+    /// The ids of Issues matching `filter`, in its `sort:` order, else most
+    /// recently updated first. Archived Issues are left out unless the filter
+    /// names `archived`.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Filter`] when the filter does not parse or does not fit
+    /// the Scheme, or any SQLite failure.
+    pub fn find(&self, filter: &str, context: Context<'_>) -> Result<Vec<Uuid>, StoreError> {
+        let resolved = resolve(&parse(filter)?, &self.scheme, context)?;
+        let (sql, params) = query::compile(&resolved);
+        let mut stmt = self.conn.prepare(&sql)?;
+        let ids = stmt.query_map(rusqlite::params_from_iter(params), |row| {
+            row.get::<_, Vec<u8>>(0)
+        })?;
+        ids.map(|id| uuid_from(&id?)).collect()
     }
 
     /// An Issue as it currently reads, labelled from the Scheme.

@@ -41,7 +41,12 @@ fn dates_and_timestamps_must_parse() {
     let issue = new_issue(&mut store);
     set(&mut store, issue, "due", json!("2026-10-17")).unwrap();
     set(&mut store, issue, "seen", json!("2026-10-17T12:00:00Z")).unwrap();
-    for (name, bad) in [("due", "17/10/2026"), ("seen", "yesterday")] {
+    for (name, bad) in [
+        ("due", "17/10/2026"),
+        ("due", "20261017"),
+        ("due", "2026-10-17T00:00"),
+        ("seen", "yesterday"),
+    ] {
         let err = set(&mut store, issue, name, json!(bad)).unwrap_err();
         assert!(matches!(err, StoreError::Invalid { .. }), "{name}: {err}");
     }

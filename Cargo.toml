@@ -23,7 +23,7 @@ tm-tui = { path = "crates/tm-tui" }
 
 jiff = "0.2.38"
 proptest = "1.12.0"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "collation"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # 0.11 detects the SHA-2 instructions at run time; 0.10 needs its `asm`

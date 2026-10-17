@@ -3,6 +3,7 @@
 mod append;
 mod concurrency;
 mod fields;
+mod find;
 mod guards;
 mod merge;
 mod rebuild;
