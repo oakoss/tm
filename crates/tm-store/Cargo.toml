@@ -10,7 +10,20 @@ rust-version.workspace = true
 description = "SQLite store: the operation log, its table projections and the read-only snapshot."
 
 [dependencies]
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+jiff.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tm-core.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true
+
+# One integration-test binary, each suite a module, so cargo links once.
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
