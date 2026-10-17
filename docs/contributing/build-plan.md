@@ -80,7 +80,7 @@ The search palette (fuzzy, FTS5, frecency), the full filter language, attachment
 
 ## Phase 9: sync (experimental)
 
-`tm serve` as the Key authority, operation exchange, provisional Keys, `tm sync status` verified against the server, and `detach`.
+`tm serve` as the Key authority, operation exchange, provisional Keys, `tm sync status` verified against the server, and `detach`. Sync brings tm's first credentials, so this phase removes the `rust/cleartext-logging` exclusion from `.github/workflows/codeql.yml`.
 
 ## Release tooling (before the first published version)
 
