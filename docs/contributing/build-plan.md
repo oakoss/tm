@@ -1,13 +1,13 @@
 # tm build plan
 
-Ordered phases for building what [design.md](design.md) describes. Each phase ends in something usable and is done when its checks pass. Work is tracked in beads until the switch milestone, then in `tm` itself.
+Ordered phases for building what [design.md](../specs/design.md) describes. Each phase ends in something usable and is done when its checks pass. Work is tracked in beads until the switch milestone, then in `tm` itself.
 
 ## Phase 1: core store and CLI
 
 - Monorepo scaffold: Cargo workspace with `tm-core`, `tm-store`, `tm-sync`, `tm-server`, `tm-tui` (internal, `publish = false`) and `tm-cli` (empty where not yet needed); bundled SQLite; mise tasks for check, build and test; lefthook; oakum initialised for releases.
-- Operation log as the source of truth, table projections in the same transaction, `tm rebuild` ([ADR 0005](adr/0005-operation-log-is-the-source-of-truth.md)). Settle and document the per-field merge rule and operation versioning now, though sync comes later.
+- Operation log as the source of truth, table projections in the same transaction, `tm rebuild` ([ADR 0005](../decisions/0005-operation-log-is-the-source-of-truth.md)). Settle and document the per-field merge rule and operation versioning now, though sync comes later.
 - Invariants: unique operation IDs, deterministic link keys, Keys never reused, take-only-if-unclaimed.
-- Workspaces, repo mapping through `.config/tm.toml`, Key assignment by the local authority ([ADR 0004](adr/0004-one-authority-assigns-keys.md)).
+- Workspaces, repo mapping through `.config/tm.toml`, Key assignment by the local authority ([ADR 0004](../decisions/0004-one-authority-assigns-keys.md)).
 - Built-in fields and a minimal default Scheme and Workflow.
 - `create`, `list`, `show`, `move`, `comment`, `ready`, `claim`, `undo`; `--json` on all of them; structured errors.
 - A first cut of the filter language: field qualifiers, negation, lists, `@me`, `sort:`.

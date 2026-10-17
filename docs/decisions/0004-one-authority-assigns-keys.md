@@ -1,5 +1,8 @@
 # One authority assigns Keys
 
+- Status: accepted
+- Date: 2026-10-16
+
 Every Issue has a permanent UUID; its Key (`CPL-42`) is a sequential display identifier assigned by exactly one authority: the local store in a local-only Workspace, or the sync server once sync is on. A synced machine that is offline gives new Issues a provisional Key (`CPL-~k3f`) that is replaced on the next sync and kept as a permanent alias, and returning to local numbering needs an explicit `tm sync detach` so two machines never number at once. This keeps Jira-style ordered, short Keys without the duplicate-Key collisions Backlog.md hit with per-clone sequential numbering.
 
 ## Considered Options

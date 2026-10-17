@@ -1,6 +1,6 @@
 # Turso DB and Turso Sync: deep dive (2026-10-16)
 
-Follow-up to [sync_engines.md](sync_engines.md). That pass ruled Turso out on "No multi-process access" and a dev-grade sync server. This pass checks those claims against current primary sources, then measures them.
+Follow-up to [sync-engines.md](sync-engines.md). That pass ruled Turso out on "No multi-process access" and a dev-grade sync server. This pass checks those claims against current primary sources, then measures them.
 
 **Scope of measurement.** macOS 27.0.1 (build 26A434), Apple Silicon arm64, APFS. `tursodb` CLI v0.8.3 (latest) and v0.9.0-pre.1 (prerelease) from the GitHub release tarballs (SHA-256 matched the published `.sha256` files). Sync client `@tursodatabase/sync` 0.8.3 on Node 24.22.0. Control runs used Apple's `/usr/bin/sqlite3` 3.54.0. **Not tested:** Linux, Windows, the `turso` Rust crate, MVCC / `BEGIN CONCURRENT`, partial sync, `remoteWritesExperimental`. Scripts are in `scripts/turso_exp/` (`scripts/`, `node/`); raw run output was not kept.
 
@@ -294,7 +294,7 @@ The flag created `local.db-tshm`, but the sync engine still holds an exclusive l
 
 ## Verdict
 
-**As the local store for many parallel agent processes: no, not now.** In default mode a second process cannot open the database at all. The opt-in multi-process mode is labelled experimental and not production ready, and on macOS it panicked under realistic contention, lost acknowledged commits without `integrity_check` noticing, and rejected even two well-behaved processes at open about half the time. Requirement 6 from sync_engines.md fails on measurement, not just on documentation.
+**As the local store for many parallel agent processes: no, not now.** In default mode a second process cannot open the database at all. The opt-in multi-process mode is labelled experimental and not production ready, and on macOS it panicked under realistic contention, lost acknowledged commits without `integrity_check` noticing, and rejected even two well-behaved processes at open about half the time. Requirement 6 from sync-engines.md fails on measurement, not just on documentation.
 
 **What does work today:** one long-lived writer process (a daemon that owns the file), with readers in other processes using default-mode `--readonly` short-lived connections that retry on a short WAL read. This also covers sandboxed agents, since it needs no writes and creates no sidecars. Agents' writes would then have to go through the daemon over IPC. That is a real architecture change, but the custom design already has a server-shaped component that could fill the role (**inferred**).
 
@@ -311,4 +311,4 @@ The flag created `local.db-tshm`, but the sync engine still holds an exclusive l
 3. Auth and TLS on `--sync-server`, or a production self-hostable server.
 4. Optionally, the server-assigned value returned in the push response instead of only via pull.
 
-**Recommendation:** keep the custom op-log design from sync_engines.md. Keep Turso on the watch list. The shared-WAL PRs (#8968, #8967, #9222, #8476) show active work, and the Supabase acquisition says development continues. Re-run this harness at the next minor release.
+**Recommendation:** keep the custom op-log design from sync-engines.md. Keep Turso on the watch list. The shared-WAL PRs (#8968, #8967, #9222, #8476) show active work, and the Supabase acquisition says development continues. Re-run this harness at the next minor release.

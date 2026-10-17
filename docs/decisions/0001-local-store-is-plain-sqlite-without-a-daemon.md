@@ -1,5 +1,8 @@
 # Local store is plain SQLite without a daemon
 
+- Status: accepted
+- Date: 2026-10-16
+
 Each machine keeps its Issues in a plain SQLite file outside any code repo, written directly by every short-lived `tm` process with `BEGIN IMMEDIATE` and a busy timeout, so parallel agents can write without a background process. Sandboxed agents that cannot write any file read a separately published, never-modified snapshot opened with `immutable=1`, because a live WAL database cannot be opened at all under a write-denying sandbox. Sync between machines is an append-only operation log exchanged with `tm serve`, which orders operations and assigns Keys; it runs on SQLite first, with Postgres added later for hosted or multi-user setups.
 
 ## Considered Options
@@ -14,5 +17,5 @@ Each machine keeps its Issues in a plain SQLite file outside any code repo, writ
 
 - Sandboxed agents see data as of the last published snapshot.
 - Snapshot publishing relies on rename-over, which Windows does not allow on open files; Windows is deferred (WSL2 works).
-- The sandbox and concurrency probes give the same results on macOS and on Ubuntu 24.04 under both bubblewrap and Codex's sandbox (`research_notes/Sync engine spike/linux_probes.md`).
+- The sandbox and concurrency probes give the same results on macOS and on Ubuntu 24.04 under both bubblewrap and Codex's sandbox ([linux-probes.md](../research/sync-engine-spike/linux-probes.md)).
 - All database access stays in one storage module so a later engine swap (for example to Turso) does not reach the sync protocol.

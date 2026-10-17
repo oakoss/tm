@@ -1,6 +1,6 @@
 # tm design
 
-`tm` is a local-first issue tracker for one human and their AI agents: Jira-style planning for the human, a complete `--json` CLI for agents, and code awareness (files, branches, releases, review findings) that neither camp of existing trackers offers. Terms are defined in [GLOSSARY.md](../GLOSSARY.md); the reasons behind the hardest-to-reverse choices are in [docs/adr/](adr/). The research behind it is in `reports/Task tracker landscape.md` and `research_notes/`.
+`tm` is a local-first issue tracker for one human and their AI agents: Jira-style planning for the human, a complete `--json` CLI for agents, and code awareness (files, branches, releases, review findings) that neither camp of existing trackers offers. Terms are defined in [GLOSSARY.md](../../GLOSSARY.md); the reasons behind the hardest-to-reverse choices are in [docs/decisions/](../decisions/). The research behind it is in [docs/research/](../research/).
 
 ## Audience and scope
 
@@ -19,21 +19,21 @@
 
 ## Architecture
 
-- **One Rust binary** for the CLI, the Ratatui TUI and `tm serve` ([ADR 0002](adr/0002-rust-core-with-typescript-web-ui.md)). One monorepo holds a Cargo workspace (`crates/tm-core`, `tm-store`, `tm-sync`, `tm-server`, `tm-tui`, and `tm-cli`, the published crate that builds the `tm` binary), the web app (`web/`, pnpm) and the npm wrapper (`npm/`). Internal crates are `publish = false`; splitting them keeps incremental builds fast. mise pins Rust, Node and pnpm and runs the tasks; git hooks are lefthook, configured by hand.
+- **One Rust binary** for the CLI, the Ratatui TUI and `tm serve` ([ADR 0002](../decisions/0002-rust-core-with-typescript-web-ui.md)). One monorepo holds a Cargo workspace (`crates/tm-core`, `tm-store`, `tm-sync`, `tm-server`, `tm-tui`, and `tm-cli`, the published crate that builds the `tm` binary), the web app (`web/`, pnpm) and the npm wrapper (`npm/`). Internal crates are `publish = false`; splitting them keeps incremental builds fast. mise pins Rust, Node and pnpm and runs the tasks; git hooks are lefthook, configured by hand.
 - **Web UI** in TypeScript, React and TanStack, using the author's UI component library. Built assets are embedded in the binary; it talks to `tm serve` over JSON plus a server-sent change stream feeding a TanStack DB custom collection. TypeScript types are generated from the Rust types.
-- **Local store**: plain SQLite (bundled build), written directly by each `tm` process with `BEGIN IMMEDIATE` and a busy timeout; no daemon ([ADR 0001](adr/0001-local-store-is-plain-sqlite-without-a-daemon.md)). All database access sits in one storage module.
+- **Local store**: plain SQLite (bundled build), written directly by each `tm` process with `BEGIN IMMEDIATE` and a busy timeout; no daemon ([ADR 0001](../decisions/0001-local-store-is-plain-sqlite-without-a-daemon.md)). All database access sits in one storage module.
 - **Read-only snapshot**: after write batches the CLI publishes a never-modified copy that sandboxed agents open with `immutable=1`.
-- **Operation log is the source of truth** ([ADR 0005](adr/0005-operation-log-is-the-source-of-truth.md)): every change is an append-only operation from v1, written in the same transaction as the tables it updates. The tables are projections that `tm rebuild` regenerates from the log; undo, history and sync all read the log.
+- **Operation log is the source of truth** ([ADR 0005](../decisions/0005-operation-log-is-the-source-of-truth.md)): every change is an append-only operation from v1, written in the same transaction as the tables it updates. The tables are projections that `tm rebuild` regenerates from the log; undo, history and sync all read the log.
 - **Invariants**: every operation has a unique ID; a take succeeds only on an unclaimed Issue, never on "already has that value"; links have deterministic keys; a Key is never reused, even after `tm purge`.
 - **`tm undo`** reverts the caller's last operation by appending its inverse.
 - **Sync** (experimental before v1): clients exchange operations with `tm serve`, which orders them and assigns Keys. `tm sync status` compares state hashes with the server, so "synced" means the server agrees. The server runs on SQLite first; Postgres comes later for hosted or multi-user use.
 - **Releases**: oakum bump files and changelogs, with cargo-dist building the binaries for crates.io, Homebrew and the npm wrapper, as oakum itself ships.
 - **Schema-version guard**: an older binary refuses a store written by a newer one.
-- **Watch list**: Turso DB, re-tested at each minor release against the multi-process and sync tests in `research_notes/Sync engine spike/turso_deep_dive.md` (scripts in `research_notes/Sync engine spike/scripts/`).
+- **Watch list**: Turso DB, re-tested at each minor release against the multi-process and sync tests in [turso-deep-dive.md](../research/sync-engine-spike/turso-deep-dive.md) (scripts in `docs/research/sync-engine-spike/scripts/`).
 
 ## Workspaces, Projects and config
 
-- A **Workspace** is a store plus its config. The global one lives under `~/.tm/`; others can be created for isolation. Issue data never lives in a code repo ([ADR 0003](adr/0003-issue-data-lives-outside-code-repos.md)).
+- A **Workspace** is a store plus its config. The global one lives under `~/.tm/`; others can be created for isolation. Issue data never lives in a code repo ([ADR 0003](../decisions/0003-issue-data-lives-outside-code-repos.md)).
 - **Repo scope** works like `bd init`: `tm init` in a repo with no Workspace creates a Workspace dedicated to it.
 - **Projects** nest freely; a repo maps to a Project through one file, `.config/tm.toml` (or `.tm.toml` at the root, never both). Without the file, the Workspace maps repos by git remote URL. Monorepos map path prefixes to Projects.
 - **Per-machine values never go in the repo file**: sync server URLs, hostnames, tokens and paths live in the Workspace or user config, and no command writes them into a tracked file.
@@ -44,7 +44,7 @@
 
 ### Identity
 
-- Every Issue has a permanent UUID and a sequential **Key** (`CPL-42`) assigned by one authority ([ADR 0004](adr/0004-one-authority-assigns-keys.md)). Provisional Keys (`CPL-~k3f`) exist only while a synced machine is offline and remain aliases forever.
+- Every Issue has a permanent UUID and a sequential **Key** (`CPL-42`) assigned by one authority ([ADR 0004](../decisions/0004-one-authority-assigns-keys.md)). Provisional Keys (`CPL-~k3f`) exist only while a synced machine is offline and remain aliases forever.
 - Ambiguous Key references are refused, never guessed.
 - Merging two Workspaces with the same Project key is an import that renumbers incoming Issues and keeps old Keys as source-tagged aliases.
 

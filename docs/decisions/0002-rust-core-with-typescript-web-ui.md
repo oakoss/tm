@@ -1,5 +1,8 @@
 # Rust core with a TypeScript web UI
 
+- Status: accepted
+- Date: 2026-10-16
+
 The CLI, TUI (Ratatui) and `tm serve` are one Rust binary; the web UI is TypeScript with React and TanStack, built into static files embedded in that binary and talking to `tm serve` over JSON and a server-sent change stream that feeds a TanStack DB custom collection. Rust gives a single static binary, a bundled SQLite build of a known version (Bun on macOS uses Apple's system SQLite, which left `-wal`/`-shm` files behind in our tests), and a mature TUI framework. TypeScript types for the web UI are generated from the Rust types so the schema has one source.
 
 ## Considered Options

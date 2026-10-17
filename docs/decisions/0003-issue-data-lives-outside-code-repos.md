@@ -1,5 +1,8 @@
 # Issue data lives outside code repos
 
+- Status: accepted
+- Date: 2026-10-16
+
 Issues, history, attachments and the store itself live in the Workspace directory (by default under `~/.tm/`), never inside a code repo; a repo holds at most one config file (`.config/tm.toml`, or `.tm.toml` at the root) that maps it to a Workspace and Project and may carry that Project's Components, Scheme overrides and rules. This keeps repos clean, means no code push can publish task data, and lets one Workspace serve many repos. It differs on purpose from beads, which keeps its database under `.beads/` inside the repo (gitignored) alongside committed config, hooks and logs, and can sync through a hidden ref on the code remote.
 
 ## Consequences

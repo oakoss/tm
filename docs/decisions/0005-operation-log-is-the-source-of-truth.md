@@ -1,5 +1,8 @@
 # Operation log is the source of truth
 
+- Status: accepted
+- Date: 2026-10-16
+
 Every change is appended to an operation log, and the Issue tables are projections of it, updated in the same SQLite transaction and regenerable at any time with `tm rebuild`. Undo, history and sync then share one mechanism, and a damaged or mis-migrated table is recoverable rather than fatal, following Fossil's ticket design; storing tables as the truth with a separate history would recreate the dual-storage drift that beads' JSONL export suffered.
 
 ## Consequences
