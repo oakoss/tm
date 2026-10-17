@@ -1,0 +1,46 @@
+# Virtual manifest. `tm-cli` builds the `tm` binary and is the only crate
+# published; the rest are internal (`publish = false`).
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+# Inherited with `<key>.workspace = true`. `edition` also feeds a line-anchored
+# grep in lefthook's rustfmt hook, which reads no manifest, so the value must
+# live here. `rust-version` equals the `.mise.toml` pin.
+[workspace.package]
+authors = ["Jace Babin"]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/oakoss/tm"
+rust-version = "1.98.1"
+
+[workspace.dependencies]
+tm-core = { path = "crates/tm-core" }
+tm-server = { path = "crates/tm-server" }
+tm-store = { path = "crates/tm-store" }
+tm-sync = { path = "crates/tm-sync" }
+tm-tui = { path = "crates/tm-tui" }
+
+[workspace.lints.rust]
+# `forbid` so no per-module `#[allow(unsafe_code)]` can reopen it.
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Counterpart to `unreachable_pub`: together they settle each item at its
+# tightest stable visibility.
+redundant_pub_crate = "warn"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+opt-level = "z"
+
+# cargo-dist builds release artifacts with a `dist` profile; without this every
+# build job fails with `profile dist is not defined`.
+[profile.dist]
+inherits = "release"

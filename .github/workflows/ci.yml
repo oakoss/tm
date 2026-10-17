@@ -1,0 +1,193 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  static-analysis:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Harden and checkout
+        uses: $/.github/actions/harden-checkout
+
+      - name: Setup
+        uses: $/.github/actions/setup
+
+      # Defined once in .mise.toml so local and CI cannot diverge.
+      - name: Check
+        run: mise run check
+
+      # Merge and fixup exemptions come from cog.toml, which the commit-msg hook
+      # reads too.
+      - name: Commit messages
+        if: github.event_name == 'pull_request'
+        run: >
+          cog check
+          ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+
+  tests:
+    name: Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - name: Harden and checkout
+        uses: $/.github/actions/harden-checkout
+
+      - name: Setup
+        uses: $/.github/actions/setup
+
+      - name: Test
+        run: mise run test
+
+  secret-scan:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Full history, because a secret stays live after the commit that
+      # removed it from the tree.
+      - name: Harden and checkout
+        uses: $/.github/actions/harden-checkout
+
+      # Scoped to gitleaks so this job skips the Rust toolchain.
+      - name: Setup
+        uses: $/.github/actions/setup
+        with:
+          tools: gitleaks
+
+      # A backstop: lefthook's pre-commit gitleaks is what stops a secret
+      # leaving the machine. `mise run` would otherwise install every tool in
+      # .mise.toml before running the task.
+      - name: Run gitleaks
+        env:
+          MISE_AUTO_INSTALL: 'false'
+        run: mise run scan-secrets
+
+  # Its own file because it also runs on a weekly cron against a fresh advisory
+  # database. Called here so CI Summary gates it on pull requests.
+  audit:
+    uses: $/.github/workflows/audit.yml
+
+  ci-summary:
+    name: CI Summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+    needs: [static-analysis, tests, secret-scan, audit]
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        with:
+          egress-policy: audit
+
+      # Iterates `needs`, so any job listed there is gated without editing this
+      # step; a job omitted from `needs` is ungated.
+      #
+      # jq writes to a file rather than a process substitution: `< <(...)` puts
+      # the producer outside `set -e` and `pipefail`, so a missing jq, malformed
+      # JSON, an empty `needs` or a truncated stream would read as zero rows and
+      # exit green while a job is failing.
+      - name: Gate on all required jobs
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+
+          # Keyed on `verdict`, not the exit status: an abort is not always
+          # nonzero. The signal traps make a killed or cancelled step report
+          # an explicit abort.
+          verdict=
+          trap 'rc=$?
+            if [ -z "$verdict" ]; then
+              verdict=aborted
+              [ "$rc" -ne 0 ] || rc=1
+              echo "::error title=CI gate::gate aborted (exit $rc) before reaching a verdict"
+              exit "$rc"
+            fi' EXIT INT TERM HUP
+
+          command -v jq >/dev/null || {
+            echo "::error title=CI gate::jq not found"
+            verdict=reached
+            exit 1
+          }
+
+          expected=$(printf '%s' "$NEEDS" | jq -r 'length')
+          case "$expected" in
+            ''|*[!0-9]*)
+              echo "::error title=CI gate::could not read the job count from needs"
+              verdict=reached
+              exit 1
+              ;;
+          esac
+          if [ "$expected" -eq 0 ]; then
+            echo "::error title=CI gate::needs is empty — the gate would pass without checking anything"
+            verdict=reached
+            exit 1
+          fi
+
+          printf '%s' "$NEEDS" | jq -r 'to_entries[] | [.key, .value.result] | @tsv' > results.tsv
+
+          {
+            echo "## CI Summary"
+            echo ""
+            echo "| Job | Result |"
+            echo "| --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY" ||
+            echo "::warning title=CI gate::step summary unwritable; the verdict is unaffected"
+
+          seen=0
+          passed=0
+          failed=0
+          while IFS=$'\t' read -r job result; do
+            seen=$((seen + 1))
+            # shellcheck disable=SC2016 # the backticks are markdown, not a subshell
+            printf '| %s | `%s` |\n' "$job" "$result" >> "$GITHUB_STEP_SUMMARY" || :
+            # Only failure and cancellation fail a job here, so a job whose own
+            # `if:` skips it does not block a merge.
+            case "$result" in
+              success)
+                passed=$((passed + 1))
+                continue
+                ;;
+              skipped)
+                echo "::notice title=CI gate::Job '$job' was skipped"
+                continue
+                ;;
+            esac
+            echo "::error title=CI gate::Job '${job:-<empty>}' did not succeed (result: $result)"
+            failed=1
+          done < results.tsv
+
+          if [ "$seen" -ne "$expected" ]; then
+            echo "::error title=CI gate::read $seen of $expected jobs — results were truncated"
+            verdict=reached
+            exit 1
+          fi
+
+          if [ "$failed" -eq 0 ] && [ "$passed" -eq 0 ]; then
+            echo "::error title=CI gate::every gated job was skipped — nothing was checked"
+            verdict=reached
+            exit 1
+          fi
+
+          verdict=reached
+          exit "$failed"

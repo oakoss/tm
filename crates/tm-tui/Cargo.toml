@@ -1,0 +1,13 @@
+[package]
+name = "tm-tui"
+version = "0.0.0"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+repository.workspace = true
+rust-version.workspace = true
+description = "Ratatui screens. Empty until the TUI is built."
+
+[lints]
+workspace = true

@@ -1,0 +1,35 @@
+name: Harden and checkout
+description: >
+  Harden the runner and check out the repository. Workflows follow with
+  $/.github/actions/setup when they need the mise toolchain.
+
+inputs:
+  fetch-depth:
+    description: Checkout history depth
+    required: false
+    default: '0'
+  persist-credentials:
+    description: Whether checkout persists credentials for later git commands
+    required: false
+    default: 'false'
+  token:
+    description: Checkout token; defaults to the workflow token when unset
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # Audit mode logs unauthorized egress without blocking; promote to
+    # `block` once a stable allowlist emerges from real runs.
+    - name: Harden Runner
+      uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+      with:
+        egress-policy: audit
+
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: ${{ inputs.fetch-depth }}
+        persist-credentials: ${{ inputs.persist-credentials }}
+        token: ${{ inputs.token != '' && inputs.token || github.token }}

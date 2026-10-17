@@ -2,7 +2,7 @@
 
 `tm` is a local-first issue tracker for one human and their AI agents: a Rust CLI and TUI with a later TypeScript web UI. The behavior it must have is in [docs/specs/design.md](docs/specs/design.md); the order it is built in is [docs/contributing/build-plan.md](docs/contributing/build-plan.md).
 
-No code exists yet. Phase 1's first task scaffolds the Cargo workspace and adds `mise run check` and `mise run test` as the local gates.
+`mise run setup` bootstraps a fresh clone. `mise run check`, `mise run test` and `mise run audit` are the local gates; CI runs the same tasks.
 
 ## Rules that override defaults
 
@@ -15,9 +15,10 @@ No code exists yet. Phase 1's first task scaffolds the Cargo workspace and adds 
 ## Project defaults
 
 - Work is tracked in beads until the switch milestone in the build plan; Phase 1 is epic `tm-u8g`. Run `bd ready` for the next task. Beads quirks and cleanup steps: [docs/contributing/task-tracking.md](docs/contributing/task-tracking.md).
-- Commit messages: `type(scope): summary`.
+- Commit messages: `type(scope): summary`. Branches: `<type>/tm-<id>-<theme>`. Details: [docs/contributing/conventions.md](docs/contributing/conventions.md).
 
 ## More detail
 
+- Contributor map (invariants, structure, conventions, pull requests): [docs/contributing/index.md](docs/contributing/index.md)
 - Docs layout (decisions, specs, research, contributing): [docs/README.md](docs/README.md)
 - Research behind the design, with sources and scripts: [docs/research/](docs/research/)

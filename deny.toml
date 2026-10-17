@@ -1,0 +1,43 @@
+[graph]
+all-features = true
+# Only the platforms tm ships for, so wasm-only dependencies (rusqlite's
+# sqlite-wasm-rs) stay out of the license and duplicate checks.
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-unknown-linux-gnu",
+]
+
+[advisories]
+yanked = "deny"
+
+# Entries are scoped by advisory ID, never by crate, so a real vulnerability in
+# the same dependency still fails. `deny` on the unused case makes an entry fail
+# once its advisory stops firing, forcing its removal.
+unused-ignored-advisory = "deny"
+
+[licenses]
+# tm ships under MIT as a statically linked binary, so every entry must be
+# compatible with that. Keep the list to what the current graph needs; adding a
+# license is a deliberate accept.
+allow = [
+  "Apache-2.0",
+  "MIT",
+  # foldhash via rusqlite's hashlink; OSI-approved, permissive.
+  "Zlib",
+]
+
+# Without `deny`, an entry would outlive the crate that needed it and pre-accept
+# the next dependency that wants it.
+unused-allowed-license = "deny"
+
+[bans]
+multiple-versions = "deny"
+wildcards = "allow"
+
+[sources]
+# A dependency resolved from anywhere but crates.io is a question about the
+# release path itself.
+unknown-registry = "deny"
+unknown-git = "deny"

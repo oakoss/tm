@@ -45,25 +45,25 @@ manual.md, CLI flags table:
 
 manual.md, "Limitations" (still on main):
 
-> * No multi-process access
-> * No multi-threading
-> * No savepoints
-> * No triggers
-> * No views
-> * No vacuum
+> - No multi-process access
+> - No multi-threading
+> - No savepoints
+> - No triggers
+> - No views
+> - No vacuum
 
 This list is stale as a capability description. COMPAT.md line 116 has `CREATE TRIGGER | ✅ Yes`, and triggers worked in experiment 4. The flag table in the same file documents multi-process access. So the "No multi-process access" line is outdated wording. The measurements below, not the doc, are the reason to still treat multi-process access as unavailable.
 
 [docs/sql-reference/multiprocess-access.mdx](https://github.com/tursodatabase/turso/blob/849e59960d662bf4d6fbc1756e04486043c89375/docs/sql-reference/multiprocess-access.mdx) (added 2026-04-21):
 
 > Multi-process access is **experimental**. The on-disk coordination format and the public API may change between releases. Do not rely on the format for long-term storage across Turso versions.
-
+>
 > By default, a Turso database file is opened by a single OS process. [...] opening the same file from a second process is rejected with a locking error.
-
+>
 > - A **single-writer** slot. At most one process across the cluster holds the writer lock at any time.
-
+>
 > The feature is not yet supported under MVCC (`BEGIN CONCURRENT`). Use either MVCC within a single process or multi-process WAL with the default isolation model, not both.
-
+>
 > Read-only opens are advisory: if `multiprocess_wal` is requested on a read-only open and no `.tshm` file exists, Turso falls back to the legacy read-only WAL path rather than failing.
 
 CHANGELOG history: "core: Implement initial support for multi-process database access" (0.6.0, 2026-05-14); "core: reject co-enablement of MVCC and multiprocess WAL" (0.7.0, 2026-07-13); "core/wal: fix multiprocess database file reader race" (0.8.0, 2026-09-28).
@@ -102,7 +102,7 @@ MVCC cannot be combined with multi-process WAL, so `BEGIN CONCURRENT` does nothi
 [docs.turso.tech/sync/local-sync-server](https://docs.turso.tech/sync/local-sync-server.md):
 
 > Use the Turso CLI as a local sync server for development and testing without Turso Cloud.
-
+>
 > Point your sync client at `http://localhost:8080`. No auth token is needed for the local server.
 
 [Conflict resolution](https://docs.turso.tech/sync/conflict-resolution) says Turso Sync "uses a **last push wins** strategy" and does not state the granularity. The [local-first guide](https://turso.tech/blog/building-local-first-apps-the-complete-guide-to-offline-first-database-sync) (2026-07-27) says: "Last-Push-Wins strategy at the row level"; "Fully distributed sync between devices is not supported"; "The remote Turso database is always the source of truth".

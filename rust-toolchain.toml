@@ -1,0 +1,5 @@
+# The third copy of the toolchain pin, after `.mise.toml` and `rust-version`
+# (equal by decision). This one reaches CI release runners, where rustup honors
+# it and mise is absent.
+[toolchain]
+channel = "1.98.1"
