@@ -144,6 +144,10 @@ _Avoid_: Template, profile
 The named set of issue types, their fields and their allowed parents that a Project follows; child Projects inherit it unless they override it.
 _Avoid_: Template, schema, config
 
+**Replica**:
+One copy of a Workspace's store on one machine, identified separately from the Actors who write to it.
+_Avoid_: Device, node, machine, client
+
 **Workspace**:
 A self-contained store of Projects and their Schemes, either global to a machine or created separately for isolation.
 _Avoid_: Database, instance, org
