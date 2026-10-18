@@ -1,19 +1,28 @@
 //! The `tm` command.
 
+mod error;
 mod init;
+mod output;
 
 use std::fmt::Write as _;
-use std::io::{self, Write as _};
 use std::process::ExitCode;
 
+use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser, Subcommand};
+use serde_json::json;
 use tm_core::Scheme;
 use tm_core::scheme::Category;
+
+use crate::error::CliError;
+use crate::output::Output;
 
 /// A local-first issue tracker for one human and their AI agents.
 #[derive(Parser)]
 #[command(name = "tm", version)]
 struct Cli {
+    /// Print one JSON document instead of text; `TM_JSON=1` does the same.
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -43,45 +52,76 @@ enum Command {
 #[derive(Subcommand)]
 enum SchemeAction {
     /// Print the Scheme's types, Workflows and fields.
-    Show {
-        /// Print JSON instead of text.
-        #[arg(long)]
-        json: bool,
-    },
+    Show,
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let output = match cli.command {
-        None => Cli::command().render_help().to_string(),
-        Some(Command::Scheme {
-            action: SchemeAction::Show { json: false },
-        }) => scheme_text(&Scheme::built_in()),
-        Some(Command::Scheme {
-            action: SchemeAction::Show { json: true },
-        }) => format!("{}\n", scheme_json(&Scheme::built_in())),
-        Some(Command::Init { key, name, yes }) => match init::run(init::Init { key, name, yes }) {
-            Ok(text) => text,
-            Err(err) => {
-                eprintln!("tm: {err}");
-                return ExitCode::FAILURE;
-            }
-        },
-    };
-    // `print!` panics when the reader goes away; a reader that stops early,
-    // as `head` does, is not an error, but a full disk is.
-    let mut stdout = io::stdout().lock();
-    match stdout
-        .write_all(output.as_bytes())
-        .and_then(|()| stdout.flush())
-    {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
-        Err(err) => {
-            eprintln!("tm: cannot write output: {err}");
-            ExitCode::FAILURE
-        }
+    let args: Vec<String> = std::env::args_os()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let json = output::json_mode(&args, std::env::var("TM_JSON").ok().as_deref());
+    if json {
+        output::install_panic_hook();
     }
+    let cli = match Cli::try_parse_from(std::env::args_os()) {
+        Ok(cli) => cli,
+        Err(err) => return parse_failed(json, &err),
+    };
+    output::finish(json, run(cli.command, json), &[])
+}
+
+fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
+    match command {
+        None => {
+            let help = Cli::command().render_help().to_string();
+            Ok(Output {
+                data: json!({ "help": help }),
+                text: help,
+            })
+        }
+        Some(Command::Scheme {
+            action: SchemeAction::Show,
+        }) => {
+            let scheme = Scheme::built_in();
+            Ok(Output {
+                text: scheme_text(&scheme),
+                data: scheme_json(&scheme),
+            })
+        }
+        Some(Command::Init { key, name, yes }) => init::run(init::Init { key, name, yes }, json),
+    }
+}
+
+/// Help and the version asked for are output, not errors; anything else clap
+/// refuses, a missing subcommand included, is a usage error, exit 2.
+fn parse_failed(json: bool, err: &clap::Error) -> ExitCode {
+    let shown = matches!(
+        err.kind(),
+        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+    );
+    if !json {
+        let _ = err.print();
+        return if shown {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(2)
+        };
+    }
+    let rendered = err.render().to_string();
+    if shown {
+        return output::finish(
+            true,
+            Ok(Output {
+                data: json!({ "help": rendered }),
+                text: String::new(),
+            }),
+            &[],
+        );
+    }
+    let message = rendered.lines().next().unwrap_or_default();
+    let message = message.strip_prefix("error: ").unwrap_or(message);
+    output::finish(true, Err(CliError::new("usage", message)), &[]);
+    ExitCode::from(2)
 }
 
 fn scheme_json(scheme: &Scheme) -> serde_json::Value {

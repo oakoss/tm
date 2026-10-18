@@ -1,0 +1,326 @@
+//! Every failure as a coded document (ADR 0011).
+
+use serde_json::{Map, Value, json};
+use tm_core::OpError;
+use tm_core::filter::FilterError;
+use tm_core::op::{CURRENT_VERSION, MAX_PAYLOAD_BYTES};
+use tm_store::StoreError;
+use tm_store::workspace::WorkspaceError;
+
+/// Keys the document itself uses, which details never take.
+const RESERVED: [&str; 6] = [
+    "schema_version",
+    "data",
+    "warnings",
+    "error",
+    "message",
+    "fix",
+];
+
+#[derive(Debug)]
+pub(crate) struct CliError {
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
+    /// A command that fixes it, when tm can write one.
+    pub(crate) fix: Option<String>,
+    pub(crate) details: Map<String, Value>,
+}
+
+impl CliError {
+    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            fix: None,
+            details: Map::new(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn fix(mut self, fix: impl Into<String>) -> Self {
+        self.fix = Some(fix.into());
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with(mut self, key: &str, value: impl Into<Value>) -> Self {
+        debug_assert!(!RESERVED.contains(&key), "{key} is reserved");
+        self.details.insert(key.to_owned(), value.into());
+        self
+    }
+
+    fn internal(cause: &str, message: impl Into<String>) -> Self {
+        Self::new("internal", message).with("cause", cause)
+    }
+
+    /// The failure document, carrying the warnings gathered before it.
+    pub(crate) fn document(&self, warnings: &[String]) -> Value {
+        let mut doc = Map::new();
+        doc.insert(
+            "schema_version".into(),
+            json!(crate::output::SCHEMA_VERSION),
+        );
+        doc.insert("error".into(), json!(self.code));
+        doc.insert("message".into(), json!(self.message));
+        if let Some(fix) = &self.fix {
+            doc.insert("fix".into(), json!(fix));
+        }
+        doc.insert("warnings".into(), json!(warnings));
+        for (key, value) in &self.details {
+            doc.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+        Value::Object(doc)
+    }
+}
+
+impl From<StoreError> for CliError {
+    fn from(err: StoreError) -> Self {
+        let message = err.to_string();
+        match err {
+            StoreError::Busy(_) => Self::new("busy", message).fix("retry"),
+            StoreError::UnknownIssue(id) => Self::new("not_found", message)
+                .with("kind", "issue")
+                .with("id", id.to_string()),
+            StoreError::UnknownProject(id) => Self::new("not_found", message)
+                .with("kind", "project")
+                .with("id", id.to_string()),
+            StoreError::DuplicateProject(id) => {
+                Self::new("duplicate_project", message).with("id", id.to_string())
+            }
+            StoreError::KeyTaken { key, project } => Self::new("key_taken", message)
+                .with("key", key)
+                .with("project", project.to_string()),
+            StoreError::KeysExhausted { key, .. } => {
+                Self::new("keys_exhausted", message).with("key", key)
+            }
+            StoreError::NotAStore(path) => {
+                Self::new("not_a_store", message).with("path", path.display().to_string())
+            }
+            StoreError::ReadOnly => Self::new("read_only", message),
+            StoreError::WorkspaceMismatch { stored, given } => {
+                Self::new("workspace_mismatch", message)
+                    .with("stored", stored.to_string())
+                    .with("given", given.to_string())
+            }
+            StoreError::UnknownField { field, valid } => Self::new("unknown_field", message)
+                .with("field", field)
+                .with("valid", valid),
+            StoreError::Invalid {
+                field,
+                reason,
+                valid,
+            } => Self::new("invalid_value", message)
+                .with("field", field)
+                .with("reason", reason)
+                .with("allowed", valid),
+            StoreError::Cycle { relation, path } => Self::new("cycle", message)
+                .with("relation", relation)
+                .with("path", ids(&path)),
+            StoreError::NoAgent { actor } => Self::new("no_agent", message).with("actor", actor),
+            StoreError::AlreadyClaimed {
+                issue,
+                agent,
+                on_behalf_of,
+                claim,
+                expires_ms,
+            } => Self::new("already_claimed", message)
+                .with("issue", issue.to_string())
+                .with("agent", agent)
+                .with("on_behalf_of", on_behalf_of)
+                .with("claim", claim.to_string())
+                .with("expires_ms", expires_ms),
+            StoreError::NotClaimHolder {
+                issue,
+                claim,
+                current,
+            } => Self::new("not_claim_holder", message)
+                .with("issue", issue.to_string())
+                .with("claim", claim.to_string())
+                .with("current", current.map(|id| id.to_string())),
+            StoreError::MissingFields { issue, fields } => Self::new("missing_fields", message)
+                .with("issue", issue.to_string())
+                .with(
+                    "fields",
+                    fields
+                        .into_iter()
+                        .map(|name| json!({ "name": name }))
+                        .collect::<Vec<_>>(),
+                ),
+            StoreError::Op(err) => Self::from(err),
+            StoreError::NewerStore { found, supported } => Self::new("upgrade_required", message)
+                .with("found", found)
+                .with("supported", supported)
+                .fix("upgrade tm"),
+            StoreError::Replay { source, seq, .. } => match *source {
+                StoreError::Op(OpError::UnsupportedVersion(found)) => {
+                    Self::from(OpError::UnsupportedVersion(found))
+                }
+                other => Self::internal(variant(&other), message).with("seq", seq),
+            },
+            StoreError::Filter(err) => Self::from(err),
+            StoreError::DuplicateIssue(_)
+            | StoreError::SubjectNotProject { .. }
+            | StoreError::ProjectMismatch { .. }
+            | StoreError::Clock(_)
+            | StoreError::Corrupt(_)
+            | StoreError::Sqlite(_) => Self::internal(variant(&err), message),
+        }
+    }
+}
+
+impl From<OpError> for CliError {
+    fn from(err: OpError) -> Self {
+        let message = err.to_string();
+        match err {
+            OpError::UnsupportedVersion(found) => Self::new("upgrade_required", message)
+                .with("found", found)
+                .with("supported", CURRENT_VERSION)
+                .fix("upgrade tm"),
+            OpError::TooLarge(bytes) => Self::new("too_large", message)
+                .with("bytes", bytes)
+                .with("limit", MAX_PAYLOAD_BYTES),
+            OpError::InvalidName { field, .. } | OpError::ReservedField(field) => {
+                Self::new("invalid_value", message).with("field", field)
+            }
+            OpError::InvalidField(field) => {
+                Self::new("invalid_value", message).with("field", field)
+            }
+            OpError::InvalidLinkType(value) | OpError::InvalidProjectKey(value) => {
+                Self::new("invalid_value", message).with("value", value)
+            }
+            OpError::Payload(_) => Self::internal("payload", message),
+            OpError::InvalidVersion => Self::internal("invalid_version", message),
+            OpError::KindMismatch { .. } => Self::internal("kind_mismatch", message),
+        }
+    }
+}
+
+impl From<FilterError> for CliError {
+    fn from(err: FilterError) -> Self {
+        let message = err.to_string();
+        let mut details = match serde_json::to_value(&err) {
+            Ok(Value::Object(details)) => details,
+            _ => Map::new(),
+        };
+        let code = match err {
+            FilterError::Syntax { .. } => "syntax",
+            FilterError::BareWord { .. } => "bare_word",
+            FilterError::Unsupported { .. } => "unsupported",
+            FilterError::UnknownField { .. } => "unknown_field",
+            FilterError::UnknownValue { .. } => "unknown_value",
+            FilterError::InvalidValue { .. } => "invalid_value",
+            FilterError::NoIdentity { .. } => "no_identity",
+        };
+        details.retain(|key, _| !RESERVED.contains(&key.as_str()));
+        Self {
+            code,
+            message,
+            fix: None,
+            details,
+        }
+    }
+}
+
+impl From<WorkspaceError> for CliError {
+    fn from(err: WorkspaceError) -> Self {
+        let message = err.to_string();
+        match err {
+            WorkspaceError::NoHome | WorkspaceError::RelativeHome { .. } => {
+                Self::new("no_home", message)
+            }
+            WorkspaceError::TwoRepoFiles { first, .. } => {
+                Self::new("invalid_repo_file", message).with("path", first.display().to_string())
+            }
+            WorkspaceError::InvalidRepoFile { path, .. } => {
+                Self::new("invalid_repo_file", message).with("path", path.display().to_string())
+            }
+            WorkspaceError::UnknownWorkspace { id, .. } => {
+                Self::new("unknown_workspace", message).with("workspace", id.to_string())
+            }
+            WorkspaceError::IncompleteWorkspace { dir } => {
+                Self::new("incomplete_workspace", message).with("dir", dir.display().to_string())
+            }
+            WorkspaceError::WorkspaceExists { id, .. } => {
+                Self::new("workspace_exists", message).with("workspace", id.to_string())
+            }
+            WorkspaceError::Io { path, .. } => {
+                Self::new("io", message).with("path", path.display().to_string())
+            }
+            WorkspaceError::OpenStore { source, .. } => {
+                let mut wrapped = Self::from(*source);
+                wrapped.message = message;
+                wrapped
+            }
+            WorkspaceError::Store(err) => Self::from(err),
+        }
+    }
+}
+
+fn ids(ids: &[uuid::Uuid]) -> Vec<String> {
+    ids.iter().map(ToString::to_string).collect()
+}
+
+/// The variant's name, for `internal`'s `cause`.
+fn variant(err: &StoreError) -> &'static str {
+    match err {
+        StoreError::DuplicateIssue(_) => "duplicate_issue",
+        StoreError::SubjectNotProject { .. } => "subject_not_project",
+        StoreError::ProjectMismatch { .. } => "project_mismatch",
+        StoreError::Clock(_) => "clock",
+        StoreError::Corrupt(_) => "corrupt",
+        StoreError::Sqlite(_) => "sqlite",
+        StoreError::Replay { .. } => "replay",
+        _ => "store",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn details_never_replace_the_documents_own_keys() {
+        let err = CliError::from(FilterError::NoIdentity {
+            span: tm_core::filter::Span(0, 3),
+        });
+        let doc = err.document(&["w".into()]);
+        assert_eq!(doc["error"], "no_identity");
+        assert_eq!(doc["schema_version"], 1);
+        assert_eq!(doc["warnings"], json!(["w"]));
+        assert_eq!(doc["span"], json!([0, 3]));
+    }
+
+    #[test]
+    fn a_newer_operation_met_while_replaying_asks_for_an_upgrade() {
+        let err = CliError::from(StoreError::Replay {
+            seq: 4,
+            op_id: None,
+            source: Box::new(StoreError::Op(OpError::UnsupportedVersion(9))),
+        });
+        assert_eq!(err.code, "upgrade_required");
+        assert_eq!(err.details["found"], 9);
+        assert_eq!(err.fix.as_deref(), Some("upgrade tm"));
+    }
+
+    #[test]
+    fn a_wrapped_store_error_keeps_its_code() {
+        let err = CliError::from(WorkspaceError::OpenStore {
+            path: "/s/store.db".into(),
+            source: Box::new(StoreError::NewerStore {
+                found: 2,
+                supported: 1,
+            }),
+        });
+        assert_eq!(err.code, "upgrade_required");
+        assert!(err.message.starts_with("/s/store.db"), "{}", err.message);
+    }
+
+    #[test]
+    fn errors_that_should_not_happen_are_internal_with_a_cause() {
+        let err = CliError::from(StoreError::Corrupt("bad row".into()));
+        assert_eq!(
+            (err.code, &err.details["cause"]),
+            ("internal", &json!("corrupt"))
+        );
+    }
+}

@@ -181,6 +181,35 @@ fn init_creates_a_workspace_and_writes_only_the_repo_file() {
 }
 
 #[test]
+fn init_in_json_mode_reports_what_it_made_and_its_batch() {
+    let scratch = Scratch::new();
+    let repo = fixture(&scratch, "repo");
+    let made = tm(&scratch, &repo, &["init", "--yes", "--json", "--key", "TM"]);
+    assert!(made.status.success(), "{made:?}");
+    assert!(made.stderr.is_empty(), "{}", text(&made.stderr));
+    let doc: serde_json::Value = serde_json::from_slice(&made.stdout).unwrap();
+    let data = &doc["data"];
+    assert_eq!(
+        (&data["created"], &data["project"]),
+        (&true.into(), &"TM".into())
+    );
+    let workspace: Uuid = data["workspace"].as_str().unwrap().parse().unwrap();
+    let batch: Uuid = data["batch"].as_str().unwrap().parse().unwrap();
+    let store = Store::open(&Workspace::at(&scratch.home(), workspace).store_path()).unwrap();
+    let batched: Vec<u8> = store
+        .connection()
+        .query_row("SELECT batch FROM op_batches", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(Uuid::from_slice(&batched).unwrap(), batch);
+
+    let again = tm(&scratch, &repo, &["init", "--json"]);
+    assert!(again.status.success(), "{again:?}");
+    let doc: serde_json::Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(doc["data"]["created"], false);
+    assert_eq!(doc["data"]["workspace"], workspace.to_string());
+}
+
+#[test]
 fn without_a_terminal_init_needs_yes_and_writes_nothing() {
     let scratch = Scratch::new();
     let repo = fixture(&scratch, "repo");

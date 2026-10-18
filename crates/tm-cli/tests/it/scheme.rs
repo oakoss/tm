@@ -11,7 +11,9 @@ fn tm(args: &[&str]) -> std::process::Output {
 fn scheme_show_json_lists_the_default_types_fields_and_statuses() {
     let output = tm(&["scheme", "show", "--json"]);
     assert!(output.status.success());
-    let scheme: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["schema_version"], 1);
+    let scheme = &document["data"];
     let ids = |list: &serde_json::Value, key: &str| -> Vec<String> {
         list.as_array()
             .unwrap()
