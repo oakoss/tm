@@ -3,6 +3,7 @@
 mod create;
 mod init;
 mod json;
+mod link;
 mod list;
 mod ready;
 mod scheme;

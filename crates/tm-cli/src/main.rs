@@ -5,6 +5,7 @@ mod error;
 mod here;
 mod identity;
 mod init;
+mod link;
 mod list;
 mod output;
 mod ready;
@@ -64,6 +65,17 @@ enum Command {
         /// The parent Issue's Key or id.
         #[arg(long)]
         parent: Option<String>,
+    },
+    /// Link two Issues, read from either end: `tm link TM-1 blocks TM-2` or
+    /// `tm link TM-2 is blocked by TM-1`.
+    Link {
+        #[arg(value_name = "ISSUE NAME… ISSUE", num_args = 3.., required = true)]
+        words: Vec<String>,
+    },
+    /// Remove a Link, named as `tm link` names it.
+    Unlink {
+        #[arg(value_name = "ISSUE NAME… ISSUE", num_args = 3.., required = true)]
+        words: Vec<String>,
     },
     /// List the Issues a filter matches; with none, the open work.
     List {
@@ -140,6 +152,8 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             labels,
             parent,
         }),
+        Some(Command::Link { words }) => link::run(&words, true),
+        Some(Command::Unlink { words }) => link::run(&words, false),
         Some(Command::List { filter, limit }) => list::run(&filter, limit),
         Some(Command::Ready { limit }) => ready::run(limit),
         Some(Command::Show { issue }) => show::run(&issue),

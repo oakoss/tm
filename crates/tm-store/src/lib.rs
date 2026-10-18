@@ -84,6 +84,12 @@ pub enum StoreError {
         /// From the Issue written, around the cycle and back to it.
         path: Vec<Uuid>,
     },
+    #[error("Issue {from} holds no {link_type} Link to {to}")]
+    NotLinked {
+        link_type: String,
+        from: Uuid,
+        to: Uuid,
+    },
     #[error("only an Agent can take a Claim, and {actor} writes as a human")]
     NoAgent { actor: String },
     #[error("Issue {issue} is held by {agent} for {on_behalf_of} (Claim {claim}{})", expires_ms.map_or_else(String::new, |ms| format!(", expiring at {ms} ms")))]
@@ -726,6 +732,36 @@ impl Store {
         self.append(draft)
     }
 
+    /// [`Store::unlink`], refused with [`StoreError::NotLinked`] and nothing
+    /// written unless the Link is held when the write begins.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::NotLinked`], or as [`Store::unlink`].
+    pub fn unlink_held(
+        &mut self,
+        actor: &Actor,
+        link_type: &str,
+        from: Uuid,
+        to: Uuid,
+    ) -> Result<Op, StoreError> {
+        let draft = self.link_draft(actor.clone(), link_type, from, to, false)?;
+        let (source, target) = tm_core::link::link_type(link_type)
+            .map_or((from, to), |def| tm_core::link::canonical(def, from, to));
+        let mut ops = self.append_guarded(vec![draft], |tx| {
+            if validate::has_link(tx, link_type, source, target)? {
+                Ok(())
+            } else {
+                Err(StoreError::NotLinked {
+                    link_type: link_type.to_owned(),
+                    from: source,
+                    to: target,
+                })
+            }
+        })?;
+        Ok(ops.remove(0))
+    }
+
     fn link_draft(
         &self,
         actor: Actor,
@@ -767,6 +803,16 @@ impl Store {
     /// [`StoreError::Clock`] or [`StoreError::Busy`]; nothing is written
     /// unless every draft succeeds.
     pub fn append_all(&mut self, drafts: Vec<Draft>) -> Result<Vec<Op>, StoreError> {
+        self.append_guarded(drafts, |_| Ok(()))
+    }
+
+    /// [`Store::append_all`] after `guard` passes inside the same write
+    /// transaction, so no other writer can change what it checked.
+    fn append_guarded(
+        &mut self,
+        drafts: Vec<Draft>,
+        guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
+    ) -> Result<Vec<Op>, StoreError> {
         for draft in &drafts {
             draft.change.validate()?;
         }
@@ -774,6 +820,7 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        guard(&tx)?;
         let mut hlc = last_hlc(&tx)?;
         let replica: Vec<u8> =
             tx.query_row("SELECT v FROM meta WHERE k = 'replica_id'", [], |row| {
