@@ -30,6 +30,7 @@ design.md records an Agent's writes as "agent, on behalf of human", and `tm undo
 - `Op` gains `on_behalf_of`, and `CURRENT_VERSION` becomes 2. Nothing else joins the envelope.
 - The envelope branches on `v`. A `v: 1` operation hashes to exactly the bytes it always did, with envelope format 1. From `v: 2`, envelope format 2 adds `on_behalf_of` after `actor`, with a presence byte.
 - A stored `v: 1` operation reads as `on_behalf_of` empty; this is the first of ADR 0006's read-time translations. A `v: 1` operation carrying `on_behalf_of` is refused, because its hash would leave the field out.
+- From `v: 2`, an `actor` or `on_behalf_of` that is blank or holds a control character is refused, on write and on replay; `v: 1` operations replay as they were written.
 - **Every new `Change` kind bumps `CURRENT_VERSION`**, enforced by a test that ties each kind to the version that introduced it. A binary then refuses an unknown kind by its number, with "upgrade tm".
 
 **Migrating the log.**
@@ -56,11 +57,11 @@ design.md records an Agent's writes as "agent, on behalf of human", and `tm undo
 - `CLAUDECODE` and `AI_AGENT` are not read. IDE extensions set `CLAUDECODE` in their integrated terminals, and Claude Code's own tools also see its session id; `AI_AGENT`'s values carry versions and are inherited from parent agents.
 - With an Agent, `actor` is the Agent's name and `on_behalf_of` is the human, unless the two are equal. Without one, `actor` is the human and `on_behalf_of` is empty. `on_behalf_of` is the human running the Agent, not the Issue's Assignee.
 - `@me` resolves to the human in both cases.
-- A take's `agent` is the resolved Agent name, the operation's `actor`. The claims table records `on_behalf_of` in place of `actor`, so a Claim shows the Agent and the human it works for.
+- A take's `agent` is the resolved Agent name, the operation's `actor`. The claims table records `on_behalf_of` in place of `actor`, so a Claim shows the Agent and the human it works for. A take with no `on_behalf_of` was written by that human, as every `v: 1` take was, so the column falls back to the writer.
 
 **Undo.**
 
-- Every write gets a batch id, kept in a local table `op_batches(op_id, batch)` outside the log and the projections. It is not hashed or synced, and a rebuild neither reads nor drops it; taskchampion's local `UndoPoint` is the precedent.
+- Every write gets a batch id, its first operation's id, kept in a local table `op_batches(op_id, batch)` outside the log and the projections. It is not hashed or synced, and a rebuild neither reads nor drops it; taskchampion's local `UndoPoint` is the precedent.
 - Every write's output carries its batch id, and `tm undo <batch>` reverts exactly that batch by appending operations that restore each touched field and set element to its state before the batch. It is refused with `undo_conflict`, naming the current value, when a later batch wrote the same field or element. There is no bare "undo my last command"; the caller keeps the id, as it keeps a Claim's.
 - Until sync is designed, undo is refused for a batch holding an acknowledged operation. Undo after sync is designed with sync.
 
