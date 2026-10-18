@@ -692,12 +692,18 @@ fn init_below_a_home_repo_is_refused_but_runs_at_home() {
     let output = init(&project, Path::new("../.."));
     assert!(!output.status.success());
     assert!(
-        text(&output.stderr).contains("is not absolute"),
+        text(&output.stderr).contains("must be an absolute path"),
         "{output:?}"
     );
-    let output = init(&project, &scratch.0.join("missing"));
-    assert!(output.status.success(), "a missing $HOME is not this repo");
-    fs::remove_dir_all(home.join(".config")).unwrap();
+    fs::write(scratch.0.join("a-file"), "").unwrap();
+    for missing in [scratch.0.join("missing"), scratch.0.join("a-file/sub")] {
+        let output = init(&project, &missing);
+        assert!(
+            output.status.success(),
+            "a missing $HOME is not this repo: {output:?}"
+        );
+        fs::remove_dir_all(home.join(".config")).unwrap();
+    }
 
     let output = init(&home, &home);
     assert!(output.status.success(), "{output:?}");
@@ -733,10 +739,15 @@ fn a_home_that_cannot_be_resolved_stops_init() {
         .unwrap();
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(!output.status.success());
+    let stderr = text(&output.stderr);
     assert!(
-        text(&output.stderr).contains("home directory"),
-        "{output:?}"
+        stderr.starts_with(&format!(
+            "tm: the home directory {}: ",
+            locked.join("link").display()
+        )),
+        "{stderr}"
     );
+    assert!(stderr.contains("set HOME"), "{stderr}");
     assert!(!home.join(".config").exists());
 }
 

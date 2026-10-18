@@ -123,12 +123,27 @@ fn check_not_below_home_repo(cwd: &Path, root: &Path) -> Result<(), String> {
         return Ok(());
     };
     if !home.is_absolute() {
-        return Err(format!("home directory {} is not absolute", home.display()));
+        return Err(format!(
+            "the home directory must be an absolute path, not \"{}\"",
+            home.display()
+        ));
     }
     let user_home = match fs::canonicalize(&home) {
         Ok(path) => path,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(format!("home directory {}: {err}", home.display())),
+        Err(err)
+            if matches!(
+                err.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(());
+        }
+        Err(err) => {
+            return Err(format!(
+                "the home directory {}: {err}; set HOME to a directory tm can read",
+                home.display()
+            ));
+        }
     };
     let cwd = fs::canonicalize(cwd).map_err(|err| format!("working directory: {err}"))?;
     if root == user_home && cwd != user_home {
