@@ -9,6 +9,7 @@ use tm_core::scheme::{Field, FieldType, Scheme, is_date, priority_rank};
 use uuid::Uuid;
 
 use crate::StoreError;
+use crate::apply::uuid_from;
 
 /// Checks `change` against the Scheme and the Issue's current state, and fills
 /// in the display labels the operation records.
@@ -357,11 +358,18 @@ fn check_value(
             if target == issue_id {
                 return Err(invalid(def, "cannot refer to the Issue itself", []));
             }
-            if exists(tx, target)? {
-                Ok(None)
-            } else {
-                Err(StoreError::UnknownIssue(target))
+            if !exists(tx, target)? {
+                return Err(StoreError::UnknownIssue(target));
             }
+            if def.name == "parent"
+                && let Some(path) = ancestry_reaches(tx, target, issue_id)?
+            {
+                return Err(StoreError::Cycle {
+                    relation: "parent".into(),
+                    path: [issue_id].into_iter().chain(path).collect(),
+                });
+            }
+            Ok(None)
         }
         (FieldType::Date, Value::String(date)) if is_date(date) => Ok(None),
         (FieldType::Date, Value::String(_)) => {
@@ -373,6 +381,36 @@ fn check_value(
             .map_err(|_| invalid(def, "is not an RFC 3339 timestamp", [])),
         _ => Err(invalid(def, "has the wrong value type", [])),
     }
+}
+
+/// The parent chain from `start` up to `goal`, both included, if `goal` is an
+/// ancestor of `start`. Stops at a cycle a merge left among the ancestors.
+fn ancestry_reaches(
+    tx: &Transaction<'_>,
+    start: Uuid,
+    goal: Uuid,
+) -> Result<Option<Vec<Uuid>>, StoreError> {
+    let mut path = vec![start];
+    let mut at = start;
+    while at != goal {
+        let parent: Option<Vec<u8>> = tx
+            .query_row(
+                "SELECT parent_id FROM issues WHERE id = ?1",
+                [at.as_bytes()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        let Some(parent) = parent else {
+            return Ok(None);
+        };
+        at = uuid_from(&parent)?;
+        if path.contains(&at) {
+            return Ok(None);
+        }
+        path.push(at);
+    }
+    Ok(Some(path))
 }
 
 fn current(

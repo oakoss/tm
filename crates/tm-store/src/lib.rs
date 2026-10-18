@@ -74,6 +74,12 @@ pub enum StoreError {
         /// The values that would be accepted, when they can be listed.
         valid: Vec<String>,
     },
+    #[error("{relation} would close a cycle: {}", path.iter().map(Uuid::to_string).collect::<Vec<_>>().join(" -> "))]
+    Cycle {
+        relation: String,
+        /// From the Issue written, around the cycle and back to it.
+        path: Vec<Uuid>,
+    },
     #[error("Issue {issue} is missing required fields: {}", fields.join(", "))]
     MissingFields { issue: Uuid, fields: Vec<String> },
     #[error("Issue {issue} belongs to Project {expected}, not {found}")]

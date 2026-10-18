@@ -152,6 +152,65 @@ fn a_parent_must_be_another_existing_issue() {
 }
 
 #[test]
+fn a_parent_that_closes_a_cycle_is_refused() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let [a, b, c, d] = [(); 4].map(|()| new_issue(&mut store));
+    set(&mut store, b, "parent", json!(a.to_string())).unwrap();
+    set(&mut store, c, "parent", json!(b.to_string())).unwrap();
+    let err = set(&mut store, a, "parent", json!(c.to_string())).unwrap_err();
+    let StoreError::Cycle { relation, path } = err else {
+        panic!("{err}");
+    };
+    assert_eq!(relation, "parent");
+    assert_eq!(path, [a, c, b, a]);
+    assert_eq!(field(&store, a, "parent"), None);
+    set(&mut store, a, "parent", json!(d.to_string())).unwrap();
+    set(&mut store, c, "parent", json!(d.to_string())).unwrap();
+}
+
+#[test]
+fn a_parent_cycle_built_within_one_batch_is_refused() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let [a, b] = [(); 2].map(|()| new_issue(&mut store));
+    let err = store
+        .append_all(vec![
+            draft(b, set_field("parent", json!(a.to_string()))),
+            draft(a, set_field("parent", json!(b.to_string()))),
+        ])
+        .unwrap_err();
+    assert!(
+        matches!(&err, StoreError::Cycle { path, .. } if *path == [a, b, a]),
+        "{err}"
+    );
+    assert_eq!(field(&store, b, "parent"), None, "the batch rolled back");
+}
+
+#[test]
+fn a_parent_cycle_from_a_merge_is_kept_and_writes_still_finish() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let [a, b] = [Uuid::now_v7(), Uuid::now_v7()];
+    let ops = [
+        (a, Change::Create),
+        (b, Change::Create),
+        (a, set_field("parent", json!(b.to_string()))),
+        (b, set_field("parent", json!(a.to_string()))),
+    ];
+    for (seq, (issue, change)) in (1..).zip(ops) {
+        let op = remote_op(7, issue, &change, Hlc::new(1_000 + seq, 0), 0);
+        insert_acked(&store, &op, i64::try_from(seq).unwrap(), 2_000);
+    }
+    assert_eq!(store.rebuild().unwrap(), 0);
+    assert_eq!(field(&store, a, "parent"), Some(json!(b.to_string())));
+    assert_eq!(field(&store, b, "parent"), Some(json!(a.to_string())));
+    let child = new_issue(&mut store);
+    set(&mut store, child, "parent", json!(a.to_string())).unwrap();
+    set(&mut store, a, "title", json!("still editable")).unwrap();
+}
+
+#[test]
 fn archiving_can_be_set_and_cleared() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
