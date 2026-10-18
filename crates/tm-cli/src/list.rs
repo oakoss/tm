@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::error::CliError;
 use crate::here::{self, Here};
 use crate::identity;
-use crate::output::Output;
+use crate::output::{Output, printable};
 
 /// With no filter, the open work: triage, todo and active.
 const OPEN: &str = "-category:done,cancelled";
@@ -115,10 +115,7 @@ pub(crate) fn item(view: &IssueView, projects: &HashMap<ProjectId, Option<String
 /// line whatever the title holds.
 pub(crate) fn line(view: &IssueView) -> String {
     let field = |name: &str| view.fields.get(name).and_then(Value::as_str).unwrap_or("-");
-    let title: String = field("title")
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
+    let title = printable(field("title"));
     format!(
         "{}  {}  {}  {title}",
         view.key.clone().unwrap_or_else(|| view.id.to_string()),

@@ -156,7 +156,7 @@ pub(crate) fn link_shape(link_type: &str, source: Uuid, target: Uuid) -> Result<
     Ok(())
 }
 
-fn has_link(
+pub(crate) fn has_link(
     tx: &Transaction<'_>,
     link_type: &str,
     source: Uuid,

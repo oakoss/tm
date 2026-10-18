@@ -43,6 +43,53 @@ fn reads_in_one_read_see_one_commit() {
     assert_eq!(title(&reader), json!("after"));
 }
 
+const CHILD_PAIR: &str = "TM_STORE_TEST_CHILD_PAIR";
+
+#[test]
+fn of_many_processes_unlinking_one_link_only_one_writes() {
+    if let (Ok(db), Ok(pair)) = (std::env::var(CHILD_DB), std::env::var(CHILD_PAIR)) {
+        let (from, to) = pair.split_once(',').unwrap();
+        let mut store = Store::open(&PathBuf::from(db)).unwrap();
+        let from = Uuid::parse_str(from).unwrap();
+        let to = Uuid::parse_str(to).unwrap();
+        match store.unlink_held(&jace(), "blocks", from, to) {
+            Ok(_) | Err(tm_store::StoreError::NotLinked { .. }) => {}
+            Err(err) => panic!("{err}"),
+        }
+        return;
+    }
+
+    let dir = TempDir::new();
+    let mut store = Store::open(&dir.db()).unwrap();
+    let (project, _) = store.create_project(&jace(), "CPL", "Core").unwrap();
+    let (from, _) = store.create_issue(&jace(), project, "task", "a").unwrap();
+    let (to, _) = store.create_issue(&jace(), project, "task", "b").unwrap();
+    store.link(&jace(), "blocks", from, to).unwrap();
+    drop(store);
+
+    run_children(
+        "concurrency::of_many_processes_unlinking_one_link_only_one_writes",
+        20,
+        |_, command| {
+            command
+                .env(CHILD_DB, dir.db())
+                .env(CHILD_PAIR, format!("{from},{to}"));
+        },
+    );
+
+    let store = Store::open(&dir.db()).unwrap();
+    let removals: i64 = store
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM ops WHERE kind = 'link' AND payload LIKE '%\"present\":false%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(removals, 1);
+    assert_eq!(store.links(from).unwrap(), Vec::new());
+}
+
 #[test]
 fn fifty_processes_write_without_losing_operations() {
     if let (Ok(db), Ok(issue)) = (std::env::var(CHILD_DB), std::env::var(CHILD_ISSUE)) {

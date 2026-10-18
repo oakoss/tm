@@ -85,6 +85,7 @@ fn show_gives_an_issues_fields_parent_labels_and_claim() {
           "id": "[id]",
           "on_behalf_of": "jace"
         },
+        "comments": [],
         "fields": {
           "archived": false,
           "created": "[ms]",
@@ -98,6 +99,7 @@ fn show_gives_an_issues_fields_parent_labels_and_claim() {
         },
         "id": "[id]",
         "key": "TM-2",
+        "links": [],
         "parent": {
           "id": "[id]",
           "key": "TM-1"
@@ -126,6 +128,76 @@ fn show_gives_an_issues_fields_parent_labels_and_claim() {
     ] {
         assert!(shown.contains(line), "{line:?} in {shown}");
     }
+}
+
+#[test]
+fn show_names_links_from_this_end_and_gives_comments_in_order() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let jace = Actor::human("jace");
+    let (blocker, _) = store.create_issue(&jace, project, "task", "a").unwrap();
+    let (held, _) = store.create_issue(&jace, project, "task", "b").unwrap();
+    store.link(&jace, "blocks", blocker, held).unwrap();
+    change(
+        &mut store,
+        project,
+        held,
+        Change::Comment {
+            body: "first\nsecond line".into(),
+        },
+    );
+    store
+        .append(Draft {
+            actor: Actor::agent("claude", "jace"),
+            project,
+            subject: held,
+            change: Change::Comment {
+                body: "on it".into(),
+            },
+        })
+        .unwrap();
+
+    let (ok, doc) = show(&scratch, &repo, "TM-2");
+    assert!(ok, "{doc}");
+    assert_eq!(
+        doc["data"]["links"],
+        json!([{
+            "type": "blocks",
+            "direction": "inward",
+            "name": "is blocked by",
+            "other": { "id": blocker.to_string(), "key": "TM-1" },
+        }])
+    );
+    let comments = doc["data"]["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 2);
+    assert_eq!(comments[0]["body"], "first\nsecond line");
+    assert_eq!(comments[1]["actor"], "claude");
+    assert_eq!(comments[1]["on_behalf_of"], "jace");
+
+    let (_, doc) = show(&scratch, &repo, "TM-1");
+    assert_eq!(doc["data"]["links"][0]["name"], "blocks");
+    assert_eq!(doc["data"]["links"][0]["other"]["key"], "TM-2");
+
+    change(
+        &mut store,
+        project,
+        held,
+        Change::Comment {
+            body: "\u{1b}[2Jcleared".into(),
+        },
+    );
+    let out = tm(&scratch, &repo, &["show", "TM-2"]);
+    let shown = text(&out.stdout);
+    assert!(
+        !shown.contains('\u{1b}'),
+        "a control sequence reached the terminal"
+    );
+    assert!(shown.contains(r"  \u{1b}[2Jcleared"), "{shown}");
+    assert!(shown.contains("is blocked by TM-1\n"), "{shown}");
+    assert!(
+        shown.contains("\njace:\n  first\n  second line\n\nclaude for jace:\n  on it\n"),
+        "{shown}"
+    );
 }
 
 #[test]

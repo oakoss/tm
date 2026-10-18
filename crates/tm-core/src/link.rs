@@ -64,6 +64,44 @@ pub fn link_type(id: &str) -> Option<&'static LinkType> {
     BUILT_IN.iter().find(|link_type| link_type.id == id)
 }
 
+/// The type a name means, and whether it reads from the target's end: its id,
+/// outward name or inward name, without case and with `_` or `-` read as a
+/// space, so `blocks`, `is blocked by` and `is_blocked_by` all resolve.
+#[must_use]
+pub fn by_name(name: &str) -> Option<(&'static LinkType, bool)> {
+    let wanted = spoken(name);
+    BUILT_IN.iter().find_map(|link_type| {
+        if spoken(link_type.id) == wanted || spoken(link_type.outward) == wanted {
+            Some((link_type, false))
+        } else if spoken(link_type.inward) == wanted {
+            Some((link_type, true))
+        } else {
+            None
+        }
+    })
+}
+
+fn spoken(name: &str) -> String {
+    name.split(|c: char| c.is_whitespace() || c == '_' || c == '-')
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Every outward and inward name, for an error to list.
+#[must_use]
+pub fn names() -> Vec<&'static str> {
+    let mut names = Vec::new();
+    for link_type in &BUILT_IN {
+        names.push(link_type.outward);
+        if link_type.inward != link_type.outward {
+            names.push(link_type.inward);
+        }
+    }
+    names
+}
+
 /// The `(source, target)` a Link between `from` and `to` is stored as: as
 /// given for a directional type, ordered by bytes for a symmetric one.
 #[must_use]
@@ -92,6 +130,31 @@ mod tests {
             assert!(crate::scheme::is_id(built_in.id), "{}", built_in.id);
             assert_eq!(link_type(built_in.id), Some(&BUILT_IN[i]));
         }
+    }
+
+    #[test]
+    fn a_name_resolves_to_its_type_and_which_end_it_reads_from() {
+        let blocks = link_type(BLOCKS).unwrap();
+        for name in ["blocks", "BLOCKS", " blocks "] {
+            assert_eq!(by_name(name), Some((blocks, false)), "{name}");
+        }
+        for name in ["is blocked by", "is_blocked_by", "Is-Blocked  By"] {
+            assert_eq!(by_name(name), Some((blocks, true)), "{name}");
+        }
+        let relates = link_type("relates_to").unwrap();
+        assert_eq!(by_name("relates to"), Some((relates, false)));
+        assert_eq!(by_name("relates_to"), Some((relates, false)));
+        let derived = link_type("derived_from").unwrap();
+        assert_eq!(by_name("has derived"), Some((derived, true)));
+        assert_eq!(by_name("is derived from"), Some((derived, false)));
+        assert_eq!(by_name("derived_from"), Some((derived, false)));
+        assert_eq!(by_name("blocked"), None);
+        assert_eq!(by_name(""), None);
+        assert!(names().contains(&"is blocked by"));
+        assert_eq!(
+            names().iter().filter(|name| **name == "relates to").count(),
+            1
+        );
     }
 
     #[test]

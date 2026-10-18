@@ -23,16 +23,21 @@ pub(crate) struct Create {
 /// `--set FIELD=VALUE`. A field with its own flag is refused, so `--type`
 /// alone decides the Status.
 pub(crate) fn field_value(pair: &str) -> Result<(String, String), String> {
-    let (field, value) = pair
-        .split_once('=')
-        .ok_or_else(|| format!("expected FIELD=VALUE, such as priority=high, not {pair:?}"))?;
-    match field {
+    let (field, value) = split_pair(pair)?;
+    match field.as_str() {
         "type" | "title" | "parent" | "labels" => {
-            let flag = if field == "labels" { "label" } else { field };
+            let flag = if field == "labels" { "label" } else { &field };
             Err(format!("give {field} with --{flag}, not --set"))
         }
-        _ => Ok((field.to_owned(), value.to_owned())),
+        _ => Ok((field, value)),
     }
+}
+
+/// `FIELD=VALUE`, split at the first `=`.
+pub(crate) fn split_pair(pair: &str) -> Result<(String, String), String> {
+    pair.split_once('=')
+        .map(|(field, value)| (field.to_owned(), value.to_owned()))
+        .ok_or_else(|| format!("expected FIELD=VALUE, such as priority=high, not {pair:?}"))
 }
 
 pub(crate) fn run(create: &Create) -> Result<Output, CliError> {
@@ -119,7 +124,7 @@ fn changes(scheme: &Scheme, create: &Create, parent: Option<Uuid>) -> Vec<Change
 /// A `--set` value as the field's type stores it: a number or boolean where
 /// the Scheme says so, else the text. Text that does not parse is passed on
 /// for the store to refuse with the field's rules.
-fn typed(scheme: &Scheme, field: &str, value: &str) -> Value {
+pub(crate) fn typed(scheme: &Scheme, field: &str, value: &str) -> Value {
     match scheme.field(field).map(|field| &field.field_type) {
         Some(FieldType::Number) => value
             .parse::<f64>()
@@ -141,39 +146,7 @@ fn missing(scheme: &Scheme, create: &Create, fields: Vec<String>) -> CliError {
         .into_iter()
         .filter(|name| !(no_type && name == "status"))
         .collect();
-    let described: Vec<Value> = fields
-        .iter()
-        .map(|name| {
-            let allowed: Vec<&str> = match scheme.field(name).map(|field| &field.field_type) {
-                Some(FieldType::IssueType) => scheme
-                    .types
-                    .iter()
-                    .map(|issue_type| issue_type.id.as_str())
-                    .collect(),
-                Some(FieldType::Priority) => scheme
-                    .priorities
-                    .iter()
-                    .map(|level| level.id.as_str())
-                    .collect(),
-                Some(FieldType::SingleSelect | FieldType::MultiSelect) => scheme
-                    .field(name)
-                    .map(|field| {
-                        field
-                            .options
-                            .iter()
-                            .map(|choice| choice.id.as_str())
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                _ => Vec::new(),
-            };
-            if allowed.is_empty() {
-                json!({ "name": name })
-            } else {
-                json!({ "name": name, "allowed": allowed })
-            }
-        })
-        .collect();
+    let described = described(scheme, &fields);
     let mut fix = vec!["tm".to_owned(), "create".to_owned()];
     // One word per flag, so a value starting with `-` is not read as a flag.
     let mut flag = |name: &str, value: &str| fix.push(format!("{name}={}", quoted(value)));
@@ -205,6 +178,44 @@ fn missing(scheme: &Scheme, create: &Create, fields: Vec<String>) -> CliError {
     )
     .fix(fix.join(" "))
     .with("fields", described)
+}
+
+/// Each field as `missing_fields` names it, with the values the Scheme allows
+/// where it lists them.
+fn described(scheme: &Scheme, fields: &[String]) -> Vec<Value> {
+    fields
+        .iter()
+        .map(|name| {
+            let allowed: Vec<&str> = match scheme.field(name).map(|field| &field.field_type) {
+                Some(FieldType::IssueType) => scheme
+                    .types
+                    .iter()
+                    .map(|issue_type| issue_type.id.as_str())
+                    .collect(),
+                Some(FieldType::Priority) => scheme
+                    .priorities
+                    .iter()
+                    .map(|level| level.id.as_str())
+                    .collect(),
+                Some(FieldType::SingleSelect | FieldType::MultiSelect) => scheme
+                    .field(name)
+                    .map(|field| {
+                        field
+                            .options
+                            .iter()
+                            .map(|choice| choice.id.as_str())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            if allowed.is_empty() {
+                json!({ "name": name })
+            } else {
+                json!({ "name": name, "allowed": allowed })
+            }
+        })
+        .collect()
 }
 
 /// `value` as one POSIX shell word.

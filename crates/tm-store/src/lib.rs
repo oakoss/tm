@@ -32,7 +32,7 @@ use uuid::Uuid;
 use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
 pub use claim::Claim;
-pub use read::IssueView;
+pub use read::{CommentView, Direction, IssueView, LinkView};
 pub use ready::Ready;
 
 /// How long a writer waits for another writer before giving up.
@@ -83,6 +83,12 @@ pub enum StoreError {
         relation: &'static str,
         /// From the Issue written, around the cycle and back to it.
         path: Vec<Uuid>,
+    },
+    #[error("Issue {from} holds no {link_type} Link to {to}")]
+    NotLinked {
+        link_type: String,
+        from: Uuid,
+        to: Uuid,
     },
     #[error("only an Agent can take a Claim, and {actor} writes as a human")]
     NoAgent { actor: String },
@@ -726,6 +732,36 @@ impl Store {
         self.append(draft)
     }
 
+    /// [`Store::unlink`], refused with [`StoreError::NotLinked`] and nothing
+    /// written unless the Link is held when the write begins.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::NotLinked`], or as [`Store::unlink`].
+    pub fn unlink_held(
+        &mut self,
+        actor: &Actor,
+        link_type: &str,
+        from: Uuid,
+        to: Uuid,
+    ) -> Result<Op, StoreError> {
+        let draft = self.link_draft(actor.clone(), link_type, from, to, false)?;
+        let (source, target) = tm_core::link::link_type(link_type)
+            .map_or((from, to), |def| tm_core::link::canonical(def, from, to));
+        let mut ops = self.append_guarded(vec![draft], |tx| {
+            if validate::has_link(tx, link_type, source, target)? {
+                Ok(())
+            } else {
+                Err(StoreError::NotLinked {
+                    link_type: link_type.to_owned(),
+                    from: source,
+                    to: target,
+                })
+            }
+        })?;
+        Ok(ops.remove(0))
+    }
+
     fn link_draft(
         &self,
         actor: Actor,
@@ -767,6 +803,16 @@ impl Store {
     /// [`StoreError::Clock`] or [`StoreError::Busy`]; nothing is written
     /// unless every draft succeeds.
     pub fn append_all(&mut self, drafts: Vec<Draft>) -> Result<Vec<Op>, StoreError> {
+        self.append_guarded(drafts, |_| Ok(()))
+    }
+
+    /// [`Store::append_all`] after `guard` passes inside the same write
+    /// transaction, so no other writer can change what it checked.
+    fn append_guarded(
+        &mut self,
+        drafts: Vec<Draft>,
+        guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
+    ) -> Result<Vec<Op>, StoreError> {
         for draft in &drafts {
             draft.change.validate()?;
         }
@@ -774,6 +820,7 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        guard(&tx)?;
         let mut hlc = last_hlc(&tx)?;
         let replica: Vec<u8> =
             tx.query_row("SELECT v FROM meta WHERE k = 'replica_id'", [], |row| {
@@ -944,6 +991,33 @@ impl Store {
     /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
     pub fn issues(&self, ids: &[Uuid]) -> Result<Vec<IssueView>, StoreError> {
         self.read(|store| read::issues(&store.conn, &store.scheme, ids))
+    }
+
+    /// The Links `issue` holds at either end, by type, outward before
+    /// inward.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::UnknownIssue`], any SQLite failure, or
+    /// [`StoreError::Corrupt`] for a malformed row.
+    pub fn links(&self, issue: Uuid) -> Result<Vec<LinkView>, StoreError> {
+        self.read(|store| {
+            apply::issue_project(&store.conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?;
+            read::links(&store.conn, issue)
+        })
+    }
+
+    /// The comments on `issue`, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::UnknownIssue`], any SQLite failure, or
+    /// [`StoreError::Corrupt`] for a malformed row.
+    pub fn comments(&self, issue: Uuid) -> Result<Vec<CommentView>, StoreError> {
+        self.read(|store| {
+            apply::issue_project(&store.conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?;
+            read::comments(&store.conn, issue)
+        })
     }
 
     /// Runs `reads` in one read transaction, so what they return never mixes

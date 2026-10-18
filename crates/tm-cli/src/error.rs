@@ -140,6 +140,14 @@ impl From<StoreError> for CliError {
                 .with("relation", relation)
                 .with("path", ids(&path)),
             StoreError::NoAgent { actor } => Self::new("no_agent", message).with("actor", actor),
+            StoreError::NotLinked {
+                link_type,
+                from,
+                to,
+            } => Self::new("not_linked", message)
+                .with("type", link_type)
+                .with("from", from.to_string())
+                .with("to", to.to_string()),
             StoreError::AlreadyClaimed {
                 issue,
                 agent,

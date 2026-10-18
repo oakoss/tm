@@ -199,7 +199,7 @@ fn list_keeps_the_filters_order_negation_and_one_line_per_issue() {
 
     let out = tm(&scratch, &repo, &["list", "priority:none"]);
     assert_eq!(text(&out.stdout).lines().count(), 1, "{out:?}");
-    assert!(text(&out.stdout).ends_with("two lines\n"), "{out:?}");
+    assert!(text(&out.stdout).ends_with("two\\nlines\n"), "{out:?}");
 }
 
 #[test]

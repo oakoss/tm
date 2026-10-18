@@ -3,7 +3,7 @@
 
 /// Stamped into `PRAGMA user_version`; a store with a different value is
 /// rebuilt on open.
-pub(crate) const PROJECTION_VERSION: i64 = 6;
+pub(crate) const PROJECTION_VERSION: i64 = 7;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
 /// Until tm v1 is released the log changes in place (ADR 0010).
@@ -205,6 +205,7 @@ CREATE TABLE links (
 ) STRICT, WITHOUT ROWID;
 
 CREATE INDEX links_by_dst ON links (dst, type, src);
+CREATE INDEX links_by_src ON links (src, type, dst);
 
 CREATE TABLE comments (
   op_id BLOB PRIMARY KEY,
@@ -215,6 +216,8 @@ CREATE TABLE comments (
   utc_ms INTEGER NOT NULL,
   offset_min INTEGER NOT NULL
 ) STRICT;
+
+CREATE INDEX comments_by_issue ON comments (issue_id, hlc);
 
 -- Keys outlive purged Issues, so they carry no foreign key.
 CREATE TABLE keys (

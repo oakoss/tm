@@ -1,14 +1,15 @@
 //! `tm show`: one Issue, its fields and its Claim.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
-use tm_store::Store;
+use tm_store::{LinkView, Store};
 use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::here::{self, Here};
-use crate::output::Output;
+use crate::output::{Output, printable};
 
 pub(crate) fn run(reference: &str) -> Result<Output, CliError> {
     let here = here::open()?;
@@ -24,7 +25,7 @@ pub(crate) fn run(reference: &str) -> Result<Output, CliError> {
 /// An Issue as `show` prints it; `create` prints the Issue it made the same way.
 pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
     let store = &here.store;
-    let (view, project, parent, claim) = store.read(|store| {
+    let (view, project, parent, claim, links, comments) = store.read(|store| {
         let view = store.issue(id)?.ok_or_else(|| {
             CliError::new("not_found", format!("Issue {id} does not exist"))
                 .with("kind", "issue")
@@ -36,7 +37,22 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
             None => None,
         };
         let claim = store.claim(id)?;
-        Ok::<_, CliError>((view, project, parent, claim))
+        let links = store.links(id)?;
+        let others: Vec<Uuid> = links.iter().map(|link| link.other).collect();
+        let keys: HashMap<Uuid, Option<String>> = store
+            .issues(&others)?
+            .into_iter()
+            .map(|other| (other.id, other.key))
+            .collect();
+        let links: Vec<(LinkView, Option<String>)> = links
+            .into_iter()
+            .map(|link| {
+                let key = keys.get(&link.other).cloned().flatten();
+                (link, key)
+            })
+            .collect();
+        let comments = store.comments(id)?;
+        Ok::<_, CliError>((view, project, parent, claim, links, comments))
     })?;
     let data = json!({
         "id": view.id,
@@ -52,6 +68,13 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
             "on_behalf_of": claim.on_behalf_of,
             "expires_ms": claim.expires_ms,
         })),
+        "links": links.iter().map(|(link, key)| json!({
+            "type": link.link_type,
+            "direction": link.direction,
+            "name": link.name,
+            "other": { "id": link.other, "key": key },
+        })).collect::<Vec<_>>(),
+        "comments": comments,
     });
 
     let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
@@ -60,7 +83,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         .get("title")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let mut text = format!("{name}  {title}\n");
+    let mut text = format!("{name}  {}\n", printable(title));
     for (field, value) in &view.fields {
         if field == "title" {
             continue;
@@ -71,10 +94,10 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
                 .map_or_else(|| plain(&parent["id"]), str::to_owned),
             _ => plain(value),
         };
-        let _ = writeln!(text, "{field}: {shown}");
+        let _ = writeln!(text, "{field}: {}", printable(&shown));
     }
     for (field, members) in &view.sets {
-        let shown: Vec<&str> = members.values().map(String::as_str).collect();
+        let shown: Vec<String> = members.values().map(|member| printable(member)).collect();
         let _ = writeln!(text, "{field}: {}", shown.join(", "));
     }
     if let Some(claim) = &claim {
@@ -83,6 +106,20 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
             "claimed by {} for {} (Claim {})",
             claim.agent, claim.on_behalf_of, claim.id
         );
+    }
+    for (link, key) in &links {
+        let other = key.clone().unwrap_or_else(|| link.other.to_string());
+        let _ = writeln!(text, "{} {other}", link.name);
+    }
+    for comment in &comments {
+        let by = match &comment.on_behalf_of {
+            Some(human) => format!("{} for {human}", comment.actor),
+            None => comment.actor.clone(),
+        };
+        let _ = writeln!(text, "\n{by}:");
+        for line in comment.body.lines() {
+            let _ = writeln!(text, "  {}", printable(line));
+        }
     }
     Ok(Output::new(text, data))
 }
