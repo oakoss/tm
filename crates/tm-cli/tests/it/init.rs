@@ -588,6 +588,9 @@ fn the_actor_falls_back_to_git_and_is_required() {
     assert!(!output.status.success());
     assert!(text(&output.stderr).contains("TM_ACTOR"), "{output:?}");
     assert!(!repo.join(".config").exists());
+    let output = run(&[("TM_JSON", "1")]);
+    let doc: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(doc["error"], "no_identity", "{doc}");
 
     let output = run(&[
         ("GIT_CONFIG_COUNT", "1"),

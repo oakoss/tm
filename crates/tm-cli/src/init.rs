@@ -57,8 +57,8 @@ pub(crate) fn run(init: Init, json: bool) -> Result<Output, CliError> {
     }
     check_not_below_home_repo(&cwd, &root).map_err(refused)?;
     let (key, name) = project(&root, init.key, init.name).map_err(refused)?;
-    let identity =
-        identity::resolve(identity::env, || identity::git_email(&root)).map_err(refused)?;
+    let identity = identity::resolve(identity::env, || identity::git_email(&root))
+        .map_err(|message| CliError::new("no_identity", message))?;
     let config_dir = root.join(".config");
     check_config_dir(&root, &config_dir).map_err(refused)?;
     check_not_ignored(&root).map_err(refused)?;

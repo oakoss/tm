@@ -60,6 +60,7 @@ design.md promises that every command supports `--json` (or `TM_JSON=1`) "with a
 | A repo file names a Workspace this machine lacks, or one that holds no store | `unknown_workspace`, `incomplete_workspace`, with the remedy in `message` |
 | `tm init` on a repo that already has a Workspace | `workspace_exists` |
 | No home directory, or a relative `TM_HOME` | `no_home` |
+| No human to write as, or a blank or non-UTF-8 `TM_ACTOR` or `TM_AGENT` | `no_identity` |
 | Two repo files, or one that does not parse | `invalid_repo_file` |
 | A path that cannot be read or written | `io`, naming the path |
 | A filter that does not parse or fit | the filter's own codes |
