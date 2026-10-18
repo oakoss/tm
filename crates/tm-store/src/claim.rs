@@ -37,13 +37,13 @@ impl Store {
     /// Issue, or as [`Store::append_all`].
     pub fn take(
         &mut self,
-        actor: impl Into<Actor>,
+        actor: &Actor,
         issue: Uuid,
         agent: &str,
         ttl_ms: Option<u64>,
     ) -> Result<Claim, StoreError> {
         let op = self.append(self.claim_draft(
-            actor.into(),
+            actor.clone(),
             issue,
             ClaimAction::Take {
                 agent: agent.to_owned(),
@@ -62,13 +62,8 @@ impl Store {
     ///
     /// [`StoreError::NotClaimHolder`] when `claim` is not the Issue's current
     /// Claim, [`StoreError::UnknownIssue`], or as [`Store::append_all`].
-    pub fn release(
-        &mut self,
-        actor: impl Into<Actor>,
-        issue: Uuid,
-        claim: Uuid,
-    ) -> Result<Op, StoreError> {
-        let draft = self.claim_draft(actor.into(), issue, ClaimAction::Release { claim })?;
+    pub fn release(&mut self, actor: &Actor, issue: Uuid, claim: Uuid) -> Result<Op, StoreError> {
+        let draft = self.claim_draft(actor.clone(), issue, ClaimAction::Release { claim })?;
         self.append(draft)
     }
 

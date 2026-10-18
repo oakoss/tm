@@ -7,7 +7,7 @@ use tm_store::{Clock, Store, StoreError, WallTime};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, TempDir, draft, field, insert_acked, new_issue, open, remote_op, set_field,
+    ManualClock, TempDir, draft, field, insert_acked, jace, new_issue, open, remote_op, set_field,
 };
 use crate::support::{OTHER, PROJECT};
 
@@ -349,7 +349,7 @@ fn an_offset_no_time_zone_has_is_refused() {
     ] {
         let mut store = Store::open_with_clock(&dir.db(), Box::new(Offset(offset))).unwrap();
         crate::support::seed_projects(&mut store);
-        let result = store.create_issue("jace", PROJECT, "task", "t");
+        let result = store.create_issue(&jace(), PROJECT, "task", "t");
         assert_eq!(result.is_ok(), ok, "{offset}: {result:?}");
     }
 }

@@ -4,7 +4,7 @@ use tm_core::{Actor, Change, Hlc};
 use tm_store::{Draft, StoreError};
 use uuid::Uuid;
 
-use crate::support::{ManualClock, TempDir, draft, field, new_issue, open, set_field};
+use crate::support::{ManualClock, TempDir, draft, field, jace, new_issue, open, set_field};
 use crate::support::{OTHER, PROJECT};
 
 fn count_ops(store: &tm_store::Store) -> i64 {
@@ -23,14 +23,14 @@ fn an_agent_write_records_the_human_it_writes_for() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let (agent_issue, ops) = store
-        .create_issue(Actor::agent("claude", "jace"), PROJECT, "task", "t")
+        .create_issue(&Actor::agent("claude", "jace"), PROJECT, "task", "t")
         .unwrap();
     assert!(
         ops.iter()
             .all(|op| op.on_behalf_of.as_deref() == Some("jace"))
     );
     let (human_issue, _) = store
-        .create_issue(Actor::agent("jace", "jace"), PROJECT, "task", "t")
+        .create_issue(&Actor::agent("jace", "jace"), PROJECT, "task", "t")
         .unwrap();
     assert_eq!(store.rebuild().unwrap(), 0, "the stored column must hash");
     let stored = |issue: Uuid| -> Vec<(String, Option<String>)> {
@@ -73,7 +73,7 @@ fn batches(store: &tm_store::Store) -> Vec<(Uuid, Uuid)> {
 fn each_write_is_one_batch_named_by_its_first_operation() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
-    let (issue, created) = store.create_issue("jace", PROJECT, "task", "t").unwrap();
+    let (issue, created) = store.create_issue(&jace(), PROJECT, "task", "t").unwrap();
     let edited = store
         .append(draft(issue, set_field("title", json!("u"))))
         .unwrap();
@@ -103,18 +103,18 @@ fn each_write_is_one_batch_named_by_its_first_operation() {
 fn every_write_helper_records_the_human_an_agent_writes_for() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
-    let claude = || Actor::agent("claude", "jace");
+    let claude = Actor::agent("claude", "jace");
     let (a, b) = (new_issue(&mut store), new_issue(&mut store));
-    let (project, created) = store.create_project(claude(), "AGT", "Agents").unwrap();
-    let claim = store.take(claude(), a, "claude", None).unwrap();
+    let (project, created) = store.create_project(&claude, "AGT", "Agents").unwrap();
+    let claim = store.take(&claude, a, "claude", None).unwrap();
     let ops = [
         created,
         store
-            .rename_project(claude(), project, None, Some("Agent work"))
+            .rename_project(&claude, project, None, Some("Agent work"))
             .unwrap(),
-        store.link(claude(), "blocks", a, b).unwrap(),
-        store.unlink(claude(), "blocks", a, b).unwrap(),
-        store.release(claude(), a, claim.id).unwrap(),
+        store.link(&claude, "blocks", a, b).unwrap(),
+        store.unlink(&claude, "blocks", a, b).unwrap(),
+        store.release(&claude, a, claim.id).unwrap(),
     ];
     for op in ops {
         assert_eq!(op.on_behalf_of.as_deref(), Some("jace"), "{}", op.kind);
@@ -134,7 +134,9 @@ fn every_write_helper_records_the_human_an_agent_writes_for() {
 fn creating_an_issue_writes_its_required_fields_in_its_starting_status() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
-    let (issue, ops) = store.create_issue("jace", PROJECT, "bug", "Crash").unwrap();
+    let (issue, ops) = store
+        .create_issue(&jace(), PROJECT, "bug", "Crash")
+        .unwrap();
     let kinds: Vec<&str> = ops.iter().map(|op| op.kind.as_str()).collect();
     assert_eq!(kinds, ["create", "set_field", "set_field", "set_field"]);
     assert_eq!(count_ops(&store), 4);
@@ -421,7 +423,7 @@ fn every_change_advances_updated() {
     assert_eq!(field(&store, issue, "updated"), Some(json!(5_000)));
     let other = new_issue(&mut store);
     clock.set(9_000);
-    store.link("jace", "blocks", issue, other).unwrap();
+    store.link(&jace(), "blocks", issue, other).unwrap();
     assert_eq!(field(&store, issue, "updated"), Some(json!(9_000)));
 }
 
@@ -431,7 +433,7 @@ fn the_clock_never_moves_backwards_across_reopens() {
     let clock = ManualClock::at(50_000);
     let (issue, first) = {
         let mut store = open(&dir.db(), &clock);
-        let (issue, ops) = store.create_issue("jace", PROJECT, "task", "t").unwrap();
+        let (issue, ops) = store.create_issue(&jace(), PROJECT, "task", "t").unwrap();
         (issue, ops.last().unwrap().hlc)
     };
     clock.set(10_000);
@@ -474,7 +476,7 @@ fn a_store_records_its_workspace_once() {
 fn the_stored_hash_matches_the_operation() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
-    let (_, ops) = store.create_issue("jace", PROJECT, "task", "t").unwrap();
+    let (_, ops) = store.create_issue(&jace(), PROJECT, "task", "t").unwrap();
     for op in ops {
         let stored: Vec<u8> = store
             .connection()
@@ -514,9 +516,9 @@ fn a_stale_projection_version_is_rebuilt_on_open() {
 fn a_draft_may_name_any_project_for_a_new_issue() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
-    let (issue, _) = store.create_issue("jace", OTHER, "task", "t").unwrap();
+    let (issue, _) = store.create_issue(&jace(), OTHER, "task", "t").unwrap();
     let draft = Draft {
-        actor: "jace".into(),
+        actor: jace(),
         project: OTHER,
         subject: issue,
         change: set_field("title", json!("u")),

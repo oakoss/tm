@@ -49,18 +49,6 @@ impl Actor {
     }
 }
 
-impl From<&str> for Actor {
-    fn from(name: &str) -> Self {
-        Self::human(name)
-    }
-}
-
-impl From<String> for Actor {
-    fn from(name: String) -> Self {
-        Self::human(&name)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

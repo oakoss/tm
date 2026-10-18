@@ -6,6 +6,7 @@ use std::io::{self, BufRead, IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use tm_core::Actor;
 use tm_store::workspace::{self, RepoFile, Workspace};
 use uuid::Uuid;
 
@@ -84,7 +85,7 @@ pub(crate) fn run(init: Init) -> Result<String, String> {
     };
     let target = root.join(REPO_FILE);
     let finished = store
-        .create_project(actor.as_str(), &key, &name)
+        .create_project(&Actor::human(&actor), &key, &name)
         .map_err(|err| err.to_string())
         .and_then(|_| write_new(&target, &text))
         .and_then(|()| {

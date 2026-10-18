@@ -6,7 +6,7 @@ use tm_core::Change;
 use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
-use crate::support::{ManualClock, TempDir, draft, dump, links, new_issue, open, set_field};
+use crate::support::{ManualClock, TempDir, draft, dump, jace, links, new_issue, open, set_field};
 
 const ISSUES: usize = 3;
 /// A required built-in, two enumerated built-ins and a Scheme field.
@@ -274,9 +274,9 @@ proptest! {
             } else if let Action::Link { from, to, link_type, present } = action {
                 let (from, to, link_type) = (issues[*from], issues[*to], LINK_TYPES[*link_type]);
                 let result = if *present {
-                    store.link("jace", link_type, from, to)
+                    store.link(&jace(), link_type, from, to)
                 } else {
-                    store.unlink("jace", link_type, from, to)
+                    store.unlink(&jace(), link_type, from, to)
                 };
                 match expected.link(from, to, link_type, *present) {
                     Some((src, dst)) => {
@@ -296,19 +296,19 @@ proptest! {
                 let held = expected.claims[*issue];
                 match (release, held) {
                     (false, None) => {
-                        let claim = store.take("jace", issues[*issue], "claude", None).unwrap();
+                        let claim = store.take(&jace(), issues[*issue], "claude", None).unwrap();
                         expected.claims[*issue] = Some(claim.id);
                     }
                     (false, Some(_)) => {
-                        let err = store.take("jace", issues[*issue], "claude", None).unwrap_err();
+                        let err = store.take(&jace(), issues[*issue], "claude", None).unwrap_err();
                         prop_assert!(matches!(err, StoreError::AlreadyClaimed { .. }), "{}", err);
                     }
                     (true, Some(token)) => {
-                        store.release("jace", issues[*issue], token).unwrap();
+                        store.release(&jace(), issues[*issue], token).unwrap();
                         expected.claims[*issue] = None;
                     }
                     (true, None) => {
-                        let err = store.release("jace", issues[*issue], Uuid::now_v7()).unwrap_err();
+                        let err = store.release(&jace(), issues[*issue], Uuid::now_v7()).unwrap_err();
                         prop_assert!(matches!(err, StoreError::NotClaimHolder { .. }), "{}", err);
                     }
                 }

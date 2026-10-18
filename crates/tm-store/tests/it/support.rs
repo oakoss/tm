@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use tm_core::Change;
 use tm_core::op::CURRENT_VERSION;
 use tm_core::scheme::{Choice, Field, FieldType};
-use tm_core::{Hlc, Op, ProjectId, Scheme};
+use tm_core::{Actor, Hlc, Op, ProjectId, Scheme};
 use tm_store::{Clock, Draft, Store, WallTime};
 use uuid::Uuid;
 
@@ -249,7 +249,7 @@ pub(crate) fn seed_projects(store: &mut Store) {
 
 /// A new Task titled "t" in PROJECT.
 pub(crate) fn new_issue(store: &mut Store) -> Uuid {
-    store.create_issue("jace", PROJECT, "task", "t").unwrap().0
+    store.create_issue(&jace(), PROJECT, "task", "t").unwrap().0
 }
 
 /// One field of an Issue as it reads now.
@@ -263,9 +263,14 @@ pub(crate) fn field(store: &Store, issue: Uuid, name: &str) -> Option<serde_json
         .cloned()
 }
 
+/// The human the tests write as.
+pub(crate) fn jace() -> Actor {
+    Actor::human("jace")
+}
+
 pub(crate) fn draft(issue_id: Uuid, change: Change) -> Draft {
     Draft {
-        actor: "jace".into(),
+        actor: jace(),
         project: PROJECT,
         subject: issue_id,
         change,

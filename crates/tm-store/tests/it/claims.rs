@@ -10,7 +10,8 @@ use tm_store::{Store, StoreError, Unapplied};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, TempDir, draft, insert_acked, new_issue, open, remote_op, run_children, set_field,
+    ManualClock, TempDir, draft, insert_acked, jace, new_issue, open, remote_op, run_children,
+    set_field,
 };
 
 const HOUR_MS: u64 = 3_600_000;
@@ -36,12 +37,12 @@ fn a_take_holds_the_issue_until_its_token_releases_it() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    let claim = store.take("jace", issue, "claude", Some(HOUR_MS)).unwrap();
+    let claim = store.take(&jace(), issue, "claude", Some(HOUR_MS)).unwrap();
     assert_eq!(claim.expires_ms, Some(1_000 + 3_600_000));
     assert_eq!(store.claim(issue).unwrap(), Some(claim.clone()));
-    store.release("jace", issue, claim.id).unwrap();
+    store.release(&jace(), issue, claim.id).unwrap();
     assert_eq!(store.claim(issue).unwrap(), None);
-    let again = store.take("jace", issue, "codex", None).unwrap();
+    let again = store.take(&jace(), issue, "codex", None).unwrap();
     assert_eq!(store.claim(issue).unwrap(), Some(again));
 }
 
@@ -50,9 +51,11 @@ fn a_held_issue_is_refused_even_under_the_holders_own_agent_name() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    let claim = store.take("jace", issue, "claude", Some(HOUR_MS)).unwrap();
+    let claim = store.take(&jace(), issue, "claude", Some(HOUR_MS)).unwrap();
     for agent in ["claude", "codex"] {
-        let err = store.take("kim", issue, agent, None).unwrap_err();
+        let err = store
+            .take(&Actor::human("kim"), issue, agent, None)
+            .unwrap_err();
         let StoreError::AlreadyClaimed {
             agent,
             on_behalf_of,
@@ -77,7 +80,7 @@ fn a_store_with_the_previous_claims_table_rebuilds_on_open() {
         let mut store = open(&dir.db(), &ManualClock::at(1_000));
         let issue = new_issue(&mut store);
         let claim = store
-            .take(Actor::agent("claude", "jace"), issue, "claude", None)
+            .take(&Actor::agent("claude", "jace"), issue, "claude", None)
             .unwrap();
         store
             .connection()
@@ -100,10 +103,12 @@ fn an_agents_claim_is_held_for_the_human_it_writes_for() {
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
     let claim = store
-        .take(Actor::agent("claude", "jace"), issue, "claude", None)
+        .take(&Actor::agent("claude", "jace"), issue, "claude", None)
         .unwrap();
     assert_eq!(claim.on_behalf_of, "jace");
-    let err = store.take("kim", issue, "codex", None).unwrap_err();
+    let err = store
+        .take(&Actor::human("kim"), issue, "codex", None)
+        .unwrap_err();
     assert!(err.to_string().contains("held by claude for jace"), "{err}");
     assert_eq!(store.rebuild().unwrap(), 0);
     assert_eq!(store.claim(issue).unwrap(), Some(claim));
@@ -115,13 +120,13 @@ fn a_release_must_name_the_current_claim() {
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
     let stranger = Uuid::now_v7();
-    let err = store.release("jace", issue, stranger).unwrap_err();
+    let err = store.release(&jace(), issue, stranger).unwrap_err();
     assert!(
         matches!(err, StoreError::NotClaimHolder { current: None, .. }),
         "{err}"
     );
-    let claim = store.take("jace", issue, "claude", None).unwrap();
-    let err = store.release("jace", issue, stranger).unwrap_err();
+    let claim = store.take(&jace(), issue, "claude", None).unwrap();
+    let err = store.release(&jace(), issue, stranger).unwrap_err();
     assert!(
         matches!(err, StoreError::NotClaimHolder { current: Some(id), .. } if id == claim.id),
         "{err}"
@@ -149,7 +154,7 @@ fn a_take_needs_an_agent_an_expiry_and_a_live_issue() {
         ("claude", Some(max), "out of range"),
         ("claude", Some(u64::MAX), "out of range"),
     ] {
-        refused(store.take("jace", issue, agent, ttl).unwrap_err(), why);
+        refused(store.take(&jace(), issue, agent, ttl).unwrap_err(), why);
     }
     let named = store.append(draft(issue, take("claude", Some(Uuid::now_v7()))));
     refused(named.unwrap_err(), "names a previous Claim");
@@ -157,12 +162,12 @@ fn a_take_needs_an_agent_an_expiry_and_a_live_issue() {
         .append(draft(issue, set_field("archived", json!(true))))
         .unwrap();
     refused(
-        store.take("jace", issue, "claude", None).unwrap_err(),
+        store.take(&jace(), issue, "claude", None).unwrap_err(),
         "archived",
     );
     let missing = Uuid::now_v7();
     for err in [
-        store.take("jace", missing, "claude", None).unwrap_err(),
+        store.take(&jace(), missing, "claude", None).unwrap_err(),
         store.claim(missing).unwrap_err(),
     ] {
         assert!(
@@ -315,7 +320,7 @@ fn a_pending_take_loses_to_one_the_server_acknowledged_first() {
     let issue = Uuid::now_v7();
     insert_all(&store, &[(issue, Change::Create)]);
     assert_eq!(store.rebuild().unwrap(), 0);
-    let mine = store.take("jace", issue, "claude", None).unwrap();
+    let mine = store.take(&jace(), issue, "claude", None).unwrap();
     let theirs = remote_op(8, issue, &take("codex", None), Hlc::new(1_005, 0), 1);
     insert_acked(&store, &theirs, 2, 2_000);
     assert_eq!(store.rebuild().unwrap(), 1);
@@ -378,8 +383,8 @@ fn of_fifty_processes_taking_one_issue_exactly_one_wins() {
 fn race(shared_name: bool) {
     let dir = TempDir::new();
     let mut store = Store::open(&dir.db()).unwrap();
-    let (project, _) = store.create_project("jace", "CPL", "Core").unwrap();
-    let (issue, _) = store.create_issue("jace", project, "task", "t").unwrap();
+    let (project, _) = store.create_project(&jace(), "CPL", "Core").unwrap();
+    let (issue, _) = store.create_issue(&jace(), project, "task", "t").unwrap();
     drop(store);
     let reports: Vec<PathBuf> = (0..TAKERS)
         .map(|i| dir.path().join(format!("taker-{i}")))
@@ -424,7 +429,7 @@ fn race(shared_name: bool) {
 
 fn take_as_child(db: &Path, issue: Uuid, agent: &str, report: &Path) {
     let mut store = Store::open(db).unwrap();
-    let outcome = match store.take("jace", issue, agent, None) {
+    let outcome = match store.take(&jace(), issue, agent, None) {
         Ok(claim) => {
             assert_eq!(claim.agent, agent, "a take returns its own Claim");
             format!("won {}", claim.id)

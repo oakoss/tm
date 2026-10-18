@@ -7,7 +7,8 @@ use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, TempDir, draft, field, insert_acked, new_issue, open, remote_op, scheme, set_field,
+    ManualClock, TempDir, draft, field, insert_acked, jace, new_issue, open, remote_op, scheme,
+    set_field,
 };
 use crate::support::{OTHER, PROJECT};
 
@@ -257,7 +258,7 @@ fn every_required_field_is_enforced() {
     required.add_field(team).unwrap();
     let mut store = open(&dir.db(), &ManualClock::at(1_000)).with_scheme(required);
     let err = store
-        .create_issue("jace", PROJECT, "task", "t")
+        .create_issue(&jace(), PROJECT, "task", "t")
         .unwrap_err();
     let StoreError::MissingFields { fields, .. } = err else {
         panic!("{err}");
@@ -276,7 +277,7 @@ fn a_required_set_field_needs_an_element() {
     }
     let mut store = open(&dir.db(), &ManualClock::at(1_000)).with_scheme(required);
     let err = store
-        .create_issue("jace", PROJECT, "task", "t")
+        .create_issue(&jace(), PROJECT, "task", "t")
         .unwrap_err();
     let StoreError::MissingFields { fields, .. } = err else {
         panic!("{err}");

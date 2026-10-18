@@ -558,13 +558,13 @@ impl Store {
     /// any Project holds or once held the key, or as [`Store::append_all`].
     pub fn create_project(
         &mut self,
-        actor: impl Into<Actor>,
+        actor: &Actor,
         key: &str,
         name: &str,
     ) -> Result<(ProjectId, Op), StoreError> {
         let project = ProjectId::new();
         let op = self.append(Draft {
-            actor: actor.into(),
+            actor: actor.clone(),
             project,
             subject: project.uuid(),
             change: Change::CreateProject {
@@ -583,13 +583,13 @@ impl Store {
     /// As [`Store::create_project`], or [`StoreError::UnknownProject`].
     pub fn rename_project(
         &mut self,
-        actor: impl Into<Actor>,
+        actor: &Actor,
         project: ProjectId,
         key: Option<&str>,
         name: Option<&str>,
     ) -> Result<Op, StoreError> {
         self.append(Draft {
-            actor: actor.into(),
+            actor: actor.clone(),
             project,
             subject: project.uuid(),
             change: Change::RenameProject {
@@ -636,7 +636,7 @@ impl Store {
     /// As [`Store::append_all`].
     pub fn create_issue(
         &mut self,
-        actor: impl Into<Actor>,
+        actor: &Actor,
         project: ProjectId,
         issue_type: &str,
         title: &str,
@@ -654,7 +654,7 @@ impl Store {
         if let Some(start) = start {
             changes.push(set("status", serde_json::json!(start)));
         }
-        let actor = actor.into();
+        let actor = actor.clone();
         let drafts = changes
             .into_iter()
             .map(|change| Draft {
@@ -678,12 +678,12 @@ impl Store {
     /// `blocks` Link that would close a cycle, or as [`Store::append_all`].
     pub fn link(
         &mut self,
-        actor: impl Into<Actor>,
+        actor: &Actor,
         link_type: &str,
         from: Uuid,
         to: Uuid,
     ) -> Result<Op, StoreError> {
-        let draft = self.link_draft(actor.into(), link_type, from, to, true)?;
+        let draft = self.link_draft(actor.clone(), link_type, from, to, true)?;
         self.append(draft)
     }
 
@@ -694,12 +694,12 @@ impl Store {
     /// As [`Store::link`], except that a held Link of any type can be removed.
     pub fn unlink(
         &mut self,
-        actor: impl Into<Actor>,
+        actor: &Actor,
         link_type: &str,
         from: Uuid,
         to: Uuid,
     ) -> Result<Op, StoreError> {
-        let draft = self.link_draft(actor.into(), link_type, from, to, false)?;
+        let draft = self.link_draft(actor.clone(), link_type, from, to, false)?;
         self.append(draft)
     }
 
