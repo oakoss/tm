@@ -1,37 +1,46 @@
 //! Who writes an operation (ADR 0010).
 
-/// The Actor writing, and the human an Agent writes for.
+/// The Actor writing: a human, or an Agent and the human it writes for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Actor {
     name: String,
+    agent: bool,
     on_behalf_of: Option<String>,
 }
 
 impl Actor {
     /// A human writing for themselves.
     #[must_use]
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn human(name: &str) -> Self {
         Self {
-            name: name.into(),
+            name: name.trim().to_owned(),
+            agent: false,
             on_behalf_of: None,
         }
     }
 
-    /// An Agent writing for `human`. An Agent named exactly as the human is the
-    /// human writing, so nothing is recorded on their behalf.
+    /// An Agent writing for `human`. Names are compared trimmed and ignoring
+    /// case; an Agent named as its human writes under the human's spelling
+    /// and records nothing on their behalf.
     #[must_use]
-    pub fn agent(name: impl Into<String>, human: impl Into<String>) -> Self {
-        let name = name.into();
-        let human = human.into();
+    pub fn agent(name: &str, human: &str) -> Self {
+        let (name, human) = (name.trim(), human.trim());
+        let same = name.to_lowercase() == human.to_lowercase();
         Self {
-            on_behalf_of: (human != name).then_some(human),
-            name,
+            name: if same { human } else { name }.to_owned(),
+            agent: true,
+            on_behalf_of: (!same).then(|| human.to_owned()),
         }
     }
 
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    #[must_use]
+    pub const fn is_agent(&self) -> bool {
+        self.agent
     }
 
     #[must_use]
@@ -42,13 +51,13 @@ impl Actor {
 
 impl From<&str> for Actor {
     fn from(name: &str) -> Self {
-        Self::new(name)
+        Self::human(name)
     }
 }
 
 impl From<String> for Actor {
     fn from(name: String) -> Self {
-        Self::new(name)
+        Self::human(&name)
     }
 }
 
@@ -60,11 +69,33 @@ mod tests {
     fn an_agent_records_the_human_it_writes_for() {
         let agent = Actor::agent("claude", "jace");
         assert_eq!(
+            (agent.name(), agent.is_agent(), agent.on_behalf_of()),
+            ("claude", true, Some("jace"))
+        );
+        let human = Actor::human("jace");
+        assert_eq!(
+            (human.name(), human.is_agent(), human.on_behalf_of()),
+            ("jace", false, None)
+        );
+    }
+
+    #[test]
+    fn names_are_trimmed_and_an_agent_named_as_its_human_writes_for_no_one() {
+        let agent = Actor::agent(" claude ", " jace\n");
+        assert_eq!(
             (agent.name(), agent.on_behalf_of()),
             ("claude", Some("jace"))
         );
-        let human = Actor::agent("jace", "jace");
-        assert_eq!((human.name(), human.on_behalf_of()), ("jace", None));
-        assert_eq!(Actor::from("jace"), human);
+        for (name, human) in [
+            ("jace", "jace"),
+            ("Jace ", "jace"),
+            ("JACE@x.io", "jace@X.io"),
+        ] {
+            let same = Actor::agent(name, human);
+            assert!(same.is_agent(), "{name}");
+            assert_eq!(same.on_behalf_of(), None, "{name} writing for {human}");
+            assert_eq!(same.name(), human, "the human's spelling is kept");
+        }
+        assert_eq!(Actor::human("  jace ").name(), "jace");
     }
 }
