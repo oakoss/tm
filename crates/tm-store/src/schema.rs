@@ -3,7 +3,7 @@
 
 /// Stamped into `PRAGMA user_version`; a store with a different value is
 /// rebuilt on open.
-pub(crate) const PROJECTION_VERSION: i64 = 4;
+pub(crate) const PROJECTION_VERSION: i64 = 5;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
 pub(crate) const STORE_FORMAT: i64 = 1;
@@ -94,6 +94,7 @@ END;
 
 pub(crate) const DROP_PROJECTIONS: &str = "
 DROP TABLE IF EXISTS comments;
+DROP TABLE IF EXISTS links;
 DROP TABLE IF EXISTS set_members;
 DROP TABLE IF EXISTS field_values;
 DROP TABLE IF EXISTS unapplied;
@@ -178,6 +179,18 @@ CREATE TABLE set_members (
 ) STRICT, WITHOUT ROWID;
 
 CREATE INDEX set_members_by_elem ON set_members (field, elem);
+
+-- Present Links in canonical form (ADR 0009); removals live in
+-- `field_versions` under the source's `links` field. No foreign keys: a
+-- target in another Project's chain can replay after the Link.
+CREATE TABLE links (
+  type TEXT NOT NULL,
+  src BLOB NOT NULL,
+  dst BLOB NOT NULL,
+  PRIMARY KEY (type, src, dst)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX links_by_dst ON links (dst, type, src);
 
 CREATE TABLE comments (
   op_id BLOB PRIMARY KEY,

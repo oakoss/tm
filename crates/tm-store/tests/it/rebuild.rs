@@ -6,7 +6,7 @@ use tm_core::Change;
 use tm_store::Store;
 use uuid::Uuid;
 
-use crate::support::{ManualClock, TempDir, draft, dump, new_issue, open, set_field};
+use crate::support::{ManualClock, TempDir, draft, dump, links, new_issue, open, set_field};
 
 const ISSUES: usize = 3;
 /// A required built-in, two enumerated built-ins and a Scheme field.
@@ -21,6 +21,8 @@ const STATUSES: [&str; 6] = [
 ];
 const PRIORITIES: [&str; 5] = ["urgent", "high", "medium", "low", "none"];
 const ELEMS: [&str; 3] = ["a", "b", "c"];
+/// A directional type that can close a cycle, and a symmetric one.
+const LINK_TYPES: [&str; 2] = ["blocks", "relates_to"];
 
 #[derive(Debug, Clone)]
 enum Action {
@@ -42,6 +44,12 @@ enum Action {
         issue: usize,
         body: String,
     },
+    Link {
+        from: usize,
+        to: usize,
+        link_type: usize,
+        present: bool,
+    },
     /// Zero leaves the clock in place, so writes share a millisecond and
     /// exercise the counter.
     Tick(u8),
@@ -54,7 +62,15 @@ fn action() -> impl Strategy<Value = Action> {
             .prop_map(|(issue, field, pick)| Action::Set { issue, field, pick }),
         (issue.clone(), 0..ELEMS.len()).prop_map(|(issue, elem)| Action::Add { issue, elem }),
         (issue.clone(), 0..ELEMS.len()).prop_map(|(issue, elem)| Action::Remove { issue, elem }),
-        (issue, "[a-z ]{0,8}").prop_map(|(issue, body)| Action::Comment { issue, body }),
+        (issue.clone(), "[a-z ]{0,8}").prop_map(|(issue, body)| Action::Comment { issue, body }),
+        (issue.clone(), issue, 0..LINK_TYPES.len(), any::<bool>()).prop_map(
+            |(from, to, link_type, present)| Action::Link {
+                from,
+                to,
+                link_type,
+                present,
+            }
+        ),
         (0u8..3).prop_map(Action::Tick),
     ]
 }
@@ -111,7 +127,7 @@ fn change(action: &Action) -> Option<(usize, Change)> {
             )
         }
         Action::Comment { issue, body } => (*issue, Change::Comment { body: body.clone() }),
-        Action::Tick(_) => return None,
+        Action::Link { .. } | Action::Tick(_) => return None,
     })
 }
 
@@ -122,9 +138,38 @@ struct Model {
     fields: Vec<BTreeMap<String, Value>>,
     labels: Vec<BTreeSet<String>>,
     comments: Vec<usize>,
+    /// `(type, source, target)` in canonical form.
+    links: BTreeSet<(String, Uuid, Uuid)>,
 }
 
 impl Model {
+    /// The canonical form of a Link, or `None` when it must be refused: an
+    /// Issue joined to itself, or a `blocks` add whose target already reaches
+    /// its source.
+    fn link(&self, from: Uuid, to: Uuid, link_type: &str, present: bool) -> Option<(Uuid, Uuid)> {
+        if from == to {
+            return None;
+        }
+        if link_type == "relates_to" {
+            return Some((from.min(to), from.max(to)));
+        }
+        if present {
+            let mut reached = BTreeSet::from([to]);
+            let mut frontier = vec![to];
+            while let Some(at) = frontier.pop() {
+                for (kind, src, dst) in &self.links {
+                    if kind == "blocks" && *src == at && reached.insert(*dst) {
+                        frontier.push(*dst);
+                    }
+                }
+            }
+            if reached.contains(&from) {
+                return None;
+            }
+        }
+        Some((from, to))
+    }
+
     /// Issues as `new_issue` creates them.
     fn new() -> Self {
         let created = BTreeMap::from([
@@ -136,6 +181,7 @@ impl Model {
             fields: vec![created; ISSUES],
             labels: vec![BTreeSet::new(); ISSUES],
             comments: vec![0; ISSUES],
+            links: BTreeSet::new(),
         }
     }
 
@@ -157,7 +203,7 @@ impl Model {
                 self.labels[*issue].remove(ELEMS[*elem]);
             }
             Action::Comment { issue, .. } => self.comments[*issue] += 1,
-            Action::Tick(_) => {}
+            Action::Link { .. } | Action::Tick(_) => {}
         }
     }
 
@@ -166,6 +212,7 @@ impl Model {
             fields: Vec::new(),
             labels: Vec::new(),
             comments: Vec::new(),
+            links: links(store).into_iter().collect(),
         };
         for issue in issues {
             let view = store.issue(*issue).unwrap().unwrap();
@@ -210,6 +257,27 @@ proptest! {
         for action in &actions {
             if let Action::Tick(ms) = action {
                 clock.advance(i64::from(*ms));
+            } else if let Action::Link { from, to, link_type, present } = action {
+                let (from, to, link_type) = (issues[*from], issues[*to], LINK_TYPES[*link_type]);
+                let result = if *present {
+                    store.link("jace", link_type, from, to)
+                } else {
+                    store.unlink("jace", link_type, from, to)
+                };
+                match expected.link(from, to, link_type, *present) {
+                    Some((src, dst)) => {
+                        result.unwrap();
+                        let key = (link_type.to_owned(), src, dst);
+                        if *present {
+                            expected.links.insert(key);
+                        } else {
+                            expected.links.remove(&key);
+                        }
+                    }
+                    None => {
+                        result.unwrap_err();
+                    }
+                }
             } else if let Some((issue, change)) = change(action) {
                 store.append(draft(issues[issue], change)).unwrap();
                 expected.record(action);

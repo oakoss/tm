@@ -7,10 +7,10 @@
 //! pairwise and is not guaranteed to commute.
 
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value as Json;
 use tm_core::scheme::priority_rank;
-use tm_core::{Change, Hlc, Op, ProjectId};
+use tm_core::{Change, Hlc, Op, ProjectId, link};
 use uuid::Uuid;
 
 use crate::{StoreError, project};
@@ -143,6 +143,11 @@ pub(crate) fn apply(
             let (elem, _) = label_key(&field, &elem, None);
             set_member(tx, op.subject, &field, &elem, false, None, &version)?;
         }
+        Change::Link {
+            link_type,
+            target,
+            present,
+        } => link(tx, op.subject, &link_type, target, present, &version)?,
         Change::Comment { body } => {
             tx.execute(
                 "INSERT INTO comments (op_id, issue_id, actor, body, hlc, utc_ms, offset_min)
@@ -228,6 +233,48 @@ fn set_member(
         tx.execute(
             "DELETE FROM set_members WHERE issue_id = ?1 AND field = ?2 AND elem = ?3",
             params![issue_id.as_bytes(), field, elem],
+        )?;
+    }
+    Ok(())
+}
+
+/// Neither cycles nor the target are checked: a merge can make a cycle (ADR
+/// 0009), and a target in another Project's chain can replay after the Link.
+fn link(
+    tx: &Transaction<'_>,
+    source: Uuid,
+    link_type: &str,
+    target: Uuid,
+    present: bool,
+    version: &Version,
+) -> Result<(), StoreError> {
+    let invalid = |reason: &str| StoreError::Invalid {
+        field: "link".into(),
+        reason: reason.to_owned(),
+        valid: Vec::new(),
+    };
+    if target == source {
+        return Err(invalid("cannot join an Issue to itself"));
+    }
+    // Only a built-in type is known to be symmetric; replay never reads the Scheme.
+    if link::link_type(link_type).is_some_and(|known| known.symmetric) && target < source {
+        return Err(invalid("is not filed under its canonical source"));
+    }
+    let elem = link::elem(link_type, target);
+    if !wins(tx, source, link::FIELD, &elem, version)? {
+        return Ok(());
+    }
+    record(tx, source, link::FIELD, &elem, present, version)?;
+    if present {
+        tx.execute(
+            "INSERT INTO links (type, src, dst) VALUES (?1, ?2, ?3)
+             ON CONFLICT (type, src, dst) DO NOTHING",
+            params![link_type, source.as_bytes(), target.as_bytes()],
+        )?;
+    } else {
+        tx.execute(
+            "DELETE FROM links WHERE type = ?1 AND src = ?2 AND dst = ?3",
+            params![link_type, source.as_bytes(), target.as_bytes()],
         )?;
     }
     Ok(())
@@ -412,8 +459,11 @@ fn record(
     Ok(())
 }
 
-fn issue_project(tx: &Transaction<'_>, issue_id: Uuid) -> Result<Option<ProjectId>, StoreError> {
-    let text: Option<String> = tx
+pub(crate) fn issue_project(
+    conn: &Connection,
+    issue_id: Uuid,
+) -> Result<Option<ProjectId>, StoreError> {
+    let text: Option<String> = conn
         .query_row(
             "SELECT project FROM issues WHERE id = ?1",
             [issue_id.as_bytes()],

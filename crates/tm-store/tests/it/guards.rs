@@ -148,6 +148,32 @@ fn rebuild_names_an_operation_whose_content_no_longer_matches_its_hash() {
 }
 
 #[test]
+fn a_payload_not_in_serdes_form_is_hashed_and_replayed_as_stored() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = Uuid::now_v7();
+    let create = remote_op(7, issue, &Change::Create, Hlc::new(1_000, 0), 0);
+    let mut edit = remote_op(
+        7,
+        issue,
+        &set_field("title", json!("x")),
+        Hlc::new(1_001, 0),
+        1,
+    );
+    edit.payload =
+        r#"{ "value" : "remote",  "field": "title", "label": "Title", "kind": "set_field" }"#
+            .into();
+    assert_ne!(
+        edit.payload,
+        serde_json::to_string(&edit.change().unwrap()).unwrap()
+    );
+    insert_acked(&store, &create, 1, 1_000);
+    insert_acked(&store, &edit, 2, 1_001);
+    assert_eq!(store.rebuild().unwrap(), 0);
+    assert_eq!(field(&store, issue, "title"), Some(json!("remote")));
+}
+
+#[test]
 fn rebuild_names_the_position_of_a_row_that_cannot_be_read() {
     for damage in ["v = 70000", "offset_min = 99999", "op_id = x'01'"] {
         let dir = TempDir::new();

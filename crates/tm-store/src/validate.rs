@@ -2,13 +2,17 @@
 //! writes; replay never consults the Scheme, so a Scheme edit or a merge never
 //! makes a stored operation unreadable.
 
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, VecDeque};
+
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::Value;
-use tm_core::Change;
 use tm_core::scheme::{Field, FieldType, Scheme, is_date, priority_rank};
+use tm_core::{Change, link};
 use uuid::Uuid;
 
 use crate::StoreError;
+use crate::apply::uuid_from;
 
 /// Checks `change` against the Scheme and the Issue's current state, and fills
 /// in the display labels the operation records.
@@ -61,6 +65,18 @@ pub(crate) fn check(
                 elem_label,
             })
         }
+        Change::Link {
+            link_type,
+            target,
+            present,
+        } => {
+            check_link(tx, issue_id, &link_type, target, present)?;
+            Ok(Change::Link {
+                link_type,
+                target,
+                present,
+            })
+        }
         Change::Remove { field, elem, .. } => {
             // A held element can be removed even when the Scheme does not allow it.
             let def = scheme.field(&field);
@@ -85,6 +101,146 @@ pub(crate) fn check(
             })
         }
     }
+}
+
+/// A held Link can be removed whatever its type; any other Link must have a
+/// built-in type, join two existing Issues and, for `blocks`, not close a
+/// cycle. Applying it checks that it is filed under its canonical source.
+fn check_link(
+    tx: &Transaction<'_>,
+    source: Uuid,
+    link_type: &str,
+    target: Uuid,
+    present: bool,
+) -> Result<(), StoreError> {
+    if !present && has_link(tx, link_type, source, target)? {
+        return Ok(());
+    }
+    // Before the cycle check, which would report an Issue joined to itself as a cycle.
+    link_shape(link_type, source, target)?;
+    if !exists(tx, target)? {
+        return Err(StoreError::UnknownIssue(target));
+    }
+    if present
+        && link_type == link::BLOCKS
+        && let Some(path) = blocking_path(tx, target, source)?
+    {
+        return Err(StoreError::Cycle {
+            relation: link::BLOCKS,
+            path: [source].into_iter().chain(path).collect(),
+        });
+    }
+    Ok(())
+}
+
+/// The Link checks that read no Issue: a built-in type joining two Issues.
+pub(crate) fn link_shape(link_type: &str, source: Uuid, target: Uuid) -> Result<(), StoreError> {
+    let invalid = |reason: &str, valid: Vec<String>| StoreError::Invalid {
+        field: "link".into(),
+        reason: reason.to_owned(),
+        valid,
+    };
+    if link::link_type(link_type).is_none() {
+        return Err(invalid(
+            "is not a Link type",
+            link::BUILT_IN.iter().map(|t| t.id.to_owned()).collect(),
+        ));
+    }
+    if target == source {
+        return Err(invalid("cannot join an Issue to itself", Vec::new()));
+    }
+    Ok(())
+}
+
+fn has_link(
+    tx: &Transaction<'_>,
+    link_type: &str,
+    source: Uuid,
+    target: Uuid,
+) -> Result<bool, StoreError> {
+    Ok(tx
+        .query_row(
+            "SELECT 1 FROM links WHERE type = ?1 AND src = ?2 AND dst = ?3",
+            params![link_type, source.as_bytes(), target.as_bytes()],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+/// The `blocks` path from `start` to `goal`, both included, if `goal` is
+/// reachable. Detection is one recursive query; `UNION` on the id alone keeps
+/// it finite on a merged cycle, and `CROSS JOIN` pins the join order, without
+/// which the planner scanned every Link per step (ADR 0009). The path is
+/// walked only after the query finds one.
+fn blocking_path(
+    tx: &Transaction<'_>,
+    start: Uuid,
+    goal: Uuid,
+) -> Result<Option<Vec<Uuid>>, StoreError> {
+    let reaches = tx
+        .query_row(
+            "WITH RECURSIVE reach(id) AS (
+               SELECT ?1
+               UNION
+               SELECT l.dst FROM reach r CROSS JOIN links l
+               WHERE l.type = ?3 AND l.src = r.id
+             )
+             SELECT 1 FROM reach WHERE id = ?2",
+            params![start.as_bytes(), goal.as_bytes(), link::BLOCKS],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !reaches {
+        return Ok(None);
+    }
+    let next = format!(
+        "SELECT dst FROM links WHERE type = '{}' AND src = ?1",
+        link::BLOCKS
+    );
+    shortest_path(tx, &next, start, goal)?
+        .ok_or_else(|| {
+            StoreError::Corrupt("a blocks path the recursive query found is missing".into())
+        })
+        .map(Some)
+}
+
+/// The shortest path from `start` to `goal`, both included, following the
+/// Issues `next` selects for `?1`. Visiting each Issue once keeps it finite
+/// on a cycle a merge left.
+fn shortest_path(
+    tx: &Transaction<'_>,
+    next: &str,
+    start: Uuid,
+    goal: Uuid,
+) -> Result<Option<Vec<Uuid>>, StoreError> {
+    let mut stmt = tx.prepare(next)?;
+    let mut came_from = HashMap::from([(start, start)]);
+    let mut queue = VecDeque::from([start]);
+    while let Some(at) = queue.pop_front() {
+        if at == goal {
+            let mut path = vec![goal];
+            let mut step = goal;
+            while step != start {
+                step = came_from[&step];
+                path.push(step);
+            }
+            path.reverse();
+            return Ok(Some(path));
+        }
+        let ids = stmt
+            .query_map([at.as_bytes()], |row| row.get::<_, Vec<u8>>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for bytes in ids {
+            let id = uuid_from(&bytes)?;
+            if let Entry::Vacant(entry) = came_from.entry(id) {
+                entry.insert(at);
+                queue.push_back(id);
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Project names must not be blank. Key spelling is checked with the
@@ -357,11 +513,18 @@ fn check_value(
             if target == issue_id {
                 return Err(invalid(def, "cannot refer to the Issue itself", []));
             }
-            if exists(tx, target)? {
-                Ok(None)
-            } else {
-                Err(StoreError::UnknownIssue(target))
+            if !exists(tx, target)? {
+                return Err(StoreError::UnknownIssue(target));
             }
+            if def.name == "parent"
+                && let Some(path) = ancestry_reaches(tx, target, issue_id)?
+            {
+                return Err(StoreError::Cycle {
+                    relation: "parent",
+                    path: [issue_id].into_iter().chain(path).collect(),
+                });
+            }
+            Ok(None)
         }
         (FieldType::Date, Value::String(date)) if is_date(date) => Ok(None),
         (FieldType::Date, Value::String(_)) => {
@@ -373,6 +536,21 @@ fn check_value(
             .map_err(|_| invalid(def, "is not an RFC 3339 timestamp", [])),
         _ => Err(invalid(def, "has the wrong value type", [])),
     }
+}
+
+/// The parent chain from `start` up to `goal`, both included, if `goal` is an
+/// ancestor of `start`. Stops at a cycle a merge left among the ancestors.
+fn ancestry_reaches(
+    tx: &Transaction<'_>,
+    start: Uuid,
+    goal: Uuid,
+) -> Result<Option<Vec<Uuid>>, StoreError> {
+    shortest_path(
+        tx,
+        "SELECT parent_id FROM issues WHERE id = ?1 AND parent_id IS NOT NULL",
+        start,
+        goal,
+    )
 }
 
 fn current(
