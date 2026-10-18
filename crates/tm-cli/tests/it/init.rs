@@ -2,90 +2,13 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 
 use tm_store::Store;
 use tm_store::workspace::{RepoFile, Workspace};
 use uuid::Uuid;
 
-/// A scratch directory outside any other repo's reach: each fixture repo has
-/// its own `.git`, so discovery stops there.
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new() -> Self {
-        let path =
-            PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("tm-cli-{}", Uuid::now_v7()));
-        fs::create_dir_all(&path).unwrap();
-        Self(fs::canonicalize(&path).unwrap())
-    }
-
-    fn home(&self) -> PathBuf {
-        self.0.join("tm-home")
-    }
-
-    /// Empty, so no user or system git config reaches the fixture.
-    fn git_config(&self) -> PathBuf {
-        let path = self.0.join("gitconfig");
-        if !path.exists() {
-            fs::write(&path, "").unwrap();
-        }
-        path
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn git(scratch: &Scratch, dir: &Path, args: &[&str]) -> Output {
-    let output = Command::new("git")
-        .args([
-            "-c",
-            "user.name=Fixture",
-            "-c",
-            "user.email=fixture@example.com",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "init.defaultBranch=main",
-            // Background maintenance after a commit writes into .git while
-            // the test compares it byte for byte.
-            "-c",
-            "maintenance.auto=false",
-            "-c",
-            "gc.auto=0",
-        ])
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "git {args:?}: {output:?}");
-    output
-}
-
-/// A committed repo holding the files tm must never touch.
-fn fixture(scratch: &Scratch, name: &str) -> PathBuf {
-    let repo = scratch.0.join(name);
-    fs::create_dir_all(&repo).unwrap();
-    git(scratch, &repo, &["init", "--quiet"]);
-    for (file, text) in [
-        ("README.md", "# fixture\n"),
-        ("AGENTS.md", "agents\n"),
-        ("CLAUDE.md", "claude\n"),
-        (".gitignore", "target/\n"),
-    ] {
-        fs::write(repo.join(file), text).unwrap();
-    }
-    git(scratch, &repo, &["add", "--all"]);
-    git(scratch, &repo, &["commit", "--quiet", "-m", "fixture"]);
-    repo
-}
+use crate::support::{Scratch, fixture, git, text, tm, tm_command};
 
 /// Every file and directory under `dir`, `.git` included, with its bytes.
 fn snapshot(dir: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
@@ -106,19 +29,6 @@ fn snapshot(dir: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
     out
 }
 
-fn tm(scratch: &Scratch, dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_tm"))
-        .args(args)
-        .current_dir(dir)
-        .env("TM_HOME", scratch.home())
-        .env("TM_ACTOR", "jace")
-        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .stdin(Stdio::null())
-        .output()
-        .unwrap()
-}
-
 /// Whether the scratch directory's disk tells names apart by case.
 fn case_sensitive(scratch: &Scratch) -> bool {
     let probe = scratch.0.join("case-probe");
@@ -126,10 +36,6 @@ fn case_sensitive(scratch: &Scratch) -> bool {
     let sensitive = !scratch.0.join("CASE-PROBE").exists();
     fs::remove_file(&probe).unwrap();
     sensitive
-}
-
-fn text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
 }
 
 #[test]
@@ -178,6 +84,67 @@ fn init_creates_a_workspace_and_writes_only_the_repo_file() {
         )
         .unwrap();
     assert_eq!(actor, "jace");
+}
+
+#[test]
+fn init_in_json_mode_reports_what_it_made_and_its_batch() {
+    let scratch = Scratch::new();
+    let repo = fixture(&scratch, "repo");
+    let made = tm(&scratch, &repo, &["init", "--yes", "--json", "--key", "TM"]);
+    assert!(made.status.success(), "{made:?}");
+    assert!(made.stderr.is_empty(), "{}", text(&made.stderr));
+    let doc: serde_json::Value = serde_json::from_slice(&made.stdout).unwrap();
+    let data = &doc["data"];
+    assert_eq!(
+        (&data["created"], &data["project"]),
+        (&true.into(), &"TM".into())
+    );
+    let workspace: Uuid = data["workspace"].as_str().unwrap().parse().unwrap();
+    let batch: Uuid = data["batch"].as_str().unwrap().parse().unwrap();
+    let store = Store::open(&Workspace::at(&scratch.home(), workspace).store_path()).unwrap();
+    let batched: Vec<u8> = store
+        .connection()
+        .query_row("SELECT batch FROM op_batches", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(Uuid::from_slice(&batched).unwrap(), batch);
+
+    let again = tm(&scratch, &repo, &["init", "--json"]);
+    assert!(again.status.success(), "{again:?}");
+    let doc: serde_json::Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(doc["data"]["created"], false);
+    assert_eq!(doc["data"]["workspace"], workspace.to_string());
+}
+
+#[test]
+fn an_agent_writes_for_the_human_and_two_harnesses_warn() {
+    let scratch = Scratch::new();
+    let repo = fixture(&scratch, "repo");
+    let made = tm_command()
+        .args(["init", "--yes", "--json", "--key", "TM"])
+        .current_dir(&repo)
+        .env("TM_HOME", scratch.home())
+        .env("TM_ACTOR", "jace")
+        .env("CLAUDE_CODE_SESSION_ID", "s")
+        .env("CODEX_THREAD_ID", "t")
+        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{made:?}");
+    let doc: serde_json::Value = serde_json::from_slice(&made.stdout).unwrap();
+    let warnings = doc["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{doc}");
+    assert!(warnings[0].as_str().unwrap().contains("TM_AGENT"), "{doc}");
+    let workspace: Uuid = doc["data"]["workspace"].as_str().unwrap().parse().unwrap();
+    let store = Store::open(&Workspace::at(&scratch.home(), workspace).store_path()).unwrap();
+    let written: (String, Option<String>) = store
+        .connection()
+        .query_row("SELECT actor, on_behalf_of FROM ops", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(written, ("codex".to_owned(), Some("jace".to_owned())));
 }
 
 #[test]
@@ -494,7 +461,7 @@ fn a_failure_never_removes_a_config_this_run_did_not_make() {
 fn a_git_warning_is_passed_on() {
     let scratch = Scratch::new();
     let repo = fixture(&scratch, "repo");
-    let output = Command::new(env!("CARGO_BIN_EXE_tm"))
+    let output = tm_command()
         .args(["init", "--key", "TM", "--yes"])
         .current_dir(&repo)
         .env("TM_HOME", scratch.home())
@@ -512,7 +479,7 @@ fn a_git_warning_is_passed_on() {
 fn a_set_but_unusable_tm_actor_is_refused() {
     let scratch = Scratch::new();
     let repo = fixture(&scratch, "repo");
-    let output = Command::new(env!("CARGO_BIN_EXE_tm"))
+    let output = tm_command()
         .args(["init", "--key", "TM", "--yes"])
         .current_dir(&repo)
         .env("TM_HOME", scratch.home())
@@ -543,7 +510,7 @@ fn a_broken_git_config_is_reported_as_itself() {
         "[user]\n\temail = me@example.com\nthis is not config\n",
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_tm"))
+    let output = tm_command()
         .args(["init", "--key", "TM", "--yes"])
         .current_dir(&repo)
         .env("TM_HOME", scratch.home())
@@ -603,7 +570,7 @@ fn the_actor_falls_back_to_git_and_is_required() {
     let scratch = Scratch::new();
     let repo = fixture(&scratch, "repo");
     let run = |extra: &[(&str, &str)]| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_tm"));
+        let mut command = tm_command();
         command
             .args(["init", "--key", "TM", "--yes"])
             .current_dir(&repo)
@@ -621,6 +588,9 @@ fn the_actor_falls_back_to_git_and_is_required() {
     assert!(!output.status.success());
     assert!(text(&output.stderr).contains("TM_ACTOR"), "{output:?}");
     assert!(!repo.join(".config").exists());
+    let output = run(&[("TM_JSON", "1")]);
+    let doc: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(doc["error"], "no_identity", "{doc}");
 
     let output = run(&[
         ("GIT_CONFIG_COUNT", "1"),
@@ -678,7 +648,7 @@ fn init_below_a_home_repo_is_refused_but_runs_at_home() {
     std::os::unix::fs::symlink(&home, &linked).unwrap();
     let before = snapshot(&home);
     let init = |dir: &Path, user_home: &Path| {
-        Command::new(env!("CARGO_BIN_EXE_tm"))
+        tm_command()
             .args(["init", "--key", "TM", "--yes"])
             .current_dir(dir)
             .env("HOME", user_home)
@@ -749,7 +719,7 @@ fn a_home_that_cannot_be_resolved_stops_init() {
     fs::create_dir(&locked).unwrap();
     std::os::unix::fs::symlink(&home, locked.join("link")).unwrap();
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_tm"))
+    let output = tm_command()
         .args(["init", "--key", "TM", "--yes"])
         .current_dir(&project)
         .env("HOME", locked.join("link"))
@@ -780,7 +750,7 @@ fn concurrent_inits_write_the_file_once() {
     let repo = fixture(&scratch, "repo");
     let children: Vec<_> = (0..8)
         .map(|_| {
-            Command::new(env!("CARGO_BIN_EXE_tm"))
+            tm_command()
                 .args(["init", "--key", "TM", "--yes"])
                 .current_dir(&repo)
                 .env("TM_HOME", scratch.home())

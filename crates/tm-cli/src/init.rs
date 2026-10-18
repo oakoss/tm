@@ -1,14 +1,17 @@
 //! `tm init`: a Workspace dedicated to the repo, mapped by `.config/tm.toml`.
 
-use std::env::VarError;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use tm_core::Actor;
+use serde_json::json;
 use tm_store::workspace::{self, RepoFile, Workspace};
 use uuid::Uuid;
+
+use crate::error::CliError;
+use crate::identity;
+use crate::output::Output;
 
 const REPO_FILE: &str = ".config/tm.toml";
 
@@ -18,40 +21,58 @@ pub(crate) struct Init {
     pub(crate) yes: bool,
 }
 
-/// Runs `tm init` in the working directory, returning what to print last.
-/// Everything that can be checked is checked before the file is shown;
-/// nothing is written until it is confirmed, and the Workspace is made
-/// before the file that names it and removed again if the file cannot be.
-pub(crate) fn run(init: Init) -> Result<String, String> {
-    let cwd = std::env::current_dir().map_err(|err| format!("working directory: {err}"))?;
-    let root = workspace::repo_root(&cwd)
-        .map_err(|err| err.to_string())?
-        .ok_or("tm init runs inside a git repository; none contains this directory")?;
-    let home = workspace::home(std::env::var_os("TM_HOME"), std::env::home_dir())
-        .map_err(|err| err.to_string())?;
-    if let Some(found) = workspace::discover(&cwd).map_err(|err| err.to_string())? {
+/// An `init` refusal: a check failed, or the file was not confirmed.
+fn refused(message: String) -> CliError {
+    CliError::new("init_refused", message)
+}
+
+fn io_failed(path: &Path, message: String) -> CliError {
+    CliError::new("io", message).with("path", path.display().to_string())
+}
+
+/// Names a path a failed `init` could not clean up, for the caller to remove.
+fn left_behind(err: CliError, path: &Path) -> CliError {
+    let mut paths = match err.details.get("left_behind") {
+        Some(serde_json::Value::Array(paths)) => paths.clone(),
+        _ => Vec::new(),
+    };
+    paths.push(json!(path.display().to_string()));
+    err.with("left_behind", paths)
+}
+
+/// Runs `tm init` in the working directory. Everything that can be checked
+/// is checked before the file is shown; nothing is written until it is
+/// confirmed, and the Workspace is made before the file that names it and
+/// removed again if the file cannot be. In JSON mode nothing is shown or
+/// asked, so `--yes` is the confirmation.
+pub(crate) fn run(init: Init, json: bool) -> Result<Output, CliError> {
+    let cwd = std::env::current_dir()
+        .map_err(|err| CliError::new("io", format!("working directory: {err}")))?;
+    let root = workspace::repo_root(&cwd)?.ok_or_else(|| {
+        refused("tm init runs inside a git repository; none contains this directory".into())
+    })?;
+    let home = workspace::home(std::env::var_os("TM_HOME"), std::env::home_dir())?;
+    if let Some(found) = workspace::discover(&cwd)? {
         return already_mapped(&home, &found, &init);
     }
-    check_not_below_home_repo(&cwd, &root)?;
-    let (key, name) = project(&root, init.key, init.name)?;
-    let actor = actor(&root)?;
+    check_not_below_home_repo(&cwd, &root).map_err(refused)?;
+    let (key, name) = project(&root, init.key, init.name).map_err(refused)?;
+    let identity = identity::resolve(identity::env, || identity::git_email(&root))
+        .map_err(|message| CliError::new("no_identity", message))?;
     let config_dir = root.join(".config");
-    check_config_dir(&root, &config_dir)?;
-    check_not_ignored(&root)?;
+    check_config_dir(&root, &config_dir).map_err(refused)?;
+    check_not_ignored(&root).map_err(refused)?;
     let file = RepoFile {
         workspace: Uuid::now_v7(),
         project: key.clone(),
         paths: Vec::new(),
     };
     let text = file.render();
-    print_now(&diff(&text))?;
-    if !init.yes && !confirm()? {
-        return Err(format!("{REPO_FILE} not written"));
-    }
+    confirmed(&text, init.yes, json).map_err(refused)?;
     let made_config = match fs::create_dir(&config_dir) {
         Ok(()) => true,
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => false,
-        Err(err) => return Err(failed(&config_dir, &err)),
+        Err(err) => return Err(io_failed(&config_dir, failed(&config_dir, &err))),
     };
     // Removes only the empty `.config` this run made; `remove_dir` cannot
     // delete anything else.
@@ -63,15 +84,14 @@ pub(crate) fn run(init: Init) -> Result<String, String> {
     // The repo may have changed while the prompt waited.
     let still_fits = check_config_dir(&root, &config_dir)
         .and_then(|()| check_not_ignored(&root))
-        .and_then(
-            |()| match workspace::discover(&cwd).map_err(|err| err.to_string())? {
-                Some(found) => Err(format!(
-                    "{} appeared while waiting; {REPO_FILE} not written",
-                    found.path.display()
-                )),
-                None => Ok(()),
-            },
-        );
+        .map_err(refused)
+        .and_then(|()| match workspace::discover(&cwd)? {
+            Some(found) => Err(refused(format!(
+                "{} appeared while waiting; {REPO_FILE} not written",
+                found.path.display()
+            ))),
+            None => Ok(()),
+        });
     if let Err(err) = still_fits {
         undo_config();
         return Err(err);
@@ -80,40 +100,68 @@ pub(crate) fn run(init: Init) -> Result<String, String> {
         Ok(made) => made,
         Err(err) => {
             undo_config();
-            return Err(err.to_string());
+            return Err(err.into());
         }
     };
     let target = root.join(REPO_FILE);
     let finished = store
-        .create_project(&Actor::human(&actor), &key, &name)
-        .map_err(|err| err.to_string())
-        .and_then(|_| write_new(&target, &text))
-        .and_then(|()| {
-            check_git_sees(&root, REPO_FILE).map_err(|err| match fs::remove_file(&target) {
-                Ok(()) => err,
-                Err(cleanup) => format!(
-                    "{err}; {} was left behind ({cleanup}), so remove it",
-                    target.display()
-                ),
-            })
+        .create_project(&identity.actor, &key, &name)
+        .map_err(CliError::from)
+        .and_then(|(_, op)| write_new(&target, &text).map(|()| op.op_id))
+        .and_then(|batch| {
+            check_git_sees(&root, REPO_FILE)
+                .map(|()| batch)
+                .map_err(|err| match fs::remove_file(&target) {
+                    Ok(()) => refused(err),
+                    Err(cleanup) => left_behind(
+                        refused(format!(
+                            "{err}; {} was left behind ({cleanup}), so remove it",
+                            target.display()
+                        )),
+                        &target,
+                    ),
+                })
         });
     drop(store);
-    if let Err(err) = finished {
-        undo_config();
-        return Err(match fs::remove_dir_all(&workspace.dir) {
-            Ok(()) => err,
-            Err(cleanup) => format!(
-                "{err}; Workspace {} at {} was left behind ({cleanup}) and nothing names it, so remove it",
-                workspace.id,
-                workspace.dir.display()
-            ),
-        });
+    let batch = match finished {
+        Ok(batch) => batch,
+        Err(err) => return Err(clean_up_after(err, &workspace, undo_config)),
+    };
+    Ok(Output {
+        text: format!(
+            "Created Workspace {} at {} with Project {key}, and wrote {REPO_FILE}\n",
+            workspace.id,
+            workspace.dir.display()
+        ),
+        data: json!({
+            "created": true,
+            "workspace": workspace.id,
+            "dir": workspace.dir.display().to_string(),
+            "project": key,
+            "file": target.display().to_string(),
+            "batch": batch,
+        }),
+        warnings: identity.warnings,
+    })
+}
+
+/// Removes the Workspace a failed `init` made, naming whatever it could not.
+fn clean_up_after(
+    mut err: CliError,
+    workspace: &Workspace,
+    undo_config: impl FnOnce(),
+) -> CliError {
+    undo_config();
+    if let Err(cleanup) = fs::remove_dir_all(&workspace.dir) {
+        err.message = format!(
+            "{}; Workspace {} at {} was left behind ({cleanup}) and nothing names it, so remove it",
+            err.message,
+            workspace.id,
+            workspace.dir.display()
+        );
+        err = left_behind(err, &workspace.dir);
     }
-    Ok(format!(
-        "Created Workspace {} at {} with Project {key}, and wrote {REPO_FILE}\n",
-        workspace.id,
-        workspace.dir.display()
-    ))
+    err
 }
 
 /// A git repo at `$HOME` holds unrelated directories, so init from one of
@@ -160,32 +208,25 @@ fn check_not_below_home_repo(cwd: &Path, root: &Path) -> Result<(), String> {
 
 /// Reports the mapping a repo file already makes, after checking that git
 /// shares the file and that its Workspace and every Project it names exist.
-fn already_mapped(home: &Path, found: &workspace::Found, init: &Init) -> Result<String, String> {
-    check_spelling(found)?;
-    let root = workspace::repo_root(&found.dir)
-        .map_err(|err| err.to_string())?
-        .unwrap_or_else(|| found.dir.clone());
+fn already_mapped(home: &Path, found: &workspace::Found, init: &Init) -> Result<Output, CliError> {
+    check_spelling(found).map_err(refused)?;
+    let root = workspace::repo_root(&found.dir)?.unwrap_or_else(|| found.dir.clone());
     if let Ok(relative) = found.path.strip_prefix(&root) {
-        check_git_sees(&root, &relative.to_string_lossy())?;
+        check_git_sees(&root, &relative.to_string_lossy()).map_err(refused)?;
     }
-    let (workspace, store) =
-        workspace::workspace_for(home, found).map_err(|err| err.to_string())?;
+    let (workspace, store) = workspace::workspace_for(home, found)?;
     let keys = std::iter::once(&found.file.project)
         .chain(found.file.paths.iter().map(|mapping| &mapping.project));
     for key in keys {
-        if store
-            .project_by_key(key)
-            .map_err(|err| err.to_string())?
-            .is_none()
-        {
-            return Err(format!(
+        if store.project_by_key(key)?.is_none() {
+            return Err(refused(format!(
                 "{} names Project {key}, which Workspace {} does not have",
                 found.path.display(),
                 workspace.id
-            ));
+            )));
         }
     }
-    let mut out = format!(
+    let mut text = format!(
         "{} already maps {} to Workspace {} and Project {}\n",
         found.path.display(),
         found.dir.display(),
@@ -193,9 +234,18 @@ fn already_mapped(home: &Path, found: &workspace::Found, init: &Init) -> Result<
         found.file.project
     );
     if init.key.is_some() || init.name.is_some() {
-        out.push_str("--key and --name apply only when a Workspace is created; nothing changed\n");
+        text.push_str("--key and --name apply only when a Workspace is created; nothing changed\n");
     }
-    Ok(out)
+    Ok(Output::new(
+        text,
+        json!({
+            "created": false,
+            "workspace": workspace.id,
+            "dir": workspace.dir.display().to_string(),
+            "project": found.file.project,
+            "file": found.path.display().to_string(),
+        }),
+    ))
 }
 
 /// The new Project's key and name, each defaulting to the repo directory's.
@@ -267,43 +317,6 @@ fn default_key(dir_name: &str) -> Option<String> {
         .take(10)
         .collect();
     tm_core::project::is_key(&key).then_some(key)
-}
-
-/// Who writes: `TM_ACTOR`, else git's `user.email`. A `TM_ACTOR` that is set
-/// but unusable is an error, never a reason to write as someone else.
-fn actor(root: &Path) -> Result<String, String> {
-    match std::env::var("TM_ACTOR") {
-        Ok(actor) if actor.trim().is_empty() => {
-            return Err("TM_ACTOR is set but blank; set it to who you are, or unset it".into());
-        }
-        Ok(actor) => return Ok(actor.trim().to_owned()),
-        Err(VarError::NotUnicode(_)) => return Err("TM_ACTOR is not valid UTF-8".into()),
-        Err(VarError::NotPresent) => {}
-    }
-    let output = Command::new("git")
-        .args(["config", "--get", "user.email"])
-        .current_dir(root)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()
-        .map_err(|err| format!("cannot run git to read user.email: {err}"))?;
-    let email = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    // `git config --get` exits 1 when the key is unset.
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    let said = if stderr.is_empty() {
-        String::new()
-    } else {
-        format!(" (git said: {stderr})")
-    };
-    match output.status.code() {
-        Some(0) if !email.is_empty() => Ok(email),
-        Some(0 | 1) => Err(format!(
-            "cannot tell who you are; set TM_ACTOR or git's user.email{said}"
-        )),
-        _ => Err(format!(
-            "git config --get user.email failed ({}){said}",
-            output.status
-        )),
-    }
 }
 
 /// `.config` must be a real directory named exactly that, or absent: git does
@@ -439,10 +452,28 @@ fn print_now(text: &str) -> Result<(), String> {
         .map_err(|err| format!("cannot write output: {err}"))
 }
 
+/// Shows the file and asks, unless `--yes` confirms it already. JSON mode
+/// shows and asks nothing.
+fn confirmed(text: &str, yes: bool, json: bool) -> Result<(), String> {
+    if json {
+        return if yes {
+            Ok(())
+        } else {
+            Err(format!("{REPO_FILE} not written: confirm with --yes"))
+        };
+    }
+    print_now(&diff(text))?;
+    if yes || confirm()? {
+        Ok(())
+    } else {
+        Err(format!("{REPO_FILE} not written"))
+    }
+}
+
 /// Asks at a terminal; anywhere else, such as an agent's shell, `--yes` is
 /// the confirmation.
 fn confirm() -> Result<bool, String> {
-    if !io::stdin().is_terminal() {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(format!(
             "{REPO_FILE} not written: confirm with --yes when not at a terminal"
         ));
@@ -466,19 +497,25 @@ fn failed(path: &Path, err: &io::Error) -> String {
 /// Writes `text` to a file that must not exist yet, so a concurrent
 /// `tm init` fails rather than overwriting. A file this call created but
 /// could not finish is removed, so a retry is not blocked by it.
-fn write_new(target: &PathBuf, text: &str) -> Result<(), String> {
+fn write_new(target: &PathBuf, text: &str) -> Result<(), CliError> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(target)
-        .map_err(|err| failed(target, &err))?;
+        .map_err(|err| io_failed(target, failed(target, &err)))?;
     file.write_all(text.as_bytes())
         .and_then(|()| file.sync_all())
         .map_err(|err| match fs::remove_file(target) {
-            Ok(()) => failed(target, &err),
-            Err(cleanup) => format!(
-                "{}; the partial file was left behind ({cleanup}), so remove it",
-                failed(target, &err)
+            Ok(()) => io_failed(target, failed(target, &err)),
+            Err(cleanup) => left_behind(
+                io_failed(
+                    target,
+                    format!(
+                        "{}; the partial file was left behind ({cleanup}), so remove it",
+                        failed(target, &err)
+                    ),
+                ),
+                target,
             ),
         })
 }

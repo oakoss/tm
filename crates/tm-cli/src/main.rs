@@ -1,19 +1,32 @@
 //! The `tm` command.
 
+mod create;
+mod error;
+mod here;
+mod identity;
 mod init;
+mod output;
+mod show;
 
 use std::fmt::Write as _;
-use std::io::{self, Write as _};
 use std::process::ExitCode;
 
+use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser, Subcommand};
+use serde_json::json;
 use tm_core::Scheme;
 use tm_core::scheme::Category;
+
+use crate::error::CliError;
+use crate::output::Output;
 
 /// A local-first issue tracker for one human and their AI agents.
 #[derive(Parser)]
 #[command(name = "tm", version)]
 struct Cli {
+    /// Print one JSON document instead of text; `TM_JSON=1` does the same.
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -33,6 +46,28 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Create an Issue in the Project this directory maps to.
+    Create {
+        /// The Issue type, such as task or bug; `tm scheme show` lists them.
+        #[arg(long = "type")]
+        issue_type: Option<String>,
+        #[arg(long)]
+        title: Option<String>,
+        /// Set a field, such as priority=high; repeat for more.
+        #[arg(long, value_name = "FIELD=VALUE", value_parser = create::field_value)]
+        set: Vec<(String, String)>,
+        /// Add a label; repeat for more.
+        #[arg(long = "label", value_name = "LABEL")]
+        labels: Vec<String>,
+        /// The parent Issue's Key or id.
+        #[arg(long)]
+        parent: Option<String>,
+    },
+    /// Show an Issue's fields and Claim.
+    Show {
+        /// The Issue's Key, such as CPL-42, or its full id.
+        issue: String,
+    },
     /// Inspect the Scheme.
     Scheme {
         #[command(subcommand)]
@@ -43,45 +78,80 @@ enum Command {
 #[derive(Subcommand)]
 enum SchemeAction {
     /// Print the Scheme's types, Workflows and fields.
-    Show {
-        /// Print JSON instead of text.
-        #[arg(long)]
-        json: bool,
-    },
+    Show,
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let output = match cli.command {
-        None => Cli::command().render_help().to_string(),
-        Some(Command::Scheme {
-            action: SchemeAction::Show { json: false },
-        }) => scheme_text(&Scheme::built_in()),
-        Some(Command::Scheme {
-            action: SchemeAction::Show { json: true },
-        }) => format!("{}\n", scheme_json(&Scheme::built_in())),
-        Some(Command::Init { key, name, yes }) => match init::run(init::Init { key, name, yes }) {
-            Ok(text) => text,
-            Err(err) => {
-                eprintln!("tm: {err}");
-                return ExitCode::FAILURE;
-            }
-        },
-    };
-    // `print!` panics when the reader goes away; a reader that stops early,
-    // as `head` does, is not an error, but a full disk is.
-    let mut stdout = io::stdout().lock();
-    match stdout
-        .write_all(output.as_bytes())
-        .and_then(|()| stdout.flush())
-    {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
-        Err(err) => {
-            eprintln!("tm: cannot write output: {err}");
-            ExitCode::FAILURE
-        }
+    let args: Vec<String> = std::env::args_os()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let json = output::json_mode(&args, std::env::var("TM_JSON").ok().as_deref());
+    if json {
+        output::install_panic_hook();
     }
+    let cli = match Cli::try_parse_from(std::env::args_os()) {
+        Ok(cli) => cli,
+        Err(err) => return parse_failed(json, &err),
+    };
+    output::finish(json, run(cli.command, json), &[])
+}
+
+fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
+    match command {
+        None => {
+            let help = Cli::command().render_help().to_string();
+            Ok(Output::new(help.clone(), json!({ "help": help })))
+        }
+        Some(Command::Scheme {
+            action: SchemeAction::Show,
+        }) => {
+            let scheme = Scheme::built_in();
+            Ok(Output::new(scheme_text(&scheme), scheme_json(&scheme)))
+        }
+        Some(Command::Init { key, name, yes }) => init::run(init::Init { key, name, yes }, json),
+        Some(Command::Create {
+            issue_type,
+            title,
+            set,
+            labels,
+            parent,
+        }) => create::run(&create::Create {
+            issue_type,
+            title,
+            set,
+            labels,
+            parent,
+        }),
+        Some(Command::Show { issue }) => show::run(&issue),
+    }
+}
+
+/// Help and the version asked for are output, not errors; anything else clap
+/// refuses, a missing subcommand included, is a usage error, exit 2.
+fn parse_failed(json: bool, err: &clap::Error) -> ExitCode {
+    let shown = matches!(
+        err.kind(),
+        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+    );
+    if !json {
+        let _ = err.print();
+        return if shown {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(2)
+        };
+    }
+    let rendered = err.render().to_string();
+    if shown {
+        return output::finish(
+            true,
+            Ok(Output::new(String::new(), json!({ "help": rendered }))),
+            &[],
+        );
+    }
+    let message = rendered.lines().next().unwrap_or_default();
+    let message = message.strip_prefix("error: ").unwrap_or(message);
+    output::finish(true, Err(CliError::new("usage", message)), &[])
 }
 
 fn scheme_json(scheme: &Scheme) -> serde_json::Value {

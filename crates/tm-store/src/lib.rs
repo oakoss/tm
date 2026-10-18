@@ -207,6 +207,8 @@ impl Drop for Store {
         // Best effort: a failed optimize costs query planning, never data.
         // A store that failed to open is left as it was found.
         if self.opened {
+            // Skipped, not waited for, while another process writes.
+            let _ = self.conn.busy_timeout(Duration::ZERO);
             let _ = self.conn.execute_batch("PRAGMA optimize");
         }
     }
@@ -407,6 +409,12 @@ impl Store {
     }
 
     fn init(&mut self) -> Result<(), StoreError> {
+        if self.ready()? {
+            // Creates only what an older build of this format lacked; with
+            // nothing to create it takes no lock.
+            self.conn.execute_batch(schema::LOG)?;
+            return Ok(());
+        }
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -605,6 +613,22 @@ impl Store {
         project::key_holder(&self.conn, &key.to_ascii_uppercase())
     }
 
+    /// The key a Project holds now.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure.
+    pub fn project_key(&self, project: ProjectId) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT key FROM projects WHERE id = ?1",
+                [project.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     /// The Issue a Key names, matched without case. Any key its Project holds
     /// or held finds it, so `CPL-42` still resolves after `CPL` becomes `KERN`.
     ///
@@ -748,10 +772,7 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let last: i64 = tx.query_row("SELECT v FROM meta WHERE k = 'last_hlc'", [], |row| {
-            row.get(0)
-        })?;
-        let mut hlc = Hlc::from_raw(rust_int(last)?);
+        let mut hlc = last_hlc(&tx)?;
         let replica: Vec<u8> =
             tx.query_row("SELECT v FROM meta WHERE k = 'replica_id'", [], |row| {
                 row.get(0)
@@ -844,6 +865,29 @@ impl Store {
         Ok(ops)
     }
 
+    /// Whether the store is already set up for this binary. Read without the
+    /// write lock, so opening such a store never waits on a writer.
+    fn ready(&self) -> Result<bool, StoreError> {
+        let has_meta: bool = self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'meta')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_meta {
+            return Ok(false);
+        }
+        let (format, set_up): (Option<i64>, bool) = self.conn.query_row(
+            "SELECT (SELECT v FROM meta WHERE k = 'format'),
+                    (SELECT count(*) FROM meta WHERE k IN ('replica_id', 'last_hlc')) = 2",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let version: i64 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        Ok(format == Some(schema::STORE_FORMAT) && set_up && version == schema::PROJECTION_VERSION)
+    }
+
     /// The clock's reading, and its milliseconds as the clock counts them.
     fn now(&self) -> Result<(WallTime, u64), StoreError> {
         let now = self.clock.now().map_err(StoreError::Clock)?;
@@ -887,9 +931,29 @@ impl Store {
     /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row;
     /// `Ok(None)` when the Issue does not exist.
     pub fn issue(&self, issue_id: Uuid) -> Result<Option<IssueView>, StoreError> {
-        // One read transaction, so the Issue never mixes two writers' commits.
-        let tx = self.conn.unchecked_transaction()?;
-        read::issue(&tx, &self.scheme, issue_id)
+        self.read(|store| read::issue(&store.conn, &store.scheme, issue_id))
+    }
+
+    /// Runs `reads` in one read transaction, so what they return never mixes
+    /// two writers' commits. Nested calls share the outer transaction.
+    ///
+    /// # Errors
+    ///
+    /// What `reads` returns, or any SQLite failure starting the transaction.
+    pub fn read<T, E: From<StoreError>>(
+        &self,
+        reads: impl FnOnce(&Self) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let _tx = if self.conn.is_autocommit() {
+            Some(
+                self.conn
+                    .unchecked_transaction()
+                    .map_err(StoreError::from)?,
+            )
+        } else {
+            None
+        };
+        reads(self)
     }
 
     /// Logged operations the last rebuild could not apply, in log order.
@@ -961,6 +1025,21 @@ impl Store {
         tx.commit()?;
         Ok(unapplied)
     }
+}
+
+/// The clock's last value. The log bounds it as well as `last_hlc`, so a lost
+/// or stale clock state never moves it back; only this Replica's operations
+/// count, since others reach the clock solely through the capped `observe`.
+fn last_hlc(tx: &Transaction<'_>) -> Result<Hlc, StoreError> {
+    let last: i64 = tx.query_row(
+        "SELECT max(
+           coalesce((SELECT v FROM meta WHERE k = 'last_hlc'), 0),
+           coalesce((SELECT max(hlc) FROM ops
+                     WHERE replica_id = (SELECT v FROM meta WHERE k = 'replica_id')), 0))",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(Hlc::from_raw(rust_int(last)?))
 }
 
 /// Replay keeps a Link whose target has not replayed, since it may be in a

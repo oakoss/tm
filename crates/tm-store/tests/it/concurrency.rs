@@ -1,10 +1,11 @@
 //! Many short-lived processes writing at once, as parallel agents do.
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 use tm_core::Change;
-use tm_store::Store;
+use tm_store::{Draft, Store};
 use uuid::Uuid;
 
 use crate::support::{TempDir, draft, jace, run_children, set_field};
@@ -15,6 +16,32 @@ const CHILD_ISSUE: &str = "TM_STORE_TEST_CHILD_ISSUE";
 
 const PROCESSES: usize = 50;
 const WRITES_EACH: usize = 10;
+
+#[test]
+fn reads_in_one_read_see_one_commit() {
+    let dir = TempDir::new();
+    let mut writer = Store::open(&dir.db()).unwrap();
+    let (project, _) = writer.create_project(&jace(), "CPL", "Core").unwrap();
+    let (issue, _) = writer
+        .create_issue(&jace(), project, "task", "before")
+        .unwrap();
+    let reader = Store::open(&dir.db()).unwrap();
+    let title = |store: &Store| store.issue(issue).unwrap().unwrap().fields["title"].clone();
+    let (first, second) = reader
+        .read(|store| {
+            let first = title(store);
+            writer
+                .append(Draft {
+                    project,
+                    ..draft(issue, set_field("title", json!("after")))
+                })
+                .unwrap();
+            Ok::<_, tm_store::StoreError>((first, title(store)))
+        })
+        .unwrap();
+    assert_eq!((first, second), (json!("before"), json!("before")));
+    assert_eq!(title(&reader), json!("after"));
+}
 
 #[test]
 fn fifty_processes_write_without_losing_operations() {
@@ -57,6 +84,26 @@ fn fifty_processes_write_without_losing_operations() {
         comments,
         i64::try_from(PROCESSES * WRITES_EACH / 2).unwrap()
     );
+}
+
+#[test]
+fn opening_and_reading_never_wait_for_a_writer() {
+    let dir = TempDir::new();
+    let issue = {
+        let mut store = Store::open(&dir.db()).unwrap();
+        let (project, _) = store.create_project(&jace(), "CPL", "Core").unwrap();
+        store.create_issue(&jace(), project, "task", "t").unwrap().0
+    };
+    let writer = rusqlite::Connection::open(dir.db()).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let started = Instant::now();
+    {
+        let store = Store::open(&dir.db()).unwrap();
+        assert!(store.issue(issue).unwrap().is_some());
+    }
+    let waited = started.elapsed();
+    writer.execute_batch("ROLLBACK").unwrap();
+    assert!(waited < Duration::from_secs(1), "waited {waited:?}");
 }
 
 fn write_as_child(db: &std::path::Path, issue: Uuid) {
