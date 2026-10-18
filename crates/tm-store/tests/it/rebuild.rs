@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 use tm_core::Change;
-use tm_store::Store;
+use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::{ManualClock, TempDir, draft, dump, links, new_issue, open, set_field};
@@ -50,6 +50,11 @@ enum Action {
         link_type: usize,
         present: bool,
     },
+    /// Takes the Issue, or releases it with its current token.
+    Claim {
+        issue: usize,
+        release: bool,
+    },
     /// Zero leaves the clock in place, so writes share a millisecond and
     /// exercise the counter.
     Tick(u8),
@@ -63,6 +68,8 @@ fn action() -> impl Strategy<Value = Action> {
         (issue.clone(), 0..ELEMS.len()).prop_map(|(issue, elem)| Action::Add { issue, elem }),
         (issue.clone(), 0..ELEMS.len()).prop_map(|(issue, elem)| Action::Remove { issue, elem }),
         (issue.clone(), "[a-z ]{0,8}").prop_map(|(issue, body)| Action::Comment { issue, body }),
+        (issue.clone(), any::<bool>())
+            .prop_map(|(issue, release)| Action::Claim { issue, release }),
         (issue.clone(), issue, 0..LINK_TYPES.len(), any::<bool>()).prop_map(
             |(from, to, link_type, present)| Action::Link {
                 from,
@@ -127,7 +134,7 @@ fn change(action: &Action) -> Option<(usize, Change)> {
             )
         }
         Action::Comment { issue, body } => (*issue, Change::Comment { body: body.clone() }),
-        Action::Link { .. } | Action::Tick(_) => return None,
+        Action::Link { .. } | Action::Claim { .. } | Action::Tick(_) => return None,
     })
 }
 
@@ -140,6 +147,8 @@ struct Model {
     comments: Vec<usize>,
     /// `(type, source, target)` in canonical form.
     links: BTreeSet<(String, Uuid, Uuid)>,
+    /// Each Issue's Claim token, if held.
+    claims: Vec<Option<Uuid>>,
 }
 
 impl Model {
@@ -182,6 +191,7 @@ impl Model {
             labels: vec![BTreeSet::new(); ISSUES],
             comments: vec![0; ISSUES],
             links: BTreeSet::new(),
+            claims: vec![None; ISSUES],
         }
     }
 
@@ -203,7 +213,7 @@ impl Model {
                 self.labels[*issue].remove(ELEMS[*elem]);
             }
             Action::Comment { issue, .. } => self.comments[*issue] += 1,
-            Action::Link { .. } | Action::Tick(_) => {}
+            Action::Link { .. } | Action::Claim { .. } | Action::Tick(_) => {}
         }
     }
 
@@ -213,6 +223,10 @@ impl Model {
             labels: Vec::new(),
             comments: Vec::new(),
             links: links(store).into_iter().collect(),
+            claims: issues
+                .iter()
+                .map(|issue| store.claim(*issue).unwrap().map(|claim| claim.id))
+                .collect(),
         };
         for issue in issues {
             let view = store.issue(*issue).unwrap().unwrap();
@@ -276,6 +290,26 @@ proptest! {
                     }
                     None => {
                         result.unwrap_err();
+                    }
+                }
+            } else if let Action::Claim { issue, release } = action {
+                let held = expected.claims[*issue];
+                match (release, held) {
+                    (false, None) => {
+                        let claim = store.take("jace", issues[*issue], "claude", None).unwrap();
+                        expected.claims[*issue] = Some(claim.id);
+                    }
+                    (false, Some(_)) => {
+                        let err = store.take("jace", issues[*issue], "claude", None).unwrap_err();
+                        prop_assert!(matches!(err, StoreError::AlreadyClaimed { .. }), "{}", err);
+                    }
+                    (true, Some(token)) => {
+                        store.release("jace", issues[*issue], token).unwrap();
+                        expected.claims[*issue] = None;
+                    }
+                    (true, None) => {
+                        let err = store.release("jace", issues[*issue], Uuid::now_v7()).unwrap_err();
+                        prop_assert!(matches!(err, StoreError::NotClaimHolder { .. }), "{}", err);
                     }
                 }
             } else if let Some((issue, change)) = change(action) {

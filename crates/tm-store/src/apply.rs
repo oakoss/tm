@@ -149,6 +149,12 @@ pub(crate) fn apply(
             target,
             present,
         } => link(tx, op.subject, &link_type, target, present, &version)?,
+        // A lost take or release changes nothing, so it is not activity either.
+        Change::Claim { action } => {
+            if let Some(lost) = crate::claim::apply(tx, op, action)? {
+                return Ok(Some(lost));
+            }
+        }
         Change::Comment { body } => {
             tx.execute(
                 "INSERT INTO comments (op_id, issue_id, actor, body, hlc, utc_ms, offset_min)
