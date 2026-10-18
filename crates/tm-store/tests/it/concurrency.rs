@@ -1,6 +1,7 @@
 //! Many short-lived processes writing at once, as parallel agents do.
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 use tm_core::Change;
@@ -57,6 +58,26 @@ fn fifty_processes_write_without_losing_operations() {
         comments,
         i64::try_from(PROCESSES * WRITES_EACH / 2).unwrap()
     );
+}
+
+#[test]
+fn opening_and_reading_never_wait_for_a_writer() {
+    let dir = TempDir::new();
+    let issue = {
+        let mut store = Store::open(&dir.db()).unwrap();
+        let (project, _) = store.create_project(&jace(), "CPL", "Core").unwrap();
+        store.create_issue(&jace(), project, "task", "t").unwrap().0
+    };
+    let writer = rusqlite::Connection::open(dir.db()).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let started = Instant::now();
+    {
+        let store = Store::open(&dir.db()).unwrap();
+        assert!(store.issue(issue).unwrap().is_some());
+    }
+    let waited = started.elapsed();
+    writer.execute_batch("ROLLBACK").unwrap();
+    assert!(waited < Duration::from_secs(1), "waited {waited:?}");
 }
 
 fn write_as_child(db: &std::path::Path, issue: Uuid) {

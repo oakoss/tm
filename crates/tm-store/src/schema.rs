@@ -43,6 +43,9 @@ CREATE INDEX IF NOT EXISTS ops_target ON ops (issue_id, field, elem);
 -- Server order is per Project (one chain per Project, ADR 0006).
 CREATE UNIQUE INDEX IF NOT EXISTS ops_server_position ON ops (project, server_seq);
 
+-- A write reads its own Replica's latest clock value with one seek.
+CREATE INDEX IF NOT EXISTS ops_by_replica ON ops (replica_id, hlc);
+
 -- Stored operations are immutable; only the columns the server fills in later
 -- may change.
 CREATE TRIGGER IF NOT EXISTS ops_immutable
