@@ -215,7 +215,7 @@ fn labels_ignore_case_and_keep_their_written_form() {
     store.append(draft(issue, add("Bug"))).unwrap();
     let op = store.append(draft(issue, add("bug"))).unwrap();
     assert_eq!(
-        op.change().unwrap().elem(),
+        op.change().unwrap().elem().as_deref(),
         Some("bug"),
         "stored lowercased"
     );
@@ -307,6 +307,10 @@ fn every_change_advances_updated() {
         .unwrap();
     assert_eq!(field(&store, issue, "created"), Some(json!(1_000)));
     assert_eq!(field(&store, issue, "updated"), Some(json!(5_000)));
+    let other = new_issue(&mut store);
+    clock.set(9_000);
+    store.link("jace", "blocks", issue, other).unwrap();
+    assert_eq!(field(&store, issue, "updated"), Some(json!(9_000)));
 }
 
 #[test]

@@ -1,5 +1,7 @@
 //! Operations: the typed, field-level changes the log records (ADR 0006).
 
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -38,6 +40,12 @@ pub enum OpError {
         "field name {0:?} must be lowercase letters, digits and underscores, starting with a letter"
     )]
     InvalidField(String),
+    #[error("field {0:?} belongs to another operation kind")]
+    ReservedField(&'static str),
+    #[error(
+        "Link type {0:?} must be lowercase letters, digits and underscores, starting with a letter"
+    )]
+    InvalidLinkType(String),
     #[error(
         "Project key {0:?} must be an uppercase letter then 1 to 9 uppercase letters or digits"
     )]
@@ -75,6 +83,12 @@ pub enum Change {
     Comment {
         body: String,
     },
+    /// Adds or removes a Link, filed under its canonical source Issue.
+    Link {
+        link_type: String,
+        target: Uuid,
+        present: bool,
+    },
     /// A Project; the operation's subject and Project are both its id.
     CreateProject {
         key: String,
@@ -98,6 +112,7 @@ impl Change {
             Self::Add { .. } => "add",
             Self::Remove { .. } => "remove",
             Self::Comment { .. } => "comment",
+            Self::Link { .. } => "link",
             Self::CreateProject { .. } => "create_project",
             Self::RenameProject { .. } => "rename_project",
         }
@@ -119,6 +134,7 @@ impl Change {
             Self::SetField { field, .. } | Self::Add { field, .. } | Self::Remove { field, .. } => {
                 Some(field)
             }
+            Self::Link { .. } => Some(crate::link::FIELD),
             Self::Create
             | Self::Comment { .. }
             | Self::CreateProject { .. }
@@ -128,9 +144,12 @@ impl Change {
 
     /// The set element this change targets, if any.
     #[must_use]
-    pub fn elem(&self) -> Option<&str> {
+    pub fn elem(&self) -> Option<Cow<'_, str>> {
         match self {
-            Self::Add { elem, .. } | Self::Remove { elem, .. } => Some(elem),
+            Self::Add { elem, .. } | Self::Remove { elem, .. } => Some(Cow::Borrowed(elem)),
+            Self::Link {
+                link_type, target, ..
+            } => Some(Cow::Owned(crate::link::elem(link_type, *target))),
             Self::Create
             | Self::SetField { .. }
             | Self::Comment { .. }
@@ -151,6 +170,15 @@ impl Change {
             && !crate::scheme::is_id(field)
         {
             return Err(OpError::InvalidField(field.to_owned()));
+        }
+        // Another kind writing a Link's element would merge with it unseen.
+        if self.field() == Some(crate::link::FIELD) && !matches!(self, Self::Link { .. }) {
+            return Err(OpError::ReservedField(crate::link::FIELD));
+        }
+        if let Self::Link { link_type, .. } = self
+            && !crate::scheme::is_id(link_type)
+        {
+            return Err(OpError::InvalidLinkType(link_type.clone()));
         }
         let key = match self {
             Self::CreateProject { key, .. } => Some(key),
@@ -410,6 +438,11 @@ mod tests {
             Change::Comment {
                 body: String::new(),
             },
+            Change::Link {
+                link_type: "blocks".into(),
+                target: Uuid::from_u128(5),
+                present: true,
+            },
             Change::CreateProject {
                 key: "CPL".into(),
                 name: "Core".into(),
@@ -442,6 +475,34 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn a_link_targets_its_type_and_target_under_links() {
+        let target = Uuid::from_u128(5);
+        let link = Change::Link {
+            link_type: "blocks".into(),
+            target,
+            present: false,
+        };
+        assert_eq!(link.field(), Some("links"));
+        assert_eq!(link.elem().as_deref(), Some(&*format!("blocks/{target}")));
+        let bad = Change::Link {
+            link_type: "Blocks".into(),
+            target,
+            present: true,
+        };
+        assert!(matches!(bad.validate(), Err(OpError::InvalidLinkType(_))));
+        let forged = Change::Remove {
+            field: "links".into(),
+            label: String::new(),
+            elem: format!("blocks/{target}"),
+            elem_label: None,
+        };
+        assert!(matches!(
+            forged.validate(),
+            Err(OpError::ReservedField("links"))
+        ));
     }
 
     #[test]

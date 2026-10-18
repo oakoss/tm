@@ -76,7 +76,7 @@ pub enum StoreError {
     },
     #[error("{relation} would close a cycle: {}", path.iter().map(Uuid::to_string).collect::<Vec<_>>().join(" -> "))]
     Cycle {
-        relation: String,
+        relation: &'static str,
         /// From the Issue written, around the cycle and back to it.
         path: Vec<Uuid>,
     },
@@ -636,6 +636,71 @@ impl Store {
         Ok((issue_id, self.append_all(drafts)?))
     }
 
+    /// Links `from` to `to`: "`from` blocks `to`" for `blocks`. The Link is
+    /// filed under its canonical source, so the same Link written from either
+    /// end is one Link (ADR 0009).
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Invalid`] for an unknown type or an Issue joined to
+    /// itself, [`StoreError::UnknownIssue`], [`StoreError::Cycle`] for a
+    /// `blocks` Link that would close a cycle, or as [`Store::append_all`].
+    pub fn link(
+        &mut self,
+        actor: &str,
+        link_type: &str,
+        from: Uuid,
+        to: Uuid,
+    ) -> Result<Op, StoreError> {
+        let draft = self.link_draft(actor, link_type, from, to, true)?;
+        self.append(draft)
+    }
+
+    /// Removes the Link [`Store::link`] would add.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::link`], except that a held Link of any type can be removed.
+    pub fn unlink(
+        &mut self,
+        actor: &str,
+        link_type: &str,
+        from: Uuid,
+        to: Uuid,
+    ) -> Result<Op, StoreError> {
+        let draft = self.link_draft(actor, link_type, from, to, false)?;
+        self.append(draft)
+    }
+
+    fn link_draft(
+        &self,
+        actor: &str,
+        link_type: &str,
+        from: Uuid,
+        to: Uuid,
+        present: bool,
+    ) -> Result<Draft, StoreError> {
+        let (source, target) = tm_core::link::link_type(link_type)
+            .map_or((from, to), |def| tm_core::link::canonical(def, from, to));
+        let tx = self.conn.unchecked_transaction()?;
+        let Some(project) = apply::issue_project(&tx, source)? else {
+            // A missing source holds no Link, so a type or pairing that cannot
+            // be written is the error to report.
+            validate::link_shape(link_type, from, to)?;
+            return Err(StoreError::UnknownIssue(source));
+        };
+        Ok(Draft {
+            actor: actor.to_owned(),
+            project,
+            subject: source,
+            change: Change::Link {
+                link_type: link_type.to_owned(),
+                target,
+                present,
+            },
+        })
+    }
+
     /// Checks, stamps, logs and applies every draft in one `BEGIN IMMEDIATE`
     /// transaction. Required fields are checked after the whole batch, so an
     /// Issue's `create` and its required `set_field`s go in together.
@@ -844,6 +909,7 @@ impl Store {
                 unapplied += 1;
             }
         }
+        unapplied += record_dangling_links(&tx)?;
         tx.execute_batch(&format!(
             "PRAGMA user_version = {}",
             schema::PROJECTION_VERSION
@@ -851,6 +917,46 @@ impl Store {
         tx.commit()?;
         Ok(unapplied)
     }
+}
+
+/// Replay keeps a Link whose target has not replayed, since it may be in a
+/// later chain; once every chain has, one still missing is recorded against
+/// the operation that added the Link.
+fn record_dangling_links(tx: &Transaction<'_>) -> Result<usize, StoreError> {
+    let dangling = {
+        let mut stmt = tx
+            .prepare("SELECT type, src, dst FROM links WHERE dst NOT IN (SELECT id FROM issues)")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for (link_type, src, dst) in &dangling {
+        let target = uuid_from(dst)?;
+        let (seq, op_id): (i64, Vec<u8>) = tx.query_row(
+            "SELECT o.seq, o.op_id FROM field_versions v JOIN ops o ON o.op_id = v.op_id
+             WHERE v.issue_id = ?1 AND v.field = ?2 AND v.elem = ?3",
+            params![
+                src,
+                tm_core::link::FIELD,
+                tm_core::link::elem(link_type, target)
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        tx.execute(
+            "INSERT INTO unapplied (seq, op_id, reason) VALUES (?1, ?2, ?3)",
+            params![
+                seq,
+                op_id,
+                format!("applied, but the Issue {target} it links to does not exist")
+            ],
+        )?;
+    }
+    Ok(dangling.len())
 }
 
 /// A `set_field` whose labels the Scheme check fills in.

@@ -2,6 +2,7 @@
 
 pub mod filter;
 pub mod hlc;
+pub mod link;
 pub mod op;
 pub mod project;
 pub mod scheme;

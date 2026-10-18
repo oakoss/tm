@@ -5,6 +5,7 @@ mod concurrency;
 mod fields;
 mod find;
 mod guards;
+mod links;
 mod merge;
 mod projects;
 mod rebuild;

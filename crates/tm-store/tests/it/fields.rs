@@ -211,6 +211,33 @@ fn a_parent_cycle_from_a_merge_is_kept_and_writes_still_finish() {
 }
 
 #[test]
+fn adding_a_held_label_or_removing_a_missing_one_is_logged() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = new_issue(&mut store);
+    let remove = |elem: &str| Change::Remove {
+        field: "labels".into(),
+        label: String::new(),
+        elem: elem.into(),
+        elem_label: None,
+    };
+    store.append(draft(issue, add("labels", "x"))).unwrap();
+    store.append(draft(issue, add("labels", "x"))).unwrap();
+    store.append(draft(issue, remove("x"))).unwrap();
+    store.append(draft(issue, remove("x"))).unwrap();
+    let logged: i64 = store
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM ops WHERE field = 'labels'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(logged, 4);
+    assert_eq!(field(&store, issue, "labels"), None);
+}
+
+#[test]
 fn archiving_can_be_set_and_cleared() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));

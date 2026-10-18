@@ -247,6 +247,7 @@ pub(crate) fn dump(store: &Store) -> Vec<String> {
         "field_values",
         "field_versions",
         "set_members",
+        "links",
         "comments",
         "keys",
         "claims",
