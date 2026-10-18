@@ -931,7 +931,17 @@ impl Store {
     /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row;
     /// `Ok(None)` when the Issue does not exist.
     pub fn issue(&self, issue_id: Uuid) -> Result<Option<IssueView>, StoreError> {
-        self.read(|store| read::issue(&store.conn, &store.scheme, issue_id))
+        Ok(self.issues(&[issue_id])?.pop())
+    }
+
+    /// The Issues `ids` names, in that order, read together; an id with no
+    /// Issue is left out.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
+    pub fn issues(&self, ids: &[Uuid]) -> Result<Vec<IssueView>, StoreError> {
+        self.read(|store| read::issues(&store.conn, &store.scheme, ids))
     }
 
     /// Runs `reads` in one read transaction, so what they return never mixes

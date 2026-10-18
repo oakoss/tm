@@ -69,6 +69,56 @@ fn booleans_and_whole_numbers_read_back_as_written() {
 }
 
 #[test]
+fn issues_read_together_keep_their_order_and_their_own_values() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let a = new_issue(&mut store);
+    let b = new_issue(&mut store);
+    let c = new_issue(&mut store);
+    set(&mut store, a, "area", json!(3)).unwrap();
+    set(&mut store, a, "flag", json!(true)).unwrap();
+    store.append(draft(a, add("labels", "x"))).unwrap();
+    store.append(draft(b, add("labels", "y"))).unwrap();
+    store
+        .connection()
+        .execute(
+            "UPDATE keys SET provisional = 1 WHERE issue_id = ?1",
+            [c.as_bytes()],
+        )
+        .unwrap();
+
+    let views = store.issues(&[c, Uuid::now_v7(), a, b]).unwrap();
+    let ids: Vec<Uuid> = views.iter().map(|view| view.id).collect();
+    assert_eq!(ids, [c, a, b]);
+    let keys: Vec<Option<&str>> = views.iter().map(|view| view.key.as_deref()).collect();
+    assert_eq!(
+        keys,
+        [None, Some("CPL-1"), Some("CPL-2")],
+        "a provisional Key is no Key"
+    );
+    let (c, a, b) = (&views[0], &views[1], &views[2]);
+    assert_eq!(a.fields.get("area"), Some(&json!(3)));
+    assert_eq!(a.fields.get("flag"), Some(&json!(true)));
+    assert_eq!(b.fields.get("area"), None);
+    let labels = |view: &tm_store::IssueView| {
+        view.sets
+            .get("labels")
+            .map(|set| set.keys().cloned().collect::<Vec<_>>())
+    };
+    assert_eq!(labels(a), Some(vec!["x".to_owned()]));
+    assert_eq!(labels(b), Some(vec!["y".to_owned()]));
+    assert_eq!(labels(c), None);
+    assert_eq!(store.issues(&[]).unwrap(), []);
+    let twice: Vec<Uuid> = store
+        .issues(&[a.id, b.id, a.id])
+        .unwrap()
+        .iter()
+        .map(|view| view.id)
+        .collect();
+    assert_eq!(twice, [a.id, b.id, a.id]);
+}
+
+#[test]
 fn integers_an_f64_cannot_hold_exactly_are_refused() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
