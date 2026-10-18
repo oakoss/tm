@@ -107,7 +107,7 @@ Everything is soft-deleted: archived, hidden and restorable. `tm purge` is the o
 ### Interface
 
 - Everything a human can do, an agent can do through the CLI. Every command supports `--json` (or `TM_JSON=1`) with a stable, versioned output schema.
-- Errors are structured and carry the fix, for example `{"error":"missing_fields","target":"active","fields":[{"name":"area","allowed":["cli","tui","web"]}],"fix":"tm move CPL-42 active --set area=<value>"}`. In a terminal, humans are prompted for the missing values instead.
+- Errors are structured and carry the fix, for example `{"error":"missing_fields","target":"in_progress","fields":[{"name":"area","allowed":["cli","tui","web"]}],"fix":"tm move CPL-42 in_progress --set area=<value>"}`. In a terminal, humans are prompted for the missing values instead.
 - Bare `tm` opens the TUI only on a terminal; without one it prints help, so an agent never hangs in an interactive screen. `tm human` prints the short list of commands people need.
 - List commands accept `--watch` to stream changes instead of polling.
 - `tm prime` prints a compact context block for SessionStart hooks: the Scheme, the caller's Claims, the ready queue, Notifications, and open Findings or Path Claims touching files in the current diff. It warns when an agent session has no identity set.
