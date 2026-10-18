@@ -739,19 +739,7 @@ impl Store {
         for draft in &drafts {
             draft.change.validate()?;
         }
-        let now = self.clock.now().map_err(StoreError::Clock)?;
-        let now_ms = u64::try_from(now.utc_ms)
-            .ok()
-            .filter(|ms| *ms <= MAX_MS)
-            .ok_or_else(|| {
-                StoreError::Clock(format!("{} ms is outside the supported range", now.utc_ms))
-            })?;
-        if now.offset_min.unsigned_abs() > MAX_OFFSET_MIN {
-            return Err(StoreError::Clock(format!(
-                "UTC offset of {} minutes is not a real offset",
-                now.offset_min
-            )));
-        }
+        let (now, now_ms) = self.now()?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -840,6 +828,24 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(ops)
+    }
+
+    /// The clock's reading, and its milliseconds as the clock counts them.
+    fn now(&self) -> Result<(WallTime, u64), StoreError> {
+        let now = self.clock.now().map_err(StoreError::Clock)?;
+        let now_ms = u64::try_from(now.utc_ms)
+            .ok()
+            .filter(|ms| *ms <= MAX_MS)
+            .ok_or_else(|| {
+                StoreError::Clock(format!("{} ms is outside the supported range", now.utc_ms))
+            })?;
+        if now.offset_min.unsigned_abs() > MAX_OFFSET_MIN {
+            return Err(StoreError::Clock(format!(
+                "UTC offset of {} minutes is not a real offset",
+                now.offset_min
+            )));
+        }
+        Ok((now, now_ms))
     }
 
     /// The ids of Issues matching `filter`, in its `sort:` order, else most
