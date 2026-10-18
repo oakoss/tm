@@ -119,6 +119,15 @@ fn tm(scratch: &Scratch, dir: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
+/// Whether the scratch directory's disk tells names apart by case.
+fn case_sensitive(scratch: &Scratch) -> bool {
+    let probe = scratch.0.join("case-probe");
+    fs::write(&probe, "").unwrap();
+    let sensitive = !scratch.0.join("CASE-PROBE").exists();
+    fs::remove_file(&probe).unwrap();
+    sensitive
+}
+
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
@@ -410,9 +419,16 @@ fn a_repo_file_spelled_in_another_case_is_reported() {
             .success()
     );
     fs::rename(repo.join(".config/tm.toml"), repo.join(".config/TM.toml")).unwrap();
-    let output = tm(&scratch, &repo, &["init", "--yes"]);
-    if !repo.join(".config/tm.toml").exists() {
-        // A case-sensitive disk finds no repo file and starts afresh.
+    let output = tm(&scratch, &repo, &["init", "--key", "TM", "--yes"]);
+    if case_sensitive(&scratch) {
+        // TM.toml is not a repo file there, so init starts afresh beside it.
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            text(&output.stdout).contains("Created Workspace"),
+            "{output:?}"
+        );
+        assert!(repo.join(".config/tm.toml").exists());
+        assert!(repo.join(".config/TM.toml").exists());
         return;
     }
     assert!(!output.status.success());
@@ -428,6 +444,13 @@ fn a_config_spelled_in_another_case_is_refused() {
     let repo = fixture(&scratch, "repo");
     fs::create_dir(repo.join(".Config")).unwrap();
     let output = tm(&scratch, &repo, &["init", "--key", "TM", "--yes"]);
+    if case_sensitive(&scratch) {
+        // .Config is another directory there, and .config is made beside it.
+        assert!(output.status.success(), "{output:?}");
+        assert!(repo.join(".config/tm.toml").exists());
+        assert_eq!(fs::read_dir(repo.join(".Config")).unwrap().count(), 0);
+        return;
+    }
     assert!(!output.status.success());
     assert!(text(&output.stderr).contains("another case"), "{output:?}");
     assert_eq!(fs::read_dir(repo.join(".Config")).unwrap().count(), 0);
