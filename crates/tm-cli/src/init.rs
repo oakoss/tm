@@ -31,6 +31,7 @@ pub(crate) fn run(init: Init) -> Result<String, String> {
     if let Some(found) = workspace::discover(&cwd).map_err(|err| err.to_string())? {
         return already_mapped(&home, &found, &init);
     }
+    check_not_below_home_repo(&cwd, &root)?;
     let (key, name) = project(&root, init.key, init.name)?;
     let actor = actor(&root)?;
     let config_dir = root.join(".config");
@@ -112,6 +113,33 @@ pub(crate) fn run(init: Init) -> Result<String, String> {
         workspace.id,
         workspace.dir.display()
     ))
+}
+
+/// A git repo at `$HOME` holds unrelated directories, so init from one of
+/// them most likely ran before that directory's own `git init`. A `$HOME`
+/// that does not exist cannot be the repo root.
+fn check_not_below_home_repo(cwd: &Path, root: &Path) -> Result<(), String> {
+    let Some(home) = std::env::home_dir() else {
+        return Ok(());
+    };
+    if !home.is_absolute() {
+        return Err(format!("home directory {} is not absolute", home.display()));
+    }
+    let user_home = match fs::canonicalize(&home) {
+        Ok(path) => path,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(format!("home directory {}: {err}", home.display())),
+    };
+    let cwd = fs::canonicalize(cwd).map_err(|err| format!("working directory: {err}"))?;
+    if root == user_home && cwd != user_home {
+        return Err(format!(
+            "{} is inside the git repository at your home directory {}; run git init here first, or run tm init from {} to map your home directory",
+            cwd.display(),
+            user_home.display(),
+            user_home.display()
+        ));
+    }
+    Ok(())
 }
 
 /// Reports the mapping a repo file already makes, after checking that git

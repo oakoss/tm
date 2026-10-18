@@ -646,6 +646,101 @@ fn init_outside_a_repo_is_refused() {
 }
 
 #[test]
+fn init_below_a_home_repo_is_refused_but_runs_at_home() {
+    let scratch = Scratch::new();
+    let home = fixture(&scratch, "home");
+    let project = home.join("code/new-thing");
+    fs::create_dir_all(&project).unwrap();
+    let linked = scratch.0.join("home-link");
+    std::os::unix::fs::symlink(&home, &linked).unwrap();
+    let before = snapshot(&home);
+    let init = |dir: &Path, user_home: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_tm"))
+            .args(["init", "--key", "TM", "--yes"])
+            .current_dir(dir)
+            .env("HOME", user_home)
+            .env("TM_HOME", scratch.home())
+            .env("TM_ACTOR", "jace")
+            .env("GIT_CONFIG_GLOBAL", scratch.git_config())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    for user_home in [&home, &linked] {
+        let output = init(&project, user_home);
+        assert!(!output.status.success());
+        let stderr = text(&output.stderr);
+        assert!(stderr.contains("git init here"), "{stderr}");
+        assert!(
+            stderr.starts_with(&format!(
+                "tm: {} is inside the git repository at your home directory {};",
+                project.display(),
+                home.display()
+            )),
+            "{stderr}"
+        );
+    }
+    assert_eq!(snapshot(&home), before);
+    assert!(!scratch.home().exists(), "no Workspace was made");
+
+    let nested = fixture(&scratch, "home/code/other");
+    let output = init(&nested, &home);
+    assert!(output.status.success(), "{output:?}");
+    assert!(nested.join(".config/tm.toml").exists());
+
+    let output = init(&project, Path::new("../.."));
+    assert!(!output.status.success());
+    assert!(
+        text(&output.stderr).contains("is not absolute"),
+        "{output:?}"
+    );
+    let output = init(&project, &scratch.0.join("missing"));
+    assert!(output.status.success(), "a missing $HOME is not this repo");
+    fs::remove_dir_all(home.join(".config")).unwrap();
+
+    let output = init(&home, &home);
+    assert!(output.status.success(), "{output:?}");
+    assert!(home.join(".config/tm.toml").exists());
+    let output = init(&project, &home);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        text(&output.stdout).contains("already maps"),
+        "a mapped $HOME is reported, not refused"
+    );
+}
+
+#[test]
+fn a_home_that_cannot_be_resolved_stops_init() {
+    let scratch = Scratch::new();
+    let home = fixture(&scratch, "home");
+    let project = home.join("code/new-thing");
+    fs::create_dir_all(&project).unwrap();
+    let locked = scratch.0.join("locked");
+    fs::create_dir(&locked).unwrap();
+    std::os::unix::fs::symlink(&home, locked.join("link")).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tm"))
+        .args(["init", "--key", "TM", "--yes"])
+        .current_dir(&project)
+        .env("HOME", locked.join("link"))
+        .env("TM_HOME", scratch.home())
+        .env("TM_ACTOR", "jace")
+        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!output.status.success());
+    assert!(
+        text(&output.stderr).contains("home directory"),
+        "{output:?}"
+    );
+    assert!(!home.join(".config").exists());
+}
+
+#[test]
 fn concurrent_inits_write_the_file_once() {
     let scratch = Scratch::new();
     let repo = fixture(&scratch, "repo");
