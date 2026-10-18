@@ -1,4 +1,4 @@
-use serde_json::json;
+use serde_json::{Value, json};
 use tm_core::scheme::Category;
 use tm_core::{Actor, Change, Hlc};
 use tm_store::{Draft, StoreError};
@@ -48,6 +48,55 @@ fn an_agent_write_records_the_human_it_writes_for() {
         [("claude".to_owned(), Some("jace".to_owned()))]
     );
     assert_eq!(stored(human_issue), [("jace".to_owned(), None)]);
+}
+
+fn batches(store: &tm_store::Store) -> Vec<(Uuid, Uuid)> {
+    let mut stmt = store
+        .connection()
+        .prepare("SELECT op_id, batch FROM op_batches ORDER BY op_id")
+        .unwrap();
+    stmt.query_map([], |row| {
+        Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+    })
+    .unwrap()
+    .map(|row| {
+        let (op, batch) = row.unwrap();
+        (
+            Uuid::from_slice(&op).unwrap(),
+            Uuid::from_slice(&batch).unwrap(),
+        )
+    })
+    .collect()
+}
+
+#[test]
+fn each_write_is_one_batch_named_by_its_first_operation() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let (issue, created) = store.create_issue("jace", PROJECT, "task", "t").unwrap();
+    let edited = store
+        .append(draft(issue, set_field("title", json!("u"))))
+        .unwrap();
+    let mut expected: Vec<(Uuid, Uuid)> = created
+        .iter()
+        .map(|op| (op.op_id, created[0].op_id))
+        .chain([(edited.op_id, edited.op_id)])
+        .collect();
+    expected.sort();
+    assert_eq!(batches(&store), expected);
+
+    let refused = store.append_all(vec![
+        draft(issue, set_field("title", json!("v"))),
+        draft(issue, set_field("title", Value::Null)),
+    ]);
+    assert!(refused.is_err());
+    assert_eq!(
+        batches(&store),
+        expected,
+        "a refused write records no batch"
+    );
+    assert_eq!(store.rebuild().unwrap(), 0);
+    assert_eq!(batches(&store), expected, "a rebuild keeps the batches");
 }
 
 #[test]

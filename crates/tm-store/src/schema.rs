@@ -98,6 +98,15 @@ WHEN NEW.assigned_key IS NOT NULL AND NEW.kind <> 'create'
 BEGIN
   SELECT RAISE(ABORT, 'only a create operation is given a Key');
 END;
+
+-- Which write each local operation came from, for undo. Kept by this Replica
+-- only: not hashed, synced or replayed, and a rebuild leaves it in place.
+CREATE TABLE IF NOT EXISTS op_batches (
+  op_id BLOB PRIMARY KEY,
+  batch BLOB NOT NULL
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS op_batches_by_batch ON op_batches (batch);
 ";
 
 pub(crate) const DROP_PROJECTIONS: &str = "

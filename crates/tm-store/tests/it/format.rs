@@ -45,6 +45,11 @@ fn a_format_1_store_upgrades_and_replays_every_operation() {
         )
         .unwrap();
     assert_eq!((ops, empty), (13, 13));
+    let batched: i64 = store
+        .connection()
+        .query_row("SELECT count(*) FROM op_batches", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(batched, 0, "operations written before batches have none");
 
     let first = store.issue_by_key("CPL-1").unwrap().unwrap();
     let second = store.issue_by_key("CPL-2").unwrap().unwrap();

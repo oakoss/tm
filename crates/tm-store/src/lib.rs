@@ -733,7 +733,9 @@ impl Store {
 
     /// Checks, stamps, logs and applies every draft in one `BEGIN IMMEDIATE`
     /// transaction. Required fields are checked after the whole batch, so an
-    /// Issue's `create` and its required `set_field`s go in together.
+    /// Issue's `create` and its required `set_field`s go in together. The
+    /// batch is named by its first operation's id, which `tm undo` takes
+    /// (ADR 0010).
     ///
     /// # Errors
     ///
@@ -758,7 +760,7 @@ impl Store {
                 row.get(0)
             })?;
         let replica_id = uuid_from(&replica)?;
-        let mut ops = Vec::with_capacity(drafts.len());
+        let mut ops: Vec<Op> = Vec::with_capacity(drafts.len());
         // Each Issue's state before the batch is the bar it is held to after:
         // a batch may not make it worse, but an Issue that arrived incomplete
         // or inconsistent stays editable.
@@ -799,6 +801,11 @@ impl Store {
                 _ => None,
             };
             insert_op(&tx, &op, &change, assigned_key.as_deref())?;
+            let batch = ops.first().map_or(op.op_id, |first| first.op_id);
+            tx.execute(
+                "INSERT INTO op_batches (op_id, batch) VALUES (?1, ?2)",
+                [op.op_id.as_bytes(), batch.as_bytes()],
+            )?;
             let effects = apply::Effects {
                 assigned_key: assigned_key.as_deref(),
                 ..apply::Effects::default()
