@@ -14,8 +14,9 @@ use crate::project::ProjectId;
 /// (ADR 0010).
 pub const CURRENT_VERSION: u16 = 2;
 
-/// The first format whose envelope carries `on_behalf_of`.
-const ON_BEHALF_OF_SINCE: u16 = 2;
+/// The first format whose envelope carries `on_behalf_of` and whose names
+/// must be printable; v1 operations replay as they were written.
+const IDENTITY_SINCE: u16 = 2;
 
 /// Domain prefix for `op_hash`; chain hashes use a different one.
 const OP_HASH_PREFIX: u8 = 0x00;
@@ -33,8 +34,11 @@ pub enum OpError {
     InvalidVersion,
     #[error("operation format v{0} has no on_behalf_of, so its hash would leave it out")]
     OnBehalfOfUnsupported(u16),
-    #[error("on_behalf_of is set but blank")]
-    BlankOnBehalfOf,
+    #[error("{field} {reason}")]
+    InvalidName {
+        field: &'static str,
+        reason: &'static str,
+    },
     #[error("operation kind {kind:?} needs format v{needs}, but the operation is v{v}")]
     KindNewerThanFormat {
         kind: &'static str,
@@ -289,12 +293,15 @@ impl Op {
             v if v > CURRENT_VERSION => return Err(OpError::UnsupportedVersion(v)),
             _ => {}
         }
-        match &self.on_behalf_of {
-            Some(_) if self.v < ON_BEHALF_OF_SINCE => {
+        if self.v < IDENTITY_SINCE {
+            if self.on_behalf_of.is_some() {
                 return Err(OpError::OnBehalfOfUnsupported(self.v));
             }
-            Some(human) if human.trim().is_empty() => return Err(OpError::BlankOnBehalfOf),
-            _ => {}
+        } else {
+            check_name("actor", &self.actor)?;
+            if let Some(human) = &self.on_behalf_of {
+                check_name("on_behalf_of", human)?;
+            }
         }
         if self.payload.len() > MAX_PAYLOAD_BYTES {
             return Err(OpError::TooLarge(self.payload.len()));
@@ -322,7 +329,7 @@ impl Op {
     /// changes; from `v: 2` the layout adds `on_behalf_of` after `actor`.
     #[must_use]
     pub fn envelope(&self) -> Vec<u8> {
-        let v1 = self.v < ON_BEHALF_OF_SINCE;
+        let v1 = self.v < IDENTITY_SINCE;
         let mut buf = Vec::with_capacity(128 + self.payload.len());
         buf.push(if v1 { 1 } else { 2 });
         buf.extend_from_slice(&self.v.to_be_bytes());
@@ -359,6 +366,17 @@ impl Op {
         hasher.update(self.envelope());
         hasher.finalize().into()
     }
+}
+
+fn check_name(field: &'static str, name: &str) -> Result<(), OpError> {
+    let reason = if name.trim().is_empty() {
+        "is blank"
+    } else if name.chars().any(char::is_control) {
+        "has a control character"
+    } else {
+        return Ok(());
+    };
+    Err(OpError::InvalidName { field, reason })
 }
 
 fn put_bytes(buf: &mut Vec<u8>, bytes: &[u8]) {
@@ -548,10 +566,36 @@ mod tests {
     }
 
     #[test]
-    fn a_blank_on_behalf_of_is_refused() {
-        let mut op = sample_v2();
-        op.on_behalf_of = Some(" ".into());
-        assert!(matches!(op.change(), Err(OpError::BlankOnBehalfOf)));
+    fn names_must_be_printable_from_v2() {
+        let cases: [(Mutation, &str, &str); 4] = [
+            (Box::new(|o| o.actor = " ".into()), "actor", "is blank"),
+            (
+                Box::new(|o| o.actor = "cl\naude".into()),
+                "actor",
+                "has a control character",
+            ),
+            (
+                Box::new(|o| o.on_behalf_of = Some(" ".into())),
+                "on_behalf_of",
+                "is blank",
+            ),
+            (
+                Box::new(|o| o.on_behalf_of = Some("ja\u{7}ce".into())),
+                "on_behalf_of",
+                "has a control character",
+            ),
+        ];
+        for (mutate, field, reason) in cases {
+            let mut op = sample_v2();
+            mutate(&mut op);
+            assert!(
+                matches!(op.change(), Err(OpError::InvalidName { field: f, reason: r }) if f == field && r == reason),
+                "{field} {reason}"
+            );
+        }
+        let mut v1 = sample();
+        v1.actor = String::new();
+        assert!(v1.change().is_ok(), "v1 operations replay as written");
     }
 
     #[test]

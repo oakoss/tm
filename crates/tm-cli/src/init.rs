@@ -84,7 +84,7 @@ pub(crate) fn run(init: Init) -> Result<String, String> {
     };
     let target = root.join(REPO_FILE);
     let finished = store
-        .create_project(&actor, &key, &name)
+        .create_project(actor.as_str(), &key, &name)
         .map_err(|err| err.to_string())
         .and_then(|_| write_new(&target, &text))
         .and_then(|()| {

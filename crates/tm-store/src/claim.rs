@@ -3,7 +3,7 @@
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use tm_core::op::{CLAIM_FIELD, ClaimAction};
-use tm_core::{Change, Op};
+use tm_core::{Actor, Change, Op};
 use uuid::Uuid;
 
 use crate::apply::{issue_project, uuid_from};
@@ -35,13 +35,13 @@ impl Store {
     /// Issue, or as [`Store::append_all`].
     pub fn take(
         &mut self,
-        actor: &str,
+        actor: impl Into<Actor>,
         issue: Uuid,
         agent: &str,
         ttl_ms: Option<u64>,
     ) -> Result<Claim, StoreError> {
         let op = self.append(self.claim_draft(
-            actor,
+            actor.into(),
             issue,
             ClaimAction::Take {
                 agent: agent.to_owned(),
@@ -60,8 +60,13 @@ impl Store {
     ///
     /// [`StoreError::NotClaimHolder`] when `claim` is not the Issue's current
     /// Claim, [`StoreError::UnknownIssue`], or as [`Store::append_all`].
-    pub fn release(&mut self, actor: &str, issue: Uuid, claim: Uuid) -> Result<Op, StoreError> {
-        let draft = self.claim_draft(actor, issue, ClaimAction::Release { claim })?;
+    pub fn release(
+        &mut self,
+        actor: impl Into<Actor>,
+        issue: Uuid,
+        claim: Uuid,
+    ) -> Result<Op, StoreError> {
+        let draft = self.claim_draft(actor.into(), issue, ClaimAction::Release { claim })?;
         self.append(draft)
     }
 
@@ -79,13 +84,13 @@ impl Store {
 
     fn claim_draft(
         &self,
-        actor: &str,
+        actor: Actor,
         issue: Uuid,
         action: ClaimAction,
     ) -> Result<Draft, StoreError> {
         let project = issue_project(&self.conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?;
         Ok(Draft {
-            actor: actor.to_owned(),
+            actor,
             project,
             subject: issue,
             change: Change::Claim { action },

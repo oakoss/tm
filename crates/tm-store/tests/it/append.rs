@@ -1,6 +1,6 @@
 use serde_json::json;
 use tm_core::scheme::Category;
-use tm_core::{Change, Hlc};
+use tm_core::{Actor, Change, Hlc};
 use tm_store::{Draft, StoreError};
 use uuid::Uuid;
 
@@ -16,6 +16,69 @@ fn count_ops(store: &tm_store::Store) -> i64 {
             |r| r.get(0),
         )
         .unwrap()
+}
+
+#[test]
+fn an_agent_write_records_the_human_it_writes_for() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let (agent_issue, ops) = store
+        .create_issue(Actor::agent("claude", "jace"), PROJECT, "task", "t")
+        .unwrap();
+    assert!(
+        ops.iter()
+            .all(|op| op.on_behalf_of.as_deref() == Some("jace"))
+    );
+    let (human_issue, _) = store
+        .create_issue(Actor::agent("jace", "jace"), PROJECT, "task", "t")
+        .unwrap();
+    assert_eq!(store.rebuild().unwrap(), 0, "the stored column must hash");
+    let stored = |issue: Uuid| -> Vec<(String, Option<String>)> {
+        let conn = store.connection();
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT actor, on_behalf_of FROM ops WHERE issue_id = ?1")
+            .unwrap();
+        stmt.query_map([issue.as_bytes()], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(
+        stored(agent_issue),
+        [("claude".to_owned(), Some("jace".to_owned()))]
+    );
+    assert_eq!(stored(human_issue), [("jace".to_owned(), None)]);
+}
+
+#[test]
+fn every_write_helper_records_the_human_an_agent_writes_for() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let claude = || Actor::agent("claude", "jace");
+    let (a, b) = (new_issue(&mut store), new_issue(&mut store));
+    let (project, created) = store.create_project(claude(), "AGT", "Agents").unwrap();
+    let claim = store.take(claude(), a, "claude", None).unwrap();
+    let ops = [
+        created,
+        store
+            .rename_project(claude(), project, None, Some("Agent work"))
+            .unwrap(),
+        store.link(claude(), "blocks", a, b).unwrap(),
+        store.unlink(claude(), "blocks", a, b).unwrap(),
+        store.release(claude(), a, claim.id).unwrap(),
+    ];
+    for op in ops {
+        assert_eq!(op.on_behalf_of.as_deref(), Some("jace"), "{}", op.kind);
+    }
+    let took: Option<String> = store
+        .connection()
+        .query_row(
+            "SELECT on_behalf_of FROM ops WHERE op_id = ?1",
+            [claim.id.as_bytes()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(took.as_deref(), Some("jace"), "take");
 }
 
 #[test]

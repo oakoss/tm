@@ -25,7 +25,7 @@ use rusqlite::{
 use tm_core::filter::{Context, FilterError, parse, resolve};
 use tm_core::hlc::MAX_MS;
 use tm_core::op::CURRENT_VERSION;
-use tm_core::{Change, Hlc, Op, OpError, ProjectId, Scheme};
+use tm_core::{Actor, Change, Hlc, Op, OpError, ProjectId, Scheme};
 use uuid::Uuid;
 
 use apply::{apply, project_from, rust_int, sql_int, uuid_from};
@@ -187,7 +187,7 @@ impl Unapplied {
 /// A change to write, before the store stamps it with identity and time.
 #[derive(Debug, Clone)]
 pub struct Draft {
-    pub actor: String,
+    pub actor: Actor,
     pub project: ProjectId,
     pub subject: Uuid,
     pub change: Change,
@@ -558,13 +558,13 @@ impl Store {
     /// any Project holds or once held the key, or as [`Store::append_all`].
     pub fn create_project(
         &mut self,
-        actor: &str,
+        actor: impl Into<Actor>,
         key: &str,
         name: &str,
     ) -> Result<(ProjectId, Op), StoreError> {
         let project = ProjectId::new();
         let op = self.append(Draft {
-            actor: actor.to_owned(),
+            actor: actor.into(),
             project,
             subject: project.uuid(),
             change: Change::CreateProject {
@@ -583,13 +583,13 @@ impl Store {
     /// As [`Store::create_project`], or [`StoreError::UnknownProject`].
     pub fn rename_project(
         &mut self,
-        actor: &str,
+        actor: impl Into<Actor>,
         project: ProjectId,
         key: Option<&str>,
         name: Option<&str>,
     ) -> Result<Op, StoreError> {
         self.append(Draft {
-            actor: actor.to_owned(),
+            actor: actor.into(),
             project,
             subject: project.uuid(),
             change: Change::RenameProject {
@@ -636,7 +636,7 @@ impl Store {
     /// As [`Store::append_all`].
     pub fn create_issue(
         &mut self,
-        actor: &str,
+        actor: impl Into<Actor>,
         project: ProjectId,
         issue_type: &str,
         title: &str,
@@ -654,10 +654,11 @@ impl Store {
         if let Some(start) = start {
             changes.push(set("status", serde_json::json!(start)));
         }
+        let actor = actor.into();
         let drafts = changes
             .into_iter()
             .map(|change| Draft {
-                actor: actor.to_owned(),
+                actor: actor.clone(),
                 project,
                 subject: issue_id,
                 change,
@@ -677,12 +678,12 @@ impl Store {
     /// `blocks` Link that would close a cycle, or as [`Store::append_all`].
     pub fn link(
         &mut self,
-        actor: &str,
+        actor: impl Into<Actor>,
         link_type: &str,
         from: Uuid,
         to: Uuid,
     ) -> Result<Op, StoreError> {
-        let draft = self.link_draft(actor, link_type, from, to, true)?;
+        let draft = self.link_draft(actor.into(), link_type, from, to, true)?;
         self.append(draft)
     }
 
@@ -693,18 +694,18 @@ impl Store {
     /// As [`Store::link`], except that a held Link of any type can be removed.
     pub fn unlink(
         &mut self,
-        actor: &str,
+        actor: impl Into<Actor>,
         link_type: &str,
         from: Uuid,
         to: Uuid,
     ) -> Result<Op, StoreError> {
-        let draft = self.link_draft(actor, link_type, from, to, false)?;
+        let draft = self.link_draft(actor.into(), link_type, from, to, false)?;
         self.append(draft)
     }
 
     fn link_draft(
         &self,
-        actor: &str,
+        actor: Actor,
         link_type: &str,
         from: Uuid,
         to: Uuid,
@@ -719,7 +720,7 @@ impl Store {
             return Err(StoreError::UnknownIssue(source));
         };
         Ok(Draft {
-            actor: actor.to_owned(),
+            actor,
             project,
             subject: source,
             change: Change::Link {
@@ -780,8 +781,8 @@ impl Store {
                 v: CURRENT_VERSION,
                 op_id: Uuid::now_v7(),
                 replica_id,
-                actor: draft.actor,
-                on_behalf_of: None,
+                actor: draft.actor.name().to_owned(),
+                on_behalf_of: draft.actor.on_behalf_of().map(str::to_owned),
                 project: draft.project,
                 subject: draft.subject,
                 kind: change.kind().to_owned(),
