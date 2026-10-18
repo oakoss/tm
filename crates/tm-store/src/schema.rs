@@ -6,7 +6,14 @@
 pub(crate) const PROJECTION_VERSION: i64 = 5;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
-pub(crate) const STORE_FORMAT: i64 = 1;
+pub(crate) const STORE_FORMAT: i64 = 2;
+
+/// Runs between two passes of `LOG`; the second recreates `ops_immutable` over
+/// the new column.
+pub(crate) const FORMAT_2: &str = "
+ALTER TABLE ops ADD COLUMN on_behalf_of TEXT;
+DROP TRIGGER ops_immutable;
+";
 
 pub(crate) const LOG: &str = "
 CREATE TABLE IF NOT EXISTS meta (
@@ -33,7 +40,8 @@ CREATE TABLE IF NOT EXISTS ops (
   payload TEXT NOT NULL,
   server_seq INTEGER,
   server_received_ms INTEGER,
-  assigned_key TEXT
+  assigned_key TEXT,
+  on_behalf_of TEXT
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS ops_target ON ops (issue_id, field, elem);
@@ -44,8 +52,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS ops_server_position ON ops (project, server_se
 -- Stored operations are immutable; only the columns the server fills in later
 -- may change.
 CREATE TRIGGER IF NOT EXISTS ops_immutable
-BEFORE UPDATE OF op_id, op_hash, v, kind, replica_id, actor, project, issue_id, field, elem,
-                 hlc, base_seq, utc_ms, offset_min, payload ON ops
+BEFORE UPDATE OF op_id, op_hash, v, kind, replica_id, actor, on_behalf_of, project, issue_id,
+                 field, elem, hlc, base_seq, utc_ms, offset_min, payload ON ops
 BEGIN
   SELECT RAISE(ABORT, 'stored operations are immutable');
 END;

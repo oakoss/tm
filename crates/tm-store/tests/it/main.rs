@@ -5,6 +5,7 @@ mod claims;
 mod concurrency;
 mod fields;
 mod find;
+mod format;
 mod guards;
 mod links;
 mod merge;

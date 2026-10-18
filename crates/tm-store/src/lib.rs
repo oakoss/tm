@@ -424,6 +424,11 @@ impl Store {
             Some(found) if found < 1 => {
                 return Err(StoreError::Corrupt(format!("unknown store format {found}")));
             }
+            Some(1) => {
+                tx.execute_batch(schema::FORMAT_2)?;
+                tx.execute_batch(schema::LOG)?;
+                tx.execute("UPDATE meta SET v = 2 WHERE k = 'format'", [])?;
+            }
             Some(_) => {}
             None => {
                 tx.execute(
@@ -927,7 +932,7 @@ impl Store {
             let mut stmt = tx.prepare(
                 "SELECT seq, op_id, op_hash, v, replica_id, actor, project, issue_id, kind, hlc,
                         base_seq, utc_ms, offset_min, payload, server_seq, server_received_ms,
-                        assigned_key
+                        assigned_key, on_behalf_of
                  FROM ops
                  ORDER BY server_seq IS NULL, server_seq, hlc, replica_id, op_id",
             )?;
@@ -1067,9 +1072,10 @@ fn insert_op(
     assigned_key: Option<&str>,
 ) -> Result<(), StoreError> {
     tx.execute(
-        "INSERT INTO ops (op_id, op_hash, v, kind, replica_id, actor, project, issue_id, field, elem,
-                          hlc, base_seq, utc_ms, offset_min, payload, assigned_key)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        "INSERT INTO ops (op_id, op_hash, v, kind, replica_id, actor, on_behalf_of, project,
+                          issue_id, field, elem, hlc, base_seq, utc_ms, offset_min, payload,
+                          assigned_key)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         params![
             op.op_id.as_bytes(),
             op.op_hash(),
@@ -1077,6 +1083,7 @@ fn insert_op(
             op.kind,
             op.replica_id.as_bytes(),
             op.actor,
+            op.on_behalf_of,
             op.project.to_string(),
             op.subject.as_bytes(),
             change.field(),
@@ -1111,6 +1118,7 @@ struct StoredOp {
     server_seq: Option<i64>,
     server_received_ms: Option<i64>,
     assigned_key: Option<String>,
+    on_behalf_of: Option<String>,
 }
 
 impl StoredOp {
@@ -1133,6 +1141,7 @@ impl StoredOp {
             server_seq: row.get(14)?,
             server_received_ms: row.get(15)?,
             assigned_key: row.get(16)?,
+            on_behalf_of: row.get(17)?,
         })
     }
 
@@ -1144,7 +1153,7 @@ impl StoredOp {
             op_id: uuid_from(&self.op_id)?,
             replica_id: uuid_from(&self.replica_id)?,
             actor: self.actor.clone(),
-            on_behalf_of: None,
+            on_behalf_of: self.on_behalf_of.clone(),
             project: project_from(&self.project)?,
             subject: uuid_from(&self.issue_id)?,
             kind: self.kind.clone(),
