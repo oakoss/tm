@@ -57,7 +57,7 @@ design.md records an Agent's writes as "agent, on behalf of human", and `tm undo
 - `CLAUDECODE` and `AI_AGENT` are not read. IDE extensions set `CLAUDECODE` in their integrated terminals, and Claude Code's own tools also see its session id; `AI_AGENT`'s values carry versions and are inherited from parent agents.
 - With an Agent, `actor` is the Agent's name and `on_behalf_of` is the human, unless the two are equal. Without one, `actor` is the human and `on_behalf_of` is empty. `on_behalf_of` is the human running the Agent, not the Issue's Assignee.
 - `@me` resolves to the human in both cases.
-- A take's `agent` is the resolved Agent name, the operation's `actor`. The claims table records `on_behalf_of` in place of `actor`, so a Claim shows the Agent and the human it works for. A take with no `on_behalf_of` was written by that human, as every `v: 1` take was, so the column falls back to the writer.
+- Only an Agent takes a Claim, and the take names the Agent writing it; a human's own work is tracked through the Assignee. Both are checked when written, so takes already in the log replay. The claims table records `on_behalf_of` in place of `actor`, so a Claim shows the Agent and the human it works for. A take with no `on_behalf_of` was written by an Agent named as its human or, as every `v: 1` take was, by the human, so the column falls back to the writer.
 
 **Undo.**
 
@@ -84,4 +84,4 @@ A `v: 1` sample keeps the pinned hash, and removing the `v: 1` envelope branch f
 
 - Research: [core-commands.md](../research/cli/core-commands.md), sections 3 and 4.
 - Answers ADR 0009's open question of where "on behalf of" lives.
-- Open: whether a human with no Agent identity may take a Claim; how `create` and `comment` are undone; what undo means once operations sync.
+- Open: how `create` and `comment` are undone; what undo means once operations sync.

@@ -82,6 +82,8 @@ pub enum StoreError {
         /// From the Issue written, around the cycle and back to it.
         path: Vec<Uuid>,
     },
+    #[error("only an Agent can take a Claim, and {actor} writes as a human")]
+    NoAgent { actor: String },
     #[error("Issue {issue} is held by {agent} for {on_behalf_of} (Claim {claim}{})", expires_ms.map_or_else(String::new, |ms| format!(", expiring at {ms} ms")))]
     AlreadyClaimed {
         issue: Uuid,
@@ -771,6 +773,9 @@ impl Store {
                     validate::missing_fields(&tx, &self.scheme, draft.subject)?,
                     validate::status_fits_type(&tx, &self.scheme, draft.subject)?,
                 ));
+            }
+            if let Change::Claim { action } = &draft.change {
+                claim::check_taker(&draft.actor, action)?;
             }
             let change = validate::check(&tx, &self.scheme, draft.subject, draft.change)?;
             hlc = hlc.tick(now_ms);

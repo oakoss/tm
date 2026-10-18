@@ -26,34 +26,34 @@ pub struct Claim {
 }
 
 impl Store {
-    /// Claims `issue` for `agent`. Refused while any Claim holds it, even one
-    /// under the same Agent name; [`Claim::id`] is the token to release it.
+    /// Claims `issue` for the Agent writing. Refused while any Claim holds it,
+    /// even one under the same Agent name; [`Claim::id`] is the token to
+    /// release it.
     ///
     /// # Errors
     ///
+    /// [`StoreError::NoAgent`] when a human writes,
     /// [`StoreError::AlreadyClaimed`] naming the holder,
-    /// [`StoreError::UnknownIssue`], [`StoreError::Invalid`] for a blank or
-    /// unprintable Agent, an expiry of zero or out of range, or an archived
-    /// Issue, or as [`Store::append_all`].
+    /// [`StoreError::UnknownIssue`], [`StoreError::Invalid`] for an expiry of
+    /// zero or out of range or an archived Issue, or as [`Store::append_all`].
     pub fn take(
         &mut self,
         actor: &Actor,
         issue: Uuid,
-        agent: &str,
         ttl_ms: Option<u64>,
     ) -> Result<Claim, StoreError> {
         let op = self.append(self.claim_draft(
             actor.clone(),
             issue,
             ClaimAction::Take {
-                agent: agent.to_owned(),
+                agent: actor.name().to_owned(),
                 ttl_ms,
                 prev: None,
             },
         )?)?;
         // From the operation, not the table: another writer may already have
         // released and retaken the Issue.
-        taken(&op, agent, ttl_ms)
+        taken(&op, actor.name(), ttl_ms)
     }
 
     /// Releases the Claim `claim` holds on `issue`.
@@ -167,6 +167,22 @@ fn taken(op: &Op, agent: &str, ttl_ms: Option<u64>) -> Result<Claim, StoreError>
         on_behalf_of: op.on_behalf_of.clone().unwrap_or_else(|| op.actor.clone()),
         expires_ms,
     })
+}
+
+/// Checked on write only, so takes already in the log still replay.
+pub(crate) fn check_taker(actor: &Actor, action: &ClaimAction) -> Result<(), StoreError> {
+    let ClaimAction::Take { agent, .. } = action else {
+        return Ok(());
+    };
+    if !actor.is_agent() {
+        return Err(StoreError::NoAgent {
+            actor: actor.name().to_owned(),
+        });
+    }
+    if agent != actor.name() {
+        return Err(invalid("must name the Agent writing it"));
+    }
+    Ok(())
 }
 
 /// Checked inside the write transaction, so of concurrent takers exactly one

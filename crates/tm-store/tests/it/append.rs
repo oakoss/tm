@@ -106,7 +106,7 @@ fn every_write_helper_records_the_human_an_agent_writes_for() {
     let claude = Actor::agent("claude", "jace");
     let (a, b) = (new_issue(&mut store), new_issue(&mut store));
     let (project, created) = store.create_project(&claude, "AGT", "Agents").unwrap();
-    let claim = store.take(&claude, a, "claude", None).unwrap();
+    let claim = store.take(&claude, a, None).unwrap();
     let ops = [
         created,
         store

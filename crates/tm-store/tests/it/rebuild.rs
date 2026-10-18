@@ -6,7 +6,9 @@ use tm_core::Change;
 use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
-use crate::support::{ManualClock, TempDir, draft, dump, jace, links, new_issue, open, set_field};
+use crate::support::{
+    ManualClock, TempDir, claude, draft, dump, jace, links, new_issue, open, set_field,
+};
 
 const ISSUES: usize = 3;
 /// A required built-in, two enumerated built-ins and a Scheme field.
@@ -296,11 +298,11 @@ proptest! {
                 let held = expected.claims[*issue];
                 match (release, held) {
                     (false, None) => {
-                        let claim = store.take(&jace(), issues[*issue], "claude", None).unwrap();
+                        let claim = store.take(&claude(), issues[*issue], None).unwrap();
                         expected.claims[*issue] = Some(claim.id);
                     }
                     (false, Some(_)) => {
-                        let err = store.take(&jace(), issues[*issue], "claude", None).unwrap_err();
+                        let err = store.take(&claude(), issues[*issue], None).unwrap_err();
                         prop_assert!(matches!(err, StoreError::AlreadyClaimed { .. }), "{}", err);
                     }
                     (true, Some(token)) => {

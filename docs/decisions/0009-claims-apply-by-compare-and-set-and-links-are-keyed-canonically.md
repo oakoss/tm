@@ -45,5 +45,5 @@ Fifty processes taking one Issue get one success and refusals naming the winner,
 
 - Research: [claims-and-links.md](../research/workspaces/claims-and-links.md).
 - The glossary's Claim, "an Agent's exclusive, expiring hold on an Issue", still holds; the token decides which session under that Agent name is the holder.
-- Where "on behalf of" lives, and what a Claim records of it: [ADR 0010](0010-operations-record-who-an-agent-acts-for-and-undo-names-a-batch.md).
-- Open: whether a human with no Agent identity may take a Claim; how renewal is recorded under sync; Links across Projects and to Findings; purge's redaction of payloads.
+- Where "on behalf of" lives, what a Claim records of it, and that only an Agent takes a Claim: [ADR 0010](0010-operations-record-who-an-agent-acts-for-and-undo-names-a-batch.md).
+- Open: how renewal is recorded under sync; Links across Projects and to Findings; purge's redaction of payloads.

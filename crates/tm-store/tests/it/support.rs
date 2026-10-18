@@ -268,6 +268,11 @@ pub(crate) fn jace() -> Actor {
     Actor::human("jace")
 }
 
+/// An Agent writing for `jace`.
+pub(crate) fn claude() -> Actor {
+    Actor::agent("claude", "jace")
+}
+
 pub(crate) fn draft(issue_id: Uuid, change: Change) -> Draft {
     Draft {
         actor: jace(),
