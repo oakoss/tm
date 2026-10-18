@@ -1,5 +1,7 @@
 //! Every failure as a coded document (ADR 0011).
 
+use std::process::ExitCode;
+
 use serde_json::{Map, Value, json};
 use tm_core::OpError;
 use tm_core::filter::FilterError;
@@ -36,6 +38,15 @@ impl CliError {
             fix: None,
             details: Map::new(),
             warnings: Vec::new(),
+        }
+    }
+
+    /// 2 for a usage error, 1 for any other.
+    pub(crate) fn exit_code(&self) -> ExitCode {
+        if self.code == "usage" {
+            ExitCode::from(2)
+        } else {
+            ExitCode::FAILURE
         }
     }
 

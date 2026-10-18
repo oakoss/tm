@@ -77,7 +77,7 @@ pub(crate) fn finish(
             ),
             ExitCode::SUCCESS,
         ),
-        (true, Err(err)) => (format!("{}\n", err.document(warnings)), ExitCode::FAILURE),
+        (true, Err(err)) => (format!("{}\n", err.document(warnings)), err.exit_code()),
         (false, Ok(output)) => {
             for warning in warnings.iter().chain(&output.warnings) {
                 eprintln!("tm: warning: {warning}");
@@ -92,7 +92,7 @@ pub(crate) fn finish(
             if let Some(fix) = &err.fix {
                 eprintln!("  fix: {fix}");
             }
-            return ExitCode::FAILURE;
+            return err.exit_code();
         }
     };
     match write(&text) {

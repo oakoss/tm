@@ -1,12 +1,19 @@
 //! The Workspace the working directory maps to, opened for a command.
 
+use std::path::PathBuf;
+
+use tm_core::ProjectId;
 use tm_store::Store;
-use tm_store::workspace;
+use tm_store::workspace::{self, Found};
 use uuid::Uuid;
 
 use crate::error::CliError;
 
 pub(crate) struct Here {
+    /// The repo file that applies, and the directory holding it.
+    pub(crate) found: Found,
+    /// The working directory, resolved, for the path-to-Project mapping.
+    pub(crate) cwd: PathBuf,
     pub(crate) store: Store,
     /// What every command reports, such as operations that did not apply.
     pub(crate) warnings: Vec<String>,
@@ -44,10 +51,40 @@ pub(crate) fn open() -> Result<Here, CliError> {
             if unapplied == 1 { "it" } else { "them" }
         )]
     };
-    Ok(Here { store, warnings })
+    let cwd = std::fs::canonicalize(&cwd).map_err(|err| {
+        CliError::new("io", format!("working directory: {err}"))
+            .with("path", cwd.display().to_string())
+    })?;
+    Ok(Here {
+        found,
+        cwd,
+        store,
+        warnings,
+    })
 }
 
 impl Here {
+    /// The Project the repo file maps the working directory to.
+    ///
+    /// # Errors
+    ///
+    /// `not_found` when the Workspace has no Project with the mapped key.
+    pub(crate) fn project(&self) -> Result<ProjectId, CliError> {
+        let relative = self.cwd.strip_prefix(&self.found.dir).unwrap_or(&self.cwd);
+        let key = self.found.file.project_for(relative);
+        self.store.project_by_key(key)?.ok_or_else(|| {
+            CliError::new(
+                "not_found",
+                format!(
+                    "{} maps this directory to Project {key}, which this Workspace does not have",
+                    self.found.path.display()
+                ),
+            )
+            .with("kind", "project")
+            .with("reference", key)
+        })
+    }
+
     /// The Issue a Key, matched without case and through retired Project
     /// keys, or a full UUID names. A UUID prefix is never guessed at.
     ///

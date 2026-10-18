@@ -1,5 +1,6 @@
 //! The `tm` command.
 
+mod create;
 mod error;
 mod here;
 mod identity;
@@ -44,6 +45,23 @@ enum Command {
         /// Write the file without asking; needed when not at a terminal.
         #[arg(long)]
         yes: bool,
+    },
+    /// Create an Issue in the Project this directory maps to.
+    Create {
+        /// The Issue type, such as task or bug; `tm scheme show` lists them.
+        #[arg(long = "type")]
+        issue_type: Option<String>,
+        #[arg(long)]
+        title: Option<String>,
+        /// Set a field, such as priority=high; repeat for more.
+        #[arg(long, value_name = "FIELD=VALUE", value_parser = create::field_value)]
+        set: Vec<(String, String)>,
+        /// Add a label; repeat for more.
+        #[arg(long = "label", value_name = "LABEL")]
+        labels: Vec<String>,
+        /// The parent Issue's Key or id.
+        #[arg(long)]
+        parent: Option<String>,
     },
     /// Show an Issue's fields and Claim.
     Show {
@@ -91,6 +109,19 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             Ok(Output::new(scheme_text(&scheme), scheme_json(&scheme)))
         }
         Some(Command::Init { key, name, yes }) => init::run(init::Init { key, name, yes }, json),
+        Some(Command::Create {
+            issue_type,
+            title,
+            set,
+            labels,
+            parent,
+        }) => create::run(&create::Create {
+            issue_type,
+            title,
+            set,
+            labels,
+            parent,
+        }),
         Some(Command::Show { issue }) => show::run(&issue),
     }
 }
@@ -120,8 +151,7 @@ fn parse_failed(json: bool, err: &clap::Error) -> ExitCode {
     }
     let message = rendered.lines().next().unwrap_or_default();
     let message = message.strip_prefix("error: ").unwrap_or(message);
-    output::finish(true, Err(CliError::new("usage", message)), &[]);
-    ExitCode::from(2)
+    output::finish(true, Err(CliError::new("usage", message)), &[])
 }
 
 fn scheme_json(scheme: &Scheme) -> serde_json::Value {

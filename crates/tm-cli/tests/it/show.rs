@@ -1,24 +1,11 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{Value, json};
 use tm_core::{Actor, Change, ProjectId};
-use tm_store::workspace::Workspace;
 use tm_store::{Draft, Store};
 use uuid::Uuid;
 
-use crate::support::{Scratch, fixture, text, tm};
-
-/// A repo mapped to a new Workspace with the Project TM, and its store.
-fn initialized(scratch: &Scratch) -> (PathBuf, Store, ProjectId) {
-    let repo = fixture(scratch, "repo");
-    let made = tm(scratch, &repo, &["init", "--yes", "--json", "--key", "TM"]);
-    assert!(made.status.success(), "{made:?}");
-    let doc: Value = serde_json::from_slice(&made.stdout).unwrap();
-    let workspace: Uuid = doc["data"]["workspace"].as_str().unwrap().parse().unwrap();
-    let store = Store::open(&Workspace::at(&scratch.home(), workspace).store_path()).unwrap();
-    let project = store.project_by_key("TM").unwrap().unwrap();
-    (repo, store, project)
-}
+use crate::support::{Scratch, fixture, initialized, text, tm};
 
 fn change(store: &mut Store, project: ProjectId, issue: Uuid, change: Change) {
     store

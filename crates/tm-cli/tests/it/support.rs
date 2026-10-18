@@ -4,6 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+use tm_core::ProjectId;
+use tm_store::Store;
+use tm_store::workspace::Workspace;
 use uuid::Uuid;
 
 /// A scratch directory outside any other repo's reach: each fixture repo has
@@ -119,6 +122,18 @@ pub(crate) fn tm(scratch: &Scratch, dir: &Path, args: &[&str]) -> Output {
         .stdin(Stdio::null())
         .output()
         .unwrap()
+}
+
+/// A repo mapped to a new Workspace with the Project TM, and its store.
+pub(crate) fn initialized(scratch: &Scratch) -> (PathBuf, Store, ProjectId) {
+    let repo = fixture(scratch, "repo");
+    let made = tm(scratch, &repo, &["init", "--yes", "--json", "--key", "TM"]);
+    assert!(made.status.success(), "{made:?}");
+    let doc: serde_json::Value = serde_json::from_slice(&made.stdout).unwrap();
+    let workspace: Uuid = doc["data"]["workspace"].as_str().unwrap().parse().unwrap();
+    let store = Store::open(&Workspace::at(&scratch.home(), workspace).store_path()).unwrap();
+    let project = store.project_by_key("TM").unwrap().unwrap();
+    (repo, store, project)
 }
 
 pub(crate) fn text(bytes: &[u8]) -> String {
