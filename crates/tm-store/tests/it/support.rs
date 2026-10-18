@@ -101,6 +101,7 @@ pub(crate) fn remote_op(
         op_id: Uuid::now_v7(),
         replica_id: Uuid::from_u128(replica),
         actor: "codex".into(),
+        on_behalf_of: None,
         project: PROJECT,
         subject: issue_id,
         kind: change.kind().into(),
