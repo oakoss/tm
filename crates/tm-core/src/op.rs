@@ -9,14 +9,12 @@ use uuid::Uuid;
 use crate::Hlc;
 use crate::project::ProjectId;
 
-/// The operation format this binary writes and fully understands. Every new
-/// `Change` kind raises it, so an older binary refuses the kind by number
-/// (ADR 0010).
-pub const CURRENT_VERSION: u16 = 2;
+/// The operation format this binary writes and fully understands. Until tm
+/// v1 is released the format changes in place (ADR 0010).
+pub const CURRENT_VERSION: u16 = 1;
 
-/// The first format whose envelope carries `on_behalf_of` and whose names
-/// must be printable; v1 operations replay as they were written.
-const IDENTITY_SINCE: u16 = 2;
+/// Version of the binary envelope `op_hash` is computed over.
+const ENVELOPE_FORMAT: u8 = 1;
 
 /// Domain prefix for `op_hash`; chain hashes use a different one.
 const OP_HASH_PREFIX: u8 = 0x00;
@@ -32,18 +30,10 @@ pub enum OpError {
     UnsupportedVersion(u16),
     #[error("operation format v0 does not exist")]
     InvalidVersion,
-    #[error("operation format v{0} has no on_behalf_of, so its hash would leave it out")]
-    OnBehalfOfUnsupported(u16),
     #[error("{field} {reason}")]
     InvalidName {
         field: &'static str,
         reason: &'static str,
-    },
-    #[error("operation kind {kind:?} needs format v{needs}, but the operation is v{v}")]
-    KindNewerThanFormat {
-        kind: &'static str,
-        needs: u16,
-        v: u16,
     },
     #[error("operation kind {stored:?} does not match its payload, which is {payload:?}")]
     KindMismatch {
@@ -162,23 +152,6 @@ impl Change {
         }
     }
 
-    /// The format this kind first appeared in. A new kind takes a new
-    /// `CURRENT_VERSION`, so a binary that predates it refuses it by number.
-    #[must_use]
-    pub const fn introduced_in(&self) -> u16 {
-        match self {
-            Self::Create
-            | Self::SetField { .. }
-            | Self::Add { .. }
-            | Self::Remove { .. }
-            | Self::Comment { .. }
-            | Self::Link { .. }
-            | Self::Claim { .. }
-            | Self::CreateProject { .. }
-            | Self::RenameProject { .. } => 1,
-        }
-    }
-
     /// Whether the subject is a Project rather than an Issue.
     #[must_use]
     pub const fn is_project(&self) -> bool {
@@ -293,15 +266,9 @@ impl Op {
             v if v > CURRENT_VERSION => return Err(OpError::UnsupportedVersion(v)),
             _ => {}
         }
-        if self.v < IDENTITY_SINCE {
-            if self.on_behalf_of.is_some() {
-                return Err(OpError::OnBehalfOfUnsupported(self.v));
-            }
-        } else {
-            check_name("actor", &self.actor)?;
-            if let Some(human) = &self.on_behalf_of {
-                check_name("on_behalf_of", human)?;
-            }
+        check_name("actor", &self.actor)?;
+        if let Some(human) = &self.on_behalf_of {
+            check_name("on_behalf_of", human)?;
         }
         if self.payload.len() > MAX_PAYLOAD_BYTES {
             return Err(OpError::TooLarge(self.payload.len()));
@@ -313,37 +280,25 @@ impl Op {
                 payload: change.kind(),
             });
         }
-        if change.introduced_in() > self.v {
-            return Err(OpError::KindNewerThanFormat {
-                kind: change.kind(),
-                needs: change.introduced_in(),
-                v: self.v,
-            });
-        }
         change.validate()?;
         Ok(change)
     }
 
-    /// The fixed binary envelope of every field the Replica writes. A `v: 1`
-    /// operation keeps the layout it was hashed with, so its `op_hash` never
-    /// changes; from `v: 2` the layout adds `on_behalf_of` after `actor`.
+    /// The fixed binary envelope of every field the Replica writes.
     #[must_use]
     pub fn envelope(&self) -> Vec<u8> {
-        let v1 = self.v < IDENTITY_SINCE;
         let mut buf = Vec::with_capacity(128 + self.payload.len());
-        buf.push(if v1 { 1 } else { 2 });
+        buf.push(ENVELOPE_FORMAT);
         buf.extend_from_slice(&self.v.to_be_bytes());
         buf.extend_from_slice(self.op_id.as_bytes());
         buf.extend_from_slice(self.replica_id.as_bytes());
         put_bytes(&mut buf, self.actor.as_bytes());
-        if !v1 {
-            match &self.on_behalf_of {
-                Some(human) => {
-                    buf.push(1);
-                    put_bytes(&mut buf, human.as_bytes());
-                }
-                None => buf.push(0),
+        match &self.on_behalf_of {
+            Some(human) => {
+                buf.push(1);
+                put_bytes(&mut buf, human.as_bytes());
             }
+            None => buf.push(0),
         }
         put_bytes(&mut buf, self.project.to_string().as_bytes());
         buf.extend_from_slice(self.subject.as_bytes());
@@ -357,8 +312,6 @@ impl Op {
     }
 
     /// The operation's identity: SHA-256 over a domain prefix and the envelope.
-    /// Only an operation [`Op::change`] accepts has a meaningful hash; a v1
-    /// operation carrying `on_behalf_of` hashes as if it had none.
     #[must_use]
     pub fn op_hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
@@ -392,47 +345,13 @@ mod tests {
     type Mutation = Box<dyn Fn(&mut Op)>;
 
     /// Changing the envelope layout or hash input changes every Replica's
-    /// operation identities, so the values are pinned, one per format.
-    const PINNED_OP_HASH: &str = "ee4e794fbfc682546be2fc037644bcbc28ab2809018acaeac0c84f5f5604acb6";
-    const PINNED_OP_HASH_V2: &str =
-        "ac2176bd4504ae65b92afef3e4b77f930d532c15fb800a3280572d29ecd6faa5";
-    const PINNED_OP_HASH_V2_HUMAN: &str =
-        "3f5b9a9aa7516a2671669172d75b5e363863d079dae34768e2889970bdde327d";
+    /// operation identities, so the values are pinned: a human's operation
+    /// and an Agent's.
+    const PINNED_OP_HASH: &str = "acb8ceb7219a0e25c8c2a45fb04d581757cc6f9fa57768e4dfd3660367bbdb93";
+    const PINNED_OP_HASH_AGENT: &str =
+        "8792a963eeace336f49134d420a90a8f99c3fac3b40ccb06e6b9079ff6be0429";
 
-    /// The kinds each format knows. A row never changes once released; a new
-    /// kind goes in a new row with a new `CURRENT_VERSION`.
-    const KINDS_BY_FORMAT: [(u16, &[&str]); 2] = [
-        (
-            1,
-            &[
-                "create",
-                "set_field",
-                "add",
-                "remove",
-                "comment",
-                "link",
-                "claim",
-                "create_project",
-                "rename_project",
-            ],
-        ),
-        (
-            2,
-            &[
-                "create",
-                "set_field",
-                "add",
-                "remove",
-                "comment",
-                "link",
-                "claim",
-                "create_project",
-                "rename_project",
-            ],
-        ),
-    ];
-
-    /// A v1 operation, as stored before format v2.
+    /// A human's operation.
     fn sample() -> Op {
         let change = Change::SetField {
             field: "status".into(),
@@ -457,10 +376,9 @@ mod tests {
         }
     }
 
-    /// An Agent's operation in the current format.
-    fn sample_v2() -> Op {
+    /// An Agent's operation.
+    fn sample_agent() -> Op {
         Op {
-            v: 2,
             actor: "claude".into(),
             on_behalf_of: Some("jace".into()),
             ..sample()
@@ -525,14 +443,14 @@ mod tests {
     #[test]
     fn op_hash_is_deterministic() {
         assert_eq!(sample().op_hash(), sample().op_hash());
-        assert_eq!(sample_v2().op_hash(), sample_v2().op_hash());
+        assert_eq!(sample_agent().op_hash(), sample_agent().op_hash());
     }
 
     #[test]
     fn op_hash_covers_every_written_field() {
-        let base = sample_v2().op_hash();
+        let base = sample_agent().op_hash();
         let variants: Vec<Mutation> = vec![
-            Box::new(|o| o.v = 3),
+            Box::new(|o| o.v = 2),
             Box::new(|o| o.op_id = Uuid::from_u128(9)),
             Box::new(|o| o.replica_id = Uuid::from_u128(9)),
             Box::new(|o| o.actor = "codex".into()),
@@ -548,25 +466,14 @@ mod tests {
             Box::new(|o| o.payload.push(' ')),
         ];
         for (i, change) in variants.iter().enumerate() {
-            let mut op = sample_v2();
+            let mut op = sample_agent();
             change(&mut op);
             assert_ne!(op.op_hash(), base, "variant {i} did not change op_hash");
         }
     }
 
     #[test]
-    fn a_v1_operation_cannot_carry_on_behalf_of() {
-        let mut op = sample();
-        op.on_behalf_of = Some("jace".into());
-        assert!(matches!(
-            op.change(),
-            Err(OpError::OnBehalfOfUnsupported(1))
-        ));
-        assert!(sample_v2().change().is_ok());
-    }
-
-    #[test]
-    fn names_must_be_printable_from_v2() {
+    fn names_must_be_printable() {
         let cases: [(Mutation, &str, &str); 4] = [
             (Box::new(|o| o.actor = " ".into()), "actor", "is blank"),
             (
@@ -586,40 +493,14 @@ mod tests {
             ),
         ];
         for (mutate, field, reason) in cases {
-            let mut op = sample_v2();
+            let mut op = sample_agent();
             mutate(&mut op);
             assert!(
                 matches!(op.change(), Err(OpError::InvalidName { field: f, reason: r }) if f == field && r == reason),
                 "{field} {reason}"
             );
         }
-        let mut v1 = sample();
-        v1.actor = String::new();
-        assert!(v1.change().is_ok(), "v1 operations replay as written");
-    }
-
-    /// Checks nothing until a kind arrives after format 1, then holds it to
-    /// its format.
-    #[test]
-    fn a_kind_is_refused_in_a_format_before_it() {
-        for change in every_change() {
-            let needs = change.introduced_in();
-            if needs <= 1 {
-                continue;
-            }
-            let op = Op {
-                v: needs - 1,
-                kind: change.kind().into(),
-                payload: serde_json::to_string(&change).unwrap(),
-                ..sample()
-            };
-            assert!(
-                matches!(op.change(), Err(OpError::KindNewerThanFormat { .. })),
-                "{} accepted at v{}",
-                change.kind(),
-                needs - 1
-            );
-        }
+        assert!(sample_agent().change().is_ok());
     }
 
     #[test]
@@ -640,34 +521,6 @@ mod tests {
         let kinds: std::collections::BTreeSet<&str> =
             every_change().iter().map(Change::kind).collect();
         assert_eq!(kinds, tags);
-    }
-
-    #[test]
-    fn every_kind_belongs_to_the_format_that_introduced_it() {
-        assert_eq!(
-            KINDS_BY_FORMAT.last().unwrap().0,
-            CURRENT_VERSION,
-            "a new format needs its row of kinds"
-        );
-        for change in every_change() {
-            assert!(
-                change.introduced_in() <= CURRENT_VERSION,
-                "{} needs a new CURRENT_VERSION",
-                change.kind()
-            );
-        }
-        for (format, kinds) in KINDS_BY_FORMAT {
-            let known: std::collections::BTreeSet<&str> = every_change()
-                .iter()
-                .filter(|change| change.introduced_in() <= format)
-                .map(Change::kind)
-                .collect();
-            assert_eq!(
-                known,
-                kinds.iter().copied().collect(),
-                "format {format}'s kinds changed; a new kind needs a new format"
-            );
-        }
     }
 
     #[test]
@@ -711,13 +564,7 @@ mod tests {
     #[test]
     fn op_hash_has_a_fixed_value() {
         assert_eq!(hex(sample().op_hash()), PINNED_OP_HASH);
-        assert_eq!(hex(sample_v2().op_hash()), PINNED_OP_HASH_V2);
-        let human = Op {
-            actor: "jace".into(),
-            on_behalf_of: None,
-            ..sample_v2()
-        };
-        assert_eq!(hex(human.op_hash()), PINNED_OP_HASH_V2_HUMAN);
+        assert_eq!(hex(sample_agent().op_hash()), PINNED_OP_HASH_AGENT);
     }
 
     #[test]

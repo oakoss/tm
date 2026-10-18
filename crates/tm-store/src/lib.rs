@@ -426,11 +426,6 @@ impl Store {
             Some(found) if found < 1 => {
                 return Err(StoreError::Corrupt(format!("unknown store format {found}")));
             }
-            Some(1) => {
-                tx.execute_batch(schema::FORMAT_2)?;
-                tx.execute_batch(schema::LOG)?;
-                tx.execute("UPDATE meta SET v = 2 WHERE k = 'format'", [])?;
-            }
             Some(_) => {}
             None => {
                 tx.execute(

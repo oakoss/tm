@@ -293,7 +293,7 @@ fn a_lost_replica_identity_with_operations_is_corruption() {
 
 #[test]
 fn a_store_format_this_tm_never_wrote_is_refused() {
-    for (format, newer) in [(3, true), (0, false)] {
+    for (format, newer) in [(2, true), (0, false)] {
         let dir = TempDir::new();
         {
             let (store, _) = store_with_an_edit(&dir);
@@ -305,7 +305,7 @@ fn a_store_format_this_tm_never_wrote_is_refused() {
         let err = reopen_err(&dir);
         if newer {
             assert!(
-                matches!(err, StoreError::NewerStore { found: 3, .. }),
+                matches!(err, StoreError::NewerStore { found: 2, .. }),
                 "{err}"
             );
         } else {

@@ -6,14 +6,8 @@
 pub(crate) const PROJECTION_VERSION: i64 = 6;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
-pub(crate) const STORE_FORMAT: i64 = 2;
-
-/// Runs between two passes of `LOG`; the second recreates `ops_immutable` over
-/// the new column.
-pub(crate) const FORMAT_2: &str = "
-ALTER TABLE ops ADD COLUMN on_behalf_of TEXT;
-DROP TRIGGER ops_immutable;
-";
+/// Until tm v1 is released the log changes in place (ADR 0010).
+pub(crate) const STORE_FORMAT: i64 = 1;
 
 pub(crate) const LOG: &str = "
 CREATE TABLE IF NOT EXISTS meta (
@@ -29,6 +23,7 @@ CREATE TABLE IF NOT EXISTS ops (
   kind TEXT NOT NULL,
   replica_id BLOB NOT NULL,
   actor TEXT NOT NULL,
+  on_behalf_of TEXT,
   project TEXT NOT NULL,
   issue_id BLOB NOT NULL,
   field TEXT,
@@ -40,8 +35,7 @@ CREATE TABLE IF NOT EXISTS ops (
   payload TEXT NOT NULL,
   server_seq INTEGER,
   server_received_ms INTEGER,
-  assigned_key TEXT,
-  on_behalf_of TEXT
+  assigned_key TEXT
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS ops_target ON ops (issue_id, field, elem);
