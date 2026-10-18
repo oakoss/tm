@@ -4,7 +4,10 @@ use tm_core::{Actor, Change, Hlc};
 use tm_store::{Draft, StoreError};
 use uuid::Uuid;
 
-use crate::support::{ManualClock, TempDir, draft, field, jace, new_issue, open, set_field};
+use crate::support::{
+    ManualClock, TempDir, claude, draft, field, insert_acked, jace, new_issue, open, remote_op,
+    set_field,
+};
 use crate::support::{OTHER, PROJECT};
 
 fn count_ops(store: &tm_store::Store) -> i64 {
@@ -407,6 +410,103 @@ fn a_status_the_scheme_no_longer_defines_reads_as_triage() {
         store.issue(issue).unwrap().unwrap().category,
         Some(Category::Triage)
     );
+}
+
+#[test]
+fn comments_read_back_in_log_order_with_who_wrote_them() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let issue = new_issue(&mut store);
+    let other = new_issue(&mut store);
+    let first = store
+        .append(draft(
+            issue,
+            Change::Comment {
+                body: "first".into(),
+            },
+        ))
+        .unwrap();
+    clock.set(2_000);
+    store
+        .append(Draft {
+            actor: claude(),
+            ..draft(
+                issue,
+                Change::Comment {
+                    body: "second".into(),
+                },
+            )
+        })
+        .unwrap();
+    store
+        .append(draft(
+            other,
+            Change::Comment {
+                body: "elsewhere".into(),
+            },
+        ))
+        .unwrap();
+
+    let comments = store.comments(issue).unwrap();
+    let read: Vec<(&str, &str, Option<&str>, i64)> = comments
+        .iter()
+        .map(|c| {
+            (
+                c.body.as_str(),
+                c.actor.as_str(),
+                c.on_behalf_of.as_deref(),
+                c.utc_ms,
+            )
+        })
+        .collect();
+    assert_eq!(
+        read,
+        [
+            ("first", "jace", None, 1_000),
+            ("second", "claude", Some("jace"), 2_000),
+        ]
+    );
+    assert_eq!(comments[0].id, first.op_id);
+    assert!(matches!(
+        store.comments(Uuid::now_v7()),
+        Err(StoreError::UnknownIssue(_))
+    ));
+}
+
+#[test]
+fn comments_at_the_same_clock_order_by_replica() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = Uuid::now_v7();
+    let create = remote_op(7, issue, &Change::Create, Hlc::new(1_000, 0), 0);
+    insert_acked(&store, &create, 1, 1_000);
+    // Replica 8's operation gets the smaller id, so ordering by id alone
+    // would put it first.
+    for (seq, replica) in [(2, 8), (3, 7)] {
+        let body = format!("replica {replica}");
+        let op = remote_op(
+            replica,
+            issue,
+            &Change::Comment { body },
+            Hlc::new(5_000, 0),
+            0,
+        );
+        insert_acked(&store, &op, seq, 5_000);
+    }
+    store.rebuild().unwrap();
+    assert!(
+        store.unapplied().unwrap().is_empty(),
+        "{:?}",
+        store.unapplied().unwrap()
+    );
+    let bodies: Vec<String> = store
+        .comments(issue)
+        .unwrap()
+        .into_iter()
+        .map(|comment| comment.body)
+        .collect();
+    assert_eq!(bodies, ["replica 7", "replica 8"]);
 }
 
 #[test]

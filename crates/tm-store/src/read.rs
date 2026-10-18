@@ -159,6 +159,91 @@ fn built_in(scheme: &Scheme, row: &Row<'_>) -> Result<IssueView, StoreError> {
     })
 }
 
+/// A Link as one of its Issues sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LinkView {
+    #[serde(rename = "type")]
+    pub link_type: String,
+    /// `outward` from the Link's source, `inward` from its target; a
+    /// symmetric Link reads `outward` from both ends.
+    pub direction: Direction,
+    /// The name read from this end, such as `is blocked by`; a type this
+    /// build does not know reads as its id.
+    pub name: String,
+    pub other: Uuid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Direction {
+    Outward,
+    Inward,
+}
+
+/// A comment, in log order: clock, then Replica, then operation (ADR 0006).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CommentView {
+    /// The id of the operation that added it.
+    pub id: Uuid,
+    pub actor: String,
+    pub on_behalf_of: Option<String>,
+    pub body: String,
+    pub utc_ms: i64,
+}
+
+const LINKS: &str = "SELECT type, dst, 0 FROM links WHERE src = ?1
+     UNION ALL
+     SELECT type, src, 1 FROM links WHERE dst = ?1
+     ORDER BY 1, 3, 2";
+
+const COMMENTS: &str = "SELECT c.op_id, c.actor, o.on_behalf_of, c.body, c.utc_ms
+     FROM comments c LEFT JOIN ops o ON o.op_id = c.op_id
+     WHERE c.issue_id = ?1 ORDER BY c.hlc, o.replica_id, c.op_id";
+
+pub(crate) fn links(conn: &Connection, issue: Uuid) -> Result<Vec<LinkView>, StoreError> {
+    let mut stmt = conn.prepare_cached(LINKS)?;
+    let mut rows = stmt.query([issue.as_bytes()])?;
+    let mut links = Vec::new();
+    while let Some(row) = rows.next()? {
+        let link_type: String = row.get(0)?;
+        let other = uuid_from(&row.get::<_, Vec<u8>>(1)?)?;
+        let known = tm_core::link::link_type(&link_type);
+        let inward = row.get::<_, bool>(2)? && !known.is_some_and(|def| def.symmetric);
+        let name = match known {
+            Some(def) if inward => def.inward,
+            Some(def) => def.outward,
+            None => &link_type,
+        };
+        links.push(LinkView {
+            name: name.to_owned(),
+            direction: if inward {
+                Direction::Inward
+            } else {
+                Direction::Outward
+            },
+            other,
+            link_type,
+        });
+    }
+    Ok(links)
+}
+
+pub(crate) fn comments(conn: &Connection, issue: Uuid) -> Result<Vec<CommentView>, StoreError> {
+    let mut stmt = conn.prepare_cached(COMMENTS)?;
+    let mut rows = stmt.query([issue.as_bytes()])?;
+    let mut comments = Vec::new();
+    while let Some(row) = rows.next()? {
+        comments.push(CommentView {
+            id: uuid_from(&row.get::<_, Vec<u8>>(0)?)?,
+            actor: row.get(1)?,
+            on_behalf_of: row.get(2)?,
+            body: row.get(3)?,
+            utc_ms: row.get(4)?,
+        });
+    }
+    Ok(comments)
+}
+
 /// Whole numbers read back as the integers they were written as.
 #[allow(clippy::cast_possible_truncation)]
 fn number_json(number: f64) -> Value {
@@ -187,4 +272,45 @@ fn scheme_value(scheme: &Scheme, row: &Row<'_>) -> Result<(String, Value), Store
         }
     };
     Ok((name, value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Store;
+
+    /// Without these, `show` scanned every Link and comment in the Workspace.
+    #[test]
+    fn an_issues_links_and_comments_are_found_by_index() {
+        let dir = std::env::temp_dir().join(format!("tm-store-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("store.db")).unwrap();
+        let plan = |sql: &str| -> Vec<String> {
+            store
+                .connection()
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map([Uuid::nil().as_bytes()], |row| row.get(3))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let (links, comments) = (plan(LINKS), plan(COMMENTS));
+        drop(store);
+        std::fs::remove_dir_all(&dir).unwrap();
+        for (index, plan) in [
+            ("links_by_src", &links),
+            ("links_by_dst", &links),
+            ("comments_by_issue", &comments),
+        ] {
+            assert!(
+                plan.iter().any(|step| step.contains(index)),
+                "{index}: {plan:?}"
+            );
+        }
+        assert!(
+            !links.iter().any(|step| step.starts_with("SCAN")),
+            "{links:?}"
+        );
+    }
 }

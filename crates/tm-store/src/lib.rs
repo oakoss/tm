@@ -32,7 +32,7 @@ use uuid::Uuid;
 use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
 pub use claim::Claim;
-pub use read::IssueView;
+pub use read::{CommentView, Direction, IssueView, LinkView};
 pub use ready::Ready;
 
 /// How long a writer waits for another writer before giving up.
@@ -944,6 +944,33 @@ impl Store {
     /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
     pub fn issues(&self, ids: &[Uuid]) -> Result<Vec<IssueView>, StoreError> {
         self.read(|store| read::issues(&store.conn, &store.scheme, ids))
+    }
+
+    /// The Links `issue` holds at either end, by type, outward before
+    /// inward.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::UnknownIssue`], any SQLite failure, or
+    /// [`StoreError::Corrupt`] for a malformed row.
+    pub fn links(&self, issue: Uuid) -> Result<Vec<LinkView>, StoreError> {
+        self.read(|store| {
+            apply::issue_project(&store.conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?;
+            read::links(&store.conn, issue)
+        })
+    }
+
+    /// The comments on `issue`, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::UnknownIssue`], any SQLite failure, or
+    /// [`StoreError::Corrupt`] for a malformed row.
+    pub fn comments(&self, issue: Uuid) -> Result<Vec<CommentView>, StoreError> {
+        self.read(|store| {
+            apply::issue_project(&store.conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?;
+            read::comments(&store.conn, issue)
+        })
     }
 
     /// Runs `reads` in one read transaction, so what they return never mixes

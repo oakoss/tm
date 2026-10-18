@@ -1,7 +1,7 @@
 //! Links: canonical keys, write-time checks and merge (ADR 0009).
 
 use tm_core::{Change, Hlc};
-use tm_store::{Store, StoreError};
+use tm_store::{Direction, Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::{
@@ -32,6 +32,56 @@ fn link(link_type: &str, target: Uuid, present: bool) -> Change {
 fn ordered_pair(store: &mut Store) -> (Uuid, Uuid) {
     let (a, b) = (new_issue(store), new_issue(store));
     (a.min(b), a.max(b))
+}
+
+#[test]
+fn each_end_reads_a_link_by_the_name_it_sees() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let (low, high) = ordered_pair(&mut store);
+    let third = new_issue(&mut store);
+    store.link(&jace(), "blocks", low, high).unwrap();
+    store.link(&jace(), "relates_to", high, low).unwrap();
+    store.link(&jace(), "duplicates", third, high).unwrap();
+    // A type from a later build, as sync could bring it.
+    store
+        .connection()
+        .execute(
+            "INSERT INTO links (type, src, dst) VALUES ('mentors', ?1, ?2)",
+            [third.as_bytes(), high.as_bytes()],
+        )
+        .unwrap();
+
+    let seen = |issue: Uuid| -> Vec<(String, Direction, String, Uuid)> {
+        store
+            .links(issue)
+            .unwrap()
+            .into_iter()
+            .map(|link| (link.link_type, link.direction, link.name, link.other))
+            .collect()
+    };
+    let o = Direction::Outward;
+    let i = Direction::Inward;
+    assert_eq!(
+        seen(high),
+        [
+            ("blocks".into(), i, "is blocked by".into(), low),
+            ("duplicates".into(), i, "is duplicated by".into(), third),
+            ("mentors".into(), i, "mentors".into(), third),
+            ("relates_to".into(), o, "relates to".into(), low),
+        ]
+    );
+    assert_eq!(
+        seen(low),
+        [
+            ("blocks".into(), o, "blocks".into(), high),
+            ("relates_to".into(), o, "relates to".into(), high),
+        ]
+    );
+    assert!(matches!(
+        store.links(Uuid::now_v7()),
+        Err(StoreError::UnknownIssue(_))
+    ));
 }
 
 #[test]
