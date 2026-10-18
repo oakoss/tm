@@ -29,6 +29,20 @@ impl Output {
     }
 }
 
+/// Stored text made safe to print: control characters, which could move the
+/// cursor or clear a terminal, appear escaped, as `\u{1b}` or `\n`.
+pub(crate) fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_default().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
 /// Whether to print JSON, decided before the arguments are parsed so a
 /// usage error is a document too. A `--json` after `--` is an argument, not
 /// the flag.
