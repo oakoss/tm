@@ -9,6 +9,7 @@ mod claim;
 mod project;
 mod query;
 mod read;
+mod ready;
 mod schema;
 mod validate;
 pub mod workspace;
@@ -32,6 +33,7 @@ use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
 pub use claim::Claim;
 pub use read::IssueView;
+pub use ready::Ready;
 
 /// How long a writer waits for another writer before giving up.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -409,7 +411,7 @@ impl Store {
     }
 
     fn init(&mut self) -> Result<(), StoreError> {
-        if self.ready()? {
+        if self.is_set_up()? {
             // Creates only what an older build of this format lacked; with
             // nothing to create it takes no lock.
             self.conn.execute_batch(schema::LOG)?;
@@ -867,7 +869,7 @@ impl Store {
 
     /// Whether the store is already set up for this binary. Read without the
     /// write lock, so opening such a store never waits on a writer.
-    fn ready(&self) -> Result<bool, StoreError> {
+    fn is_set_up(&self) -> Result<bool, StoreError> {
         let has_meta: bool = self.conn.query_row(
             "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'meta')",
             [],

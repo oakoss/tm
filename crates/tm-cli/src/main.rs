@@ -7,6 +7,7 @@ mod identity;
 mod init;
 mod list;
 mod output;
+mod ready;
 mod show;
 
 use std::fmt::Write as _;
@@ -73,6 +74,13 @@ enum Command {
         #[arg(long)]
         limit: Option<usize>,
     },
+    /// List the work that can start now: unclaimed todo Issues no open Issue
+    /// blocks, most urgent first, with what each would unblock.
+    Ready {
+        /// Show at most this many.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// Show an Issue's fields and Claim.
     Show {
         /// The Issue's Key, such as CPL-42, or its full id.
@@ -133,6 +141,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             parent,
         }),
         Some(Command::List { filter, limit }) => list::run(&filter, limit),
+        Some(Command::Ready { limit }) => ready::run(limit),
         Some(Command::Show { issue }) => show::run(&issue),
     }
 }

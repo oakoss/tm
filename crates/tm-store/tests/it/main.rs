@@ -9,6 +9,7 @@ mod guards;
 mod links;
 mod merge;
 mod projects;
+mod ready;
 mod rebuild;
 mod support;
 mod workspace;

@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 use tm_core::ProjectId;
 use tm_core::filter::{Context, FilterError, parse};
-use tm_store::{IssueView, StoreError};
+use tm_store::{IssueView, Store, StoreError};
 use uuid::Uuid;
 
 use crate::error::CliError;
@@ -41,28 +41,15 @@ fn list(here: &Here, filter: &[String], limit: Option<usize>) -> Result<Output, 
         let ids = find(here, &filter)?;
         let shown = &ids[..limit.map_or(ids.len(), |limit| limit.min(ids.len()))];
         let views = store.issues(shown)?;
-        let mut projects: HashMap<ProjectId, Option<String>> = HashMap::new();
-        for view in &views {
-            if let Entry::Vacant(entry) = projects.entry(view.project) {
-                entry.insert(store.project_key(view.project)?);
-            }
-        }
+        let projects = project_keys(store, &views)?;
         Ok::<_, CliError>((ids.len(), views, projects))
     })?;
 
     let mut items = Vec::with_capacity(views.len());
     let mut text = String::new();
     for view in &views {
-        let project = &projects[&view.project];
         let _ = writeln!(text, "{}", line(view));
-        items.push(json!({
-            "id": view.id,
-            "key": view.key,
-            "project": project,
-            "category": view.category,
-            "fields": view.fields,
-            "sets": view.sets,
-        }));
+        items.push(item(view, &projects));
     }
     if total == 0 {
         text.push_str("no Issues match\n");
@@ -98,9 +85,35 @@ fn find(here: &Here, filter: &str) -> Result<Vec<Uuid>, CliError> {
     }
 }
 
+/// The key of each Project `views` belong to.
+pub(crate) fn project_keys(
+    store: &Store,
+    views: &[IssueView],
+) -> Result<HashMap<ProjectId, Option<String>>, CliError> {
+    let mut projects = HashMap::new();
+    for view in views {
+        if let Entry::Vacant(entry) = projects.entry(view.project) {
+            entry.insert(store.project_key(view.project)?);
+        }
+    }
+    Ok(projects)
+}
+
+/// An Issue as a list gives it: `show`'s shape without parent and Claim.
+pub(crate) fn item(view: &IssueView, projects: &HashMap<ProjectId, Option<String>>) -> Value {
+    json!({
+        "id": view.id,
+        "key": view.key,
+        "project": projects.get(&view.project),
+        "category": view.category,
+        "fields": view.fields,
+        "sets": view.sets,
+    })
+}
+
 /// `KEY  status  priority  title`, the Key falling back to the id, on one
 /// line whatever the title holds.
-fn line(view: &IssueView) -> String {
+pub(crate) fn line(view: &IssueView) -> String {
     let field = |name: &str| view.fields.get(name).and_then(Value::as_str).unwrap_or("-");
     let title: String = field("title")
         .chars()

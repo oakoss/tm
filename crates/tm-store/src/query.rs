@@ -88,6 +88,49 @@ pub(crate) fn compile(resolved: &Resolved) -> (String, Vec<Sql>) {
     (b.sql, b.params)
 }
 
+/// The ready queue's ids: `todo`'s Issues, unarchived and unclaimed, that no
+/// Issue matching `open` blocks, most urgent first and then oldest.
+pub(crate) fn ready(todo: &Resolved, open: &Resolved, blocks: &str) -> (String, Vec<Sql>) {
+    let mut b = Builder::default();
+    b.push("SELECT id FROM issues WHERE archived = 0");
+    for condition in &todo.conditions {
+        b.push(" AND ");
+        condition_sql(&mut b, condition);
+    }
+    b.push(" AND id NOT IN (SELECT issue_id FROM claims)");
+    b.push(" AND id NOT IN (SELECT dst FROM links WHERE type = ");
+    b.param(Sql::Text(blocks.to_owned()));
+    b.push(" AND src IN ");
+    open_ids(&mut b, open);
+    b.push(") ORDER BY priority DESC, created_ms, id");
+    (b.sql, b.params)
+}
+
+/// `blocks` Links whose both ends match `open`, as (src, dst). The unary `+`
+/// keeps the ends out of index lookups, so the `blocks` Links are scanned
+/// once; otherwise the planner probes every pair of open Issues.
+pub(crate) fn open_blocks(open: &Resolved, blocks: &str) -> (String, Vec<Sql>) {
+    let mut b = Builder::default();
+    b.push("SELECT src, dst FROM links WHERE type = ");
+    b.param(Sql::Text(blocks.to_owned()));
+    b.push(" AND +src IN ");
+    open_ids(&mut b, open);
+    b.push(" AND +dst IN ");
+    open_ids(&mut b, open);
+    (b.sql, b.params)
+}
+
+/// `(SELECT id FROM issues WHERE …)`: unarchived Issues matching `open`. Its
+/// own scope, so the conditions' bare column names read this `issues`.
+fn open_ids(b: &mut Builder, open: &Resolved) {
+    b.push("(SELECT id FROM issues WHERE archived = 0");
+    for condition in &open.conditions {
+        b.push(" AND ");
+        condition_sql(b, condition);
+    }
+    b.push(")");
+}
+
 fn condition_sql(b: &mut Builder, condition: &Condition) {
     match condition {
         Condition::Match {
