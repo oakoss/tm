@@ -613,6 +613,22 @@ impl Store {
         project::key_holder(&self.conn, &key.to_ascii_uppercase())
     }
 
+    /// The key a Project holds now.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure.
+    pub fn project_key(&self, project: ProjectId) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT key FROM projects WHERE id = ?1",
+                [project.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     /// The Issue a Key names, matched without case. Any key its Project holds
     /// or held finds it, so `CPL-42` still resolves after `CPL` becomes `KERN`.
     ///
@@ -915,9 +931,29 @@ impl Store {
     /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row;
     /// `Ok(None)` when the Issue does not exist.
     pub fn issue(&self, issue_id: Uuid) -> Result<Option<IssueView>, StoreError> {
-        // One read transaction, so the Issue never mixes two writers' commits.
-        let tx = self.conn.unchecked_transaction()?;
-        read::issue(&tx, &self.scheme, issue_id)
+        self.read(|store| read::issue(&store.conn, &store.scheme, issue_id))
+    }
+
+    /// Runs `reads` in one read transaction, so what they return never mixes
+    /// two writers' commits. Nested calls share the outer transaction.
+    ///
+    /// # Errors
+    ///
+    /// What `reads` returns, or any SQLite failure starting the transaction.
+    pub fn read<T, E: From<StoreError>>(
+        &self,
+        reads: impl FnOnce(&Self) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let _tx = if self.conn.is_autocommit() {
+            Some(
+                self.conn
+                    .unchecked_transaction()
+                    .map_err(StoreError::from)?,
+            )
+        } else {
+            None
+        };
+        reads(self)
     }
 
     /// Logged operations the last rebuild could not apply, in log order.

@@ -1,9 +1,11 @@
 //! The `tm` command.
 
 mod error;
+mod here;
 mod identity;
 mod init;
 mod output;
+mod show;
 
 use std::fmt::Write as _;
 use std::process::ExitCode;
@@ -42,6 +44,11 @@ enum Command {
         /// Write the file without asking; needed when not at a terminal.
         #[arg(long)]
         yes: bool,
+    },
+    /// Show an Issue's fields and Claim.
+    Show {
+        /// The Issue's Key, such as CPL-42, or its full id.
+        issue: String,
     },
     /// Inspect the Scheme.
     Scheme {
@@ -84,6 +91,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             Ok(Output::new(scheme_text(&scheme), scheme_json(&scheme)))
         }
         Some(Command::Init { key, name, yes }) => init::run(init::Init { key, name, yes }, json),
+        Some(Command::Show { issue }) => show::run(&issue),
     }
 }
 

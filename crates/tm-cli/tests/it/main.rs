@@ -3,4 +3,6 @@
 mod init;
 mod json;
 mod scheme;
+mod show;
 mod smoke;
+mod support;

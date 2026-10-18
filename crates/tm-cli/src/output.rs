@@ -85,7 +85,7 @@ pub(crate) fn finish(
             (output.text, ExitCode::SUCCESS)
         }
         (false, Err(err)) => {
-            for warning in warnings {
+            for warning in warnings.iter().chain(&err.warnings) {
                 eprintln!("tm: warning: {warning}");
             }
             eprintln!("tm: {}", err.message);

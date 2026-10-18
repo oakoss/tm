@@ -24,6 +24,8 @@ pub(crate) struct CliError {
     /// A command that fixes it, when tm can write one.
     pub(crate) fix: Option<String>,
     pub(crate) details: Map<String, Value>,
+    /// Warnings the command gathered before it failed.
+    pub(crate) warnings: Vec<String>,
 }
 
 impl CliError {
@@ -33,7 +35,14 @@ impl CliError {
             message: message.into(),
             fix: None,
             details: Map::new(),
+            warnings: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub(crate) fn warned(mut self, warnings: Vec<String>) -> Self {
+        self.warnings.extend(warnings);
+        self
     }
 
     #[must_use]
@@ -65,7 +74,10 @@ impl CliError {
         if let Some(fix) = &self.fix {
             doc.insert("fix".into(), json!(fix));
         }
-        doc.insert("warnings".into(), json!(warnings));
+        doc.insert(
+            "warnings".into(),
+            json!(warnings.iter().chain(&self.warnings).collect::<Vec<_>>()),
+        );
         for (key, value) in &self.details {
             doc.entry(key.clone()).or_insert_with(|| value.clone());
         }
@@ -217,6 +229,7 @@ impl From<FilterError> for CliError {
             message,
             fix: None,
             details,
+            warnings: Vec::new(),
         }
     }
 }

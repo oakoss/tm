@@ -17,6 +17,7 @@ tm-store.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+insta.workspace = true
 rusqlite.workspace = true
 
 [[bin]]
