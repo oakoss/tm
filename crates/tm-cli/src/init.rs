@@ -1,17 +1,16 @@
 //! `tm init`: a Workspace dedicated to the repo, mapped by `.config/tm.toml`.
 
-use std::env::VarError;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::json;
-use tm_core::Actor;
 use tm_store::workspace::{self, RepoFile, Workspace};
 use uuid::Uuid;
 
 use crate::error::CliError;
+use crate::identity;
 use crate::output::Output;
 
 const REPO_FILE: &str = ".config/tm.toml";
@@ -58,7 +57,8 @@ pub(crate) fn run(init: Init, json: bool) -> Result<Output, CliError> {
     }
     check_not_below_home_repo(&cwd, &root).map_err(refused)?;
     let (key, name) = project(&root, init.key, init.name).map_err(refused)?;
-    let actor = actor(&root).map_err(refused)?;
+    let identity =
+        identity::resolve(identity::env, || identity::git_email(&root)).map_err(refused)?;
     let config_dir = root.join(".config");
     check_config_dir(&root, &config_dir).map_err(refused)?;
     check_not_ignored(&root).map_err(refused)?;
@@ -105,7 +105,7 @@ pub(crate) fn run(init: Init, json: bool) -> Result<Output, CliError> {
     };
     let target = root.join(REPO_FILE);
     let finished = store
-        .create_project(&Actor::human(&actor), &key, &name)
+        .create_project(&identity.actor, &key, &name)
         .map_err(CliError::from)
         .and_then(|(_, op)| write_new(&target, &text).map(|()| op.op_id))
         .and_then(|batch| {
@@ -141,6 +141,7 @@ pub(crate) fn run(init: Init, json: bool) -> Result<Output, CliError> {
             "file": target.display().to_string(),
             "batch": batch,
         }),
+        warnings: identity.warnings,
     })
 }
 
@@ -235,16 +236,16 @@ fn already_mapped(home: &Path, found: &workspace::Found, init: &Init) -> Result<
     if init.key.is_some() || init.name.is_some() {
         text.push_str("--key and --name apply only when a Workspace is created; nothing changed\n");
     }
-    Ok(Output {
+    Ok(Output::new(
         text,
-        data: json!({
+        json!({
             "created": false,
             "workspace": workspace.id,
             "dir": workspace.dir.display().to_string(),
             "project": found.file.project,
             "file": found.path.display().to_string(),
         }),
-    })
+    ))
 }
 
 /// The new Project's key and name, each defaulting to the repo directory's.
@@ -316,43 +317,6 @@ fn default_key(dir_name: &str) -> Option<String> {
         .take(10)
         .collect();
     tm_core::project::is_key(&key).then_some(key)
-}
-
-/// Who writes: `TM_ACTOR`, else git's `user.email`. A `TM_ACTOR` that is set
-/// but unusable is an error, never a reason to write as someone else.
-fn actor(root: &Path) -> Result<String, String> {
-    match std::env::var("TM_ACTOR") {
-        Ok(actor) if actor.trim().is_empty() => {
-            return Err("TM_ACTOR is set but blank; set it to who you are, or unset it".into());
-        }
-        Ok(actor) => return Ok(actor.trim().to_owned()),
-        Err(VarError::NotUnicode(_)) => return Err("TM_ACTOR is not valid UTF-8".into()),
-        Err(VarError::NotPresent) => {}
-    }
-    let output = Command::new("git")
-        .args(["config", "--get", "user.email"])
-        .current_dir(root)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()
-        .map_err(|err| format!("cannot run git to read user.email: {err}"))?;
-    let email = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    // `git config --get` exits 1 when the key is unset.
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    let said = if stderr.is_empty() {
-        String::new()
-    } else {
-        format!(" (git said: {stderr})")
-    };
-    match output.status.code() {
-        Some(0) if !email.is_empty() => Ok(email),
-        Some(0 | 1) => Err(format!(
-            "cannot tell who you are; set TM_ACTOR or git's user.email{said}"
-        )),
-        _ => Err(format!(
-            "git config --get user.email failed ({}){said}",
-            output.status
-        )),
-    }
 }
 
 /// `.config` must be a real directory named exactly that, or absent: git does

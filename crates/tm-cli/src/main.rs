@@ -1,6 +1,7 @@
 //! The `tm` command.
 
 mod error;
+mod identity;
 mod init;
 mod output;
 
@@ -74,19 +75,13 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
     match command {
         None => {
             let help = Cli::command().render_help().to_string();
-            Ok(Output {
-                data: json!({ "help": help }),
-                text: help,
-            })
+            Ok(Output::new(help.clone(), json!({ "help": help })))
         }
         Some(Command::Scheme {
             action: SchemeAction::Show,
         }) => {
             let scheme = Scheme::built_in();
-            Ok(Output {
-                text: scheme_text(&scheme),
-                data: scheme_json(&scheme),
-            })
+            Ok(Output::new(scheme_text(&scheme), scheme_json(&scheme)))
         }
         Some(Command::Init { key, name, yes }) => init::run(init::Init { key, name, yes }, json),
     }
@@ -111,10 +106,7 @@ fn parse_failed(json: bool, err: &clap::Error) -> ExitCode {
     if shown {
         return output::finish(
             true,
-            Ok(Output {
-                data: json!({ "help": rendered }),
-                text: String::new(),
-            }),
+            Ok(Output::new(String::new(), json!({ "help": rendered }))),
             &[],
         );
     }

@@ -16,6 +16,17 @@ pub(crate) const SCHEMA_VERSION: u32 = 1;
 pub(crate) struct Output {
     pub(crate) text: String,
     pub(crate) data: Value,
+    pub(crate) warnings: Vec<String>,
+}
+
+impl Output {
+    pub(crate) fn new(text: String, data: Value) -> Self {
+        Self {
+            text,
+            data,
+            warnings: Vec::new(),
+        }
+    }
 }
 
 /// Whether to print JSON, decided before the arguments are parsed so a
@@ -61,14 +72,14 @@ pub(crate) fn finish(
                 json!({
                     "schema_version": SCHEMA_VERSION,
                     "data": output.data,
-                    "warnings": warnings,
+                    "warnings": warnings.iter().chain(&output.warnings).collect::<Vec<_>>(),
                 })
             ),
             ExitCode::SUCCESS,
         ),
         (true, Err(err)) => (format!("{}\n", err.document(warnings)), ExitCode::FAILURE),
         (false, Ok(output)) => {
-            for warning in warnings {
+            for warning in warnings.iter().chain(&output.warnings) {
                 eprintln!("tm: warning: {warning}");
             }
             (output.text, ExitCode::SUCCESS)
