@@ -3,7 +3,7 @@
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use tm_core::op::{CLAIM_FIELD, ClaimAction};
-use tm_core::{Change, Op};
+use tm_core::{Actor, Change, Op};
 use uuid::Uuid;
 
 use crate::apply::{issue_project, uuid_from};
@@ -19,39 +19,41 @@ pub struct Claim {
     pub id: Uuid,
     pub issue: Uuid,
     pub agent: String,
-    pub actor: String,
+    /// The human the Claim is held for: the take's `on_behalf_of`, else its
+    /// writer.
+    pub on_behalf_of: String,
     pub expires_ms: Option<i64>,
 }
 
 impl Store {
-    /// Claims `issue` for `agent`. Refused while any Claim holds it, even one
-    /// under the same Agent name; [`Claim::id`] is the token to release it.
+    /// Claims `issue` for the Agent writing. Refused while any Claim holds it,
+    /// even one under the same Agent name; [`Claim::id`] is the token to
+    /// release it.
     ///
     /// # Errors
     ///
+    /// [`StoreError::NoAgent`] when a human writes,
     /// [`StoreError::AlreadyClaimed`] naming the holder,
-    /// [`StoreError::UnknownIssue`], [`StoreError::Invalid`] for a blank or
-    /// unprintable Agent, an expiry of zero or out of range, or an archived
-    /// Issue, or as [`Store::append_all`].
+    /// [`StoreError::UnknownIssue`], [`StoreError::Invalid`] for an expiry of
+    /// zero or out of range or an archived Issue, or as [`Store::append_all`].
     pub fn take(
         &mut self,
-        actor: &str,
+        actor: &Actor,
         issue: Uuid,
-        agent: &str,
         ttl_ms: Option<u64>,
     ) -> Result<Claim, StoreError> {
         let op = self.append(self.claim_draft(
-            actor,
+            actor.clone(),
             issue,
             ClaimAction::Take {
-                agent: agent.to_owned(),
+                agent: actor.name().to_owned(),
                 ttl_ms,
                 prev: None,
             },
         )?)?;
         // From the operation, not the table: another writer may already have
         // released and retaken the Issue.
-        taken(&op, agent, ttl_ms)
+        taken(&op, actor.name(), ttl_ms)
     }
 
     /// Releases the Claim `claim` holds on `issue`.
@@ -60,8 +62,8 @@ impl Store {
     ///
     /// [`StoreError::NotClaimHolder`] when `claim` is not the Issue's current
     /// Claim, [`StoreError::UnknownIssue`], or as [`Store::append_all`].
-    pub fn release(&mut self, actor: &str, issue: Uuid, claim: Uuid) -> Result<Op, StoreError> {
-        let draft = self.claim_draft(actor, issue, ClaimAction::Release { claim })?;
+    pub fn release(&mut self, actor: &Actor, issue: Uuid, claim: Uuid) -> Result<Op, StoreError> {
+        let draft = self.claim_draft(actor.clone(), issue, ClaimAction::Release { claim })?;
         self.append(draft)
     }
 
@@ -79,13 +81,13 @@ impl Store {
 
     fn claim_draft(
         &self,
-        actor: &str,
+        actor: Actor,
         issue: Uuid,
         action: ClaimAction,
     ) -> Result<Draft, StoreError> {
         let project = issue_project(&self.conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?;
         Ok(Draft {
-            actor: actor.to_owned(),
+            actor,
             project,
             subject: issue,
             change: Change::Claim { action },
@@ -96,7 +98,7 @@ impl Store {
 fn current(conn: &Connection, issue: Uuid) -> Result<Option<Claim>, StoreError> {
     let row = conn
         .query_row(
-            "SELECT op_id, agent, actor, expires_ms FROM claims WHERE issue_id = ?1",
+            "SELECT op_id, agent, on_behalf_of, expires_ms FROM claims WHERE issue_id = ?1",
             [issue.as_bytes()],
             |row| {
                 Ok((
@@ -108,12 +110,12 @@ fn current(conn: &Connection, issue: Uuid) -> Result<Option<Claim>, StoreError> 
             },
         )
         .optional()?;
-    row.map(|(id, agent, actor, expires_ms)| {
+    row.map(|(id, agent, on_behalf_of, expires_ms)| {
         Ok(Claim {
             id: uuid_from(&id)?,
             issue,
             agent,
-            actor,
+            on_behalf_of,
             expires_ms,
         })
     })
@@ -162,9 +164,25 @@ fn taken(op: &Op, agent: &str, ttl_ms: Option<u64>) -> Result<Claim, StoreError>
         id: op.op_id,
         issue: op.subject,
         agent: agent.to_owned(),
-        actor: op.actor.clone(),
+        on_behalf_of: op.on_behalf_of.clone().unwrap_or_else(|| op.actor.clone()),
         expires_ms,
     })
+}
+
+/// Checked on write only, so takes already in the log still replay.
+pub(crate) fn check_taker(actor: &Actor, action: &ClaimAction) -> Result<(), StoreError> {
+    let ClaimAction::Take { agent, .. } = action else {
+        return Ok(());
+    };
+    if !actor.is_agent() {
+        return Err(StoreError::NoAgent {
+            actor: actor.name().to_owned(),
+        });
+    }
+    if agent != actor.name() {
+        return Err(invalid("must name the Agent writing it"));
+    }
+    Ok(())
 }
 
 /// Checked inside the write transaction, so of concurrent takers exactly one
@@ -182,7 +200,7 @@ pub(crate) fn check(
             (ClaimAction::Take { .. }, Some(held)) => StoreError::AlreadyClaimed {
                 issue,
                 agent: held.agent,
-                actor: held.actor,
+                on_behalf_of: held.on_behalf_of,
                 claim: held.id,
                 expires_ms: held.expires_ms,
             },
@@ -239,12 +257,12 @@ pub(crate) fn apply(
     }
     match claim {
         Some(claim) => tx.execute(
-            "INSERT INTO claims (issue_id, agent, actor, op_id, expires_ms)
+            "INSERT INTO claims (issue_id, agent, on_behalf_of, op_id, expires_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 claim.issue.as_bytes(),
                 claim.agent,
-                claim.actor,
+                claim.on_behalf_of,
                 claim.id.as_bytes(),
                 claim.expires_ms
             ],

@@ -25,7 +25,7 @@ use rusqlite::{
 use tm_core::filter::{Context, FilterError, parse, resolve};
 use tm_core::hlc::MAX_MS;
 use tm_core::op::CURRENT_VERSION;
-use tm_core::{Change, Hlc, Op, OpError, ProjectId, Scheme};
+use tm_core::{Actor, Change, Hlc, Op, OpError, ProjectId, Scheme};
 use uuid::Uuid;
 
 use apply::{apply, project_from, rust_int, sql_int, uuid_from};
@@ -82,11 +82,13 @@ pub enum StoreError {
         /// From the Issue written, around the cycle and back to it.
         path: Vec<Uuid>,
     },
-    #[error("Issue {issue} is held by {agent} (Claim {claim}, taken by {actor}{})", expires_ms.map_or_else(String::new, |ms| format!(", expiring at {ms} ms")))]
+    #[error("only an Agent can take a Claim, and {actor} writes as a human")]
+    NoAgent { actor: String },
+    #[error("Issue {issue} is held by {agent} for {on_behalf_of} (Claim {claim}{})", expires_ms.map_or_else(String::new, |ms| format!(", expiring at {ms} ms")))]
     AlreadyClaimed {
         issue: Uuid,
         agent: String,
-        actor: String,
+        on_behalf_of: String,
         claim: Uuid,
         expires_ms: Option<i64>,
     },
@@ -187,7 +189,7 @@ impl Unapplied {
 /// A change to write, before the store stamps it with identity and time.
 #[derive(Debug, Clone)]
 pub struct Draft {
-    pub actor: String,
+    pub actor: Actor,
     pub project: ProjectId,
     pub subject: Uuid,
     pub change: Change,
@@ -553,13 +555,13 @@ impl Store {
     /// any Project holds or once held the key, or as [`Store::append_all`].
     pub fn create_project(
         &mut self,
-        actor: &str,
+        actor: &Actor,
         key: &str,
         name: &str,
     ) -> Result<(ProjectId, Op), StoreError> {
         let project = ProjectId::new();
         let op = self.append(Draft {
-            actor: actor.to_owned(),
+            actor: actor.clone(),
             project,
             subject: project.uuid(),
             change: Change::CreateProject {
@@ -578,13 +580,13 @@ impl Store {
     /// As [`Store::create_project`], or [`StoreError::UnknownProject`].
     pub fn rename_project(
         &mut self,
-        actor: &str,
+        actor: &Actor,
         project: ProjectId,
         key: Option<&str>,
         name: Option<&str>,
     ) -> Result<Op, StoreError> {
         self.append(Draft {
-            actor: actor.to_owned(),
+            actor: actor.clone(),
             project,
             subject: project.uuid(),
             change: Change::RenameProject {
@@ -631,7 +633,7 @@ impl Store {
     /// As [`Store::append_all`].
     pub fn create_issue(
         &mut self,
-        actor: &str,
+        actor: &Actor,
         project: ProjectId,
         issue_type: &str,
         title: &str,
@@ -649,10 +651,11 @@ impl Store {
         if let Some(start) = start {
             changes.push(set("status", serde_json::json!(start)));
         }
+        let actor = actor.clone();
         let drafts = changes
             .into_iter()
             .map(|change| Draft {
-                actor: actor.to_owned(),
+                actor: actor.clone(),
                 project,
                 subject: issue_id,
                 change,
@@ -672,12 +675,12 @@ impl Store {
     /// `blocks` Link that would close a cycle, or as [`Store::append_all`].
     pub fn link(
         &mut self,
-        actor: &str,
+        actor: &Actor,
         link_type: &str,
         from: Uuid,
         to: Uuid,
     ) -> Result<Op, StoreError> {
-        let draft = self.link_draft(actor, link_type, from, to, true)?;
+        let draft = self.link_draft(actor.clone(), link_type, from, to, true)?;
         self.append(draft)
     }
 
@@ -688,18 +691,18 @@ impl Store {
     /// As [`Store::link`], except that a held Link of any type can be removed.
     pub fn unlink(
         &mut self,
-        actor: &str,
+        actor: &Actor,
         link_type: &str,
         from: Uuid,
         to: Uuid,
     ) -> Result<Op, StoreError> {
-        let draft = self.link_draft(actor, link_type, from, to, false)?;
+        let draft = self.link_draft(actor.clone(), link_type, from, to, false)?;
         self.append(draft)
     }
 
     fn link_draft(
         &self,
-        actor: &str,
+        actor: Actor,
         link_type: &str,
         from: Uuid,
         to: Uuid,
@@ -714,7 +717,7 @@ impl Store {
             return Err(StoreError::UnknownIssue(source));
         };
         Ok(Draft {
-            actor: actor.to_owned(),
+            actor,
             project,
             subject: source,
             change: Change::Link {
@@ -727,7 +730,9 @@ impl Store {
 
     /// Checks, stamps, logs and applies every draft in one `BEGIN IMMEDIATE`
     /// transaction. Required fields are checked after the whole batch, so an
-    /// Issue's `create` and its required `set_field`s go in together.
+    /// Issue's `create` and its required `set_field`s go in together. The
+    /// batch is named by its first operation's id, which `tm undo` takes
+    /// (ADR 0010).
     ///
     /// # Errors
     ///
@@ -739,19 +744,7 @@ impl Store {
         for draft in &drafts {
             draft.change.validate()?;
         }
-        let now = self.clock.now().map_err(StoreError::Clock)?;
-        let now_ms = u64::try_from(now.utc_ms)
-            .ok()
-            .filter(|ms| *ms <= MAX_MS)
-            .ok_or_else(|| {
-                StoreError::Clock(format!("{} ms is outside the supported range", now.utc_ms))
-            })?;
-        if now.offset_min.unsigned_abs() > MAX_OFFSET_MIN {
-            return Err(StoreError::Clock(format!(
-                "UTC offset of {} minutes is not a real offset",
-                now.offset_min
-            )));
-        }
+        let (now, now_ms) = self.now()?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -764,7 +757,7 @@ impl Store {
                 row.get(0)
             })?;
         let replica_id = uuid_from(&replica)?;
-        let mut ops = Vec::with_capacity(drafts.len());
+        let mut ops: Vec<Op> = Vec::with_capacity(drafts.len());
         // Each Issue's state before the batch is the bar it is held to after:
         // a batch may not make it worse, but an Issue that arrived incomplete
         // or inconsistent stays editable.
@@ -775,6 +768,9 @@ impl Store {
                     validate::missing_fields(&tx, &self.scheme, draft.subject)?,
                     validate::status_fits_type(&tx, &self.scheme, draft.subject)?,
                 ));
+            }
+            if let Change::Claim { action } = &draft.change {
+                claim::check_taker(&draft.actor, action)?;
             }
             let change = validate::check(&tx, &self.scheme, draft.subject, draft.change)?;
             hlc = hlc.tick(now_ms);
@@ -787,7 +783,8 @@ impl Store {
                 v: CURRENT_VERSION,
                 op_id: Uuid::now_v7(),
                 replica_id,
-                actor: draft.actor,
+                actor: draft.actor.name().to_owned(),
+                on_behalf_of: draft.actor.on_behalf_of().map(str::to_owned),
                 project: draft.project,
                 subject: draft.subject,
                 kind: change.kind().to_owned(),
@@ -804,6 +801,11 @@ impl Store {
                 _ => None,
             };
             insert_op(&tx, &op, &change, assigned_key.as_deref())?;
+            let batch = ops.first().map_or(op.op_id, |first| first.op_id);
+            tx.execute(
+                "INSERT INTO op_batches (op_id, batch) VALUES (?1, ?2)",
+                [op.op_id.as_bytes(), batch.as_bytes()],
+            )?;
             let effects = apply::Effects {
                 assigned_key: assigned_key.as_deref(),
                 ..apply::Effects::default()
@@ -840,6 +842,24 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(ops)
+    }
+
+    /// The clock's reading, and its milliseconds as the clock counts them.
+    fn now(&self) -> Result<(WallTime, u64), StoreError> {
+        let now = self.clock.now().map_err(StoreError::Clock)?;
+        let now_ms = u64::try_from(now.utc_ms)
+            .ok()
+            .filter(|ms| *ms <= MAX_MS)
+            .ok_or_else(|| {
+                StoreError::Clock(format!("{} ms is outside the supported range", now.utc_ms))
+            })?;
+        if now.offset_min.unsigned_abs() > MAX_OFFSET_MIN {
+            return Err(StoreError::Clock(format!(
+                "UTC offset of {} minutes is not a real offset",
+                now.offset_min
+            )));
+        }
+        Ok((now, now_ms))
     }
 
     /// The ids of Issues matching `filter`, in its `sort:` order, else most
@@ -920,7 +940,7 @@ impl Store {
             let mut stmt = tx.prepare(
                 "SELECT seq, op_id, op_hash, v, replica_id, actor, project, issue_id, kind, hlc,
                         base_seq, utc_ms, offset_min, payload, server_seq, server_received_ms,
-                        assigned_key
+                        assigned_key, on_behalf_of
                  FROM ops
                  ORDER BY server_seq IS NULL, server_seq, hlc, replica_id, op_id",
             )?;
@@ -1060,9 +1080,10 @@ fn insert_op(
     assigned_key: Option<&str>,
 ) -> Result<(), StoreError> {
     tx.execute(
-        "INSERT INTO ops (op_id, op_hash, v, kind, replica_id, actor, project, issue_id, field, elem,
-                          hlc, base_seq, utc_ms, offset_min, payload, assigned_key)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        "INSERT INTO ops (op_id, op_hash, v, kind, replica_id, actor, on_behalf_of, project,
+                          issue_id, field, elem, hlc, base_seq, utc_ms, offset_min, payload,
+                          assigned_key)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         params![
             op.op_id.as_bytes(),
             op.op_hash(),
@@ -1070,6 +1091,7 @@ fn insert_op(
             op.kind,
             op.replica_id.as_bytes(),
             op.actor,
+            op.on_behalf_of,
             op.project.to_string(),
             op.subject.as_bytes(),
             change.field(),
@@ -1104,6 +1126,7 @@ struct StoredOp {
     server_seq: Option<i64>,
     server_received_ms: Option<i64>,
     assigned_key: Option<String>,
+    on_behalf_of: Option<String>,
 }
 
 impl StoredOp {
@@ -1126,6 +1149,7 @@ impl StoredOp {
             server_seq: row.get(14)?,
             server_received_ms: row.get(15)?,
             assigned_key: row.get(16)?,
+            on_behalf_of: row.get(17)?,
         })
     }
 
@@ -1137,6 +1161,7 @@ impl StoredOp {
             op_id: uuid_from(&self.op_id)?,
             replica_id: uuid_from(&self.replica_id)?,
             actor: self.actor.clone(),
+            on_behalf_of: self.on_behalf_of.clone(),
             project: project_from(&self.project)?,
             subject: uuid_from(&self.issue_id)?,
             kind: self.kind.clone(),

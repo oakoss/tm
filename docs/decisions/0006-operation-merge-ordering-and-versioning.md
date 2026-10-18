@@ -8,7 +8,7 @@ The operation log is the source of truth ([ADR 0005](0005-operation-log-is-the-s
 ## Operations
 
 - An operation is one typed, field-level change: `create`, `set_field`, `add` or `remove` on a set, `comment`, `link`, `archive`, `claim`. Edits to different fields never conflict.
-- Each operation carries `kind` and a format version `v`. The code keeps a translation from every old version to the current shape, applied when reading; a stored operation is never rewritten. A version newer than the binary understands stops sync with an upgrade message instead of being skipped. Table schema changes need no operation version, because tables are rebuilt from the log.
+- Each operation carries `kind` and a format version `v`. The code keeps a translation from every old version to the current shape, applied when reading; a stored operation is never rewritten. A version newer than the binary understands stops sync with an upgrade message instead of being skipped. Table schema changes need no operation version, because tables are rebuilt from the log. Until tm v1 is released the format changes in place instead ([ADR 0010](0010-operations-record-who-an-agent-acts-for-and-undo-names-a-batch.md)).
 
 ## Order and time
 

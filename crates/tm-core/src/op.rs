@@ -9,7 +9,8 @@ use uuid::Uuid;
 use crate::Hlc;
 use crate::project::ProjectId;
 
-/// The operation format this binary writes and fully understands.
+/// The operation format this binary writes and fully understands. Until tm
+/// v1 is released the format changes in place (ADR 0010).
 pub const CURRENT_VERSION: u16 = 1;
 
 /// Version of the binary envelope `op_hash` is computed over.
@@ -29,6 +30,11 @@ pub enum OpError {
     UnsupportedVersion(u16),
     #[error("operation format v0 does not exist")]
     InvalidVersion,
+    #[error("{field} {reason}")]
+    InvalidName {
+        field: &'static str,
+        reason: &'static str,
+    },
     #[error("operation kind {stored:?} does not match its payload, which is {payload:?}")]
     KindMismatch {
         stored: String,
@@ -235,6 +241,8 @@ pub struct Op {
     pub op_id: Uuid,
     pub replica_id: Uuid,
     pub actor: String,
+    /// The human an Agent writes for; none when the human writes.
+    pub on_behalf_of: Option<String>,
     pub project: ProjectId,
     /// What the operation changes: an Issue, or a Project for Project kinds.
     pub subject: Uuid,
@@ -257,6 +265,10 @@ impl Op {
             0 => return Err(OpError::InvalidVersion),
             v if v > CURRENT_VERSION => return Err(OpError::UnsupportedVersion(v)),
             _ => {}
+        }
+        check_name("actor", &self.actor)?;
+        if let Some(human) = &self.on_behalf_of {
+            check_name("on_behalf_of", human)?;
         }
         if self.payload.len() > MAX_PAYLOAD_BYTES {
             return Err(OpError::TooLarge(self.payload.len()));
@@ -281,6 +293,13 @@ impl Op {
         buf.extend_from_slice(self.op_id.as_bytes());
         buf.extend_from_slice(self.replica_id.as_bytes());
         put_bytes(&mut buf, self.actor.as_bytes());
+        match &self.on_behalf_of {
+            Some(human) => {
+                buf.push(1);
+                put_bytes(&mut buf, human.as_bytes());
+            }
+            None => buf.push(0),
+        }
         put_bytes(&mut buf, self.project.to_string().as_bytes());
         buf.extend_from_slice(self.subject.as_bytes());
         put_bytes(&mut buf, self.kind.as_bytes());
@@ -302,6 +321,17 @@ impl Op {
     }
 }
 
+fn check_name(field: &'static str, name: &str) -> Result<(), OpError> {
+    let reason = if name.trim().is_empty() {
+        "is blank"
+    } else if name.chars().any(char::is_control) {
+        "has a control character"
+    } else {
+        return Ok(());
+    };
+    Err(OpError::InvalidName { field, reason })
+}
+
 fn put_bytes(buf: &mut Vec<u8>, bytes: &[u8]) {
     let len = u32::try_from(bytes.len()).expect("envelope field longer than 4 GiB");
     buf.extend_from_slice(&len.to_be_bytes());
@@ -315,9 +345,13 @@ mod tests {
     type Mutation = Box<dyn Fn(&mut Op)>;
 
     /// Changing the envelope layout or hash input changes every Replica's
-    /// operation identities, so the value is pinned.
-    const PINNED_OP_HASH: &str = "ee4e794fbfc682546be2fc037644bcbc28ab2809018acaeac0c84f5f5604acb6";
+    /// operation identities, so the values are pinned: a human's operation
+    /// and an Agent's.
+    const PINNED_OP_HASH: &str = "acb8ceb7219a0e25c8c2a45fb04d581757cc6f9fa57768e4dfd3660367bbdb93";
+    const PINNED_OP_HASH_AGENT: &str =
+        "8792a963eeace336f49134d420a90a8f99c3fac3b40ccb06e6b9079ff6be0429";
 
+    /// A human's operation.
     fn sample() -> Op {
         let change = Change::SetField {
             field: "status".into(),
@@ -326,10 +360,11 @@ mod tests {
             value_label: None,
         };
         Op {
-            v: CURRENT_VERSION,
+            v: 1,
             op_id: Uuid::from_u128(1),
             replica_id: Uuid::from_u128(2),
             actor: "jace".into(),
+            on_behalf_of: None,
             project: ProjectId::from_uuid(Uuid::from_u128(4)),
             subject: Uuid::from_u128(3),
             kind: change.kind().into(),
@@ -341,19 +376,86 @@ mod tests {
         }
     }
 
+    /// An Agent's operation.
+    fn sample_agent() -> Op {
+        Op {
+            actor: "claude".into(),
+            on_behalf_of: Some("jace".into()),
+            ..sample()
+        }
+    }
+
+    fn hex(hash: [u8; 32]) -> String {
+        hash.iter().fold(String::new(), |mut hex, b| {
+            use std::fmt::Write;
+            write!(hex, "{b:02x}").unwrap();
+            hex
+        })
+    }
+
+    /// One change of every kind; `every_change_has_every_kind` fails until a
+    /// new kind is added.
+    fn every_change() -> Vec<Change> {
+        vec![
+            Change::Create,
+            Change::SetField {
+                field: "a".into(),
+                label: String::new(),
+                value: serde_json::Value::Null,
+                value_label: None,
+            },
+            Change::Add {
+                field: "a".into(),
+                label: String::new(),
+                elem: "x".into(),
+                elem_label: None,
+            },
+            Change::Remove {
+                field: "a".into(),
+                label: String::new(),
+                elem: "x".into(),
+                elem_label: None,
+            },
+            Change::Comment {
+                body: String::new(),
+            },
+            Change::Link {
+                link_type: "blocks".into(),
+                target: Uuid::from_u128(5),
+                present: true,
+            },
+            Change::Claim {
+                action: ClaimAction::Release {
+                    claim: Uuid::from_u128(6),
+                },
+            },
+            Change::CreateProject {
+                key: "CPL".into(),
+                name: "Core".into(),
+            },
+            Change::RenameProject {
+                key: None,
+                name: Some("Core".into()),
+            },
+        ]
+    }
+
     #[test]
     fn op_hash_is_deterministic() {
         assert_eq!(sample().op_hash(), sample().op_hash());
+        assert_eq!(sample_agent().op_hash(), sample_agent().op_hash());
     }
 
     #[test]
     fn op_hash_covers_every_written_field() {
-        let base = sample().op_hash();
+        let base = sample_agent().op_hash();
         let variants: Vec<Mutation> = vec![
             Box::new(|o| o.v = 2),
             Box::new(|o| o.op_id = Uuid::from_u128(9)),
             Box::new(|o| o.replica_id = Uuid::from_u128(9)),
             Box::new(|o| o.actor = "codex".into()),
+            Box::new(|o| o.on_behalf_of = None),
+            Box::new(|o| o.on_behalf_of = Some("ana".into())),
             Box::new(|o| o.project = ProjectId::from_uuid(Uuid::from_u128(9))),
             Box::new(|o| o.subject = Uuid::from_u128(9)),
             Box::new(|o| o.kind = "add".into()),
@@ -364,10 +466,61 @@ mod tests {
             Box::new(|o| o.payload.push(' ')),
         ];
         for (i, change) in variants.iter().enumerate() {
-            let mut op = sample();
+            let mut op = sample_agent();
             change(&mut op);
             assert_ne!(op.op_hash(), base, "variant {i} did not change op_hash");
         }
+    }
+
+    #[test]
+    fn names_must_be_printable() {
+        let cases: [(Mutation, &str, &str); 4] = [
+            (Box::new(|o| o.actor = " ".into()), "actor", "is blank"),
+            (
+                Box::new(|o| o.actor = "cl\naude".into()),
+                "actor",
+                "has a control character",
+            ),
+            (
+                Box::new(|o| o.on_behalf_of = Some(" ".into())),
+                "on_behalf_of",
+                "is blank",
+            ),
+            (
+                Box::new(|o| o.on_behalf_of = Some("ja\u{7}ce".into())),
+                "on_behalf_of",
+                "has a control character",
+            ),
+        ];
+        for (mutate, field, reason) in cases {
+            let mut op = sample_agent();
+            mutate(&mut op);
+            assert!(
+                matches!(op.change(), Err(OpError::InvalidName { field: f, reason: r }) if f == field && r == reason),
+                "{field} {reason}"
+            );
+        }
+        assert!(sample_agent().change().is_ok());
+    }
+
+    #[test]
+    fn every_change_has_every_kind() {
+        // serde's error for an unknown tag lists every tag it knows.
+        let err = serde_json::from_str::<Change>(r#"{"kind":"?"}"#)
+            .unwrap_err()
+            .to_string();
+        let listed = err
+            .split("expected one of ")
+            .nth(1)
+            .expect("serde lists the known tags");
+        let tags: std::collections::BTreeSet<&str> = listed
+            .split(", ")
+            .map(|tag| tag.trim_matches(|c: char| c == '`' || !c.is_ascii_graphic()))
+            .map(|tag| tag.split('`').next().unwrap_or(tag))
+            .collect();
+        let kinds: std::collections::BTreeSet<&str> =
+            every_change().iter().map(Change::kind).collect();
+        assert_eq!(kinds, tags);
     }
 
     #[test]
@@ -410,12 +563,8 @@ mod tests {
 
     #[test]
     fn op_hash_has_a_fixed_value() {
-        let hex = sample().op_hash().iter().fold(String::new(), |mut hex, b| {
-            use std::fmt::Write;
-            write!(hex, "{b:02x}").unwrap();
-            hex
-        });
-        assert_eq!(hex, PINNED_OP_HASH);
+        assert_eq!(hex(sample().op_hash()), PINNED_OP_HASH);
+        assert_eq!(hex(sample_agent().op_hash()), PINNED_OP_HASH_AGENT);
     }
 
     #[test]
@@ -448,49 +597,7 @@ mod tests {
 
     #[test]
     fn kind_names_match_the_serialized_tag() {
-        let changes = [
-            Change::Create,
-            Change::SetField {
-                field: "a".into(),
-                label: String::new(),
-                value: serde_json::Value::Null,
-                value_label: None,
-            },
-            Change::Add {
-                field: "a".into(),
-                label: String::new(),
-                elem: "x".into(),
-                elem_label: None,
-            },
-            Change::Remove {
-                field: "a".into(),
-                label: String::new(),
-                elem: "x".into(),
-                elem_label: None,
-            },
-            Change::Comment {
-                body: String::new(),
-            },
-            Change::Link {
-                link_type: "blocks".into(),
-                target: Uuid::from_u128(5),
-                present: true,
-            },
-            Change::Claim {
-                action: ClaimAction::Release {
-                    claim: Uuid::from_u128(6),
-                },
-            },
-            Change::CreateProject {
-                key: "CPL".into(),
-                name: "Core".into(),
-            },
-            Change::RenameProject {
-                key: None,
-                name: Some("Core".into()),
-            },
-        ];
-        for change in changes {
+        for change in every_change() {
             let tag = serde_json::to_value(&change).unwrap()["kind"].clone();
             assert_eq!(tag, change.kind());
         }

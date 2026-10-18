@@ -3,9 +3,10 @@
 
 /// Stamped into `PRAGMA user_version`; a store with a different value is
 /// rebuilt on open.
-pub(crate) const PROJECTION_VERSION: i64 = 5;
+pub(crate) const PROJECTION_VERSION: i64 = 6;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
+/// Until tm v1 is released the log changes in place (ADR 0010).
 pub(crate) const STORE_FORMAT: i64 = 1;
 
 pub(crate) const LOG: &str = "
@@ -22,6 +23,7 @@ CREATE TABLE IF NOT EXISTS ops (
   kind TEXT NOT NULL,
   replica_id BLOB NOT NULL,
   actor TEXT NOT NULL,
+  on_behalf_of TEXT,
   project TEXT NOT NULL,
   issue_id BLOB NOT NULL,
   field TEXT,
@@ -44,8 +46,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS ops_server_position ON ops (project, server_se
 -- Stored operations are immutable; only the columns the server fills in later
 -- may change.
 CREATE TRIGGER IF NOT EXISTS ops_immutable
-BEFORE UPDATE OF op_id, op_hash, v, kind, replica_id, actor, project, issue_id, field, elem,
-                 hlc, base_seq, utc_ms, offset_min, payload ON ops
+BEFORE UPDATE OF op_id, op_hash, v, kind, replica_id, actor, on_behalf_of, project, issue_id,
+                 field, elem, hlc, base_seq, utc_ms, offset_min, payload ON ops
 BEGIN
   SELECT RAISE(ABORT, 'stored operations are immutable');
 END;
@@ -90,6 +92,15 @@ WHEN NEW.assigned_key IS NOT NULL AND NEW.kind <> 'create'
 BEGIN
   SELECT RAISE(ABORT, 'only a create operation is given a Key');
 END;
+
+-- Which write each local operation came from, for undo. Kept by this Replica
+-- only: not hashed, synced or replayed, and a rebuild leaves it in place.
+CREATE TABLE IF NOT EXISTS op_batches (
+  op_id BLOB PRIMARY KEY,
+  batch BLOB NOT NULL
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS op_batches_by_batch ON op_batches (batch);
 ";
 
 pub(crate) const DROP_PROJECTIONS: &str = "
@@ -239,7 +250,7 @@ CREATE TABLE project_keys (
 CREATE TABLE claims (
   issue_id BLOB PRIMARY KEY,
   agent TEXT NOT NULL,
-  actor TEXT NOT NULL,
+  on_behalf_of TEXT NOT NULL,
   op_id BLOB NOT NULL,
   expires_ms INTEGER
 ) STRICT;

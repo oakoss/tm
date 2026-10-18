@@ -1,10 +1,10 @@
-use serde_json::json;
+use serde_json::{Value, json};
 use tm_core::scheme::Category;
-use tm_core::{Change, Hlc};
+use tm_core::{Actor, Change, Hlc};
 use tm_store::{Draft, StoreError};
 use uuid::Uuid;
 
-use crate::support::{ManualClock, TempDir, draft, field, new_issue, open, set_field};
+use crate::support::{ManualClock, TempDir, draft, field, jace, new_issue, open, set_field};
 use crate::support::{OTHER, PROJECT};
 
 fn count_ops(store: &tm_store::Store) -> i64 {
@@ -19,10 +19,124 @@ fn count_ops(store: &tm_store::Store) -> i64 {
 }
 
 #[test]
+fn an_agent_write_records_the_human_it_writes_for() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let (agent_issue, ops) = store
+        .create_issue(&Actor::agent("claude", "jace"), PROJECT, "task", "t")
+        .unwrap();
+    assert!(
+        ops.iter()
+            .all(|op| op.on_behalf_of.as_deref() == Some("jace"))
+    );
+    let (human_issue, _) = store
+        .create_issue(&Actor::agent("jace", "jace"), PROJECT, "task", "t")
+        .unwrap();
+    assert_eq!(store.rebuild().unwrap(), 0, "the stored column must hash");
+    let stored = |issue: Uuid| -> Vec<(String, Option<String>)> {
+        let conn = store.connection();
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT actor, on_behalf_of FROM ops WHERE issue_id = ?1")
+            .unwrap();
+        stmt.query_map([issue.as_bytes()], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(
+        stored(agent_issue),
+        [("claude".to_owned(), Some("jace".to_owned()))]
+    );
+    assert_eq!(stored(human_issue), [("jace".to_owned(), None)]);
+}
+
+fn batches(store: &tm_store::Store) -> Vec<(Uuid, Uuid)> {
+    let mut stmt = store
+        .connection()
+        .prepare("SELECT op_id, batch FROM op_batches ORDER BY op_id")
+        .unwrap();
+    stmt.query_map([], |row| {
+        Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+    })
+    .unwrap()
+    .map(|row| {
+        let (op, batch) = row.unwrap();
+        (
+            Uuid::from_slice(&op).unwrap(),
+            Uuid::from_slice(&batch).unwrap(),
+        )
+    })
+    .collect()
+}
+
+#[test]
+fn each_write_is_one_batch_named_by_its_first_operation() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let (issue, created) = store.create_issue(&jace(), PROJECT, "task", "t").unwrap();
+    let edited = store
+        .append(draft(issue, set_field("title", json!("u"))))
+        .unwrap();
+    let mut expected: Vec<(Uuid, Uuid)> = created
+        .iter()
+        .map(|op| (op.op_id, created[0].op_id))
+        .chain([(edited.op_id, edited.op_id)])
+        .collect();
+    expected.sort();
+    assert_eq!(batches(&store), expected);
+
+    let refused = store.append_all(vec![
+        draft(issue, set_field("title", json!("v"))),
+        draft(issue, set_field("title", Value::Null)),
+    ]);
+    assert!(refused.is_err());
+    assert_eq!(
+        batches(&store),
+        expected,
+        "a refused write records no batch"
+    );
+    assert_eq!(store.rebuild().unwrap(), 0);
+    assert_eq!(batches(&store), expected, "a rebuild keeps the batches");
+}
+
+#[test]
+fn every_write_helper_records_the_human_an_agent_writes_for() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let claude = Actor::agent("claude", "jace");
+    let (a, b) = (new_issue(&mut store), new_issue(&mut store));
+    let (project, created) = store.create_project(&claude, "AGT", "Agents").unwrap();
+    let claim = store.take(&claude, a, None).unwrap();
+    let ops = [
+        created,
+        store
+            .rename_project(&claude, project, None, Some("Agent work"))
+            .unwrap(),
+        store.link(&claude, "blocks", a, b).unwrap(),
+        store.unlink(&claude, "blocks", a, b).unwrap(),
+        store.release(&claude, a, claim.id).unwrap(),
+    ];
+    for op in ops {
+        assert_eq!(op.on_behalf_of.as_deref(), Some("jace"), "{}", op.kind);
+    }
+    let took: Option<String> = store
+        .connection()
+        .query_row(
+            "SELECT on_behalf_of FROM ops WHERE op_id = ?1",
+            [claim.id.as_bytes()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(took.as_deref(), Some("jace"), "take");
+}
+
+#[test]
 fn creating_an_issue_writes_its_required_fields_in_its_starting_status() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
-    let (issue, ops) = store.create_issue("jace", PROJECT, "bug", "Crash").unwrap();
+    let (issue, ops) = store
+        .create_issue(&jace(), PROJECT, "bug", "Crash")
+        .unwrap();
     let kinds: Vec<&str> = ops.iter().map(|op| op.kind.as_str()).collect();
     assert_eq!(kinds, ["create", "set_field", "set_field", "set_field"]);
     assert_eq!(count_ops(&store), 4);
@@ -309,7 +423,7 @@ fn every_change_advances_updated() {
     assert_eq!(field(&store, issue, "updated"), Some(json!(5_000)));
     let other = new_issue(&mut store);
     clock.set(9_000);
-    store.link("jace", "blocks", issue, other).unwrap();
+    store.link(&jace(), "blocks", issue, other).unwrap();
     assert_eq!(field(&store, issue, "updated"), Some(json!(9_000)));
 }
 
@@ -319,7 +433,7 @@ fn the_clock_never_moves_backwards_across_reopens() {
     let clock = ManualClock::at(50_000);
     let (issue, first) = {
         let mut store = open(&dir.db(), &clock);
-        let (issue, ops) = store.create_issue("jace", PROJECT, "task", "t").unwrap();
+        let (issue, ops) = store.create_issue(&jace(), PROJECT, "task", "t").unwrap();
         (issue, ops.last().unwrap().hlc)
     };
     clock.set(10_000);
@@ -362,7 +476,7 @@ fn a_store_records_its_workspace_once() {
 fn the_stored_hash_matches_the_operation() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
-    let (_, ops) = store.create_issue("jace", PROJECT, "task", "t").unwrap();
+    let (_, ops) = store.create_issue(&jace(), PROJECT, "task", "t").unwrap();
     for op in ops {
         let stored: Vec<u8> = store
             .connection()
@@ -402,9 +516,9 @@ fn a_stale_projection_version_is_rebuilt_on_open() {
 fn a_draft_may_name_any_project_for_a_new_issue() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
-    let (issue, _) = store.create_issue("jace", OTHER, "task", "t").unwrap();
+    let (issue, _) = store.create_issue(&jace(), OTHER, "task", "t").unwrap();
     let draft = Draft {
-        actor: "jace".into(),
+        actor: jace(),
         project: OTHER,
         subject: issue,
         change: set_field("title", json!("u")),

@@ -5,8 +5,8 @@ use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, OTHER, TempDir, draft, insert_acked, insert_acked_raw, links, new_issue, open,
-    remote_op,
+    ManualClock, OTHER, TempDir, draft, insert_acked, insert_acked_raw, jace, links, new_issue,
+    open, remote_op,
 };
 
 fn link_versions(store: &Store) -> i64 {
@@ -39,12 +39,12 @@ fn a_symmetric_link_written_either_way_round_is_one_link() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let (low, high) = ordered_pair(&mut store);
-    let op = store.link("jace", "relates_to", high, low).unwrap();
+    let op = store.link(&jace(), "relates_to", high, low).unwrap();
     assert_eq!(op.subject, low, "filed under the canonical source");
-    store.link("jace", "relates_to", low, high).unwrap();
+    store.link(&jace(), "relates_to", low, high).unwrap();
     assert_eq!(links(&store), [("relates_to".into(), low, high)]);
     assert_eq!(link_versions(&store), 1);
-    store.unlink("jace", "relates_to", high, low).unwrap();
+    store.unlink(&jace(), "relates_to", high, low).unwrap();
     assert_eq!(links(&store), Vec::new());
 }
 
@@ -53,9 +53,9 @@ fn the_type_is_part_of_a_links_key() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let (a, b) = (new_issue(&mut store), new_issue(&mut store));
-    store.link("jace", "blocks", a, b).unwrap();
-    store.link("jace", "duplicates", a, b).unwrap();
-    store.link("jace", "blocks", b, a).unwrap_err();
+    store.link(&jace(), "blocks", a, b).unwrap();
+    store.link(&jace(), "duplicates", a, b).unwrap();
+    store.link(&jace(), "blocks", b, a).unwrap_err();
     assert_eq!(links(&store).len(), 2);
     assert_eq!(link_versions(&store), 2);
 }
@@ -89,10 +89,10 @@ fn adding_a_held_link_or_removing_a_missing_one_is_logged() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let (a, b) = (new_issue(&mut store), new_issue(&mut store));
-    store.link("jace", "blocks", a, b).unwrap();
-    store.link("jace", "blocks", a, b).unwrap();
-    store.unlink("jace", "blocks", a, b).unwrap();
-    store.unlink("jace", "blocks", a, b).unwrap();
+    store.link(&jace(), "blocks", a, b).unwrap();
+    store.link(&jace(), "blocks", a, b).unwrap();
+    store.unlink(&jace(), "blocks", a, b).unwrap();
+    store.unlink(&jace(), "blocks", a, b).unwrap();
     let logged: i64 = store
         .connection()
         .query_row("SELECT count(*) FROM ops WHERE kind = 'link'", [], |row| {
@@ -108,30 +108,30 @@ fn a_link_must_have_a_known_type_and_join_two_existing_issues() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let (a, b) = (new_issue(&mut store), new_issue(&mut store));
-    let err = store.link("jace", "waits_for", a, b).unwrap_err();
+    let err = store.link(&jace(), "waits_for", a, b).unwrap_err();
     assert!(
         matches!(&err, StoreError::Invalid { valid, .. } if valid.contains(&"blocks".to_owned())),
         "{err}"
     );
-    let err = store.link("jace", "blocks", a, a).unwrap_err();
+    let err = store.link(&jace(), "blocks", a, a).unwrap_err();
     assert!(matches!(err, StoreError::Invalid { .. }), "{err}");
     let missing = Uuid::now_v7();
-    let err = store.link("jace", "blocks", a, missing).unwrap_err();
+    let err = store.link(&jace(), "blocks", a, missing).unwrap_err();
     assert!(
         matches!(err, StoreError::UnknownIssue(id) if id == missing),
         "{err}"
     );
-    let err = store.link("jace", "blocks", missing, a).unwrap_err();
+    let err = store.link(&jace(), "blocks", missing, a).unwrap_err();
     assert!(
         matches!(err, StoreError::UnknownIssue(id) if id == missing),
         "{err}"
     );
-    let err = store.unlink("jace", "blocks", a, missing).unwrap_err();
+    let err = store.unlink(&jace(), "blocks", a, missing).unwrap_err();
     assert!(
         matches!(err, StoreError::UnknownIssue(id) if id == missing),
         "{err}"
     );
-    let err = store.link("jace", "relate", missing, a).unwrap_err();
+    let err = store.link(&jace(), "relate", missing, a).unwrap_err();
     assert!(
         matches!(err, StoreError::Invalid { .. }),
         "a bad type is reported before a missing Issue: {err}"
@@ -155,18 +155,18 @@ fn a_blocking_link_that_closes_a_cycle_is_refused_with_its_path() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let [a, b, c] = [(); 3].map(|()| new_issue(&mut store));
-    store.link("jace", "blocks", a, b).unwrap();
-    store.link("jace", "blocks", b, c).unwrap();
-    store.link("jace", "causes", a, c).unwrap();
-    let err = store.link("jace", "blocks", c, a).unwrap_err();
+    store.link(&jace(), "blocks", a, b).unwrap();
+    store.link(&jace(), "blocks", b, c).unwrap();
+    store.link(&jace(), "causes", a, c).unwrap();
+    let err = store.link(&jace(), "blocks", c, a).unwrap_err();
     let StoreError::Cycle { relation, path } = err else {
         panic!("{err}");
     };
     assert_eq!(relation, "blocks");
     assert_eq!(path, [c, a, b, c]);
-    store.link("jace", "causes", c, a).unwrap();
-    store.link("jace", "relates_to", c, a).unwrap();
-    store.link("jace", "blocks", a, c).unwrap();
+    store.link(&jace(), "causes", c, a).unwrap();
+    store.link(&jace(), "relates_to", c, a).unwrap();
+    store.link(&jace(), "blocks", a, c).unwrap();
     assert_eq!(links(&store).len(), 6);
 }
 
@@ -188,10 +188,10 @@ fn a_blocking_cycle_from_a_merge_is_kept_and_writes_still_finish() {
     assert_eq!(store.rebuild().unwrap(), 0);
     assert_eq!(links(&store).len(), 2);
     let c = new_issue(&mut store);
-    store.link("jace", "blocks", c, a).unwrap();
-    let err = store.link("jace", "blocks", a, c).unwrap_err();
+    store.link(&jace(), "blocks", c, a).unwrap();
+    let err = store.link(&jace(), "blocks", a, c).unwrap_err();
     assert!(matches!(err, StoreError::Cycle { .. }), "{err}");
-    store.unlink("jace", "blocks", b, a).unwrap();
+    store.unlink(&jace(), "blocks", b, a).unwrap();
 }
 
 #[test]
@@ -211,9 +211,9 @@ fn a_held_link_of_a_type_this_tm_lacks_can_be_removed() {
     assert_eq!(store.rebuild().unwrap(), 0);
     assert_eq!(links(&store), [("waits_for".into(), a, b)]);
     let c = new_issue(&mut store);
-    store.unlink("jace", "waits_for", a, c).unwrap_err();
-    store.unlink("jace", "other_type", a, b).unwrap_err();
-    store.unlink("jace", "waits_for", a, b).unwrap();
+    store.unlink(&jace(), "waits_for", a, c).unwrap_err();
+    store.unlink(&jace(), "other_type", a, b).unwrap_err();
+    store.unlink(&jace(), "waits_for", a, b).unwrap();
     assert_eq!(links(&store), Vec::new());
 }
 
@@ -343,8 +343,8 @@ fn a_link_across_projects_is_filed_in_the_source_project() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let here = new_issue(&mut store);
-    let there = store.create_issue("jace", OTHER, "task", "t").unwrap().0;
-    let op = store.link("jace", "blocks", there, here).unwrap();
+    let there = store.create_issue(&jace(), OTHER, "task", "t").unwrap().0;
+    let op = store.link(&jace(), "blocks", there, here).unwrap();
     assert_eq!(op.project, OTHER);
     assert_eq!(store.rebuild().unwrap(), 0);
     assert_eq!(links(&store), [("blocks".into(), there, here)]);

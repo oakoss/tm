@@ -25,7 +25,7 @@
 - **Read-only snapshot**: after write batches the CLI publishes a never-modified copy that sandboxed agents open with `immutable=1`.
 - **Operation log is the source of truth** ([ADR 0005](../decisions/0005-operation-log-is-the-source-of-truth.md)): every change is an append-only operation from v1, written in the same transaction as the tables it updates. The tables are projections that `tm rebuild` regenerates from the log; undo, history and sync all read the log.
 - **Invariants**: every operation has a unique ID; a take succeeds only on an unclaimed Issue, never on "already has that value"; links have deterministic keys; a Key is never reused, even after `tm purge`.
-- **`tm undo`** reverts the caller's last operation by appending its inverse.
+- **`tm undo <batch>`** reverts one command's writes, named by the batch id every write reports, by appending operations that restore their prior state ([ADR 0010](../decisions/0010-operations-record-who-an-agent-acts-for-and-undo-names-a-batch.md)).
 - **Sync** (experimental before v1): Replicas exchange operations with `tm serve`, which orders them and assigns Keys. Synced operations form a hash chain, so `tm sync status` reports synced, pending, behind or forked by comparing chain heads with the server; merge, ordering and versioning rules are in [ADR 0006](../decisions/0006-operation-merge-ordering-and-versioning.md). The server runs on SQLite first; Postgres comes later for hosted or multi-user use.
 - **Releases**: oakum bump files and changelogs, with cargo-dist building the binaries for crates.io, Homebrew and the npm wrapper, as oakum itself ships.
 - **Schema-version guard**: an older binary refuses a store written by a newer one.
@@ -120,8 +120,8 @@ Everything is soft-deleted: archived, hidden and restorable. `tm purge` is the o
 ### Identity
 
 - The human is set once (`tm whoami`), defaulting to git `user.email`.
-- Agents are identified by `TM_ACTOR`, else by known environment variables (`CLAUDECODE=1`, `AI_AGENT` and `CLAUDE_CODE_SESSION_ID` were observed in one Claude Code session; Codex and Copilot variables are unverified), else as the human.
-- Agent writes are recorded as "agent, on behalf of human". Orchestrators and their sub-agents use distinct names so history shows which agent did what.
+- Agents are detected from the variables their harness sets (Claude Code, Codex, Gemini CLI, OpenCode, Cursor), or named with `TM_AGENT`; otherwise the writer is the human. `TM_ACTOR` overrides the human's name and never names an Agent ([ADR 0010](../decisions/0010-operations-record-who-an-agent-acts-for-and-undo-names-a-batch.md)).
+- Agent writes are recorded as "agent, on behalf of human". Sub-agents get distinct names, from `tm setup claude`'s hook or from `TM_AGENT`, so history shows which agent did what.
 
 ### Claims
 
@@ -206,5 +206,5 @@ Off by default. An Issue can carry **Checks**: commands with an expected result.
 
 - Sandboxed agents see data as of the last snapshot, and a crashed writer delays the next one.
 - Replaying offline operations on top of the server's and compacting the operation log are not yet designed.
-- Codex and Copilot identity variables are unverified.
+- Copilot and Cursor identity variables are unverified.
 - Many users alias `tm` to `tmux`; ship a longer second binary name as a fallback.

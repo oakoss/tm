@@ -42,7 +42,7 @@ Done when daily triage and planning for this project happen in the TUI.
 
 ## Phase 3: agent workflow
 
-- Actor detection, `TM_ACTOR`, "on behalf of" history.
+- "On behalf of" in history; Actor detection and recording it are Phase 1 ([ADR 0010](../decisions/0010-operations-record-who-an-agent-acts-for-and-undo-names-a-batch.md)).
 - Full Claims: protected fields, `--force`, version-checked writes, expiry and heartbeat, `tm start`, `tm handoff`, `ready --claim`, Path Claims.
 - Notifications and `@mentions`, `tm remember`, `tm human`, `--watch`.
 - `tm setup claude` and `tm setup codex`, showing a diff before writing.

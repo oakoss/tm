@@ -7,7 +7,7 @@ use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::PROJECT;
-use crate::support::{ManualClock, TempDir, draft, insert_acked, open, remote_op, set_field};
+use crate::support::{ManualClock, TempDir, draft, insert_acked, jace, open, remote_op, set_field};
 
 const ME: Context<'static> = Context { me: Some("jace") };
 
@@ -20,7 +20,7 @@ fn issue(
     labels: &[&str],
 ) -> Uuid {
     clock.advance(1_000);
-    let (issue, _) = store.create_issue("jace", PROJECT, "task", "t").unwrap();
+    let (issue, _) = store.create_issue(&jace(), PROJECT, "task", "t").unwrap();
     for (name, value) in fields {
         store
             .append(draft(issue, set_field(name, value.clone())))

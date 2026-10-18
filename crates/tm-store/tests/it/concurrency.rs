@@ -7,7 +7,7 @@ use tm_core::Change;
 use tm_store::Store;
 use uuid::Uuid;
 
-use crate::support::{TempDir, draft, run_children, set_field};
+use crate::support::{TempDir, draft, jace, run_children, set_field};
 
 /// Set in child processes: the store path to write to, and the shared Issue.
 const CHILD_DB: &str = "TM_STORE_TEST_CHILD_DB";
@@ -25,8 +25,8 @@ fn fifty_processes_write_without_losing_operations() {
 
     let dir = TempDir::new();
     let mut store = Store::open(&dir.db()).unwrap();
-    let (project, project_op) = store.create_project("jace", "CPL", "Core").unwrap();
-    let (issue, mut created) = store.create_issue("jace", project, "task", "t").unwrap();
+    let (project, project_op) = store.create_project(&jace(), "CPL", "Core").unwrap();
+    let (issue, mut created) = store.create_issue(&jace(), project, "task", "t").unwrap();
     created.push(project_op);
     drop(store);
 
