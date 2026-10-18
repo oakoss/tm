@@ -6,13 +6,13 @@
 
 ## Context and Problem Statement
 
-design.md records an Agent's writes as "agent, on behalf of human", and `tm undo` must revert one command's writes. The log has one `actor` slot, and no record of which operations one command wrote: `create_issue` writes four, and their timestamps are not unique to a command. [ADR 0006](0006-operation-merge-ordering-and-versioning.md) says `op_hash` covers every field the Replica writes, and that old operation versions are translated when read, but no translation exists yet. The `link` and `claim` kinds were added without a version bump, so a binary from before them fails on an unknown variant instead of asking for an upgrade. Where does "on behalf of" live, how does the log format change for the first time, how does tm tell an Agent from a human, and what does undo revert? The research is in [core-commands.md](../research/cli/core-commands.md).
+design.md records an Agent's writes as "agent, on behalf of human", and `tm undo` must revert one command's writes. The log has one `actor` slot, and no record of which operations one command wrote: `create_issue` writes four, and their timestamps are not unique to a command. [ADR 0006](0006-operation-merge-ordering-and-versioning.md) says `op_hash` covers every field the Replica writes, and that old operation versions are translated when read. Where does "on behalf of" live, when must a format change keep old stores readable, how does tm tell an Agent from a human, and what does undo revert? The research is in [core-commands.md](../research/cli/core-commands.md).
 
 ## Decision Drivers
 
 - Every field the Replica writes is hashed (ADR 0006), and a stored operation is never rewritten.
-- The switch milestone imports this project's backlog during Phase 1, after which a format change is a permanent translation.
-- A binary that meets an operation it cannot read must ask for an upgrade, not fail on parse.
+- tm is unreleased: every store is a development store, and keeping old formats readable now buys nothing but code to keep.
+- A binary that meets an operation format it does not know must ask for an upgrade, not fail on parse.
 - Parallel sub-agents of one Agent share its session id. Measured: a Claude Code sub-agent sees the parent's `CLAUDE_CODE_SESSION_ID`, and Codex's `CODEX_SESSION_ID` is "the shared root-session identity".
 - A human in an IDE terminal must not be recorded as an Agent.
 
@@ -25,18 +25,13 @@ design.md records an Agent's writes as "agent, on behalf of human", and `tm undo
 
 ## Decision Outcome
 
-**Format v2.**
+**The format until v1.**
 
-- `Op` gains `on_behalf_of`, and `CURRENT_VERSION` becomes 2. Nothing else joins the envelope.
-- The envelope branches on `v`. A `v: 1` operation hashes to exactly the bytes it always did, with envelope format 1. From `v: 2`, envelope format 2 adds `on_behalf_of` after `actor`, with a presence byte.
-- A stored `v: 1` operation reads as `on_behalf_of` empty; this is the first of ADR 0006's read-time translations. A `v: 1` operation carrying `on_behalf_of` is refused, because its hash would leave the field out.
-- From `v: 2`, an `actor` or `on_behalf_of` that is blank or holds a control character is refused, on write and on replay; `v: 1` operations replay as they were written.
-- **Every new `Change` kind bumps `CURRENT_VERSION`**, enforced by a test that ties each kind to the version that introduced it. A binary then refuses an unknown kind by its number, with "upgrade tm".
-
-**Migrating the log.**
-
-- A new operation field is a nullable column on `ops`, listed in the `ops_immutable` trigger.
-- `STORE_FORMAT` becomes 2. Opening a format-1 store adds the column, recreates the trigger and stamps the format in one transaction; an older binary refuses the result through the existing newer-store guard. Later format changes follow the same pattern.
+- `Op` gains `on_behalf_of`, hashed after `actor` behind a presence byte, and is a nullable `ops` column covered by the `ops_immutable` trigger. Nothing else joins the envelope.
+- An `actor` or `on_behalf_of` that is blank or holds a control character is refused, on write and on replay.
+- Operations keep their format version `v`, and stores their `STORE_FORMAT`; a binary still refuses a newer one with "upgrade tm".
+- Until tm v1 is released, the format changes in place: `CURRENT_VERSION` and `STORE_FORMAT` stay 1, nothing translates old operations or migrates old stores, and a development store an older build wrote is recreated. This defers ADR 0006's read-time translations to v1. Data that must outlive a format change before then, such as this project's backlog after the switch milestone, moves through `tm export` and `tm import`.
+- From v1, every format change bumps `CURRENT_VERSION` (every new `Change` kind included, so an older binary refuses it by number), old operations are translated when read, and old stores are migrated when opened.
 
 **Identity.**
 
@@ -57,7 +52,7 @@ design.md records an Agent's writes as "agent, on behalf of human", and `tm undo
 - `CLAUDECODE` and `AI_AGENT` are not read. IDE extensions set `CLAUDECODE` in their integrated terminals, and Claude Code's own tools also see its session id; `AI_AGENT`'s values carry versions and are inherited from parent agents.
 - With an Agent, `actor` is the Agent's name and `on_behalf_of` is the human, unless the two are equal. Without one, `actor` is the human and `on_behalf_of` is empty. `on_behalf_of` is the human running the Agent, not the Issue's Assignee.
 - `@me` resolves to the human in both cases.
-- Only an Agent takes a Claim, and the take names the Agent writing it; a human's own work is tracked through the Assignee. Both are checked when written, so takes already in the log replay. The claims table records `on_behalf_of` in place of `actor`, so a Claim shows the Agent and the human it works for. A take with no `on_behalf_of` was written by an Agent named as its human or, as every `v: 1` take was, by the human, so the column falls back to the writer.
+- Only an Agent takes a Claim, and the take names the Agent writing it; a human's own work is tracked through the Assignee. Both are checked when written, so takes already in the log replay. The claims table records `on_behalf_of` in place of `actor`, so a Claim shows the Agent and the human it works for. A take with no `on_behalf_of` was written by an Agent named as its human, so the column falls back to the writer.
 
 **Undo.**
 
@@ -67,8 +62,8 @@ design.md records an Agent's writes as "agent, on behalf of human", and `tm undo
 
 ### Consequences
 
-- Good, because every stored v1 hash stays valid, and the translation is exercised before the backlog import makes it permanent.
-- Good, because `link`, `claim` and every later kind, once written as `v: 2` or later, are refused by version number by a binary that predates them. `v: 1` ones exist only in development stores.
+- Good, because no code keeps old formats readable before anyone holds data in them.
+- Bad, because until v1 a binary that predates a kind, such as `link` or `claim`, fails on parse instead of asking for an upgrade, and a store from an older build must be recreated.
 - Good, because undo works the same for humans, detected Agents, undetected Agents and parallel sub-agents.
 - Bad, because an Agent tm cannot detect, including one writing from a tmux session Claude Code started, records as the human unless it sets `TM_AGENT`.
 - Bad, because until Phase 3's hook, sub-agents of one Agent share its name unless each sets `TM_AGENT`. Claims still tell them apart by token.
@@ -78,7 +73,7 @@ design.md records an Agent's writes as "agent, on behalf of human", and `tm undo
 
 ### Confirmation
 
-A `v: 1` sample keeps the pinned hash, and removing the `v: 1` envelope branch fails that test. A `v: 2` sample has its own pinned hash, and the hash changes with `on_behalf_of`. A `v: 1` operation carrying `on_behalf_of` is refused. A format-1 store opens under the new binary, upgrades, rebuilds with `on_behalf_of` empty and keeps every `op_hash`. A kind added without a version bump fails the build. `tm undo` of a batch that wrote a duplicate Link add leaves the Link in place.
+A human's and an Agent's operation each have a pinned hash, and the hash changes with `on_behalf_of`. An Agent's write stores and replays its `on_behalf_of`. `tm undo` of a batch that wrote a duplicate Link add leaves the Link in place.
 
 ## More Information
 
