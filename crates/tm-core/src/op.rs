@@ -598,6 +598,30 @@ mod tests {
         assert!(v1.change().is_ok(), "v1 operations replay as written");
     }
 
+    /// Checks nothing until a kind arrives after format 1, then holds it to
+    /// its format.
+    #[test]
+    fn a_kind_is_refused_in_a_format_before_it() {
+        for change in every_change() {
+            let needs = change.introduced_in();
+            if needs <= 1 {
+                continue;
+            }
+            let op = Op {
+                v: needs - 1,
+                kind: change.kind().into(),
+                payload: serde_json::to_string(&change).unwrap(),
+                ..sample()
+            };
+            assert!(
+                matches!(op.change(), Err(OpError::KindNewerThanFormat { .. })),
+                "{} accepted at v{}",
+                change.kind(),
+                needs - 1
+            );
+        }
+    }
+
     #[test]
     fn every_change_has_every_kind() {
         // serde's error for an unknown tag lists every tag it knows.
