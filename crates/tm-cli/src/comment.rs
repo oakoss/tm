@@ -1,0 +1,75 @@
+//! `tm comment`: a comment on an Issue, its body given or read from stdin.
+
+use std::io::Read as _;
+
+use serde_json::json;
+use tm_core::Change;
+use tm_store::Draft;
+
+use crate::error::CliError;
+use crate::here::{self, Here};
+use crate::identity;
+use crate::output::Output;
+
+pub(crate) fn run(reference: &str, body: &str) -> Result<Output, CliError> {
+    let mut here = here::open()?;
+    let warnings = std::mem::take(&mut here.warnings);
+    match write(&mut here, reference, body) {
+        Ok((mut output, identity_warnings)) => {
+            output.warnings = warnings;
+            output.warnings.extend(identity_warnings);
+            Ok(output)
+        }
+        Err(err) => Err(err.warned(warnings)),
+    }
+}
+
+fn write(here: &mut Here, reference: &str, body: &str) -> Result<(Output, Vec<String>), CliError> {
+    let body = if body == "-" {
+        let mut read = String::new();
+        std::io::stdin()
+            .read_to_string(&mut read)
+            .map_err(|err| CliError::new("io", format!("stdin: {err}")).with("path", "-"))?;
+        read
+    } else {
+        body.to_owned()
+    };
+    // Comments are append-only, so a blank one from a failed `$(cmd)` would
+    // stay for good.
+    if body.trim().is_empty() {
+        return Err(CliError::new("invalid_value", "a comment cannot be blank")
+            .with("field", "body")
+            .with("reason", "is blank"));
+    }
+    let id = here.issue(reference)?;
+    let project = here
+        .store
+        .issue(id)?
+        .map(|view| view.project)
+        .ok_or_else(|| CliError::new("not_found", format!("no Issue is {reference}")))?;
+    let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
+        .map_err(|message| CliError::new("no_identity", message))?;
+    let op = here.store.append(Draft {
+        actor: identity.actor.clone(),
+        project,
+        subject: id,
+        change: Change::Comment { body: body.clone() },
+    })?;
+    let key = here.store.issue(id)?.and_then(|view| view.key);
+    let shown = key.clone().unwrap_or_else(|| id.to_string());
+    let data = json!({
+        "issue": { "id": id, "key": key },
+        "comment": {
+            "id": op.op_id,
+            "actor": op.actor,
+            "on_behalf_of": op.on_behalf_of,
+            "body": body,
+            "utc_ms": op.utc_ms,
+        },
+        "batch": op.op_id,
+    });
+    Ok((
+        Output::new(format!("commented on {shown}\n"), data),
+        identity.warnings,
+    ))
+}

@@ -1,5 +1,6 @@
 //! The `tm` command.
 
+mod comment;
 mod create;
 mod error;
 mod here;
@@ -7,6 +8,7 @@ mod identity;
 mod init;
 mod link;
 mod list;
+mod moves;
 mod output;
 mod ready;
 mod show;
@@ -49,6 +51,13 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Comment on an Issue.
+    Comment {
+        /// The Issue's Key or full id.
+        issue: String,
+        /// The comment, or `-` to read it from stdin.
+        body: String,
+    },
     /// Create an Issue in the Project this directory maps to.
     Create {
         /// The Issue type, such as task or bug; `tm scheme show` lists them.
@@ -85,6 +94,16 @@ enum Command {
         /// Show at most this many.
         #[arg(long)]
         limit: Option<usize>,
+    },
+    /// Move an Issue to a Status of its Workflow.
+    Move {
+        /// The Issue's Key or full id.
+        issue: String,
+        /// The Status, by id or label, such as `in_progress` or "In Review".
+        status: String,
+        /// Set a field in the same write, such as assignee=jace.
+        #[arg(long, value_name = "FIELD=VALUE", value_parser = moves::field_value)]
+        set: Vec<(String, String)>,
     },
     /// List the work that can start now: unclaimed todo Issues no open Issue
     /// blocks, most urgent first, with what each would unblock.
@@ -139,6 +158,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             Ok(Output::new(scheme_text(&scheme), scheme_json(&scheme)))
         }
         Some(Command::Init { key, name, yes }) => init::run(init::Init { key, name, yes }, json),
+        Some(Command::Comment { issue, body }) => comment::run(&issue, &body),
         Some(Command::Create {
             issue_type,
             title,
@@ -155,6 +175,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Link { words }) => link::run(&words, true),
         Some(Command::Unlink { words }) => link::run(&words, false),
         Some(Command::List { filter, limit }) => list::run(&filter, limit),
+        Some(Command::Move { issue, status, set }) => moves::run(&issue, &status, &set),
         Some(Command::Ready { limit }) => ready::run(limit),
         Some(Command::Show { issue }) => show::run(&issue),
     }
