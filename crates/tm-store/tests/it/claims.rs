@@ -2,7 +2,6 @@
 //! takes and releases by compare-and-set (ADR 0009).
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use serde_json::json;
 use tm_core::op::ClaimAction;
@@ -11,7 +10,7 @@ use tm_store::{Store, StoreError, Unapplied};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, TempDir, draft, insert_acked, new_issue, open, remote_op, set_field,
+    ManualClock, TempDir, draft, insert_acked, new_issue, open, remote_op, run_children, set_field,
 };
 
 const HOUR_MS: u64 = 3_600_000;
@@ -343,37 +342,25 @@ fn race(shared_name: bool) {
     let (project, _) = store.create_project("jace", "CPL", "Core").unwrap();
     let (issue, _) = store.create_issue("jace", project, "task", "t").unwrap();
     drop(store);
-    let exe = std::env::current_exe().unwrap();
     let reports: Vec<PathBuf> = (0..TAKERS)
         .map(|i| dir.path().join(format!("taker-{i}")))
         .collect();
-    let children: Vec<_> = reports
-        .iter()
-        .enumerate()
-        .map(|(i, report)| {
+    run_children(
+        "claims::of_fifty_processes_taking_one_issue_exactly_one_wins",
+        TAKERS,
+        |i, command| {
             let agent = if shared_name {
                 "claude".to_owned()
             } else {
                 format!("agent-{i}")
             };
-            Command::new(&exe)
-                .args([
-                    "--exact",
-                    "claims::of_fifty_processes_taking_one_issue_exactly_one_wins",
-                ])
-                .args(["--test-threads", "1", "--quiet"])
+            command
                 .env(CHILD_DB, dir.db())
                 .env(CHILD_ISSUE, issue.to_string())
                 .env(CHILD_AGENT, agent)
-                .env(CHILD_REPORT, report)
-                .stdout(Stdio::null())
-                .spawn()
-                .unwrap()
-        })
-        .collect();
-    for mut child in children {
-        assert!(child.wait().unwrap().success(), "a taker process failed");
-    }
+                .env(CHILD_REPORT, &reports[i]);
+        },
+    );
     let winner = Store::open(&dir.db())
         .unwrap()
         .claim(issue)

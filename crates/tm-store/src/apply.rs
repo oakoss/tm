@@ -151,7 +151,7 @@ pub(crate) fn apply(
         } => link(tx, op.subject, &link_type, target, present, &version)?,
         // A lost take or release changes nothing, so it is not activity either.
         Change::Claim { action } => {
-            if let Some(lost) = crate::claim::apply(tx, op, action)? {
+            if let Some(lost) = crate::claim::apply(tx, op, &action)? {
                 return Ok(Some(lost));
             }
         }

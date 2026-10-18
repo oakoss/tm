@@ -24,12 +24,13 @@ use rusqlite::{
 };
 use tm_core::filter::{Context, FilterError, parse, resolve};
 use tm_core::hlc::MAX_MS;
-use tm_core::op::{CURRENT_VERSION, ClaimAction};
+use tm_core::op::CURRENT_VERSION;
 use tm_core::{Change, Hlc, Op, OpError, ProjectId, Scheme};
 use uuid::Uuid;
 
 use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
+pub use claim::Claim;
 pub use read::IssueView;
 
 /// How long a writer waits for another writer before giving up.
@@ -181,16 +182,6 @@ impl Unapplied {
     pub fn is_lost_claim(&self) -> bool {
         self.reason.starts_with(claim::LOST)
     }
-}
-
-/// The Claim on an Issue. `id` is the token a release must name.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Claim {
-    pub id: Uuid,
-    pub issue: Uuid,
-    pub agent: String,
-    pub actor: String,
-    pub expires_ms: Option<i64>,
 }
 
 /// A change to write, before the store stamps it with identity and time.
@@ -668,81 +659,6 @@ impl Store {
             })
             .collect();
         Ok((issue_id, self.append_all(drafts)?))
-    }
-
-    /// Claims `issue` for `agent`. Refused while any Claim holds it, even one
-    /// under the same Agent name; [`Claim::id`] is the token to release it.
-    ///
-    /// # Errors
-    ///
-    /// [`StoreError::AlreadyClaimed`] naming the holder,
-    /// [`StoreError::UnknownIssue`], [`StoreError::Invalid`] for a blank or
-    /// unprintable Agent, an expiry of zero or out of range, or an archived
-    /// Issue, or as [`Store::append_all`].
-    pub fn take(
-        &mut self,
-        actor: &str,
-        issue: Uuid,
-        agent: &str,
-        ttl_ms: Option<u64>,
-    ) -> Result<Claim, StoreError> {
-        let op = self.append(self.claim_draft(
-            actor,
-            issue,
-            ClaimAction::Take {
-                agent: agent.to_owned(),
-                ttl_ms,
-                prev: None,
-            },
-        )?)?;
-        // From the operation, not the table: another writer may already have
-        // released and retaken the Issue.
-        Ok(Claim {
-            id: op.op_id,
-            issue,
-            agent: agent.to_owned(),
-            actor: op.actor,
-            expires_ms: claim::check_take(agent, ttl_ms, op.utc_ms)?,
-        })
-    }
-
-    /// Releases the Claim `claim` holds on `issue`.
-    ///
-    /// # Errors
-    ///
-    /// [`StoreError::NotClaimHolder`] when `claim` is not the Issue's current
-    /// Claim, [`StoreError::UnknownIssue`], or as [`Store::append_all`].
-    pub fn release(&mut self, actor: &str, issue: Uuid, claim: Uuid) -> Result<Op, StoreError> {
-        let draft = self.claim_draft(actor, issue, ClaimAction::Release { claim })?;
-        self.append(draft)
-    }
-
-    /// The Claim holding `issue`; one past `expires_ms` still holds until
-    /// expiry is enforced.
-    ///
-    /// # Errors
-    ///
-    /// [`StoreError::UnknownIssue`], any SQLite failure, or
-    /// [`StoreError::Corrupt`] for a malformed row.
-    pub fn claim(&self, issue: Uuid) -> Result<Option<Claim>, StoreError> {
-        apply::issue_project(&self.conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?;
-        claim::current(&self.conn, issue)
-    }
-
-    fn claim_draft(
-        &self,
-        actor: &str,
-        issue: Uuid,
-        action: ClaimAction,
-    ) -> Result<Draft, StoreError> {
-        let project =
-            apply::issue_project(&self.conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?;
-        Ok(Draft {
-            actor: actor.to_owned(),
-            project,
-            subject: issue,
-            change: Change::Claim { action },
-        })
     }
 
     /// Links `from` to `to`: "`from` blocks `to`" for `blocks`. The Link is
