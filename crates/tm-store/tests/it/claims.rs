@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 use tm_core::op::ClaimAction;
-use tm_core::{Change, Hlc};
+use tm_core::{Actor, Change, Hlc};
 use tm_store::{Store, StoreError, Unapplied};
 use uuid::Uuid;
 
@@ -55,7 +55,7 @@ fn a_held_issue_is_refused_even_under_the_holders_own_agent_name() {
         let err = store.take("kim", issue, agent, None).unwrap_err();
         let StoreError::AlreadyClaimed {
             agent,
-            actor,
+            on_behalf_of,
             claim: id,
             expires_ms,
             ..
@@ -64,10 +64,49 @@ fn a_held_issue_is_refused_even_under_the_holders_own_agent_name() {
             panic!("{err}");
         };
         assert_eq!(
-            (agent.as_str(), actor.as_str(), id, expires_ms),
+            (agent.as_str(), on_behalf_of.as_str(), id, expires_ms),
             ("claude", "jace", claim.id, claim.expires_ms)
         );
     }
+}
+
+#[test]
+fn a_store_with_the_previous_claims_table_rebuilds_on_open() {
+    let dir = TempDir::new();
+    let claim = {
+        let mut store = open(&dir.db(), &ManualClock::at(1_000));
+        let issue = new_issue(&mut store);
+        let claim = store
+            .take(Actor::agent("claude", "jace"), issue, "claude", None)
+            .unwrap();
+        store
+            .connection()
+            .execute_batch(
+                "DROP TABLE claims;
+                 CREATE TABLE claims (issue_id BLOB PRIMARY KEY, agent TEXT NOT NULL,
+                   actor TEXT NOT NULL, op_id BLOB NOT NULL, expires_ms INTEGER) STRICT;
+                 PRAGMA user_version = 5;",
+            )
+            .unwrap();
+        claim
+    };
+    let store = open(&dir.db(), &ManualClock::at(1_000));
+    assert_eq!(store.claim(claim.issue).unwrap(), Some(claim));
+}
+
+#[test]
+fn an_agents_claim_is_held_for_the_human_it_writes_for() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = new_issue(&mut store);
+    let claim = store
+        .take(Actor::agent("claude", "jace"), issue, "claude", None)
+        .unwrap();
+    assert_eq!(claim.on_behalf_of, "jace");
+    let err = store.take("kim", issue, "codex", None).unwrap_err();
+    assert!(err.to_string().contains("held by claude for jace"), "{err}");
+    assert_eq!(store.rebuild().unwrap(), 0);
+    assert_eq!(store.claim(issue).unwrap(), Some(claim));
 }
 
 #[test]

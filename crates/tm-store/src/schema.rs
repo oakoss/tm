@@ -3,7 +3,7 @@
 
 /// Stamped into `PRAGMA user_version`; a store with a different value is
 /// rebuilt on open.
-pub(crate) const PROJECTION_VERSION: i64 = 5;
+pub(crate) const PROJECTION_VERSION: i64 = 6;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
 pub(crate) const STORE_FORMAT: i64 = 2;
@@ -247,7 +247,7 @@ CREATE TABLE project_keys (
 CREATE TABLE claims (
   issue_id BLOB PRIMARY KEY,
   agent TEXT NOT NULL,
-  actor TEXT NOT NULL,
+  on_behalf_of TEXT NOT NULL,
   op_id BLOB NOT NULL,
   expires_ms INTEGER
 ) STRICT;

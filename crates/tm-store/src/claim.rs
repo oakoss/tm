@@ -19,7 +19,9 @@ pub struct Claim {
     pub id: Uuid,
     pub issue: Uuid,
     pub agent: String,
-    pub actor: String,
+    /// The human the Claim is held for: the take's `on_behalf_of`, else its
+    /// writer.
+    pub on_behalf_of: String,
     pub expires_ms: Option<i64>,
 }
 
@@ -101,7 +103,7 @@ impl Store {
 fn current(conn: &Connection, issue: Uuid) -> Result<Option<Claim>, StoreError> {
     let row = conn
         .query_row(
-            "SELECT op_id, agent, actor, expires_ms FROM claims WHERE issue_id = ?1",
+            "SELECT op_id, agent, on_behalf_of, expires_ms FROM claims WHERE issue_id = ?1",
             [issue.as_bytes()],
             |row| {
                 Ok((
@@ -113,12 +115,12 @@ fn current(conn: &Connection, issue: Uuid) -> Result<Option<Claim>, StoreError> 
             },
         )
         .optional()?;
-    row.map(|(id, agent, actor, expires_ms)| {
+    row.map(|(id, agent, on_behalf_of, expires_ms)| {
         Ok(Claim {
             id: uuid_from(&id)?,
             issue,
             agent,
-            actor,
+            on_behalf_of,
             expires_ms,
         })
     })
@@ -167,7 +169,7 @@ fn taken(op: &Op, agent: &str, ttl_ms: Option<u64>) -> Result<Claim, StoreError>
         id: op.op_id,
         issue: op.subject,
         agent: agent.to_owned(),
-        actor: op.actor.clone(),
+        on_behalf_of: op.on_behalf_of.clone().unwrap_or_else(|| op.actor.clone()),
         expires_ms,
     })
 }
@@ -187,7 +189,7 @@ pub(crate) fn check(
             (ClaimAction::Take { .. }, Some(held)) => StoreError::AlreadyClaimed {
                 issue,
                 agent: held.agent,
-                actor: held.actor,
+                on_behalf_of: held.on_behalf_of,
                 claim: held.id,
                 expires_ms: held.expires_ms,
             },
@@ -244,12 +246,12 @@ pub(crate) fn apply(
     }
     match claim {
         Some(claim) => tx.execute(
-            "INSERT INTO claims (issue_id, agent, actor, op_id, expires_ms)
+            "INSERT INTO claims (issue_id, agent, on_behalf_of, op_id, expires_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 claim.issue.as_bytes(),
                 claim.agent,
-                claim.actor,
+                claim.on_behalf_of,
                 claim.id.as_bytes(),
                 claim.expires_ms
             ],

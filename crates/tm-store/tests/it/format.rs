@@ -57,7 +57,11 @@ fn a_format_1_store_upgrades_and_replays_every_operation() {
     let labels = &store.issue(first).unwrap().unwrap().sets["labels"];
     assert_eq!(labels.keys().collect::<Vec<_>>(), ["core"]);
     assert_eq!(links(&store), [("blocks".to_owned(), first, second)]);
-    assert_eq!(store.claim(first).unwrap().unwrap().agent, "claude");
+    let claim = store.claim(first).unwrap().unwrap();
+    assert_eq!(
+        (claim.agent.as_str(), claim.on_behalf_of.as_str()),
+        ("claude", "jace")
+    );
     let body: String = store
         .connection()
         .query_row(

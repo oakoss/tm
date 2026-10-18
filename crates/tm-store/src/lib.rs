@@ -82,11 +82,11 @@ pub enum StoreError {
         /// From the Issue written, around the cycle and back to it.
         path: Vec<Uuid>,
     },
-    #[error("Issue {issue} is held by {agent} (Claim {claim}, taken by {actor}{})", expires_ms.map_or_else(String::new, |ms| format!(", expiring at {ms} ms")))]
+    #[error("Issue {issue} is held by {agent} for {on_behalf_of} (Claim {claim}{})", expires_ms.map_or_else(String::new, |ms| format!(", expiring at {ms} ms")))]
     AlreadyClaimed {
         issue: Uuid,
         agent: String,
-        actor: String,
+        on_behalf_of: String,
         claim: Uuid,
         expires_ms: Option<i64>,
     },
