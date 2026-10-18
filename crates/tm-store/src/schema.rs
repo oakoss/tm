@@ -3,7 +3,7 @@
 
 /// Stamped into `PRAGMA user_version`; a store with a different value is
 /// rebuilt on open.
-pub(crate) const PROJECTION_VERSION: i64 = 2;
+pub(crate) const PROJECTION_VERSION: i64 = 4;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
 pub(crate) const STORE_FORMAT: i64 = 1;
@@ -63,6 +63,33 @@ BEFORE DELETE ON ops
 BEGIN
   SELECT RAISE(ABORT, 'the operation log is append-only');
 END;
+
+-- Server order, receipt time and an assigned Key are filled in once, later
+-- than the operation itself; rewriting one would renumber or reorder history.
+CREATE TRIGGER IF NOT EXISTS ops_effects_set_once
+BEFORE UPDATE OF server_seq, server_received_ms, assigned_key ON ops
+WHEN (OLD.server_seq IS NOT NULL AND NEW.server_seq IS NOT OLD.server_seq)
+  OR (OLD.server_received_ms IS NOT NULL
+      AND NEW.server_received_ms IS NOT OLD.server_received_ms)
+  OR (OLD.assigned_key IS NOT NULL AND NEW.assigned_key IS NOT OLD.assigned_key)
+BEGIN
+  SELECT RAISE(ABORT, 'server effects are set once');
+END;
+
+-- Only a create is given a Key; one on any other kind would never be read.
+CREATE TRIGGER IF NOT EXISTS ops_key_on_create_insert
+BEFORE INSERT ON ops
+WHEN NEW.assigned_key IS NOT NULL AND NEW.kind <> 'create'
+BEGIN
+  SELECT RAISE(ABORT, 'only a create operation is given a Key');
+END;
+
+CREATE TRIGGER IF NOT EXISTS ops_key_on_create_update
+BEFORE UPDATE OF assigned_key ON ops
+WHEN NEW.assigned_key IS NOT NULL AND NEW.kind <> 'create'
+BEGIN
+  SELECT RAISE(ABORT, 'only a create operation is given a Key');
+END;
 ";
 
 pub(crate) const DROP_PROJECTIONS: &str = "
@@ -73,7 +100,10 @@ DROP TABLE IF EXISTS unapplied;
 DROP TABLE IF EXISTS field_versions;
 DROP TABLE IF EXISTS claims;
 DROP TABLE IF EXISTS keys;
+DROP TABLE IF EXISTS key_numbers;
 DROP TABLE IF EXISTS issues;
+DROP TABLE IF EXISTS project_keys;
+DROP TABLE IF EXISTS projects;
 ";
 
 /// Built-in fields are columns on `issues`; Scheme fields are rows in
@@ -110,9 +140,10 @@ CREATE TABLE field_values (
   PRIMARY KEY (issue_id, field)
 ) STRICT, WITHOUT ROWID;
 
--- Logged operations replay could not apply, such as a value another Replica
--- wrote that does not fit; ADR 0006 has every pulled operation stay in the
--- log, so they are recorded here instead of stopping the rebuild.
+-- Logged operations replay could not apply in full, such as a value another
+-- Replica wrote that does not fit or a create whose Key collided; ADR 0006 has
+-- every pulled operation stay in the log, so they are recorded here instead of
+-- stopping the rebuild.
 CREATE TABLE unapplied (
   seq INTEGER PRIMARY KEY,
   op_id BLOB NOT NULL,
@@ -165,6 +196,31 @@ CREATE TABLE keys (
   project TEXT NOT NULL,
   number INTEGER,
   provisional INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX keys_by_issue ON keys (issue_id);
+CREATE UNIQUE INDEX keys_by_number ON keys (project, number);
+
+-- The highest Key number each Project has given, counting creates that did
+-- not apply, and the create that gave it.
+CREATE TABLE key_numbers (
+  project TEXT PRIMARY KEY,
+  highest INTEGER NOT NULL,
+  op_id BLOB NOT NULL
+) STRICT;
+
+CREATE TABLE projects (
+  id TEXT PRIMARY KEY,
+  key TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  created_ms INTEGER NOT NULL
+) STRICT;
+
+-- Every key a Project has held. A retired key keeps resolving to its Project
+-- and is never given to another.
+CREATE TABLE project_keys (
+  key TEXT PRIMARY KEY,
+  project TEXT NOT NULL REFERENCES projects (id)
 ) STRICT;
 
 CREATE TABLE claims (

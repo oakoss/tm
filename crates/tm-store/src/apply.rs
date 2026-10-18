@@ -10,10 +10,10 @@ use rusqlite::types::Value as SqlValue;
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::Value as Json;
 use tm_core::scheme::priority_rank;
-use tm_core::{Change, Hlc, Op};
+use tm_core::{Change, Hlc, Op, ProjectId};
 use uuid::Uuid;
 
-use crate::StoreError;
+use crate::{StoreError, project};
 
 /// What decides a field: the winning operation's position and clock.
 struct Version {
@@ -65,36 +65,61 @@ impl Version {
     }
 }
 
+/// Where the operation sits: its server position, if acknowledged, and the
+/// Key its `create` was assigned, if any.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Effects<'a> {
+    pub(crate) server_seq: Option<u64>,
+    pub(crate) server_received_ms: Option<u64>,
+    pub(crate) assigned_key: Option<&'a str>,
+}
+
+/// Applies `op`. `Ok(Some(reason))` means it applied but its Key could not be
+/// recorded, which replay reports rather than dropping the Issue.
 pub(crate) fn apply(
     tx: &Transaction<'_>,
     op: &Op,
-    server_seq: Option<u64>,
-    server_received_ms: Option<u64>,
-) -> Result<(), StoreError> {
+    effects: Effects<'_>,
+) -> Result<Option<String>, StoreError> {
+    let Effects {
+        server_seq,
+        server_received_ms,
+        assigned_key,
+    } = effects;
     let change = op.change()?;
+    if change.is_project() {
+        return project::apply(tx, op, change).map(|()| None);
+    }
     // `base_seq` and `server_seq` are per Project, so an operation filed under
     // another Project would compare positions from different chains.
-    if !matches!(change, Change::Create) {
+    if matches!(change, Change::Create) {
+        if !project::exists(tx, op.project)? {
+            return Err(StoreError::UnknownProject(op.project));
+        }
+    } else {
         let expected =
-            issue_project(tx, op.issue_id)?.ok_or(StoreError::UnknownIssue(op.issue_id))?;
+            issue_project(tx, op.subject)?.ok_or(StoreError::UnknownIssue(op.subject))?;
         if expected != op.project {
             return Err(StoreError::ProjectMismatch {
-                issue: op.issue_id,
+                issue: op.subject,
                 expected,
-                found: op.project.clone(),
+                found: op.project,
             });
         }
     }
     let version = Version::of(op, server_seq, server_received_ms);
     match change {
-        Change::Create => return create(tx, op),
+        Change::Create => return create(tx, op, assigned_key),
+        Change::CreateProject { .. } | Change::RenameProject { .. } => {
+            unreachable!("Project operations return above")
+        }
         Change::SetField { field, value, .. } => {
             // Checked before anything is written, so a value that does not fit
             // leaves the projection untouched.
             let target = target(&field, &value)?;
-            if wins(tx, op.issue_id, &field, "", &version)? {
-                record(tx, op.issue_id, &field, "", true, &version)?;
-                write_target(tx, op.issue_id, &field, target)?;
+            if wins(tx, op.subject, &field, "", &version)? {
+                record(tx, op.subject, &field, "", true, &version)?;
+                write_target(tx, op.subject, &field, target)?;
             }
         }
         Change::Add {
@@ -106,7 +131,7 @@ pub(crate) fn apply(
             let (elem, display) = label_key(&field, &elem, elem_label);
             set_member(
                 tx,
-                op.issue_id,
+                op.subject,
                 &field,
                 &elem,
                 true,
@@ -116,7 +141,7 @@ pub(crate) fn apply(
         }
         Change::Remove { field, elem, .. } => {
             let (elem, _) = label_key(&field, &elem, None);
-            set_member(tx, op.issue_id, &field, &elem, false, None, &version)?;
+            set_member(tx, op.subject, &field, &elem, false, None, &version)?;
         }
         Change::Comment { body } => {
             tx.execute(
@@ -124,7 +149,7 @@ pub(crate) fn apply(
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     op.op_id.as_bytes(),
-                    op.issue_id.as_bytes(),
+                    op.subject.as_bytes(),
                     op.actor,
                     body,
                     sql_int(op.hlc.raw())?,
@@ -137,9 +162,9 @@ pub(crate) fn apply(
     // Every operation counts as activity, comments included.
     tx.execute(
         "UPDATE issues SET updated_ms = max(updated_ms, ?1) WHERE id = ?2",
-        params![op.utc_ms, op.issue_id.as_bytes()],
+        params![op.utc_ms, op.subject.as_bytes()],
     )?;
-    Ok(())
+    Ok(None)
 }
 
 /// Labels compare without case. Writes already store them lowercased; this
@@ -154,22 +179,29 @@ fn label_key(field: &str, elem: &str, display: Option<String>) -> (String, Optio
     (key, display)
 }
 
-fn create(tx: &Transaction<'_>, op: &Op) -> Result<(), StoreError> {
-    if issue_project(tx, op.issue_id)?.is_some() {
-        return Err(StoreError::DuplicateIssue(op.issue_id));
+fn create(
+    tx: &Transaction<'_>,
+    op: &Op,
+    assigned_key: Option<&str>,
+) -> Result<Option<String>, StoreError> {
+    if issue_project(tx, op.subject)?.is_some() {
+        return Err(StoreError::DuplicateIssue(op.subject));
     }
     tx.execute(
         "INSERT INTO issues (id, project, created_hlc, reporter, created_ms, updated_ms)
          VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
         params![
-            op.issue_id.as_bytes(),
-            op.project,
+            op.subject.as_bytes(),
+            op.project.to_string(),
             sql_int(op.hlc.raw())?,
             op.actor,
             op.utc_ms,
         ],
     )?;
-    Ok(())
+    match assigned_key {
+        Some(key) => project::record_key(tx, key, op.subject, op.project),
+        None => Ok(None),
+    }
 }
 
 /// `display` is how the element shows when it differs from `elem`.
@@ -380,14 +412,20 @@ fn record(
     Ok(())
 }
 
-fn issue_project(tx: &Transaction<'_>, issue_id: Uuid) -> Result<Option<String>, StoreError> {
-    Ok(tx
+fn issue_project(tx: &Transaction<'_>, issue_id: Uuid) -> Result<Option<ProjectId>, StoreError> {
+    let text: Option<String> = tx
         .query_row(
             "SELECT project FROM issues WHERE id = ?1",
             [issue_id.as_bytes()],
             |row| row.get(0),
         )
-        .optional()?)
+        .optional()?;
+    text.map(|text| project_from(&text)).transpose()
+}
+
+pub(crate) fn project_from(text: &str) -> Result<ProjectId, StoreError> {
+    text.parse()
+        .map_err(|_| StoreError::Corrupt(format!("{text:?} is not a Project id")))
 }
 
 pub(crate) fn sql_int(value: u64) -> Result<i64, StoreError> {

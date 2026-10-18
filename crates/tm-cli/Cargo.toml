@@ -10,8 +10,14 @@ rust-version.workspace = true
 description = "A local-first issue tracker for one human and their AI agents"
 
 [dependencies]
+clap.workspace = true
 serde_json.workspace = true
 tm-core.workspace = true
+tm-store.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+rusqlite.workspace = true
 
 [[bin]]
 name = "tm"

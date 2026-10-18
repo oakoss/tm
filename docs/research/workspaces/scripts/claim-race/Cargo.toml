@@ -1,0 +1,12 @@
+[package]
+name = "claim-race"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Standalone: not a member of tm's workspace.
+[workspace]
+
+[dependencies]
+# Same version and bundled SQLite as tm-store (Cargo.lock: rusqlite 0.40.2).
+rusqlite = { version = "=0.40.2", features = ["bundled"] }

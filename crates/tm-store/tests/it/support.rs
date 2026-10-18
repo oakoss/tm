@@ -5,9 +5,13 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use tm_core::Change;
 use tm_core::op::CURRENT_VERSION;
 use tm_core::scheme::{Choice, Field, FieldType};
-use tm_core::{Hlc, Op, Scheme};
+use tm_core::{Hlc, Op, ProjectId, Scheme};
 use tm_store::{Clock, Draft, Store, WallTime};
 use uuid::Uuid;
+
+/// The Project the tests write to, and a second one.
+pub(crate) const PROJECT: ProjectId = ProjectId::from_uuid(Uuid::from_u128(1));
+pub(crate) const OTHER: ProjectId = ProjectId::from_uuid(Uuid::from_u128(2));
 
 /// A temporary directory under Cargo's target dir, removed on drop.
 pub(crate) struct TempDir(PathBuf);
@@ -17,7 +21,12 @@ impl TempDir {
         let path =
             PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("tm-store-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&path).unwrap();
-        Self(path)
+        // Discovery returns real paths; macOS reaches /var through a symlink.
+        Self(std::fs::canonicalize(&path).unwrap())
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
     }
 
     pub(crate) fn db(&self) -> PathBuf {
@@ -72,8 +81,8 @@ pub(crate) fn remote_op(
         op_id: Uuid::now_v7(),
         replica_id: Uuid::from_u128(replica),
         actor: "codex".into(),
-        project: "CPL".into(),
-        issue_id,
+        project: PROJECT,
+        subject: issue_id,
         kind: change.kind().into(),
         hlc,
         base_seq,
@@ -101,8 +110,8 @@ pub(crate) fn insert_acked(store: &Store, op: &Op, server_seq: i64, received_ms:
                 op.kind,
                 op.replica_id.as_bytes(),
                 op.actor,
-                op.project,
-                op.issue_id.as_bytes(),
+                op.project.to_string(),
+                op.subject.as_bytes(),
                 change.field(),
                 change.elem(),
                 i64::try_from(op.hlc.raw()).unwrap(),
@@ -165,14 +174,39 @@ pub(crate) fn scheme() -> Scheme {
 }
 
 pub(crate) fn open(path: &Path, clock: &ManualClock) -> Store {
-    Store::open_with_clock(path, Box::new(clock.clone()))
+    let mut store = Store::open_with_clock(path, Box::new(clock.clone()))
         .unwrap()
-        .with_scheme(scheme())
+        .with_scheme(scheme());
+    seed_projects(&mut store);
+    store
 }
 
-/// A new Task titled "t" in Project CPL.
+/// PROJECT (key CPL) and OTHER (key OPS), created as acknowledged
+/// operations from another Replica so their ids stay fixed across tests.
+pub(crate) fn seed_projects(store: &mut Store) {
+    let mut seeded = false;
+    for (n, (project, key)) in [(PROJECT, "CPL"), (OTHER, "OPS")].into_iter().enumerate() {
+        if store.project_by_key(key).unwrap().is_some() {
+            continue;
+        }
+        let change = Change::CreateProject {
+            key: key.into(),
+            name: key.into(),
+        };
+        let mut op = remote_op(9, project.uuid(), &change, Hlc::new(1, 0), 0);
+        op.project = project;
+        op.op_id = Uuid::from_u128(0xF000 + n as u128);
+        insert_acked(store, &op, 0, 1);
+        seeded = true;
+    }
+    if seeded {
+        store.rebuild().unwrap();
+    }
+}
+
+/// A new Task titled "t" in PROJECT.
 pub(crate) fn new_issue(store: &mut Store) -> Uuid {
-    store.create_issue("jace", "CPL", "task", "t").unwrap().0
+    store.create_issue("jace", PROJECT, "task", "t").unwrap().0
 }
 
 /// One field of an Issue as it reads now.
@@ -189,8 +223,8 @@ pub(crate) fn field(store: &Store, issue: Uuid, name: &str) -> Option<serde_json
 pub(crate) fn draft(issue_id: Uuid, change: Change) -> Draft {
     Draft {
         actor: "jace".into(),
-        project: "CPL".into(),
-        issue_id,
+        project: PROJECT,
+        subject: issue_id,
         change,
     }
 }
@@ -216,6 +250,10 @@ pub(crate) fn dump(store: &Store) -> Vec<String> {
         "comments",
         "keys",
         "claims",
+        "projects",
+        "project_keys",
+        "key_numbers",
+        "unapplied",
     ] {
         let mut stmt = conn.prepare(&format!("SELECT * FROM {table}")).unwrap();
         let columns = stmt.column_count();

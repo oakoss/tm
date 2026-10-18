@@ -25,10 +25,11 @@ fn fifty_processes_write_without_losing_operations() {
     }
 
     let dir = TempDir::new();
-    let (issue, created) = Store::open(&dir.db())
-        .unwrap()
-        .create_issue("jace", "CPL", "task", "t")
-        .unwrap();
+    let mut store = Store::open(&dir.db()).unwrap();
+    let (project, project_op) = store.create_project("jace", "CPL", "Core").unwrap();
+    let (issue, mut created) = store.create_issue("jace", project, "task", "t").unwrap();
+    created.push(project_op);
+    drop(store);
 
     let exe = std::env::current_exe().unwrap();
     let children: Vec<_> = (0..PROCESSES)
@@ -71,6 +72,7 @@ fn fifty_processes_write_without_losing_operations() {
 
 fn write_as_child(db: &std::path::Path, issue: Uuid) {
     let mut store = Store::open(db).unwrap();
+    let project = store.issue(issue).unwrap().unwrap().project;
     for i in 0..WRITES_EACH {
         let change = if i % 2 == 0 {
             set_field("title", json!(format!("write {i}")))
@@ -79,6 +81,8 @@ fn write_as_child(db: &std::path::Path, issue: Uuid) {
                 body: format!("write {i}"),
             }
         };
-        store.append(draft(issue, change)).unwrap();
+        let mut draft = draft(issue, change);
+        draft.project = project;
+        store.append(draft).unwrap();
     }
 }

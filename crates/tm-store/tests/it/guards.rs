@@ -9,10 +9,11 @@ use uuid::Uuid;
 use crate::support::{
     ManualClock, TempDir, draft, field, insert_acked, new_issue, open, remote_op, set_field,
 };
+use crate::support::{OTHER, PROJECT};
 
-/// Log position of the edit `store_with_an_edit` makes after the four
-/// operations that create the Issue.
-const EDIT_SEQ: i64 = 5;
+/// Log position of the edit `store_with_an_edit` makes, after the two seeded
+/// Projects and the four operations that create the Issue.
+const EDIT_SEQ: i64 = 7;
 
 fn store_with_an_edit(dir: &TempDir) -> (Store, Uuid) {
     let mut store = open(&dir.db(), &ManualClock::at(50_000));
@@ -74,12 +75,58 @@ fn stored_operations_cannot_be_edited_or_deleted() {
     );
     assert_eq!(
         conn.execute(
-            "UPDATE ops SET server_seq = seq, server_received_ms = 1, assigned_key = 'CPL-' || seq",
+            "UPDATE ops SET server_seq = seq, server_received_ms = 1 WHERE server_seq IS NULL",
             []
         )
         .unwrap(),
-        usize::try_from(EDIT_SEQ).unwrap()
+        5,
+        "the Issue's five operations take a server position"
     );
+}
+
+#[test]
+fn an_operation_id_is_logged_once() {
+    let dir = TempDir::new();
+    let (store, _) = store_with_an_edit(&dir);
+    let err = store
+        .connection()
+        .execute(
+            "INSERT INTO ops (op_id, op_hash, v, kind, replica_id, actor, project, issue_id,
+                              hlc, base_seq, utc_ms, offset_min, payload)
+             SELECT op_id, op_hash, v, kind, replica_id, actor, project, issue_id,
+                    hlc + 1, base_seq, utc_ms, offset_min, payload
+             FROM ops WHERE seq = ?1",
+            [EDIT_SEQ],
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("UNIQUE"), "{err}");
+}
+
+#[test]
+fn server_effects_are_written_once() {
+    let dir = TempDir::new();
+    let (store, _) = store_with_an_edit(&dir);
+    let conn = store.connection();
+    let create = "kind = 'create'";
+    for (column, value) in [
+        ("assigned_key", "'CPL-99'"),
+        ("assigned_key", "NULL"),
+        ("server_seq", "99"),
+        ("server_received_ms", "99"),
+    ] {
+        conn.execute(
+            "UPDATE ops SET server_seq = 5, server_received_ms = 5 WHERE server_seq IS NULL AND kind = 'create'",
+            [],
+        )
+        .unwrap();
+        let err = conn
+            .execute(
+                &format!("UPDATE ops SET {column} = {value} WHERE {create}"),
+                [],
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("set once"), "{column}: {err}");
+    }
 }
 
 #[test]
@@ -274,7 +321,8 @@ fn an_offset_no_time_zone_has_is_refused() {
         (i16::MIN, false),
     ] {
         let mut store = Store::open_with_clock(&dir.db(), Box::new(Offset(offset))).unwrap();
-        let result = store.create_issue("jace", "CPL", "task", "t");
+        crate::support::seed_projects(&mut store);
+        let result = store.create_issue("jace", PROJECT, "task", "t");
         assert_eq!(result.is_ok(), ok, "{offset}: {result:?}");
     }
 }
@@ -284,10 +332,10 @@ fn an_operation_filed_under_another_project_is_refused() {
     let dir = TempDir::new();
     let (mut store, issue) = store_with_an_edit(&dir);
     let mut wrong = draft(issue, set_field("title", json!("b")));
-    wrong.project = "OTHER".into();
+    wrong.project = OTHER;
     let err = store.append(wrong).unwrap_err();
     assert!(
-        matches!(err, StoreError::ProjectMismatch { ref expected, .. } if expected == "CPL"),
+        matches!(err, StoreError::ProjectMismatch { ref expected, .. } if *expected == PROJECT),
         "{err}"
     );
 }

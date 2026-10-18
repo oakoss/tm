@@ -21,6 +21,7 @@ tm-store = { path = "crates/tm-store" }
 tm-sync = { path = "crates/tm-sync" }
 tm-tui = { path = "crates/tm-tui" }
 
+clap = { version = "4.6.7", features = ["derive"] }
 jiff = "0.2.38"
 proptest = "1.12.0"
 rusqlite = { version = "0.40.2", features = ["bundled", "collation"] }
@@ -30,6 +31,7 @@ serde_json = "1.0.154"
 # feature to be fast on aarch64 (ADR 0006).
 sha2 = "0.11.1"
 thiserror = "2.0.21"
+toml = "1.1.8"
 uuid = { version = "1.28.0", features = ["serde", "v7"] }
 
 [workspace.lints.rust]

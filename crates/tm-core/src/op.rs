@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::Hlc;
+use crate::project::ProjectId;
 
 /// The operation format this binary writes and fully understands.
 pub const CURRENT_VERSION: u16 = 1;
@@ -37,6 +38,10 @@ pub enum OpError {
         "field name {0:?} must be lowercase letters, digits and underscores, starting with a letter"
     )]
     InvalidField(String),
+    #[error(
+        "Project key {0:?} must be an uppercase letter then 1 to 9 uppercase letters or digits"
+    )]
+    InvalidProjectKey(String),
 }
 
 /// One change to one Issue. Field changes carry the display labels of the
@@ -70,6 +75,18 @@ pub enum Change {
     Comment {
         body: String,
     },
+    /// A Project; the operation's subject and Project are both its id.
+    CreateProject {
+        key: String,
+        name: String,
+    },
+    /// A new key, name or both; the old key keeps resolving.
+    RenameProject {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
 }
 
 impl Change {
@@ -81,7 +98,18 @@ impl Change {
             Self::Add { .. } => "add",
             Self::Remove { .. } => "remove",
             Self::Comment { .. } => "comment",
+            Self::CreateProject { .. } => "create_project",
+            Self::RenameProject { .. } => "rename_project",
         }
+    }
+
+    /// Whether the subject is a Project rather than an Issue.
+    #[must_use]
+    pub const fn is_project(&self) -> bool {
+        matches!(
+            self,
+            Self::CreateProject { .. } | Self::RenameProject { .. }
+        )
     }
 
     /// The field this change targets, if any.
@@ -91,7 +119,10 @@ impl Change {
             Self::SetField { field, .. } | Self::Add { field, .. } | Self::Remove { field, .. } => {
                 Some(field)
             }
-            Self::Create | Self::Comment { .. } => None,
+            Self::Create
+            | Self::Comment { .. }
+            | Self::CreateProject { .. }
+            | Self::RenameProject { .. } => None,
         }
     }
 
@@ -100,21 +131,36 @@ impl Change {
     pub fn elem(&self) -> Option<&str> {
         match self {
             Self::Add { elem, .. } | Self::Remove { elem, .. } => Some(elem),
-            Self::Create | Self::SetField { .. } | Self::Comment { .. } => None,
+            Self::Create
+            | Self::SetField { .. }
+            | Self::Comment { .. }
+            | Self::CreateProject { .. }
+            | Self::RenameProject { .. } => None,
         }
     }
 
     /// Rejects field names that cannot be used safely as JSON object keys and
-    /// filter qualifiers.
+    /// filter qualifiers, and Project keys not in their stored form.
     ///
     /// # Errors
     ///
-    /// [`OpError::InvalidField`] when the field name is not `[a-z][a-z0-9_]*`.
+    /// [`OpError::InvalidField`] when the field name is not `[a-z][a-z0-9_]*`,
+    /// or [`OpError::InvalidProjectKey`].
     pub fn validate(&self) -> Result<(), OpError> {
         if let Some(field) = self.field()
             && !crate::scheme::is_id(field)
         {
             return Err(OpError::InvalidField(field.to_owned()));
+        }
+        let key = match self {
+            Self::CreateProject { key, .. } => Some(key),
+            Self::RenameProject { key, .. } => key.as_ref(),
+            _ => None,
+        };
+        if let Some(key) = key
+            && !crate::project::is_key(key)
+        {
+            return Err(OpError::InvalidProjectKey(key.clone()));
         }
         Ok(())
     }
@@ -128,8 +174,9 @@ pub struct Op {
     pub op_id: Uuid,
     pub replica_id: Uuid,
     pub actor: String,
-    pub project: String,
-    pub issue_id: Uuid,
+    pub project: ProjectId,
+    /// What the operation changes: an Issue, or a Project for Project kinds.
+    pub subject: Uuid,
     pub kind: String,
     pub hlc: Hlc,
     pub base_seq: u64,
@@ -173,8 +220,8 @@ impl Op {
         buf.extend_from_slice(self.op_id.as_bytes());
         buf.extend_from_slice(self.replica_id.as_bytes());
         put_bytes(&mut buf, self.actor.as_bytes());
-        put_bytes(&mut buf, self.project.as_bytes());
-        buf.extend_from_slice(self.issue_id.as_bytes());
+        put_bytes(&mut buf, self.project.to_string().as_bytes());
+        buf.extend_from_slice(self.subject.as_bytes());
         put_bytes(&mut buf, self.kind.as_bytes());
         buf.extend_from_slice(&self.hlc.raw().to_be_bytes());
         buf.extend_from_slice(&self.base_seq.to_be_bytes());
@@ -208,7 +255,7 @@ mod tests {
 
     /// Changing the envelope layout or hash input changes every Replica's
     /// operation identities, so the value is pinned.
-    const PINNED_OP_HASH: &str = "9bf15d5f3946075af9b64db621653bff907e719dc14380bdcfaa5b3b0f165868";
+    const PINNED_OP_HASH: &str = "ee4e794fbfc682546be2fc037644bcbc28ab2809018acaeac0c84f5f5604acb6";
 
     fn sample() -> Op {
         let change = Change::SetField {
@@ -222,8 +269,8 @@ mod tests {
             op_id: Uuid::from_u128(1),
             replica_id: Uuid::from_u128(2),
             actor: "jace".into(),
-            project: "CPL".into(),
-            issue_id: Uuid::from_u128(3),
+            project: ProjectId::from_uuid(Uuid::from_u128(4)),
+            subject: Uuid::from_u128(3),
             kind: change.kind().into(),
             hlc: Hlc::new(1_000, 0),
             base_seq: 0,
@@ -246,8 +293,8 @@ mod tests {
             Box::new(|o| o.op_id = Uuid::from_u128(9)),
             Box::new(|o| o.replica_id = Uuid::from_u128(9)),
             Box::new(|o| o.actor = "codex".into()),
-            Box::new(|o| o.project = "TM".into()),
-            Box::new(|o| o.issue_id = Uuid::from_u128(9)),
+            Box::new(|o| o.project = ProjectId::from_uuid(Uuid::from_u128(9))),
+            Box::new(|o| o.subject = Uuid::from_u128(9)),
             Box::new(|o| o.kind = "add".into()),
             Box::new(|o| o.hlc = Hlc::new(1_000, 1)),
             Box::new(|o| o.base_seq = 1),
@@ -264,13 +311,14 @@ mod tests {
 
     #[test]
     fn length_prefixes_keep_adjacent_fields_apart() {
-        let mut a = sample();
-        a.actor = "ab".into();
-        a.project = "c".into();
-        let mut b = sample();
-        b.actor = "a".into();
-        b.project = "bc".into();
-        assert_ne!(a.op_hash(), b.op_hash());
+        let encode = |fields: [&str; 2]| {
+            let mut buf = Vec::new();
+            for field in fields {
+                put_bytes(&mut buf, field.as_bytes());
+            }
+            buf
+        };
+        assert_ne!(encode(["ab", "c"]), encode(["a", "bc"]));
     }
 
     #[test]
@@ -362,10 +410,37 @@ mod tests {
             Change::Comment {
                 body: String::new(),
             },
+            Change::CreateProject {
+                key: "CPL".into(),
+                name: "Core".into(),
+            },
+            Change::RenameProject {
+                key: None,
+                name: Some("Core".into()),
+            },
         ];
         for change in changes {
             let tag = serde_json::to_value(&change).unwrap()["kind"].clone();
             assert_eq!(tag, change.kind());
+        }
+    }
+
+    #[test]
+    fn project_keys_in_operations_must_be_stored_uppercase() {
+        let ok = Change::RenameProject {
+            key: Some("CORE".into()),
+            name: None,
+        };
+        assert!(ok.validate().is_ok());
+        for bad in ["cpl", "C", "CP-L"] {
+            let change = Change::CreateProject {
+                key: bad.into(),
+                name: "x".into(),
+            };
+            assert!(
+                matches!(change.validate(), Err(OpError::InvalidProjectKey(_))),
+                "{bad}"
+            );
         }
     }
 

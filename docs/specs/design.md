@@ -33,7 +33,7 @@
 
 ## Workspaces, Projects and config
 
-- A **Workspace** is a store plus its config. The global one lives under `~/.tm/`; others can be created for isolation. Issue data never lives in a code repo ([ADR 0003](../decisions/0003-issue-data-lives-outside-code-repos.md)).
+- A **Workspace** is a store plus its config. The global one lives under `~/.tm/`, as does tm's own config, never `~/.config/tm.toml`, which is the repo file of a git repo at `$HOME`; others can be created for isolation. Issue data never lives in a code repo ([ADR 0003](../decisions/0003-issue-data-lives-outside-code-repos.md)).
 - **Repo scope** works like `bd init`: `tm init` in a repo with no Workspace creates a Workspace dedicated to it.
 - **Projects** nest freely; a repo maps to a Project through one file, `.config/tm.toml` (or `.tm.toml` at the root, never both). Without the file, the Workspace maps repos by git remote URL. Monorepos map path prefixes to Projects.
 - **Per-machine values never go in the repo file**: sync server URLs, hostnames, tokens and paths live in the Workspace or user config, and no command writes them into a tracked file.
