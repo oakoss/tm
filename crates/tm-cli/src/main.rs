@@ -126,8 +126,13 @@ enum Command {
 
 #[derive(Subcommand)]
 enum SchemeAction {
-    /// Print the Scheme's types, Workflows and fields.
-    Show,
+    /// Print the Scheme's types, Workflows and fields; with a type, that
+    /// type's Workflow and the fields it carries.
+    Show {
+        /// An Issue type by id or label, such as task.
+        #[arg(value_name = "TYPE")]
+        issue_type: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -152,11 +157,16 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             Ok(Output::new(help.clone(), json!({ "help": help })))
         }
         Some(Command::Scheme {
-            action: SchemeAction::Show,
+            action: SchemeAction::Show { issue_type: None },
         }) => {
             let scheme = Scheme::built_in();
             Ok(Output::new(scheme_text(&scheme), scheme_json(&scheme)))
         }
+        Some(Command::Scheme {
+            action: SchemeAction::Show {
+                issue_type: Some(issue_type),
+            },
+        }) => scheme_type(&Scheme::built_in(), &issue_type),
         Some(Command::Init { key, name, yes }) => init::run(init::Init { key, name, yes }, json),
         Some(Command::Comment { issue, body }) => comment::run(&issue, &body),
         Some(Command::Create {
@@ -213,6 +223,55 @@ fn scheme_json(scheme: &Scheme) -> serde_json::Value {
     let mut json = serde_json::to_value(scheme).expect("a Scheme always serializes");
     json["status_categories"] = serde_json::json!(Category::ALL);
     json
+}
+
+/// One Issue type: its Workflow's Statuses in order and every field, marked
+/// required where the Scheme requires it of every Issue.
+fn scheme_type(scheme: &Scheme, wanted: &str) -> Result<Output, CliError> {
+    let issue_type = scheme
+        .types
+        .iter()
+        .find(|t| t.id.eq_ignore_ascii_case(wanted) || t.label.eq_ignore_ascii_case(wanted))
+        .ok_or_else(|| {
+            CliError::new("invalid_value", format!("{wanted:?} is not an Issue type"))
+                .with("field", "type")
+                .with(
+                    "allowed",
+                    scheme
+                        .types
+                        .iter()
+                        .map(|t| t.id.clone())
+                        .collect::<Vec<_>>(),
+                )
+        })?;
+    let workflow = scheme.workflow(&issue_type.id);
+    let data = json!({
+        "type": issue_type,
+        "workflow": workflow,
+        "fields": scheme.fields,
+    });
+    let mut text = format!("type {} ({})\n", issue_type.id, issue_type.label);
+    if let Some(workflow) = workflow {
+        let _ = writeln!(
+            text,
+            "workflow {}, starting in {}",
+            workflow.name, workflow.start
+        );
+        for status in &workflow.statuses {
+            let _ = writeln!(
+                text,
+                "  {} ({}): {}",
+                status.id,
+                status.label,
+                status.category.id()
+            );
+        }
+    }
+    for field in scheme.fields.iter().filter(|field| !field.derived) {
+        let required = if field.required { " [required]" } else { "" };
+        let _ = writeln!(text, "field {} ({}){required}", field.name, field.label);
+    }
+    Ok(Output::new(text, data))
 }
 
 fn scheme_text(scheme: &Scheme) -> String {

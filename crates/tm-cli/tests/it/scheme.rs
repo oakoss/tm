@@ -62,3 +62,47 @@ fn an_unknown_command_prints_usage_and_fails() {
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("Usage: tm scheme"));
 }
+
+#[test]
+fn scheme_show_with_a_type_gives_its_workflow_and_fields() {
+    let output = tm(&["scheme", "show", "Bug", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let doc: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let data = &doc["data"];
+    assert_eq!(data["type"]["id"], "bug");
+    assert_eq!(data["workflow"]["start"], "todo");
+    assert_eq!(data["workflow"]["statuses"][2]["id"], "in_progress");
+    assert_eq!(data["workflow"]["statuses"][2]["category"], "active");
+    let title = data["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|field| field["name"] == "title")
+        .unwrap();
+    assert_eq!(title["required"], true);
+
+    let output = tm(&["scheme", "show", "task"]);
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.starts_with("type task (Task)\nworkflow default, starting in todo\n"),
+        "{text}"
+    );
+    assert!(text.contains("field title (Title) [required]\n"), "{text}");
+    assert!(
+        !text.contains("field key"),
+        "derived fields are left out of text: {text}"
+    );
+
+    let output = tm(&["scheme", "show", "sub-task", "--json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        doc["data"]["type"]["id"], "sub_task",
+        "found by its label: {doc}"
+    );
+
+    let output = tm(&["scheme", "show", "saga", "--json"]);
+    assert_eq!(output.status.code(), Some(1));
+    let doc: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(doc["error"], "invalid_value");
+    assert_eq!(doc["allowed"].as_array().unwrap().len(), 7);
+}
