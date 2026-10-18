@@ -3,6 +3,8 @@
 mod create;
 mod init;
 mod json;
+mod list;
+mod ready;
 mod scheme;
 mod show;
 mod smoke;
