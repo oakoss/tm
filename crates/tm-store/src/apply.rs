@@ -74,8 +74,9 @@ pub(crate) struct Effects<'a> {
     pub(crate) assigned_key: Option<&'a str>,
 }
 
-/// Applies `op`. `Ok(Some(reason))` means it applied but its Key could not be
-/// recorded, which replay reports rather than dropping the Issue.
+/// Applies `op`. `Ok(Some(reason))` means it was kept but did not take full
+/// effect, such as a create whose Key could not be recorded; replay records
+/// the reason as written rather than dropping the operation.
 pub(crate) fn apply(
     tx: &Transaction<'_>,
     op: &Op,
@@ -204,7 +205,8 @@ fn create(
         ],
     )?;
     match assigned_key {
-        Some(key) => project::record_key(tx, key, op.subject, op.project),
+        Some(key) => Ok(project::record_key(tx, key, op.subject, op.project)?
+            .map(|reason| format!("applied without its Key: {reason}"))),
         None => Ok(None),
     }
 }

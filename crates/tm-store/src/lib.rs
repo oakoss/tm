@@ -785,7 +785,7 @@ impl Store {
             };
             if let Some(reason) = apply(&tx, &op, effects)? {
                 return Err(StoreError::Corrupt(format!(
-                    "a Key this store chose: {reason}"
+                    "a write this store checked did not apply in full: {reason}"
                 )));
             }
             if let Some(key) = &assigned_key {
@@ -994,16 +994,11 @@ fn replay(tx: &Transaction<'_>, row: &StoredOp) -> Result<bool, StoreError> {
             sql(tx.execute("RELEASE replay_op", []))?;
             true
         }
-        // The Issue stays; only its Key is set aside.
         Ok(Some(reason)) => {
             sql(tx.execute("RELEASE replay_op", []))?;
             sql(tx.execute(
                 "INSERT INTO unapplied (seq, op_id, reason) VALUES (?1, ?2, ?3)",
-                params![
-                    row.seq,
-                    op.op_id.as_bytes(),
-                    format!("applied without its Key: {reason}")
-                ],
+                params![row.seq, op.op_id.as_bytes(), reason],
             ))?;
             false
         }
