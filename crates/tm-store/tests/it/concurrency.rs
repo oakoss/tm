@@ -1,14 +1,13 @@
 //! Many short-lived processes writing at once, as parallel agents do.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 
 use serde_json::json;
 use tm_core::Change;
 use tm_store::Store;
 use uuid::Uuid;
 
-use crate::support::{TempDir, draft, set_field};
+use crate::support::{TempDir, draft, run_children, set_field};
 
 /// Set in child processes: the store path to write to, and the shared Issue.
 const CHILD_DB: &str = "TM_STORE_TEST_CHILD_DB";
@@ -31,25 +30,15 @@ fn fifty_processes_write_without_losing_operations() {
     created.push(project_op);
     drop(store);
 
-    let exe = std::env::current_exe().unwrap();
-    let children: Vec<_> = (0..PROCESSES)
-        .map(|_| {
-            Command::new(&exe)
-                .args([
-                    "--exact",
-                    "concurrency::fifty_processes_write_without_losing_operations",
-                ])
-                .args(["--test-threads", "1", "--quiet"])
+    run_children(
+        "concurrency::fifty_processes_write_without_losing_operations",
+        PROCESSES,
+        |_, command| {
+            command
                 .env(CHILD_DB, dir.db())
-                .env(CHILD_ISSUE, issue.to_string())
-                .stdout(Stdio::null())
-                .spawn()
-                .unwrap()
-        })
-        .collect();
-    for mut child in children {
-        assert!(child.wait().unwrap().success(), "a writer process failed");
-    }
+                .env(CHILD_ISSUE, issue.to_string());
+        },
+    );
 
     let store = Store::open(&dir.db()).unwrap();
     let conn = store.connection();

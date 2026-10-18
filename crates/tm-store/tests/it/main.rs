@@ -1,6 +1,7 @@
 //! Integration tests, compiled as one binary so cargo links once.
 
 mod append;
+mod claims;
 mod concurrency;
 mod fields;
 mod find;

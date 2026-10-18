@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -65,6 +66,25 @@ impl Clock for ManualClock {
             utc_ms: self.0.load(Ordering::SeqCst),
             offset_min: -300,
         })
+    }
+}
+
+/// Runs `count` processes of the test `test` at once, each set up by
+/// `configure` from its index, and asserts every one succeeds.
+pub(crate) fn run_children(test: &str, count: usize, configure: impl Fn(usize, &mut Command)) {
+    let exe = std::env::current_exe().unwrap();
+    let children: Vec<_> = (0..count)
+        .map(|i| {
+            let mut command = Command::new(&exe);
+            command
+                .args(["--exact", test, "--test-threads", "1", "--quiet"])
+                .stdout(Stdio::null());
+            configure(i, &mut command);
+            command.spawn().unwrap()
+        })
+        .collect();
+    for mut child in children {
+        assert!(child.wait().unwrap().success(), "a child process failed");
     }
 }
 

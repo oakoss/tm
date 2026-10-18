@@ -8,7 +8,7 @@ use tm_core::{Change, Hlc, OpError, ProjectId};
 use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
-use crate::support::{ManualClock, PROJECT, TempDir, dump, insert_acked, open, remote_op};
+use crate::support::{ManualClock, PROJECT, TempDir, insert_acked, open, remote_op};
 
 fn key(store: &Store, issue: Uuid) -> String {
     store.issue(issue).unwrap().unwrap().key.unwrap()
@@ -102,18 +102,33 @@ fn rebuild_reads_keys_from_the_log_and_never_reuses_one() {
                 .0
         })
         .collect();
-    let before = dump(&store);
-    // Wiping the projection's Keys stands in for an Issue removed from view:
-    // the next Key still counts past every Key the log holds.
+    // Removing the newest Issue from the projection, as purge will, leaves its
+    // number spent: the next Key counts past it, not past the Keys left.
+    store
+        .connection()
+        .execute(
+            "DELETE FROM keys WHERE issue_id = ?1",
+            [issues[2].as_bytes()],
+        )
+        .unwrap();
+    let next = store.create_issue("jace", core, "task", "next").unwrap().0;
+    assert_eq!(key(&store, next), "CORE-4");
     store
         .connection()
         .execute_batch("DELETE FROM keys; PRAGMA user_version = 0;")
         .unwrap();
     assert_eq!(store.rebuild().unwrap(), 0);
-    assert_eq!(dump(&store), before);
-    let next = store.create_issue("jace", core, "task", "next").unwrap().0;
-    assert_eq!(key(&store, next), "CORE-4");
-    assert_eq!(key(&store, issues[2]), "CORE-3");
+    for (issue, expected) in issues
+        .iter()
+        .chain([&next])
+        .zip(["CORE-1", "CORE-2", "CORE-3", "CORE-4"])
+    {
+        assert_eq!(
+            key(&store, *issue),
+            expected,
+            "rebuild reads every Key from the log"
+        );
+    }
 }
 
 #[test]

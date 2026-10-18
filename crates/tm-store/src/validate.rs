@@ -65,6 +65,10 @@ pub(crate) fn check(
                 elem_label,
             })
         }
+        Change::Claim { action } => {
+            crate::claim::check(tx, issue_id, &action)?;
+            Ok(Change::Claim { action })
+        }
         Change::Link {
             link_type,
             target,

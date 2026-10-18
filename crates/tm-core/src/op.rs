@@ -89,6 +89,10 @@ pub enum Change {
         target: Uuid,
         present: bool,
     },
+    /// Takes or releases the Issue's Claim (ADR 0009).
+    Claim {
+        action: ClaimAction,
+    },
     /// A Project; the operation's subject and Project are both its id.
     CreateProject {
         key: String,
@@ -103,6 +107,29 @@ pub enum Change {
     },
 }
 
+/// The field a Claim is filed under; no other kind may write it.
+pub const CLAIM_FIELD: &str = "claim";
+
+/// A take applies only while the Issue's current Claim is still `prev`, and
+/// a release only while it is still `claim`, so server order decides between
+/// concurrent ones.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum ClaimAction {
+    Take {
+        agent: String,
+        /// How long the Claim lasts; none holds it until released.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl_ms: Option<u64>,
+        /// The Claim the taker saw as current; none when the Issue was unclaimed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prev: Option<Uuid>,
+    },
+    Release {
+        claim: Uuid,
+    },
+}
+
 impl Change {
     #[must_use]
     pub const fn kind(&self) -> &'static str {
@@ -113,6 +140,7 @@ impl Change {
             Self::Remove { .. } => "remove",
             Self::Comment { .. } => "comment",
             Self::Link { .. } => "link",
+            Self::Claim { .. } => "claim",
             Self::CreateProject { .. } => "create_project",
             Self::RenameProject { .. } => "rename_project",
         }
@@ -135,6 +163,7 @@ impl Change {
                 Some(field)
             }
             Self::Link { .. } => Some(crate::link::FIELD),
+            Self::Claim { .. } => Some(CLAIM_FIELD),
             Self::Create
             | Self::Comment { .. }
             | Self::CreateProject { .. }
@@ -153,6 +182,7 @@ impl Change {
             Self::Create
             | Self::SetField { .. }
             | Self::Comment { .. }
+            | Self::Claim { .. }
             | Self::CreateProject { .. }
             | Self::RenameProject { .. } => None,
         }
@@ -174,6 +204,9 @@ impl Change {
         // Another kind writing a Link's element would merge with it unseen.
         if self.field() == Some(crate::link::FIELD) && !matches!(self, Self::Link { .. }) {
             return Err(OpError::ReservedField(crate::link::FIELD));
+        }
+        if self.field() == Some(CLAIM_FIELD) && !matches!(self, Self::Claim { .. }) {
+            return Err(OpError::ReservedField(CLAIM_FIELD));
         }
         if let Self::Link { link_type, .. } = self
             && !crate::scheme::is_id(link_type)
@@ -443,6 +476,11 @@ mod tests {
                 target: Uuid::from_u128(5),
                 present: true,
             },
+            Change::Claim {
+                action: ClaimAction::Release {
+                    claim: Uuid::from_u128(6),
+                },
+            },
             Change::CreateProject {
                 key: "CPL".into(),
                 name: "Core".into(),
@@ -502,6 +540,34 @@ mod tests {
         assert!(matches!(
             forged.validate(),
             Err(OpError::ReservedField("links"))
+        ));
+    }
+
+    #[test]
+    fn a_claim_round_trips_and_owns_the_claim_field() {
+        let take = Change::Claim {
+            action: ClaimAction::Take {
+                agent: "claude".into(),
+                ttl_ms: Some(7_200_000),
+                prev: None,
+            },
+        };
+        let json = serde_json::to_string(&take).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"claim","action":{"action":"take","agent":"claude","ttl_ms":7200000}}"#
+        );
+        assert_eq!(serde_json::from_str::<Change>(&json).unwrap(), take);
+        assert_eq!(take.field(), Some("claim"));
+        let forged = Change::SetField {
+            field: "claim".into(),
+            label: String::new(),
+            value: serde_json::json!("x"),
+            value_label: None,
+        };
+        assert!(matches!(
+            forged.validate(),
+            Err(OpError::ReservedField("claim"))
         ));
     }
 

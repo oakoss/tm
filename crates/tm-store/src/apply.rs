@@ -74,8 +74,9 @@ pub(crate) struct Effects<'a> {
     pub(crate) assigned_key: Option<&'a str>,
 }
 
-/// Applies `op`. `Ok(Some(reason))` means it applied but its Key could not be
-/// recorded, which replay reports rather than dropping the Issue.
+/// Applies `op`. `Ok(Some(reason))` means it was kept but did not take full
+/// effect, such as a create whose Key could not be recorded; replay records
+/// the reason as written rather than dropping the operation.
 pub(crate) fn apply(
     tx: &Transaction<'_>,
     op: &Op,
@@ -148,6 +149,12 @@ pub(crate) fn apply(
             target,
             present,
         } => link(tx, op.subject, &link_type, target, present, &version)?,
+        // A lost take or release changes nothing, so it is not activity either.
+        Change::Claim { action } => {
+            if let Some(lost) = crate::claim::apply(tx, op, &action)? {
+                return Ok(Some(lost));
+            }
+        }
         Change::Comment { body } => {
             tx.execute(
                 "INSERT INTO comments (op_id, issue_id, actor, body, hlc, utc_ms, offset_min)
@@ -204,7 +211,8 @@ fn create(
         ],
     )?;
     match assigned_key {
-        Some(key) => project::record_key(tx, key, op.subject, op.project),
+        Some(key) => Ok(project::record_key(tx, key, op.subject, op.project)?
+            .map(|reason| format!("applied without its Key: {reason}"))),
         None => Ok(None),
     }
 }

@@ -5,6 +5,7 @@
 //! transaction; `rebuild` regenerates the projections from the log.
 
 mod apply;
+mod claim;
 mod project;
 mod query;
 mod read;
@@ -29,6 +30,7 @@ use uuid::Uuid;
 
 use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
+pub use claim::Claim;
 pub use read::IssueView;
 
 /// How long a writer waits for another writer before giving up.
@@ -79,6 +81,20 @@ pub enum StoreError {
         relation: &'static str,
         /// From the Issue written, around the cycle and back to it.
         path: Vec<Uuid>,
+    },
+    #[error("Issue {issue} is held by {agent} (Claim {claim}, taken by {actor}{})", expires_ms.map_or_else(String::new, |ms| format!(", expiring at {ms} ms")))]
+    AlreadyClaimed {
+        issue: Uuid,
+        agent: String,
+        actor: String,
+        claim: Uuid,
+        expires_ms: Option<i64>,
+    },
+    #[error("Claim {claim} does not hold Issue {issue}{}", current.map_or_else(|| "; it is unclaimed".to_owned(), |current| format!("; Claim {current} does")))]
+    NotClaimHolder {
+        issue: Uuid,
+        claim: Uuid,
+        current: Option<Uuid>,
     },
     #[error("Issue {issue} is missing required fields: {}", fields.join(", "))]
     MissingFields { issue: Uuid, fields: Vec<String> },
@@ -157,6 +173,15 @@ pub struct Unapplied {
     pub seq: i64,
     pub op_id: Uuid,
     pub reason: String,
+}
+
+impl Unapplied {
+    /// A take or release another won, which sync makes ordinary, rather
+    /// than an operation that does not fit.
+    #[must_use]
+    pub fn is_lost_claim(&self) -> bool {
+        self.reason.starts_with(claim::LOST)
+    }
 }
 
 /// A change to write, before the store stamps it with identity and time.
@@ -785,7 +810,7 @@ impl Store {
             };
             if let Some(reason) = apply(&tx, &op, effects)? {
                 return Err(StoreError::Corrupt(format!(
-                    "a Key this store chose: {reason}"
+                    "a write this store checked did not apply in full: {reason}"
                 )));
             }
             if let Some(key) = &assigned_key {
@@ -994,16 +1019,11 @@ fn replay(tx: &Transaction<'_>, row: &StoredOp) -> Result<bool, StoreError> {
             sql(tx.execute("RELEASE replay_op", []))?;
             true
         }
-        // The Issue stays; only its Key is set aside.
         Ok(Some(reason)) => {
             sql(tx.execute("RELEASE replay_op", []))?;
             sql(tx.execute(
                 "INSERT INTO unapplied (seq, op_id, reason) VALUES (?1, ?2, ?3)",
-                params![
-                    row.seq,
-                    op.op_id.as_bytes(),
-                    format!("applied without its Key: {reason}")
-                ],
+                params![row.seq, op.op_id.as_bytes(), reason],
             ))?;
             false
         }
