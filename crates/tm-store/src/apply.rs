@@ -7,7 +7,7 @@
 //! pairwise and is not guaranteed to commute.
 
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value as Json;
 use tm_core::scheme::priority_rank;
 use tm_core::{Change, Hlc, Op, ProjectId, link};
@@ -460,10 +460,10 @@ fn record(
 }
 
 pub(crate) fn issue_project(
-    tx: &Transaction<'_>,
+    conn: &Connection,
     issue_id: Uuid,
 ) -> Result<Option<ProjectId>, StoreError> {
-    let text: Option<String> = tx
+    let text: Option<String> = conn
         .query_row(
             "SELECT project FROM issues WHERE id = ?1",
             [issue_id.as_bytes()],

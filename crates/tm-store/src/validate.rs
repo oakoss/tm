@@ -195,7 +195,27 @@ fn blocking_path(
     if !reaches {
         return Ok(None);
     }
-    let mut stmt = tx.prepare("SELECT dst FROM links WHERE type = ?1 AND src = ?2")?;
+    let next = format!(
+        "SELECT dst FROM links WHERE type = '{}' AND src = ?1",
+        link::BLOCKS
+    );
+    shortest_path(tx, &next, start, goal)?
+        .ok_or_else(|| {
+            StoreError::Corrupt("a blocks path the recursive query found is missing".into())
+        })
+        .map(Some)
+}
+
+/// The shortest path from `start` to `goal`, both included, following the
+/// Issues `next` selects for `?1`. Visiting each Issue once keeps it finite
+/// on a cycle a merge left.
+fn shortest_path(
+    tx: &Transaction<'_>,
+    next: &str,
+    start: Uuid,
+    goal: Uuid,
+) -> Result<Option<Vec<Uuid>>, StoreError> {
+    let mut stmt = tx.prepare(next)?;
     let mut came_from = HashMap::from([(start, start)]);
     let mut queue = VecDeque::from([start]);
     while let Some(at) = queue.pop_front() {
@@ -209,12 +229,10 @@ fn blocking_path(
             path.reverse();
             return Ok(Some(path));
         }
-        let next = stmt
-            .query_map(params![link::BLOCKS, at.as_bytes()], |row| {
-                row.get::<_, Vec<u8>>(0)
-            })?
+        let ids = stmt
+            .query_map([at.as_bytes()], |row| row.get::<_, Vec<u8>>(0))?
             .collect::<Result<Vec<_>, _>>()?;
-        for bytes in next {
+        for bytes in ids {
             let id = uuid_from(&bytes)?;
             if let Entry::Vacant(entry) = came_from.entry(id) {
                 entry.insert(at);
@@ -222,9 +240,7 @@ fn blocking_path(
             }
         }
     }
-    Err(StoreError::Corrupt(
-        "a blocks path the recursive query found is missing".into(),
-    ))
+    Ok(None)
 }
 
 /// Project names must not be blank. Key spelling is checked with the
@@ -529,27 +545,12 @@ fn ancestry_reaches(
     start: Uuid,
     goal: Uuid,
 ) -> Result<Option<Vec<Uuid>>, StoreError> {
-    let mut path = vec![start];
-    let mut at = start;
-    while at != goal {
-        let parent: Option<Vec<u8>> = tx
-            .query_row(
-                "SELECT parent_id FROM issues WHERE id = ?1",
-                [at.as_bytes()],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten();
-        let Some(parent) = parent else {
-            return Ok(None);
-        };
-        at = uuid_from(&parent)?;
-        if path.contains(&at) {
-            return Ok(None);
-        }
-        path.push(at);
-    }
-    Ok(Some(path))
+    shortest_path(
+        tx,
+        "SELECT parent_id FROM issues WHERE id = ?1 AND parent_id IS NOT NULL",
+        start,
+        goal,
+    )
 }
 
 fn current(

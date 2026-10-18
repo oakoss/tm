@@ -6,7 +6,7 @@ use tm_core::Change;
 use tm_store::Store;
 use uuid::Uuid;
 
-use crate::support::{ManualClock, TempDir, draft, dump, new_issue, open, set_field};
+use crate::support::{ManualClock, TempDir, draft, dump, links, new_issue, open, set_field};
 
 const ISSUES: usize = 3;
 /// A required built-in, two enumerated built-ins and a Scheme field.
@@ -208,33 +208,11 @@ impl Model {
     }
 
     fn observed(store: &Store, issues: &[Uuid]) -> Self {
-        let mut stmt = store
-            .connection()
-            .prepare("SELECT type, src, dst FROM links")
-            .unwrap();
-        let links = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                ))
-            })
-            .unwrap()
-            .map(|row| {
-                let (link_type, src, dst) = row.unwrap();
-                (
-                    link_type,
-                    Uuid::from_slice(&src).unwrap(),
-                    Uuid::from_slice(&dst).unwrap(),
-                )
-            })
-            .collect();
         let mut model = Self {
             fields: Vec::new(),
             labels: Vec::new(),
             comments: Vec::new(),
-            links,
+            links: links(store).into_iter().collect(),
         };
         for issue in issues {
             let view = store.issue(*issue).unwrap().unwrap();

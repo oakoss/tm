@@ -5,33 +5,9 @@ use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, OTHER, TempDir, draft, insert_acked, new_issue, open, remote_op,
+    ManualClock, OTHER, TempDir, draft, insert_acked, insert_acked_raw, links, new_issue, open,
+    remote_op,
 };
-
-/// The present Links, as `(type, source, target)`.
-fn links(store: &Store) -> Vec<(String, Uuid, Uuid)> {
-    let mut stmt = store
-        .connection()
-        .prepare("SELECT type, src, dst FROM links ORDER BY type, src, dst")
-        .unwrap();
-    stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, Vec<u8>>(1)?,
-            row.get::<_, Vec<u8>>(2)?,
-        ))
-    })
-    .unwrap()
-    .map(|row| {
-        let (link_type, src, dst) = row.unwrap();
-        (
-            link_type,
-            Uuid::from_slice(&src).unwrap(),
-            Uuid::from_slice(&dst).unwrap(),
-        )
-    })
-    .collect()
-}
 
 fn link_versions(store: &Store) -> i64 {
     store
@@ -346,32 +322,15 @@ fn an_operation_of_another_kind_on_the_links_field_is_refused_like_any_malformed
         let op = remote_op(7, issue, &change, Hlc::new(ms, 0), 0);
         insert_acked(&store, &op, seq, 2_000);
     }
-    let mut op = remote_op(7, a, &link("blocks", b, true), Hlc::new(1_010, 0), 3);
-    op.kind = forged.kind().into();
-    op.payload = serde_json::to_string(&forged).unwrap();
-    store
-        .connection()
-        .execute(
-            "INSERT INTO ops (op_id, op_hash, v, kind, replica_id, actor, project, issue_id,
-                              field, elem, hlc, base_seq, utc_ms, offset_min, payload,
-                              server_seq, server_received_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'links', ?9, ?10, 3, ?11, 0, ?12, 4, 2000)",
-            rusqlite::params![
-                op.op_id.as_bytes(),
-                op.op_hash(),
-                op.v,
-                op.kind,
-                op.replica_id.as_bytes(),
-                op.actor,
-                op.project.to_string(),
-                op.subject.as_bytes(),
-                format!("blocks/{b}"),
-                i64::try_from(op.hlc.raw()).unwrap(),
-                op.utc_ms,
-                op.payload,
-            ],
-        )
-        .unwrap();
+    let op = remote_op(7, a, &forged, Hlc::new(1_010, 0), 3);
+    insert_acked_raw(
+        &store,
+        &op,
+        forged.field(),
+        forged.elem().as_deref(),
+        4,
+        2_000,
+    );
     let err = store.rebuild().unwrap_err();
     assert!(
         matches!(&err, StoreError::Replay { seq, .. } if *seq == 6),

@@ -96,6 +96,26 @@ pub(crate) fn remote_op(
 /// sync will; the caller rebuilds to apply it.
 pub(crate) fn insert_acked(store: &Store, op: &Op, server_seq: i64, received_ms: i64) {
     let change = op.change().unwrap();
+    insert_acked_raw(
+        store,
+        op,
+        change.field(),
+        change.elem().as_deref(),
+        server_seq,
+        received_ms,
+    );
+}
+
+/// [`insert_acked`] for an operation whose payload need not parse, with the
+/// `field` and `elem` columns given.
+pub(crate) fn insert_acked_raw(
+    store: &Store,
+    op: &Op,
+    field: Option<&str>,
+    elem: Option<&str>,
+    server_seq: i64,
+    received_ms: i64,
+) {
     store
         .connection()
         .execute(
@@ -112,8 +132,8 @@ pub(crate) fn insert_acked(store: &Store, op: &Op, server_seq: i64, received_ms:
                 op.actor,
                 op.project.to_string(),
                 op.subject.as_bytes(),
-                change.field(),
-                change.elem(),
+                field,
+                elem,
                 i64::try_from(op.hlc.raw()).unwrap(),
                 i64::try_from(op.base_seq).unwrap(),
                 op.utc_ms,
@@ -236,6 +256,31 @@ pub(crate) fn set_field(field: &str, value: serde_json::Value) -> Change {
         value,
         value_label: None,
     }
+}
+
+/// The present Links, as `(type, source, target)`, sorted.
+pub(crate) fn links(store: &Store) -> Vec<(String, Uuid, Uuid)> {
+    let mut stmt = store
+        .connection()
+        .prepare("SELECT type, src, dst FROM links ORDER BY type, src, dst")
+        .unwrap();
+    stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Vec<u8>>(1)?,
+            row.get::<_, Vec<u8>>(2)?,
+        ))
+    })
+    .unwrap()
+    .map(|row| {
+        let (link_type, src, dst) = row.unwrap();
+        (
+            link_type,
+            Uuid::from_slice(&src).unwrap(),
+            Uuid::from_slice(&dst).unwrap(),
+        )
+    })
+    .collect()
 }
 
 /// Every projection row, sorted, as text: equal dumps mean equal projections.

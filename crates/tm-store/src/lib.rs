@@ -682,8 +682,7 @@ impl Store {
     ) -> Result<Draft, StoreError> {
         let (source, target) = tm_core::link::link_type(link_type)
             .map_or((from, to), |def| tm_core::link::canonical(def, from, to));
-        let tx = self.conn.unchecked_transaction()?;
-        let Some(project) = apply::issue_project(&tx, source)? else {
+        let Some(project) = apply::issue_project(&self.conn, source)? else {
             // A missing source holds no Link, so a type or pairing that cannot
             // be written is the error to report.
             validate::link_shape(link_type, from, to)?;
