@@ -10,6 +10,7 @@ mod list;
 mod moves;
 mod ready;
 mod scheme;
+mod shapes;
 mod show;
 mod smoke;
 mod support;
