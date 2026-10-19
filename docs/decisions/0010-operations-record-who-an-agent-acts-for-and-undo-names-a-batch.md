@@ -1,6 +1,6 @@
 # Operations record who an Agent acts for, and undo names a batch
 
-- Status: accepted
+- Status: accepted; its bare-undo and conflict rules are amended by [ADR 0012](0012-a-human-undoes-their-last-command-without-naming-it.md)
 - Date: 2026-10-18
 - Deciders: Jace Babin
 
@@ -57,7 +57,7 @@ design.md records an Agent's writes as "agent, on behalf of human", and `tm undo
 **Undo.**
 
 - Every write gets a batch id, its first operation's id, kept in a local table `op_batches(op_id, batch)` outside the log and the projections. It is not hashed or synced, and a rebuild neither reads nor drops it; taskchampion's local `UndoPoint` is the precedent.
-- Every write's output carries its batch id, and `tm undo <batch>` reverts exactly that batch by appending operations that restore each touched field and set element to its state before the batch. It is refused with `undo_conflict`, naming the current value, when a later batch wrote the same field or element. There is no bare "undo my last command"; the caller keeps the id, as it keeps a Claim's.
+- Every write's output carries its batch id, and `tm undo <batch>` reverts exactly that batch by appending operations that restore each touched field and set element to its state before the batch. It is refused with `undo_conflict`, naming the current value, when a later batch wrote the same field or element. There is no bare "undo my last command"; the caller keeps the id, as it keeps a Claim's. [ADR 0012](0012-a-human-undoes-their-last-command-without-naming-it.md) supersedes this for a human writing as themself, and has the conflict rule ignore a later batch that is undone, together with the undo standing against it.
 - Until sync is designed, undo is refused with `cannot_undo` for a batch holding an acknowledged operation. Undo after sync is designed with sync.
 - What has no prior state is undone by its nearest reversible write. Undoing a create archives the Issue, since only `tm purge` removes one. Undoing a comment retracts it, which only the Actor who wrote it, or the human an Agent wrote it for, may do; undoing the retraction shows it again. A Claim release, a Project write, and a batch whose writes all hold their prior state already are refused with `cannot_undo`.
 
