@@ -7,8 +7,9 @@ use std::collections::{HashMap, VecDeque};
 
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::Value;
+use tm_core::op::COMMENTS_FIELD;
 use tm_core::scheme::{Field, FieldType, Scheme, is_date, priority_rank};
-use tm_core::{Change, link};
+use tm_core::{Actor, Change, link};
 use uuid::Uuid;
 
 use crate::StoreError;
@@ -69,6 +70,10 @@ pub(crate) fn check(
             crate::claim::check(tx, issue_id, &action)?;
             Ok(Change::Claim { action })
         }
+        Change::Retract { comment, retracted } => {
+            comment_author(tx, issue_id, comment)?;
+            Ok(Change::Retract { comment, retracted })
+        }
         Change::Link {
             link_type,
             target,
@@ -105,6 +110,63 @@ pub(crate) fn check(
             })
         }
     }
+}
+
+/// Who wrote comment `comment` on `issue_id`, and the human it was written
+/// for, if an Agent wrote it.
+fn comment_author(
+    tx: &Transaction<'_>,
+    issue_id: Uuid,
+    comment: Uuid,
+) -> Result<(String, Option<String>), StoreError> {
+    tx.query_row(
+        "SELECT c.actor, o.on_behalf_of FROM comments c JOIN ops o ON o.op_id = c.op_id
+         WHERE c.op_id = ?1 AND c.issue_id = ?2",
+        params![comment.as_bytes(), issue_id.as_bytes()],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()?
+    .ok_or_else(|| StoreError::Invalid {
+        field: COMMENTS_FIELD.into(),
+        reason: format!("Issue {issue_id} has no comment {comment}"),
+        valid: Vec::new(),
+    })
+}
+
+/// Only a comment's author, or the human an Agent wrote it for, may retract
+/// it or bring it back.
+pub(crate) fn check_retracter(
+    tx: &Transaction<'_>,
+    issue_id: Uuid,
+    writer: &Actor,
+    comment: Uuid,
+) -> Result<(), StoreError> {
+    let (author, for_human) = comment_author(tx, issue_id, comment)?;
+    let same = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
+    // Agent names are shared across humans, so the author is the name and
+    // the human it wrote for together.
+    let is_author = same(&author, writer.name())
+        && match (for_human.as_deref(), writer.on_behalf_of()) {
+            (None, None) => true,
+            (Some(human), Some(writer_human)) => same(human, writer_human),
+            _ => false,
+        };
+    let is_their_human = !writer.is_agent()
+        && for_human
+            .as_deref()
+            .is_some_and(|human| same(human, writer.name()));
+    if is_author || is_their_human {
+        return Ok(());
+    }
+    Err(StoreError::Invalid {
+        field: COMMENTS_FIELD.into(),
+        reason: format!(
+            "only {author}{} can retract this comment, not {}",
+            for_human.map_or_else(String::new, |human| format!(" or {human}")),
+            writer.name()
+        ),
+        valid: Vec::new(),
+    })
 }
 
 /// A held Link can be removed whatever its type; any other Link must have a

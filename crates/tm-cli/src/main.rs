@@ -14,6 +14,7 @@ mod moves;
 mod output;
 mod ready;
 mod show;
+mod undo;
 
 use std::fmt::Write as _;
 use std::process::ExitCode;
@@ -138,6 +139,14 @@ enum Command {
         /// The Issue's Key, such as CPL-42, or its full id.
         issue: String,
     },
+    /// Undo one command's writes, named by the batch id it printed.
+    Undo {
+        /// The batch id, or a unique start or end of it, 8 characters or more.
+        batch: String,
+        /// Show what would be restored, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Inspect the Scheme.
     Scheme {
         #[command(subcommand)]
@@ -212,6 +221,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Move { issue, status, set }) => moves::run(&issue, &status, &set),
         Some(Command::Ready { limit }) => ready::run(limit),
         Some(Command::Show { issue }) => show::run(&issue),
+        Some(Command::Undo { batch, dry_run }) => undo::run(&batch, dry_run),
     }
 }
 

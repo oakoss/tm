@@ -58,7 +58,8 @@ design.md records an Agent's writes as "agent, on behalf of human", and `tm undo
 
 - Every write gets a batch id, its first operation's id, kept in a local table `op_batches(op_id, batch)` outside the log and the projections. It is not hashed or synced, and a rebuild neither reads nor drops it; taskchampion's local `UndoPoint` is the precedent.
 - Every write's output carries its batch id, and `tm undo <batch>` reverts exactly that batch by appending operations that restore each touched field and set element to its state before the batch. It is refused with `undo_conflict`, naming the current value, when a later batch wrote the same field or element. There is no bare "undo my last command"; the caller keeps the id, as it keeps a Claim's.
-- Until sync is designed, undo is refused for a batch holding an acknowledged operation. Undo after sync is designed with sync.
+- Until sync is designed, undo is refused with `cannot_undo` for a batch holding an acknowledged operation. Undo after sync is designed with sync.
+- What has no prior state is undone by its nearest reversible write. Undoing a create archives the Issue, since only `tm purge` removes one. Undoing a comment retracts it, which only the Actor who wrote it, or the human an Agent wrote it for, may do; undoing the retraction shows it again. A Claim release, a Project write, and a batch whose writes all hold their prior state already are refused with `cannot_undo`.
 
 ### Consequences
 
@@ -79,4 +80,4 @@ A human's and an Agent's operation each have a pinned hash, and the hash changes
 
 - Research: [core-commands.md](../research/cli/core-commands.md), sections 3 and 4.
 - Answers ADR 0009's open question of where "on behalf of" lives.
-- Open: how `create` and `comment` are undone; what undo means once operations sync.
+- Open: what undo means once operations sync.

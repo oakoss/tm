@@ -11,6 +11,7 @@ mod query;
 mod read;
 mod ready;
 mod schema;
+mod undo;
 mod validate;
 pub mod workspace;
 
@@ -34,6 +35,7 @@ use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 pub use claim::Claim;
 pub use read::{CommentView, Direction, IssueView, LinkView};
 pub use ready::Ready;
+pub use undo::{Restore, UndoPlan};
 
 /// How long a writer waits for another writer before giving up.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -84,6 +86,15 @@ pub enum StoreError {
         /// From the Issue written, around the cycle and back to it.
         path: Vec<Uuid>,
     },
+    #[error("no batch {0} was written on this Replica")]
+    UnknownBatch(Uuid),
+    #[error("batch {batch} cannot be undone: {} was written again since", conflicts.iter().map(|c| c.field.as_str()).collect::<Vec<_>>().join(", "))]
+    UndoConflict {
+        batch: Uuid,
+        conflicts: Vec<undo::Restore>,
+    },
+    #[error("batch {batch} cannot be undone: {reason}")]
+    CannotUndo { batch: Uuid, reason: String },
     #[error("Issue {from} holds no {link_type} Link to {to}")]
     NotLinked {
         link_type: String,
@@ -814,6 +825,17 @@ impl Store {
         drafts: Vec<Draft>,
         guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
     ) -> Result<Vec<Op>, StoreError> {
+        self.append_with(drafts, guard, true)
+    }
+
+    /// [`Store::append_guarded`], rolled back instead of committed when
+    /// `commit` is false: every check runs, and nothing is kept.
+    fn append_with(
+        &mut self,
+        drafts: Vec<Draft>,
+        guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
+        commit: bool,
+    ) -> Result<Vec<Op>, StoreError> {
         for draft in &drafts {
             draft.change.validate()?;
         }
@@ -842,6 +864,9 @@ impl Store {
             }
             if let Change::Claim { action } = &draft.change {
                 claim::check_taker(&draft.actor, action)?;
+            }
+            if let Change::Retract { comment, .. } = &draft.change {
+                validate::check_retracter(&tx, draft.subject, &draft.actor, *comment)?;
             }
             let change = validate::check(&tx, &self.scheme, draft.subject, draft.change)?;
             hlc = hlc.tick(now_ms);
@@ -911,7 +936,9 @@ impl Store {
             "UPDATE meta SET v = ?1 WHERE k = 'last_hlc'",
             [sql_int(hlc.raw())?],
         )?;
-        tx.commit()?;
+        if commit {
+            tx.commit()?;
+        }
         Ok(ops)
     }
 

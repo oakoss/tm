@@ -256,6 +256,75 @@ fn list_answers_in_a_fixed_shape() {
 }
 
 #[test]
+fn undo_answers_in_a_fixed_shape() {
+    let (scratch, repo) = two_issues();
+    let moved = run(&scratch, &repo, &["move", "TM-1", "in_progress"]);
+    let batch = moved["data"]["batch"].as_str().unwrap().to_owned();
+    let doc = run(&scratch, &repo, &["undo", &batch]);
+    insta::assert_json_snapshot!(doc, {
+        ".data.undone" => "[id]",
+        ".data.batch" => "[id]",
+        ".data.restored[].issue" => "[id]",
+        ".data.issues[].id" => "[id]",
+        ".data.issues[].links[].other.id" => "[id]",
+        ".data.issues[].fields.created" => "[ms]",
+        ".data.issues[].fields.updated" => "[ms]",
+    }, @r#"
+    {
+      "data": {
+        "batch": "[id]",
+        "dry_run": false,
+        "issues": [
+          {
+            "category": "todo",
+            "claim": null,
+            "comments": [],
+            "fields": {
+              "archived": false,
+              "created": "[ms]",
+              "priority": "none",
+              "reporter": "jace",
+              "status": "todo",
+              "title": "first",
+              "type": "task",
+              "updated": "[ms]"
+            },
+            "id": "[id]",
+            "key": "TM-1",
+            "links": [
+              {
+                "direction": "outward",
+                "name": "blocks",
+                "other": {
+                  "id": "[id]",
+                  "key": "TM-2"
+                },
+                "type": "blocks"
+              }
+            ],
+            "parent": null,
+            "project": "TM",
+            "sets": {}
+          }
+        ],
+        "restored": [
+          {
+            "field": "status",
+            "from": "in_progress",
+            "issue": "[id]",
+            "key": "TM-1",
+            "to": "todo"
+          }
+        ],
+        "undone": "[id]"
+      },
+      "schema_version": 1,
+      "warnings": []
+    }
+    "#);
+}
+
+#[test]
 fn ready_answers_in_a_fixed_shape() {
     let (scratch, repo) = two_issues();
     let doc = run(&scratch, &repo, &["ready"]);

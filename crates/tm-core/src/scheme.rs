@@ -367,7 +367,16 @@ impl Scheme {
         }
         // A field named for a filter qualifier could never be filtered, and
         // `links` belongs to Link operations.
-        if ["sort", "no", "has", "category", crate::link::FIELD].contains(&field.name.as_str()) {
+        if [
+            "sort",
+            "no",
+            "has",
+            "category",
+            crate::link::FIELD,
+            crate::op::COMMENTS_FIELD,
+        ]
+        .contains(&field.name.as_str())
+        {
             return Err(SchemeError::ReservedField(field.name));
         }
         if let Some(existing) = self.field(&field.name) {
@@ -474,7 +483,7 @@ mod tests {
             scheme.add_field(area()),
             Err(SchemeError::DuplicateField("area".into()))
         );
-        for reserved in ["status", "sort", "category", "links"] {
+        for reserved in ["status", "sort", "category", "links", "comments"] {
             assert_eq!(
                 scheme.add_field(Field::custom(reserved, "S", FieldType::Text, Vec::new())),
                 Err(SchemeError::ReservedField(reserved.into()))

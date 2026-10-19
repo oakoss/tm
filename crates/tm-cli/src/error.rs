@@ -175,6 +175,15 @@ impl From<StoreError> for CliError {
                 .with("relation", relation)
                 .with("path", ids(&path)),
             StoreError::NoAgent { actor } => Self::new("no_agent", message).with("actor", actor),
+            StoreError::UnknownBatch(batch) => Self::new("not_found", message)
+                .with("kind", "batch")
+                .with("reference", batch.to_string()),
+            StoreError::UndoConflict { batch, conflicts } => Self::new("undo_conflict", message)
+                .with("batch", batch.to_string())
+                .with("conflicts", json!(conflicts)),
+            StoreError::CannotUndo { batch, .. } => {
+                Self::new("cannot_undo", message).with("batch", batch.to_string())
+            }
             StoreError::NotLinked {
                 link_type,
                 from,

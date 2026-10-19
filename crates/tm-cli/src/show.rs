@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
-use tm_store::{LinkView, Store};
+use tm_store::{CommentView, LinkView, Store};
 use uuid::Uuid;
 
 use crate::error::CliError;
@@ -74,7 +74,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
             "name": link.name,
             "other": { "id": link.other, "key": key },
         })).collect::<Vec<_>>(),
-        "comments": comments,
+        "comments": comments.iter().map(comment_json).collect::<Vec<_>>(),
     });
 
     let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
@@ -112,16 +112,36 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         let _ = writeln!(text, "{} {other}", link.name);
     }
     for comment in &comments {
-        let by = match &comment.on_behalf_of {
-            Some(human) => format!("{} for {human}", comment.actor),
-            None => comment.actor.clone(),
-        };
-        let _ = writeln!(text, "\n{by}:");
-        for line in comment.body.lines() {
-            let _ = writeln!(text, "  {}", printable(line));
-        }
+        write_comment(&mut text, comment);
     }
     Ok(Output::new(text, data))
+}
+
+/// A retracted comment keeps its place and author, not its words.
+fn comment_json(comment: &CommentView) -> Value {
+    json!({
+        "id": comment.id,
+        "actor": comment.actor,
+        "on_behalf_of": comment.on_behalf_of,
+        "body": (!comment.retracted).then_some(&comment.body),
+        "utc_ms": comment.utc_ms,
+        "retracted": comment.retracted,
+    })
+}
+
+fn write_comment(text: &mut String, comment: &CommentView) {
+    let by = match &comment.on_behalf_of {
+        Some(human) => format!("{} for {human}", comment.actor),
+        None => comment.actor.clone(),
+    };
+    if comment.retracted {
+        let _ = writeln!(text, "\n{by}: (retracted)");
+        return;
+    }
+    let _ = writeln!(text, "\n{by}:");
+    for line in comment.body.lines() {
+        let _ = writeln!(text, "  {}", printable(line));
+    }
 }
 
 /// A parent by id and, where it has one, Key.

@@ -9,6 +9,7 @@
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value as Json;
+use tm_core::op::COMMENTS_FIELD;
 use tm_core::scheme::priority_rank;
 use tm_core::{Change, Hlc, Op, ProjectId, link};
 use uuid::Uuid;
@@ -16,7 +17,7 @@ use uuid::Uuid;
 use crate::{StoreError, project};
 
 /// What decides a field: the winning operation's position and clock.
-struct Version {
+pub(crate) struct Version {
     hlc: Hlc,
     replica_id: Uuid,
     op_id: Uuid,
@@ -26,6 +27,30 @@ struct Version {
 }
 
 impl Version {
+    /// A logged operation's version from its `ops` row: `hlc`, `replica_id`,
+    /// `op_id`, `base_seq`, `server_seq` and `server_received_ms`, in that
+    /// order from `first`.
+    pub(crate) fn from_row(row: &rusqlite::Row<'_>, first: usize) -> Result<Self, StoreError> {
+        Ok(Self {
+            hlc: Hlc::from_raw(rust_int(row.get(first)?)?),
+            replica_id: uuid_from(&row.get::<_, Vec<u8>>(first + 1)?)?,
+            op_id: uuid_from(&row.get::<_, Vec<u8>>(first + 2)?)?,
+            base_seq: rust_int(row.get(first + 3)?)?,
+            server_seq: row
+                .get::<_, Option<i64>>(first + 4)?
+                .map(rust_int)
+                .transpose()?,
+            server_received_ms: row
+                .get::<_, Option<i64>>(first + 5)?
+                .map(rust_int)
+                .transpose()?,
+        })
+    }
+
+    pub(crate) const fn op_id(&self) -> Uuid {
+        self.op_id
+    }
+
     fn of(op: &Op, server_seq: Option<u64>, server_received_ms: Option<u64>) -> Self {
         Self {
             hlc: op.hlc,
@@ -40,7 +65,7 @@ impl Version {
     /// ADR 0006: a pending edit shows over acknowledged ones on its own
     /// Replica; between acknowledged operations, one that saw the other wins,
     /// and concurrent ones go to the later capped clock.
-    fn beats(&self, current: &Self) -> bool {
+    pub(crate) fn beats(&self, current: &Self) -> bool {
         match (self.server_seq, current.server_seq) {
             (None, Some(_)) => true,
             (Some(_), None) => false,
@@ -155,10 +180,16 @@ pub(crate) fn apply(
                 return Ok(Some(lost));
             }
         }
+        Change::Retract { comment, retracted } => {
+            retract(tx, op.subject, comment, retracted, &version)?;
+        }
         Change::Comment { body } => {
             tx.execute(
-                "INSERT INTO comments (op_id, issue_id, actor, body, hlc, utc_ms, offset_min)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO comments
+                 (op_id, issue_id, actor, body, hlc, utc_ms, offset_min, retracted)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, coalesce(
+                   (SELECT present FROM field_versions
+                    WHERE issue_id = ?2 AND field = ?8 AND elem = ?9), 0))",
                 params![
                     op.op_id.as_bytes(),
                     op.subject.as_bytes(),
@@ -167,6 +198,8 @@ pub(crate) fn apply(
                     sql_int(op.hlc.raw())?,
                     op.utc_ms,
                     op.offset_min,
+                    COMMENTS_FIELD,
+                    op.op_id.to_string(),
                 ],
             )?;
         }
@@ -177,6 +210,27 @@ pub(crate) fn apply(
         params![op.utc_ms, op.subject.as_bytes()],
     )?;
     Ok(None)
+}
+
+/// Hides or shows comment `comment` if this retraction wins. The state is
+/// recorded even before the comment replays, which takes it on arrival.
+fn retract(
+    tx: &Transaction<'_>,
+    issue_id: Uuid,
+    comment: Uuid,
+    retracted: bool,
+    version: &Version,
+) -> Result<(), StoreError> {
+    let elem = comment.to_string();
+    if !wins(tx, issue_id, COMMENTS_FIELD, &elem, version)? {
+        return Ok(());
+    }
+    record(tx, issue_id, COMMENTS_FIELD, &elem, retracted, version)?;
+    tx.execute(
+        "UPDATE comments SET retracted = ?1 WHERE op_id = ?2 AND issue_id = ?3",
+        params![retracted, comment.as_bytes(), issue_id.as_bytes()],
+    )?;
+    Ok(())
 }
 
 /// Labels compare without case. Writes already store them lowercased; this

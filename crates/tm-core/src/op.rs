@@ -89,6 +89,12 @@ pub enum Change {
     Comment {
         body: String,
     },
+    /// Hides a comment, or shows it again; the comment stays in the log.
+    Retract {
+        /// The id of the operation that added the comment.
+        comment: Uuid,
+        retracted: bool,
+    },
     /// Adds or removes a Link, filed under its canonical source Issue.
     Link {
         link_type: String,
@@ -115,6 +121,9 @@ pub enum Change {
 
 /// The field a Claim is filed under; no other kind may write it.
 pub const CLAIM_FIELD: &str = "claim";
+
+/// The field a retraction is filed under, one element per comment.
+pub const COMMENTS_FIELD: &str = "comments";
 
 /// A take applies only while the Issue's current Claim is still `prev`, and
 /// a release only while it is still `claim`, so server order decides between
@@ -145,6 +154,7 @@ impl Change {
             Self::Add { .. } => "add",
             Self::Remove { .. } => "remove",
             Self::Comment { .. } => "comment",
+            Self::Retract { .. } => "retract",
             Self::Link { .. } => "link",
             Self::Claim { .. } => "claim",
             Self::CreateProject { .. } => "create_project",
@@ -170,6 +180,7 @@ impl Change {
             }
             Self::Link { .. } => Some(crate::link::FIELD),
             Self::Claim { .. } => Some(CLAIM_FIELD),
+            Self::Retract { .. } => Some(COMMENTS_FIELD),
             Self::Create
             | Self::Comment { .. }
             | Self::CreateProject { .. }
@@ -185,6 +196,7 @@ impl Change {
             Self::Link {
                 link_type, target, ..
             } => Some(Cow::Owned(crate::link::elem(link_type, *target))),
+            Self::Retract { comment, .. } => Some(Cow::Owned(comment.to_string())),
             Self::Create
             | Self::SetField { .. }
             | Self::Comment { .. }
@@ -213,6 +225,9 @@ impl Change {
         }
         if self.field() == Some(CLAIM_FIELD) && !matches!(self, Self::Claim { .. }) {
             return Err(OpError::ReservedField(CLAIM_FIELD));
+        }
+        if self.field() == Some(COMMENTS_FIELD) && !matches!(self, Self::Retract { .. }) {
+            return Err(OpError::ReservedField(COMMENTS_FIELD));
         }
         if let Self::Link { link_type, .. } = self
             && !crate::scheme::is_id(link_type)
@@ -415,6 +430,10 @@ mod tests {
                 label: String::new(),
                 elem: "x".into(),
                 elem_label: None,
+            },
+            Change::Retract {
+                comment: Uuid::nil(),
+                retracted: true,
             },
             Change::Comment {
                 body: String::new(),
