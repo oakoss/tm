@@ -210,7 +210,7 @@ pub(crate) fn check(
             (ClaimAction::Release { claim }, held) => StoreError::NotClaimHolder {
                 issue,
                 claim: *claim,
-                current: held.map(|held| held.id),
+                holder: held.map(Box::new),
             },
         });
     }
@@ -243,12 +243,16 @@ pub(crate) fn apply(
     if !stands(held.as_ref(), action) {
         let holder = held.map_or_else(
             || "the Issue is unclaimed".to_owned(),
-            |held| format!("{} holds it (Claim {})", held.agent, held.id),
+            |held| format!("{} holds it for {}", held.agent, held.on_behalf_of),
         );
         return Ok(Some(match action {
             ClaimAction::Take { prev, .. } => format!(
                 "{LOST} a take that saw {}, but {holder}",
-                prev.map_or_else(|| "it unclaimed".to_owned(), |prev| format!("Claim {prev}"))
+                if prev.is_some() {
+                    "an earlier Claim"
+                } else {
+                    "it unclaimed"
+                }
             ),
             ClaimAction::Release { claim } => {
                 format!("{LOST} a release of Claim {claim}, but {holder}")

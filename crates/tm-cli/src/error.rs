@@ -6,8 +6,9 @@ use serde_json::{Map, Value, json};
 use tm_core::OpError;
 use tm_core::filter::FilterError;
 use tm_core::op::{CURRENT_VERSION, MAX_PAYLOAD_BYTES};
-use tm_store::StoreError;
 use tm_store::workspace::WorkspaceError;
+use tm_store::{Claim, StoreError};
+use uuid::Uuid;
 
 /// Keys the document itself uses, which details never take.
 const RESERVED: [&str; 6] = [
@@ -96,6 +97,40 @@ impl CliError {
     }
 }
 
+// A Claim refusal names who holds the Claim, never its token: a caller that
+// retried with a token an error gave would take or free another session's
+// Claim. `tm show` gives the token to whoever asks for it.
+impl CliError {
+    fn already_claimed(
+        message: String,
+        issue: Uuid,
+        held_by: (String, String),
+        expires_ms: Option<i64>,
+    ) -> Self {
+        Self::new("already_claimed", message)
+            .with("issue", issue.to_string())
+            .with("agent", held_by.0)
+            .with("on_behalf_of", held_by.1)
+            .with("expires_ms", expires_ms)
+    }
+
+    fn not_claim_holder(message: String, issue: Uuid, claim: Uuid, holder: Option<&Claim>) -> Self {
+        Self::new("not_claim_holder", message)
+            .with("issue", issue.to_string())
+            .with("claim", claim.to_string())
+            .with(
+                "holder",
+                holder.map(|held| {
+                    json!({
+                        "agent": held.agent,
+                        "on_behalf_of": held.on_behalf_of,
+                        "expires_ms": held.expires_ms,
+                    })
+                }),
+            )
+    }
+}
+
 impl From<StoreError> for CliError {
     fn from(err: StoreError) -> Self {
         let message = err.to_string();
@@ -152,22 +187,14 @@ impl From<StoreError> for CliError {
                 issue,
                 agent,
                 on_behalf_of,
-                claim,
                 expires_ms,
-            } => Self::new("already_claimed", message)
-                .with("issue", issue.to_string())
-                .with("agent", agent)
-                .with("on_behalf_of", on_behalf_of)
-                .with("claim", claim.to_string())
-                .with("expires_ms", expires_ms),
+                ..
+            } => Self::already_claimed(message, issue, (agent, on_behalf_of), expires_ms),
             StoreError::NotClaimHolder {
                 issue,
                 claim,
-                current,
-            } => Self::new("not_claim_holder", message)
-                .with("issue", issue.to_string())
-                .with("claim", claim.to_string())
-                .with("current", current.map(|id| id.to_string())),
+                holder,
+            } => Self::not_claim_holder(message, issue, claim, holder.as_deref()),
             StoreError::MissingFields { issue, fields } => Self::new("missing_fields", message)
                 .with("issue", issue.to_string())
                 .with(

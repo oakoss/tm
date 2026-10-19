@@ -51,6 +51,11 @@ fn an_agent_claims_with_a_token_and_releases_with_it() {
     let out = as_agent(&scratch, &repo, &["--json", "claim", "TM-1"]);
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(doc(&out)["error"], "already_claimed", "{out:?}");
+    assert_eq!(doc(&out)["agent"], "claude");
+    assert!(
+        !text(&out.stdout).contains(&token),
+        "an error never hands out the holder's token: {out:?}"
+    );
 
     let out = as_agent(
         &scratch,
@@ -58,6 +63,20 @@ fn an_agent_claims_with_a_token_and_releases_with_it() {
         &["--json", "release", "TM-1", &Uuid::now_v7().to_string()],
     );
     assert_eq!(doc(&out)["error"], "not_claim_holder", "{out:?}");
+    assert_eq!(doc(&out)["holder"]["agent"], "claude", "{out:?}");
+    assert!(
+        !text(&out.stdout).contains(&token),
+        "an error never hands out the holder's token: {out:?}"
+    );
+    let out = tm(
+        &scratch,
+        &repo,
+        &["release", "TM-1", &Uuid::now_v7().to_string()],
+    );
+    assert!(
+        !text(&out.stderr).contains(&token),
+        "nor does its text: {out:?}"
+    );
     let out = as_agent(&scratch, &repo, &["--json", "release", "TM-1", &token]);
     assert!(out.status.success(), "{out:?}");
     assert_eq!(doc(&out)["data"]["released"], json!(token));
