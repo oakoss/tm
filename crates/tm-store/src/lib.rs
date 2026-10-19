@@ -825,16 +825,18 @@ impl Store {
         drafts: Vec<Draft>,
         guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
     ) -> Result<Vec<Op>, StoreError> {
-        self.append_with(drafts, guard, true)
+        self.append_with(drafts, guard, true, None)
     }
 
     /// [`Store::append_guarded`], rolled back instead of committed when
-    /// `commit` is false: every check runs, and nothing is kept.
+    /// `commit` is false: every check runs, and nothing is kept. With
+    /// `undid`, the batch is recorded as that batch's undo.
     fn append_with(
         &mut self,
         drafts: Vec<Draft>,
         guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
         commit: bool,
+        undid: Option<Uuid>,
     ) -> Result<Vec<Op>, StoreError> {
         for draft in &drafts {
             draft.change.validate()?;
@@ -916,21 +918,12 @@ impl Store {
             }
             ops.push(op);
         }
-        for (issue, (missing, fitted)) in before {
-            let fields: Vec<String> = validate::missing_fields(&tx, &self.scheme, issue)?
-                .into_iter()
-                .filter(|field| !missing.contains(field))
-                .collect();
-            if !fields.is_empty() {
-                return Err(StoreError::MissingFields { issue, fields });
-            }
-            if fitted && !validate::status_fits_type(&tx, &self.scheme, issue)? {
-                return Err(StoreError::Invalid {
-                    field: "status".into(),
-                    reason: "is not in the Workflow of the Issue's type".into(),
-                    valid: Vec::new(),
-                });
-            }
+        no_worse(&tx, &self.scheme, before)?;
+        if let (Some(undid), Some(first)) = (undid, ops.first()) {
+            tx.execute(
+                "INSERT INTO undo_batches (batch, undid) VALUES (?1, ?2)",
+                [first.op_id.as_bytes(), undid.as_bytes()],
+            )?;
         }
         tx.execute(
             "UPDATE meta SET v = ?1 WHERE k = 'last_hlc'",
@@ -1139,6 +1132,32 @@ impl Store {
         tx.commit()?;
         Ok(unapplied)
     }
+}
+
+/// Refuses a batch that left an Issue missing a field it had, or with a
+/// Status outside its type's Workflow when it fitted before.
+fn no_worse(
+    tx: &Transaction<'_>,
+    scheme: &Scheme,
+    before: BTreeMap<Uuid, (Vec<String>, bool)>,
+) -> Result<(), StoreError> {
+    for (issue, (missing, fitted)) in before {
+        let fields: Vec<String> = validate::missing_fields(tx, scheme, issue)?
+            .into_iter()
+            .filter(|field| !missing.contains(field))
+            .collect();
+        if !fields.is_empty() {
+            return Err(StoreError::MissingFields { issue, fields });
+        }
+        if fitted && !validate::status_fits_type(tx, scheme, issue)? {
+            return Err(StoreError::Invalid {
+                field: "status".into(),
+                reason: "is not in the Workflow of the Issue's type".into(),
+                valid: Vec::new(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The clock's last value. The log bounds it as well as `last_hlc`, so a lost

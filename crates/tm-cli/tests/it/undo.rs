@@ -76,10 +76,12 @@ fn undo_reverts_a_move_and_its_own_batch_redoes_it() {
     let (code, doc) = run(&scratch, &repo, &["undo", &the_undo]);
     assert_eq!(code, Some(0), "{doc}");
     assert_eq!(doc["data"]["issues"][0]["fields"]["status"], "in_progress");
+
+    run(&scratch, &repo, &["move", "TM-1", "in_review"]);
     let (code, doc) = run(&scratch, &repo, &["undo", &batch]);
     assert_eq!(code, Some(1));
     assert_eq!(doc["error"], "undo_conflict", "{doc}");
-    assert_eq!(doc["conflicts"][0]["from"], "in_progress");
+    assert_eq!(doc["conflicts"][0]["from"], "in_review");
 }
 
 #[test]
