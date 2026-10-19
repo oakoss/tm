@@ -2,7 +2,7 @@
 
 use serde_json::json;
 use tm_core::hlc::MAX_MS;
-use tm_core::{Change, Hlc};
+use tm_core::{Change, Hlc, Op};
 use tm_store::{Clock, Store, StoreError, WallTime};
 use uuid::Uuid;
 
@@ -50,6 +50,7 @@ fn stored_operations_cannot_be_edited_or_deleted() {
         "replica_id",
         "actor",
         "on_behalf_of",
+        "source",
         "project",
         "issue_id",
         "field",
@@ -146,6 +147,47 @@ fn rebuild_names_an_operation_whose_content_no_longer_matches_its_hash() {
         matches!(err, StoreError::Replay { seq: EDIT_SEQ, .. }),
         "{err}"
     );
+}
+
+#[test]
+fn a_log_another_build_wrote_is_refused_by_name() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    new_issue(&mut store);
+    store
+        .connection()
+        .execute_batch(
+            "DROP TRIGGER ops_immutable; DROP INDEX ops_by_source;
+             ALTER TABLE ops DROP COLUMN source;",
+        )
+        .unwrap();
+    drop(store);
+    let err = Store::open_with_clock(&dir.db(), Box::new(clock))
+        .err()
+        .unwrap();
+    assert!(matches!(err, StoreError::FormatChanged), "{err}");
+}
+
+#[test]
+fn an_imported_operation_replays_with_its_source() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = Uuid::now_v7();
+    for (seq, change) in (1..).zip([
+        Change::Create,
+        set_field("title", json!("x")),
+        set_field("type", json!("task")),
+        set_field("status", json!("todo")),
+    ]) {
+        let op = Op {
+            source: Some("beads:tm-1".into()),
+            ..remote_op(7, issue, &change, Hlc::new(1_000, 0), 0)
+        };
+        insert_acked(&store, &op, seq, 1_000);
+    }
+    store.rebuild().unwrap();
+    assert_eq!(field(&store, issue, "title"), Some(json!("x")));
 }
 
 #[test]

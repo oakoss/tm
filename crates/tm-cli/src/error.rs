@@ -218,6 +218,7 @@ impl From<StoreError> for CliError {
                 .with("found", found)
                 .with("supported", supported)
                 .fix("upgrade tm"),
+            StoreError::FormatChanged => Self::new("store_format_changed", message),
             StoreError::Replay { source, seq, .. } => match *source {
                 StoreError::Op(OpError::UnsupportedVersion(found)) => {
                     Self::from(OpError::UnsupportedVersion(found))

@@ -102,6 +102,7 @@ pub(crate) fn remote_op(
         replica_id: Uuid::from_u128(replica),
         actor: "codex".into(),
         on_behalf_of: None,
+        source: None,
         project: PROJECT,
         subject: issue_id,
         kind: change.kind().into(),
@@ -140,11 +141,11 @@ pub(crate) fn insert_acked_raw(
     store
         .connection()
         .execute(
-            "INSERT INTO ops (op_id, op_hash, v, kind, replica_id, actor, on_behalf_of, project,
-                              issue_id, field, elem, hlc, base_seq, utc_ms, offset_min, payload,
-                              server_seq, server_received_ms)
+            "INSERT INTO ops (op_id, op_hash, v, kind, replica_id, actor, on_behalf_of, source,
+                              project, issue_id, field, elem, hlc, base_seq, utc_ms, offset_min,
+                              payload, server_seq, server_received_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                     ?18)",
+                     ?18, ?19)",
             rusqlite::params![
                 op.op_id.as_bytes(),
                 op.op_hash(),
@@ -153,6 +154,7 @@ pub(crate) fn insert_acked_raw(
                 op.replica_id.as_bytes(),
                 op.actor,
                 op.on_behalf_of,
+                op.source,
                 op.project.to_string(),
                 op.subject.as_bytes(),
                 field,

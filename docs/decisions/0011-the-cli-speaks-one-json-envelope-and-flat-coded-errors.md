@@ -50,6 +50,7 @@ design.md promises that every command supports `--json` (or `TM_JSON=1`) "with a
 | Unknown field, or a value, name, key or type that does not fit | `unknown_field`, `invalid_value` |
 | An operation over the size limit | `too_large` |
 | A newer operation format or store | `upgrade_required` |
+| A log another build wrote before the format changed in place ([ADR 0010](0010-operations-record-who-an-agent-acts-for-and-undo-names-a-batch.md)) | `store_format_changed` |
 | A Link or parent that closes a cycle | `cycle` |
 | A Claim held, the wrong Claim token, a human taking a Claim | `already_claimed`, `not_claim_holder`, `no_agent` |
 | An Issue or Project that does not exist | `not_found` |
