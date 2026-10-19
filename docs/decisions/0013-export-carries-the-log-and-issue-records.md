@@ -21,6 +21,7 @@ design.md asks for a `tm export` that loses nothing, a `tm import` that reads a 
 - **What an export holds**: the log; a record per Issue; both in one file.
 - **Restoring into a Workspace with data**: refuse; renumber incoming Issues.
 - **A re-imported record that changed**: write the fields that differ; skip it; three-way compare.
+- **Where an import's provenance lives**: fields on the Issue holding its sources and what each last wrote; a source on each operation it writes.
 - **Imported times and Actors**: the source's; the import's and its runner's.
 - **Batches**: one per record; one per file.
 
@@ -39,24 +40,26 @@ design.md asks for a `tm export` that loses nothing, a `tm import` that reads a 
 - `--records`, and every adapter, write the `issue` records as ordinary validated writes: pass one creates or updates each Issue, pass two sets parents and Links once every target exists. A record from a tm export carries `tm:<Issue id>` as its source. History stays in the source file; the flag is the caller's choice to leave it there.
 - `--dry-run` runs every check and rolls back.
 
-**Sources make re-runs idempotent.**
+**Each imported operation names its source.**
 
-- A built-in multi-valued field `sources` holds each Issue's `<system>:<id>` elements, such as `beads:tm-u8g.10`, written by `add` like labels; a re-import finds the Issue by it.
-- A built-in field `imported` holds, for each source, the mapped values its last import wrote: one element per source, its value those values as a JSON string, projected into its own table. It is the base a re-import compares against; being logged it survives rebuild, export, restore and sync, which batches do not, and one element per source keeps two sources' bases apart under merge.
-- Only import, and an undo of an import batch, write `sources` and `imported`; any other write naming either is refused. Both are shown in `--json`, not in `show`'s text.
-- Each record is written as one batch, which sets `imported`.
-- A re-import compares each mapped field three ways: `imported`'s value for that source, the source's value now, and tm's value now. A field changed only in the source is written; a field changed only in tm keeps tm's value; a field changed in both keeps tm's value and is reported as a conflict. A record with nothing to write is unchanged.
+- An operation gains an optional `source`, such as `beads:tm-u8g.10`, hashed after `on_behalf_of` behind a presence byte as ADR 0010 added that field, and stored in an indexed `ops` column covered by the `ops_immutable` trigger. Only import writes it; an undo writes its inverses without one.
+- A re-import finds the Issue whose `create` carries the record's source. `show --json` gives an Issue's source from its `create`.
+- What the last import wrote to a field or element is the operation that wins among those on it carrying that source, folded in replay order by the ordinary merge rule, whether or not it beat tm's own writes. Being in the log, it survives rebuild, export, restore and sync, and it merges by the rules every operation does, so no separate record of it can disagree.
+- A re-import compares each mapped field three ways: that value, the source's value now, and tm's value now. A field changed only in the source is written; a field changed only in tm, an undone import included, keeps tm's value; a field changed in both keeps tm's value and is reported as a conflict. When the source changed to the value tm already holds, the import still writes it, so the next comparison starts from it. A record with nothing to write is unchanged.
+- A comment, which has no field to compare, carries its own source, the record's followed by `#` and the comment's id at the source. A re-import skips a comment already carrying its source and reports a changed body without writing it, since a comment is not edited. It retracts a comment gone from the source, with the comment's source, as the comment's own Actor at the import's time, unless a retraction, or an undo of one, has been written since the comment was; so it does not retract twice, and a comment shown again in tm stays shown.
+- Each record is written as one batch.
 
 **Imported writes carry the source's time and person.**
 
 - An imported operation's `utc_ms` is the source's time for it, and its Actor is the source's person mapped to a tm name; its `hlc` is still when this Replica wrote it. This narrows [ADR 0006](0006-operation-merge-ordering-and-versioning.md)'s `utc_ms`, "when it happened", to when it happened at the source.
-- A batch that writes `imported` is never a bare-undo candidate, so a bare `tm undo` after an import reverts the human's own last command, not the last imported Issue. A named `tm undo <batch>` still reverts an import batch.
+- A batch holding an operation with a source is never a bare-undo candidate, so a bare `tm undo` after an import reverts the human's own last command, not the last imported Issue. A named `tm undo <batch>` still reverts an import batch.
 
 ### Consequences
 
 - Good, because the log layer loses nothing and serves as the switch milestone's daily backup.
 - Good, because the record layer is one path for adapters, for a pre-v1 format change, and for bringing an export into a Workspace that has data.
-- Good, because re-running an import never overwrites an edit made in tm.
+- Good, because re-running an import never overwrites an edit made in tm, and history can say where each imported value came from.
+- Bad, because the operation envelope grows by one field, which amends ADR 0010's "Nothing else joins the envelope"; before v1 the format changes in place.
 - Bad, because a record import keeps current state and comments but not history, op identity or a retracted comment's text; tm says so before it writes.
 - Bad, because undoing a whole import takes one undo per record; `--dry-run` is the guard against a wrong import.
 - Neutral, because a Workspace merge that renumbers incoming Keys, which ADR 0008's placement of `assigned_key` permits, is left for later.
@@ -68,6 +71,7 @@ Export, restore into a fresh Workspace and export again gives identical files ap
 ## More Information
 
 - Amends ADR 0010's "moves through `tm export` and `tm import`": across a format change, through the records, with history left in the file.
-- Amends ADR 0012's bare-undo candidate rule: a batch that writes `imported` is not a candidate.
+- Amends ADR 0010's envelope: an operation's optional `source` joins it.
+- Amends ADR 0012's bare-undo candidate rule: a batch holding an operation with a source is not a candidate.
 - Narrows ADR 0006's `utc_ms` to when it happened at the source, for an imported operation.
 - Research: [import-export.md](../research/cli/import-export.md). The beads mapping is decided with the beads adapter.

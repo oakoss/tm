@@ -27,7 +27,7 @@ design.md records an Agent's writes as "agent, on behalf of human", and `tm undo
 
 **The format until v1.**
 
-- `Op` gains `on_behalf_of`, hashed after `actor` behind a presence byte, and is a nullable `ops` column covered by the `ops_immutable` trigger. Nothing else joins the envelope.
+- `Op` gains `on_behalf_of`, hashed after `actor` behind a presence byte, and is a nullable `ops` column covered by the `ops_immutable` trigger. Nothing else joins the envelope except an imported operation's `source` ([ADR 0013](0013-export-carries-the-log-and-issue-records.md)).
 - An `actor` or `on_behalf_of` that is blank or holds a control character is refused, on write and on replay.
 - Operations keep their format version `v`, and stores their `STORE_FORMAT`; a binary still refuses a newer one with "upgrade tm".
 - Until tm v1 is released, the format changes in place: `CURRENT_VERSION` and `STORE_FORMAT` stay 1, nothing translates old operations or migrates old stores, and a development store an older build wrote is recreated. This defers ADR 0006's read-time translations to v1. Data that must outlive a format change before then, such as this project's backlog after the switch milestone, moves through `tm export` and `tm import`, as its Issue records ([ADR 0013](0013-export-carries-the-log-and-issue-records.md)).
