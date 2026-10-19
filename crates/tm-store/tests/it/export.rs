@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::rebuild::{Action, ISSUES, action, change};
 use crate::support::{
-    ManualClock, TempDir, claude, draft, dump, jace, new_issue, open, remote_op, set_field,
+    ManualClock, TempDir, claude, draft, dump, field, jace, new_issue, open, remote_op, set_field,
 };
 
 const WORKSPACE: Uuid = Uuid::from_u128(0x0190_a000_0000_7000_8000_0000_0000_0001);
@@ -151,6 +151,36 @@ fn a_retracted_comment_keeps_its_words_through_a_restore() {
         (shown[0].body.as_str(), shown[0].retracted),
         ("kept in the log", false)
     );
+}
+
+#[test]
+fn a_snapshot_of_a_store_in_use_holds_what_its_wal_holds() {
+    let (dir, other) = (TempDir::new(), TempDir::new());
+    let clock = ManualClock::at(1_000);
+    let mut store = source(&dir, &clock);
+    let issue = new_issue(&mut store);
+    store
+        .connection()
+        .execute_batch("PRAGMA wal_autocheckpoint = 0")
+        .unwrap();
+    store
+        .append(draft(issue, set_field("title", json!("in the wal"))))
+        .unwrap();
+    let beside = || {
+        let mut names: Vec<_> = std::fs::read_dir(dir.db().parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = beside();
+
+    let copy = other.db();
+    tm_store::snapshot(&dir.db(), &copy).unwrap();
+    assert_eq!(beside(), before, "nothing made beside the store");
+    let copied = Store::open_with_clock(&copy, Box::new(clock.clone())).unwrap();
+    assert_eq!(field(&copied, issue, "title"), Some(json!("in the wal")));
 }
 
 #[test]

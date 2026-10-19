@@ -143,11 +143,17 @@ pub(crate) fn finish(
 /// disk is, and so is a stdout not open for writing. Writes go through a copy
 /// of the descriptor: std's stdout drops such a write and reports success.
 fn write(text: &str) -> io::Result<()> {
-    let result = io::stdout()
-        .as_fd()
-        .try_clone_to_owned()
-        .map(File::from)
-        .and_then(|mut stdout| stdout.write_all(text.as_bytes()));
+    quiet_on_broken_pipe(stdout().and_then(|mut stdout| stdout.write_all(text.as_bytes())))
+}
+
+/// Stdout as a file: unlike `io::stdout()`, it reports a descriptor that
+/// cannot be written instead of swallowing the error.
+pub(crate) fn stdout() -> io::Result<File> {
+    io::stdout().as_fd().try_clone_to_owned().map(File::from)
+}
+
+/// A reader that closed the pipe, as `head` does, has had what it wanted.
+pub(crate) fn quiet_on_broken_pipe(result: io::Result<()>) -> io::Result<()> {
     match result {
         Err(err) if err.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         other => other,

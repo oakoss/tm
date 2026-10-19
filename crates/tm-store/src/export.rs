@@ -187,7 +187,7 @@ impl Store {
                     unapplied: 0,
                 })
             } else {
-                Err(StoreError::WorkspaceNotEmpty { held })
+                Err(StoreError::WorkspaceNotEmpty { workspace, held })
             };
         }
         for (line, record) in &ops {
@@ -218,6 +218,32 @@ impl Store {
             unapplied,
         })
     }
+}
+
+/// The Workspace an export holds and its operation count, once the file
+/// passes restore's own checks, so a caller can find or make the store first.
+///
+/// # Errors
+///
+/// [`StoreError::InvalidExport`] or [`StoreError::ExportFormat`], as
+/// [`Store::restore`] would refuse the file.
+pub fn read_export(input: &mut dyn BufRead) -> Result<(Uuid, usize), StoreError> {
+    parse(input).map(|(header, ops)| (header.workspace, ops.len()))
+}
+
+/// Copies the store at `from` into a new file `to` in one locked read, which
+/// no writer can tear; like any reader it may leave SQLite's lock files.
+///
+/// # Errors
+///
+/// Any SQLite failure reading `from` or writing `to`.
+pub fn snapshot(from: &std::path::Path, to: &std::path::Path) -> Result<(), StoreError> {
+    let conn = rusqlite::Connection::open_with_flags(
+        from,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.execute("VACUUM INTO ?1", [to.to_string_lossy()])?;
+    Ok(())
 }
 
 fn write_line(out: &mut dyn Write, record: &Record) -> Result<(), StoreError> {
@@ -292,7 +318,7 @@ fn parse(input: &mut dyn BufRead) -> Result<(Header, Vec<(usize, OpRecord)>), St
         let line = index + 1;
         let text = text.map_err(StoreError::Io)?;
         let record: Record =
-            serde_json::from_str(&text).map_err(|err| invalid(line, err.to_string()))?;
+            serde_json::from_str(&text).map_err(|err| invalid(line, unreadable(&err)))?;
         match (record, &header) {
             (Record::Header(found), None) if line == 1 => {
                 if found.format != FORMAT || found.version != VERSION {
@@ -325,6 +351,23 @@ fn parse(input: &mut dyn BufRead) -> Result<(Header, Vec<(usize, OpRecord)>), St
     }
     let header = header.ok_or_else(|| invalid(0, "the file is empty".into()))?;
     Ok((header, ops))
+}
+
+/// Why a line is not a record, placed by column only, since serde counts
+/// lines within the one line it was given.
+fn unreadable(err: &serde_json::Error) -> String {
+    let what = match err.classify() {
+        serde_json::error::Category::Eof => "the line ends early".to_owned(),
+        serde_json::error::Category::Syntax => "the line is not JSON".to_owned(),
+        serde_json::error::Category::Data | serde_json::error::Category::Io => {
+            let text = err.to_string();
+            let reason = text
+                .rsplit_once(" at line ")
+                .map_or(text.as_str(), |(reason, _)| reason);
+            format!("not a tm export record: {reason}")
+        }
+    };
+    format!("{what}, at column {}", err.column())
 }
 
 /// An operation line as restore trusts it: its hash fits its content, its id

@@ -149,8 +149,10 @@ impl CliError {
                 .with("supported", supported)
                 .fix("upgrade tm"),
             StoreError::FormatChanged => Self::new("store_format_changed", message),
-            StoreError::WorkspaceNotEmpty { held } => {
-                Self::new("workspace_not_empty", message).with("held", held)
+            StoreError::WorkspaceNotEmpty { workspace, held } => {
+                Self::new("workspace_not_empty", message)
+                    .with("workspace", workspace.to_string())
+                    .with("held", held)
             }
             StoreError::InvalidExport { line, .. } => {
                 Self::new("invalid_export", message).with("line", line)
@@ -333,9 +335,9 @@ impl From<WorkspaceError> for CliError {
             WorkspaceError::InvalidRepoFile { path, .. } => {
                 Self::new("invalid_repo_file", message).with("path", path.display().to_string())
             }
-            WorkspaceError::UnknownWorkspace { id, .. } => {
-                Self::new("unknown_workspace", message).with("workspace", id.to_string())
-            }
+            WorkspaceError::UnknownWorkspace { id, .. } => Self::new("unknown_workspace", message)
+                .with("workspace", id.to_string())
+                .fix("tm import FILE"),
             WorkspaceError::IncompleteWorkspace { dir } => {
                 Self::new("incomplete_workspace", message).with("dir", dir.display().to_string())
             }

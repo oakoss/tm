@@ -26,7 +26,7 @@ pub enum WorkspaceError {
     #[error("{}: {reason}", path.display())]
     InvalidRepoFile { path: PathBuf, reason: String },
     #[error(
-        "{} names Workspace {id}, but there is none at {}; check TM_HOME, or wait for sync to bring it",
+        "{} names Workspace {id}, but there is none at {}; restore it from an export with tm import, or check TM_HOME",
         file.display(),
         dir.display()
     )]

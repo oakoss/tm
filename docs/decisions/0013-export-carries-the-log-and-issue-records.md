@@ -29,7 +29,7 @@ design.md asks for a `tm export` that loses nothing, a `tm import` that reads a 
 
 **One file, two layers.**
 
-- `tm export` writes JSONL to stdout; saving it is the caller's redirect, so tm writes nothing outside its Workspace. Every line is an object with `_type`: a `header` (format, record schema version, operation format, Workspace id, export time), then `project` records, then every operation as an `op` record in replay order, then one `issue` record per Issue.
+- `tm export` writes JSONL to stdout, in JSON mode too, since the export is itself machine-readable; a failure before it writes is the usual error document. Saving it is the caller's redirect, so tm writes nothing outside its Workspace. Every line is an object with `_type`: a `header` (format, record schema version, operation format, Workspace id, export time), then `project` records, then every operation as an `op` record in replay order, then one `issue` record per Issue.
 - An `op` record holds every logged column verbatim, its payload as the stored string, so each `op_hash` still verifies. Lines are canonical: operations in replay order, keys in a fixed order, ids in lowercase hex, so the same log always exports the same bytes. Undo batches and the clock are local and never exported (ADR 0010, [ADR 0012](0012-a-human-undoes-their-last-command-without-naming-it.md)).
 - The `issue` record is the published schema adapters write, documented with a JSON Schema in `docs/specs/`.
 
@@ -40,7 +40,7 @@ design.md asks for a `tm export` that loses nothing, a `tm import` that reads a 
 - Into the exported Workspace holding other operations, restore is refused with `workspace_not_empty`, whose fix is `tm import --records FILE`. A file of another operation format is refused the same way, with the same fix.
 - A restore warns that the Workspace now lives on this machine too. Until sync, two live copies of one Workspace each assign the same next Keys, the collision [ADR 0004](0004-one-authority-assigns-keys.md) exists to prevent, so the copy restored from is to be retired.
 - `--records`, and every adapter, write the `issue` records as ordinary validated writes: pass one creates or updates each Issue, pass two sets parents and Links once every target exists. A record from a tm export carries `tm:<Issue id>` as its source. History stays in the source file; the flag is the caller's choice to leave it there.
-- `--dry-run` runs every check and rolls back.
+- `--dry-run` runs every check against a copy, taken in one locked read of an existing store, and writes no data; like any reader, it may leave SQLite's lock files beside the store.
 
 **Each imported operation names its source.**
 

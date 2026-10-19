@@ -34,7 +34,7 @@ use uuid::Uuid;
 use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
 pub use claim::Claim;
-pub use export::{Exported, Restored};
+pub use export::{Exported, Restored, read_export, snapshot};
 pub use read::{CommentView, Direction, IssueView, LinkView};
 pub use ready::Ready;
 pub use undo::{Restore, UndoPlan};
@@ -74,9 +74,9 @@ pub enum StoreError {
     #[error("this store belongs to Workspace {stored}, not {given}")]
     WorkspaceMismatch { stored: Uuid, given: Uuid },
     #[error(
-        "the Workspace already holds {held} other operations; an export restores only into a Workspace with none"
+        "Workspace {workspace} already holds {held} operations that are not this export's; an export restores only into a Workspace with none"
     )]
-    WorkspaceNotEmpty { held: i64 },
+    WorkspaceNotEmpty { workspace: Uuid, held: i64 },
     #[error("line {line} of the export: {reason}")]
     InvalidExport { line: usize, reason: String },
     #[error("the export's operations are format {found}, and this tm reads {supported}")]
