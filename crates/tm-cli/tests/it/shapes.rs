@@ -325,6 +325,62 @@ fn undo_answers_in_a_fixed_shape() {
 }
 
 #[test]
+fn import_records_answers_in_a_fixed_shape() {
+    let (scratch, repo) = two_issues();
+    let file = scratch.0.join("records.jsonl");
+    let record = serde_json::json!({
+        "_type": "issue", "source": "beads:a", "project": "TM", "type": "task",
+        "title": "imported", "status": "todo", "labels": ["cli"],
+        "comments": [{"id": "c1", "actor": "jace", "body": "hi"}],
+    });
+    std::fs::write(&file, record.to_string()).unwrap();
+    let doc = run(
+        &scratch,
+        &repo,
+        &["import", "--records", file.to_str().unwrap()],
+    );
+    insta::assert_json_snapshot!(doc, {
+        ".data.records[].issue" => "[id]",
+        ".data.records[].batches[]" => "[id]",
+    }, @r#"
+    {
+      "data": {
+        "created": 1,
+        "dry_run": false,
+        "projects": [],
+        "records": [
+          {
+            "batches": [
+              "[id]"
+            ],
+            "changed_comments": [],
+            "conflicts": [],
+            "created": true,
+            "issue": "[id]",
+            "line": 1,
+            "removed": [],
+            "source": "beads:a",
+            "written": [
+              "type",
+              "title",
+              "status",
+              "labels/cli",
+              "comments/c1"
+            ]
+          }
+        ],
+        "unchanged": 0,
+        "updated": 0
+      },
+      "schema_version": 1,
+      "warnings": [
+        "a record import keeps each Issue's current state and comments, not its history, operation ids or retracted comments"
+      ]
+    }
+    "#);
+}
+
+#[test]
 fn ready_answers_in_a_fixed_shape() {
     let (scratch, repo) = two_issues();
     let doc = run(&scratch, &repo, &["ready"]);
