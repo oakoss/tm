@@ -220,6 +220,17 @@ pub struct Store {
     clock: Box<dyn Clock + Send>,
     scheme: Scheme,
     opened: bool,
+    last_write: Option<LastWrite>,
+}
+
+/// Whether undoing the last batch this Store wrote would succeed, as tried
+/// inside its write; it holds only while nothing has been written since.
+#[derive(Debug, Clone, Copy)]
+struct LastWrite {
+    batch: Uuid,
+    undoable: bool,
+    data_version: i64,
+    max_seq: i64,
 }
 
 impl Drop for Store {
@@ -409,6 +420,7 @@ impl Store {
             clock,
             scheme: Scheme::built_in(),
             opened: false,
+            last_write: None,
         };
         store.init()?;
         store.opened = true;
@@ -420,6 +432,7 @@ impl Store {
     #[must_use]
     pub fn with_scheme(mut self, scheme: Scheme) -> Self {
         self.scheme = scheme;
+        self.last_write = None;
         self
     }
 
@@ -842,6 +855,11 @@ impl Store {
             draft.change.validate()?;
         }
         let now = self.now()?;
+        // A batch of several writers has no one undoer to try it as.
+        let writer = drafts
+            .first()
+            .map(|first| first.actor.clone())
+            .filter(|writer| drafts.iter().all(|draft| draft.actor == *writer));
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -853,14 +871,45 @@ impl Store {
                 [first.op_id.as_bytes(), undid.as_bytes()],
             )?;
         }
+        let probed = match (commit, writer, ops.first()) {
+            (true, Some(writer), Some(first)) => Some((
+                first.op_id,
+                undo::probe(&tx, &self.scheme, &writer, first.op_id, now, hlc)?,
+            )),
+            _ => None,
+        };
         tx.execute(
             "UPDATE meta SET v = ?1 WHERE k = 'last_hlc'",
             [sql_int(hlc.raw())?],
         )?;
         if commit {
             tx.commit()?;
+            // The write is committed; a mark that cannot be read only loses
+            // the answer, never the write.
+            self.last_write = probed.zip(self.write_mark().ok()).map(
+                |((batch, undoable), (data_version, max_seq))| LastWrite {
+                    batch,
+                    undoable,
+                    data_version,
+                    max_seq,
+                },
+            );
         }
         Ok(ops)
+    }
+
+    /// What changes when anyone writes: another connection's commit moves
+    /// `data_version`, and this one's moves the log's last seq.
+    fn write_mark(&self) -> Result<(i64, i64), StoreError> {
+        let data_version = self
+            .conn
+            .query_row("PRAGMA data_version", [], |row| row.get(0))?;
+        let max_seq = self
+            .conn
+            .query_row("SELECT coalesce(max(seq), 0) FROM ops", [], |row| {
+                row.get(0)
+            })?;
+        Ok((data_version, max_seq))
     }
 
     /// Whether the store is already set up for this binary. Read without the
@@ -1030,6 +1079,7 @@ impl Store {
     /// or fails its hash, which leaves the previous projections in place, or
     /// [`StoreError::Busy`].
     pub fn rebuild(&mut self) -> Result<usize, StoreError> {
+        self.last_write = None;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;

@@ -3,15 +3,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tm_core::op::{COMMENTS_FIELD, ClaimAction};
-use tm_core::{Actor, Change, Op, ProjectId, Scheme, link};
+use tm_core::{Actor, Change, Hlc, Op, ProjectId, Scheme, link};
 use uuid::Uuid;
 
 use crate::apply::{Version, issue_project, uuid_from};
-use crate::{Draft, Store, StoreError};
+use crate::{Draft, Store, StoreError, WallTime};
 
 /// One field or set element as undo finds it and would leave it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -58,13 +58,20 @@ impl Store {
         self.undo_with(actor, batch, true)
     }
 
-    /// Whether undoing `batch` would restore anything. Read without the write
-    /// lock, so a write racing it can still make the undo refuse.
+    /// Whether undoing `batch` would succeed. For the batch this Store just
+    /// wrote, the undo was tried inside its write; for any other, only the
+    /// plan is read, so a check the write makes can still refuse it.
     ///
     /// # Errors
     ///
     /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
     pub fn can_undo(&self, batch: Uuid) -> Result<bool, StoreError> {
+        if let Some(last) = self.last_write
+            && last.batch == batch
+            && self.write_mark()? == (last.data_version, last.max_seq)
+        {
+            return Ok(last.undoable);
+        }
         match self.read(|store| plan(&store.conn, &store.scheme, batch)) {
             Ok(_) => Ok(true),
             Err(
@@ -104,16 +111,7 @@ impl Store {
         commit: bool,
     ) -> Result<(UndoPlan, Vec<Op>), StoreError> {
         let planned = self.read(|store| plan(&store.conn, &store.scheme, batch))?;
-        let drafts = planned
-            .changes
-            .iter()
-            .map(|(project, subject, change)| Draft {
-                actor: actor.clone(),
-                project: *project,
-                subject: *subject,
-                change: change.clone(),
-            })
-            .collect();
+        let drafts = planned.drafts(actor);
         let scheme = self.scheme.clone();
         let guard = |tx: &rusqlite::Transaction<'_>| match plan(tx, &scheme, batch)? {
             again if again == planned => Ok(()),
@@ -205,6 +203,62 @@ fn ignored_since(conn: &Connection, first_seq: i64) -> Result<BTreeSet<Uuid>, St
         }
     }
     Ok(ignored)
+}
+
+impl UndoPlan {
+    fn drafts(&self, actor: &Actor) -> Vec<Draft> {
+        self.changes
+            .iter()
+            .map(|(project, subject, change)| Draft {
+                actor: actor.clone(),
+                project: *project,
+                subject: *subject,
+                change: change.clone(),
+            })
+            .collect()
+    }
+}
+
+/// Whether `actor` could undo `batch` now: the undo is written inside `tx`
+/// with every check it would meet, then rolled back. A refusal is false; only
+/// a failure of the store itself fails the write being probed.
+pub(crate) fn probe(
+    tx: &Transaction<'_>,
+    scheme: &Scheme,
+    actor: &Actor,
+    batch: Uuid,
+    now: (WallTime, u64),
+    hlc: Hlc,
+) -> Result<bool, StoreError> {
+    tx.execute_batch("SAVEPOINT undo_probe")?;
+    let tried = plan(tx, scheme, batch).and_then(|plan| {
+        let drafts = plan.drafts(actor);
+        for draft in &drafts {
+            draft.change.validate()?;
+        }
+        crate::write_drafts(tx, scheme, drafts, now, hlc)
+    });
+    tx.execute_batch("ROLLBACK TO undo_probe; RELEASE undo_probe")?;
+    match tried {
+        Ok(_) => Ok(true),
+        Err(err) if failed(&err) => Err(err),
+        Err(_) => Ok(false),
+    }
+}
+
+/// An error the store hit, as opposed to a refusal of what was asked.
+const fn failed(err: &StoreError) -> bool {
+    matches!(
+        err,
+        StoreError::Busy(_)
+            | StoreError::Sqlite(_)
+            | StoreError::Corrupt(_)
+            | StoreError::Clock(_)
+            | StoreError::Replay { .. }
+            | StoreError::NewerStore { .. }
+            | StoreError::NotAStore(_)
+            | StoreError::ReadOnly
+    )
 }
 
 /// A logged operation of the batch.

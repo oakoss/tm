@@ -572,3 +572,93 @@ fn a_bare_undo_steps_back_through_the_humans_own_batches() {
     undo(&mut store, low).unwrap();
     assert_eq!(field(&store, issue, "priority"), Some(json!("none")));
 }
+
+#[test]
+fn a_write_knows_whether_it_can_be_undone() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = Uuid::now_v7();
+    let ops = [
+        Change::Create,
+        set_field("type", json!("feature")),
+        set_field("title", json!("t")),
+        set_field("status", json!("shipped")),
+    ];
+    for (seq, change) in (1..).zip(&ops) {
+        insert_acked(
+            &store,
+            &remote_op(7, issue, change, Hlc::new(1_000, 0), 0),
+            seq,
+            1_000,
+        );
+    }
+    store.rebuild().unwrap();
+    // Undoing either would put back what the Scheme refuses, a type it lacks
+    // or a Status the type lacks, which the plan alone cannot see.
+    let typed = write(&mut store, issue, set_field("type", json!("task")));
+    assert!(!store.can_undo(typed).unwrap());
+    let mut store = store.with_scheme(crate::support::scheme());
+    assert!(
+        store.can_undo(typed).unwrap(),
+        "another Scheme drops the answer; the plan alone sees no refusal"
+    );
+    assert!(matches!(
+        store.undo_plan(&jace(), typed),
+        Err(StoreError::Invalid { .. })
+    ));
+    let fixed = write(&mut store, issue, set_field("status", json!("todo")));
+    assert!(!store.can_undo(fixed).unwrap());
+    store.rebuild().unwrap();
+    assert!(store.can_undo(fixed).unwrap(), "so does a rebuild");
+    assert!(matches!(
+        undo(&mut store, fixed),
+        Err(StoreError::Invalid { .. })
+    ));
+    assert_eq!(field(&store, issue, "status"), Some(json!("todo")));
+
+    let raised = write(&mut store, issue, set_field("priority", json!("high")));
+    assert!(store.can_undo(raised).unwrap());
+}
+
+#[test]
+fn what_a_write_knew_of_its_undo_lapses_when_anyone_writes_after() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let issue = new_issue(&mut store);
+    let raise = write(&mut store, issue, set_field("priority", json!("high")));
+    assert!(store.can_undo(raise).unwrap());
+
+    let mut other = open(&dir.db(), &clock);
+    write(&mut other, issue, set_field("priority", json!("low")));
+    assert!(!store.can_undo(raise).unwrap(), "a later write conflicts");
+}
+
+#[test]
+fn a_batch_of_several_writers_is_judged_by_its_plan() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = new_issue(&mut store);
+    // claude may not retract codex's comment, but jace, for whom both write,
+    // may undo the whole batch.
+    let mixed = store
+        .append_all(vec![
+            Draft {
+                actor: claude(),
+                ..draft(issue, set_field("priority", json!("high")))
+            },
+            Draft {
+                actor: Actor::agent("codex", "jace"),
+                ..draft(
+                    issue,
+                    Change::Comment {
+                        body: "by codex".into(),
+                    },
+                )
+            },
+        ])
+        .unwrap()[0]
+        .op_id;
+    assert!(store.can_undo(mixed).unwrap());
+    undo(&mut store, mixed).unwrap();
+}
