@@ -48,13 +48,13 @@ design.md asks for a `tm export` that loses nothing, a `tm import` that reads a 
 - A re-import finds the Issue whose `create` carries the record's source. `show --json` gives an Issue's source from its `create`.
 - What the last import wrote to a field or element is the operation that wins among those on it carrying that source, folded in replay order by the ordinary merge rule, whether or not it beat tm's own writes. Being in the log, it survives rebuild, export, restore and sync, and it merges by the rules every operation does, so no separate record of it can disagree.
 - A re-import compares each mapped field three ways: that value, the source's value now, and tm's value now. A field changed only in the source is written; a field changed only in tm, an undone import included, keeps tm's value; a field changed in both keeps tm's value and is reported as a conflict. When the source changed to the value tm already holds, the import still writes it, so the next comparison starts from it. A record with nothing to write is unchanged.
-- A comment, which has no field to compare, carries its own source, the record's followed by `#` and the comment's id at the source. A re-import skips a comment already carrying its source and reports a changed body without writing it, since a comment is not edited. It retracts a comment gone from the source, with the comment's source, as the comment's own Actor at the import's time, unless a retraction, or an undo of one, has been written since the comment was; so it does not retract twice, and a comment shown again in tm stays shown.
-- Each record is written as one batch.
+- A comment, which has no field to compare, carries its own source, the record's followed by `#` and the comment's id at the source. A re-import skips a comment already carrying its source and reports a changed body without writing it, since a comment is not edited. It retracts a comment gone from the source, with the comment's source, as the comment's own Actor at the import's time, and shows one again that comes back at the source, unless the write that decides whether the comment is shown, by the merge rule, is tm's rather than the import's; so a comment tm hid or showed stays as tm left it, kept like a field changed only in tm.
+- Each record is written as one batch per pass: its fields and comments; then what its parent and Links lose, for every record, before what they gain, so a parent or Link moving between two records never closes a cycle half moved. The import names each batch, and the undo command for each its runner can undo when the import ends.
 
 **Imported writes carry the source's time and person.**
 
-- An imported operation's `utc_ms` is the source's time for it, and its Actor is the source's person mapped to a tm name; its `hlc` is still when this Replica wrote it.
-- A new Issue's `create` is written as its reporter at its `created`, and each comment as its author at its own time. Every other write is the record's `updated_by` at its `updated`; with no `updated_by`, a new Issue's writes are its reporter's, and a re-import's are whoever runs it, since the reporter need not be who changed it. This narrows [ADR 0006](0006-operation-merge-ordering-and-versioning.md)'s `utc_ms`, "when it happened", to when it happened at the source.
+- An imported operation's `utc_ms` is the source's time for it, and its Actor is the source's person mapped to a tm name; its `hlc` is still when this Replica wrote it. This narrows [ADR 0006](0006-operation-merge-ordering-and-versioning.md)'s `utc_ms`, "when it happened", to when it happened at the source.
+- A new Issue's `create` is written as its reporter at its `created`, and each comment as its author at its own time. Every other write is the record's `updated_by` at its `updated`; with no `updated_by`, a new Issue's writes are its reporter's, and a re-import's are whoever runs it, since the reporter need not be who changed it.
 - A batch holding an operation with a source is never a bare-undo candidate, so a bare `tm undo` after an import reverts the human's own last command, not the last imported Issue. A named `tm undo <batch>` still reverts an import batch.
 
 ### Consequences
@@ -63,8 +63,8 @@ design.md asks for a `tm export` that loses nothing, a `tm import` that reads a 
 - Good, because the record layer is one path for adapters, for a pre-v1 format change, and for bringing an export into a Workspace that has data.
 - Good, because re-running an import never overwrites an edit made in tm, and history can say where each imported value came from.
 - Bad, because the operation envelope grows by one field, which amends ADR 0010's "Nothing else joins the envelope"; before v1 the format changes in place.
-- Bad, because a record import keeps current state and comments but not history, op identity or a retracted comment's text; tm says so before it writes.
-- Bad, because undoing a whole import takes one undo per record; `--dry-run` is the guard against a wrong import.
+- Bad, because a record import keeps current state and comments but not history, op identity or a retracted comment's text; tm says so when a record import completes, and `--dry-run` says so before anything is written.
+- Bad, because undoing a whole import takes one undo per batch, newest first, since a later batch of the import can touch what an earlier one wrote; `--dry-run` is the guard against a wrong import.
 - Bad, because nothing but the warning stops a Workspace from living on two machines before sync; sync, which owns Key assignment across Replicas, is where that is prevented.
 - Neutral, because a Workspace merge that renumbers incoming Keys, which ADR 0008's placement of `assigned_key` permits, is left for later.
 
