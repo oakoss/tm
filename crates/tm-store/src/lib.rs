@@ -88,13 +88,16 @@ pub enum StoreError {
     #[error("reading or writing an export: {0}")]
     Io(#[source] std::io::Error),
     #[error(
-        "line {line} of the import, {record}: {cause}; what was written before it stays, so fix the line and import the file again"
+        "line {line} of the import, {record}: {cause}; {}",
+        import::kept(written)
     )]
     RecordRefused {
         line: usize,
         /// The refused record's source.
         record: String,
         cause: Box<StoreError>,
+        /// The batches the import wrote before it, which stay.
+        written: Vec<Uuid>,
     },
     #[error("Issue {0} changed while it was being imported")]
     ImportChanged(Uuid),
@@ -931,7 +934,7 @@ impl Store {
         }
         let now = self.now()?;
         // A batch of several writers has no one undoer to try it as. An import
-        // writes a batch per record and shows no undo hint, so is not probed.
+        // writes a batch per record and names each, so none is probed.
         let writer = drafts
             .first()
             .map(|(first, _)| first.actor.clone())

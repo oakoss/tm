@@ -696,6 +696,22 @@ fn a_project_line_makes_its_project() {
 }
 
 #[test]
+fn a_refusal_after_a_new_project_names_its_batch() {
+    let dir = TempDir::new();
+    let mut store = store(&dir, &ManualClock::at(1_900_000_000_000));
+    let lines = [
+        json!({"_type": "project", "key": "AA", "name": "A"}),
+        json!({"_type": "project", "key": "1!", "name": "bad"}),
+    ];
+    let err = import(&mut store, &lines).unwrap_err();
+    let StoreError::RecordRefused { line, written, .. } = &err else {
+        panic!("{err}");
+    };
+    assert_eq!((*line, written.len()), (2, 1), "{err}");
+    assert!(store.project_by_key("AA").unwrap().is_some());
+}
+
+#[test]
 fn another_operation_format_is_read_for_its_records() {
     let dir = TempDir::new();
     let mut store = store(&dir, &ManualClock::at(1_900_000_000_000));
@@ -747,11 +763,16 @@ fn a_refused_record_names_its_line_and_keeps_what_came_before() {
         line,
         record,
         cause,
+        written,
     } = &err
     else {
         panic!("{err}");
     };
     assert_eq!((*line, record.as_str()), (1, "beads:a.1"));
+    assert_eq!(written.len(), 2, "both records' first batches stay: {err}");
+    for batch in written {
+        assert!(store.can_undo(*batch).unwrap(), "{batch}");
+    }
     assert!(
         matches!(&**cause, StoreError::Invalid { field, .. } if field == "parent"),
         "{cause}"

@@ -55,6 +55,9 @@ pub struct RecordOutcome {
     pub source: String,
     pub issue: Uuid,
     pub created: bool,
+    /// The batches it wrote, which a bare undo skips; `tm undo <batch>`
+    /// reverts one.
+    pub batches: Vec<Uuid>,
     /// Each field set, or `field/element` for a set member, a Link or a
     /// comment added.
     pub written: Vec<String>,
@@ -187,38 +190,50 @@ impl Store {
         let parsed = parse(input)?;
         for (line, record) in &parsed.issues {
             check_record(&self.scheme, record)
-                .map_err(|cause| refused(*line, &record.source, cause))?;
+                .map_err(|cause| refused(*line, &record.source, cause, (&[], &[])))?;
         }
         let (now, _) = self.now()?;
-        let mut projects = Vec::new();
+        let (mut projects, mut project_batches) = (Vec::new(), Vec::new());
         for (line, project) in &parsed.projects {
             if self.project_by_key(&project.key)?.is_none() {
-                self.create_project(runner, &project.key, &project.name)
-                    .map_err(|cause| refused(*line, &project.key, cause))?;
+                let (_, op) = self
+                    .create_project(runner, &project.key, &project.name)
+                    .map_err(|cause| {
+                        refused(*line, &project.key, cause, (&project_batches, &[]))
+                    })?;
                 projects.push(project.key.to_ascii_uppercase());
+                project_batches.push(op.op_id);
             }
         }
-        let mut records = Vec::with_capacity(parsed.issues.len());
+        let mut records: Vec<RecordOutcome> = Vec::with_capacity(parsed.issues.len());
         for (line, record) in &parsed.issues {
             let outcome = self
                 .import_fields(*line, record, runner, now)
-                .map_err(|cause| refused(*line, &record.source, cause))?;
+                .map_err(|cause| {
+                    refused(*line, &record.source, cause, (&project_batches, &records))
+                })?;
             records.push(outcome);
         }
         // A Link one record still lists is kept when another drops it.
         let mut listed = BTreeSet::new();
         for (outcome, (line, record)) in records.iter().zip(&parsed.issues) {
             listed.extend(
-                wanted_links(&self.conn, record, outcome.issue)
-                    .map_err(|cause| refused(*line, &record.source, cause))?,
+                wanted_links(&self.conn, record, outcome.issue).map_err(|cause| {
+                    refused(*line, &record.source, cause, (&project_batches, &records))
+                })?,
             );
         }
         // Every detachment first, so a parent or Link that moves between two
         // records never meets the cycle check half moved.
         for detach in [true, false] {
-            for (outcome, (line, record)) in records.iter_mut().zip(&parsed.issues) {
-                self.import_relations(record, outcome, &listed, detach, (runner, now))
-                    .map_err(|cause| refused(*line, &record.source, cause))?;
+            for (index, (line, record)) in parsed.issues.iter().enumerate() {
+                let outcome = &mut records[index];
+                if let Err(cause) =
+                    self.import_relations(record, outcome, &listed, detach, (runner, now))
+                {
+                    let done = (project_batches.as_slice(), records.as_slice());
+                    return Err(refused(*line, &record.source, cause, done));
+                }
             }
         }
         Ok(RecordsImported { projects, records })
@@ -249,7 +264,7 @@ impl Store {
             })
         };
         let (issue, created, planned) = plan(&self.conn)?;
-        self.write_plan(&planned, issue, |conn| {
+        let batch = self.write_plan(&planned, issue, |conn| {
             plan(conn).map(|(again, _, plan)| (again == issue).then_some(plan))
         })?;
         Ok(RecordOutcome {
@@ -257,6 +272,7 @@ impl Store {
             source: record.source.clone(),
             issue,
             created,
+            batches: batch.into_iter().collect(),
             written: planned.written,
             removed: planned.removed,
             conflicts: planned.conflicts,
@@ -286,7 +302,8 @@ impl Store {
             relations_plan(conn, &scheme, record, &target, &writer)
         };
         let planned = plan(&self.conn)?;
-        self.write_plan(&planned, issue, |conn| plan(conn).map(Some))?;
+        let batch = self.write_plan(&planned, issue, |conn| plan(conn).map(Some))?;
+        outcome.batches.extend(batch);
         outcome.written.extend(planned.written);
         outcome.removed.extend(planned.removed);
         outcome.conflicts.extend(planned.conflicts);
@@ -295,32 +312,53 @@ impl Store {
 
     /// Writes a plan as one batch, once the same plan comes out of the write
     /// transaction, so a write made between reading and writing is never
-    /// overwritten.
+    /// overwritten; returns the batch, if anything was written.
     fn write_plan(
         &mut self,
         planned: &Plan,
         issue: Uuid,
         again: impl Fn(&Connection) -> Result<Option<Plan>, StoreError>,
-    ) -> Result<(), StoreError> {
+    ) -> Result<Option<Uuid>, StoreError> {
         if planned.drafts.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
-        self.append_imported_guarded(planned.drafts.clone(), |tx| {
+        let ops = self.append_imported_guarded(planned.drafts.clone(), |tx| {
             if again(tx)?.as_ref() == Some(planned) {
                 Ok(())
             } else {
                 Err(StoreError::ImportChanged(issue))
             }
         })?;
-        Ok(())
+        Ok(ops.first().map(|op| op.op_id))
     }
 }
 
-fn refused(line: usize, record: &str, cause: StoreError) -> StoreError {
+/// `done` is the Projects' batches and the records' outcomes written so far.
+fn refused(
+    line: usize,
+    record: &str,
+    cause: StoreError,
+    (projects, records): (&[Uuid], &[RecordOutcome]),
+) -> StoreError {
+    let records = records.iter().flat_map(|outcome| outcome.batches.iter());
     StoreError::RecordRefused {
         line,
         record: record.to_owned(),
         cause: Box::new(cause),
+        written: projects.iter().chain(records).copied().collect(),
+    }
+}
+
+/// What a refused import leaves written, for its message.
+pub(crate) fn kept(written: &[Uuid]) -> String {
+    if written.is_empty() {
+        "nothing was written; fix the line and import the file again".into()
+    } else {
+        let batches: Vec<String> = written.iter().map(Uuid::to_string).collect();
+        format!(
+            "batches {} were written before it and stay; fix the line and import the file again",
+            batches.join(", ")
+        )
     }
 }
 
