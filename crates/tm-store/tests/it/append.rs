@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use tm_core::scheme::Category;
 use tm_core::{Actor, Change, Hlc};
-use tm_store::{Draft, StoreError};
+use tm_store::{Draft, Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::{
@@ -472,6 +472,152 @@ fn comments_read_back_in_log_order_with_who_wrote_them() {
         store.comments(Uuid::now_v7()),
         Err(StoreError::UnknownIssue(_))
     ));
+}
+
+#[test]
+fn a_comment_is_retracted_by_its_author_or_their_human_and_can_come_back() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = new_issue(&mut store);
+    let comment = store
+        .append(Draft {
+            actor: claude(),
+            ..draft(
+                issue,
+                Change::Comment {
+                    body: "oops".into(),
+                },
+            )
+        })
+        .unwrap()
+        .op_id;
+    let retract = |retracted| Change::Retract { comment, retracted };
+    let retracted = |store: &Store| store.comments(issue).unwrap()[0].retracted;
+
+    for stranger in [
+        Actor::agent("codex", "jace"),
+        Actor::agent("claude", "kim"),
+        Actor::human("claude"),
+        Actor::agent("jace", "kim"),
+    ] {
+        let err = store
+            .append(Draft {
+                actor: stranger.clone(),
+                ..draft(issue, retract(true))
+            })
+            .unwrap_err();
+        assert!(
+            matches!(err, StoreError::Invalid { ref field, .. } if field == "comments"),
+            "{stranger:?}: {err}"
+        );
+    }
+    assert!(!retracted(&store));
+
+    store.append(draft(issue, retract(true))).unwrap();
+    assert!(
+        retracted(&store),
+        "jace, the human claude wrote it for, may retract it"
+    );
+    store
+        .append(Draft {
+            actor: claude(),
+            ..draft(issue, retract(false))
+        })
+        .unwrap();
+    assert!(!retracted(&store), "and its author may bring it back");
+    store.append(draft(issue, retract(true))).unwrap();
+    store.rebuild().unwrap();
+    assert!(retracted(&store), "a retraction replays");
+    assert_eq!(
+        store.comments(issue).unwrap()[0].body,
+        "oops",
+        "the words stay in the log"
+    );
+
+    let err = store
+        .append(draft(
+            issue,
+            Change::Retract {
+                comment: Uuid::now_v7(),
+                retracted: true,
+            },
+        ))
+        .unwrap_err();
+    assert!(matches!(err, StoreError::Invalid { .. }), "{err}");
+    let err = store
+        .append(draft(issue, set_field("comments", json!("x"))))
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("comments"),
+        "only a retraction writes it: {err}"
+    );
+}
+
+#[test]
+fn concurrent_retractions_of_a_comment_merge_by_clock_not_arrival() {
+    let dir = TempDir::new();
+    let store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = Uuid::now_v7();
+    let comment = remote_op(
+        7,
+        issue,
+        &Change::Comment { body: "x".into() },
+        Hlc::new(2_000, 0),
+        1,
+    );
+    let retract = |retracted, ms| {
+        let change = Change::Retract {
+            comment: comment.op_id,
+            retracted,
+        };
+        remote_op(8, issue, &change, Hlc::new(ms, 0), 2)
+    };
+    let create = remote_op(7, issue, &Change::Create, Hlc::new(1_000, 0), 0);
+    // Both saw the comment and neither saw the other; the later clock wins
+    // though it arrives first.
+    for (seq, op) in [
+        (1, create),
+        (2, comment.clone()),
+        (3, retract(true, 5_000)),
+        (4, retract(false, 3_000)),
+    ] {
+        insert_acked(&store, &op, seq, 6_000);
+    }
+    let mut store = store;
+    store.rebuild().unwrap();
+    assert!(store.comments(issue).unwrap()[0].retracted);
+}
+
+#[test]
+fn a_retraction_that_replays_before_its_comment_still_hides_it() {
+    let dir = TempDir::new();
+    let store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = Uuid::now_v7();
+    let comment = remote_op(
+        7,
+        issue,
+        &Change::Comment { body: "x".into() },
+        Hlc::new(2_000, 0),
+        1,
+    );
+    let retract = remote_op(
+        8,
+        issue,
+        &Change::Retract {
+            comment: comment.op_id,
+            retracted: true,
+        },
+        Hlc::new(3_000, 0),
+        1,
+    );
+    let create = remote_op(7, issue, &Change::Create, Hlc::new(1_000, 0), 0);
+    for (seq, op) in [(1, create), (2, retract), (3, comment)] {
+        insert_acked(&store, &op, seq, 4_000);
+    }
+    let mut store = store;
+    store.rebuild().unwrap();
+    assert!(store.comments(issue).unwrap()[0].retracted);
+    assert_eq!(store.unapplied().unwrap(), []);
 }
 
 #[test]

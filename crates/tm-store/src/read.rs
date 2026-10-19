@@ -189,6 +189,7 @@ pub struct CommentView {
     pub on_behalf_of: Option<String>,
     pub body: String,
     pub utc_ms: i64,
+    pub retracted: bool,
 }
 
 const LINKS: &str = "SELECT type, dst, 0 FROM links WHERE src = ?1
@@ -196,7 +197,7 @@ const LINKS: &str = "SELECT type, dst, 0 FROM links WHERE src = ?1
      SELECT type, src, 1 FROM links WHERE dst = ?1
      ORDER BY 1, 3, 2";
 
-const COMMENTS: &str = "SELECT c.op_id, c.actor, o.on_behalf_of, c.body, c.utc_ms
+const COMMENTS: &str = "SELECT c.op_id, c.actor, o.on_behalf_of, c.body, c.utc_ms, c.retracted
      FROM comments c LEFT JOIN ops o ON o.op_id = c.op_id
      WHERE c.issue_id = ?1 ORDER BY c.hlc, o.replica_id, c.op_id";
 
@@ -239,6 +240,7 @@ pub(crate) fn comments(conn: &Connection, issue: Uuid) -> Result<Vec<CommentView
             on_behalf_of: row.get(2)?,
             body: row.get(3)?,
             utc_ms: row.get(4)?,
+            retracted: row.get(5)?,
         });
     }
     Ok(comments)

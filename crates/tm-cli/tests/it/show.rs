@@ -198,6 +198,34 @@ fn show_names_links_from_this_end_and_gives_comments_in_order() {
         shown.contains("\njace:\n  first\n  second line\n\nclaude for jace:\n  on it\n"),
         "{shown}"
     );
+
+    let on_it: uuid::Uuid = comments[1]["id"].as_str().unwrap().parse().unwrap();
+    change(
+        &mut store,
+        project,
+        held,
+        Change::Retract {
+            comment: on_it,
+            retracted: true,
+        },
+    );
+    let (_, doc) = show(&scratch, &repo, "TM-2");
+    let retracted = &doc["data"]["comments"][1];
+    assert_eq!(retracted["retracted"], true, "{doc}");
+    assert_eq!(
+        retracted["body"],
+        Value::Null,
+        "a retracted comment loses its words"
+    );
+    assert_eq!(
+        retracted["actor"], "claude",
+        "but keeps its place and author"
+    );
+    let out = tm(&scratch, &repo, &["show", "TM-2"]);
+    assert!(
+        text(&out.stdout).contains("\nclaude for jace: (retracted)\n\njace:"),
+        "{out:?}"
+    );
 }
 
 #[test]

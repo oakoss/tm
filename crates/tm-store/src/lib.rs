@@ -843,6 +843,9 @@ impl Store {
             if let Change::Claim { action } = &draft.change {
                 claim::check_taker(&draft.actor, action)?;
             }
+            if let Change::Retract { comment, .. } = &draft.change {
+                validate::check_retracter(&tx, draft.subject, &draft.actor, *comment)?;
+            }
             let change = validate::check(&tx, &self.scheme, draft.subject, draft.change)?;
             hlc = hlc.tick(now_ms);
             let base_seq: i64 = tx.query_row(

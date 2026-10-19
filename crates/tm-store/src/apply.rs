@@ -9,6 +9,7 @@
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value as Json;
+use tm_core::op::COMMENTS_FIELD;
 use tm_core::scheme::priority_rank;
 use tm_core::{Change, Hlc, Op, ProjectId, link};
 use uuid::Uuid;
@@ -155,10 +156,16 @@ pub(crate) fn apply(
                 return Ok(Some(lost));
             }
         }
+        Change::Retract { comment, retracted } => {
+            retract(tx, op.subject, comment, retracted, &version)?;
+        }
         Change::Comment { body } => {
             tx.execute(
-                "INSERT INTO comments (op_id, issue_id, actor, body, hlc, utc_ms, offset_min)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO comments
+                 (op_id, issue_id, actor, body, hlc, utc_ms, offset_min, retracted)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, coalesce(
+                   (SELECT present FROM field_versions
+                    WHERE issue_id = ?2 AND field = ?8 AND elem = ?9), 0))",
                 params![
                     op.op_id.as_bytes(),
                     op.subject.as_bytes(),
@@ -167,6 +174,8 @@ pub(crate) fn apply(
                     sql_int(op.hlc.raw())?,
                     op.utc_ms,
                     op.offset_min,
+                    COMMENTS_FIELD,
+                    op.op_id.to_string(),
                 ],
             )?;
         }
@@ -177,6 +186,27 @@ pub(crate) fn apply(
         params![op.utc_ms, op.subject.as_bytes()],
     )?;
     Ok(None)
+}
+
+/// Hides or shows comment `comment` if this retraction wins. The state is
+/// recorded even before the comment replays, which takes it on arrival.
+fn retract(
+    tx: &Transaction<'_>,
+    issue_id: Uuid,
+    comment: Uuid,
+    retracted: bool,
+    version: &Version,
+) -> Result<(), StoreError> {
+    let elem = comment.to_string();
+    if !wins(tx, issue_id, COMMENTS_FIELD, &elem, version)? {
+        return Ok(());
+    }
+    record(tx, issue_id, COMMENTS_FIELD, &elem, retracted, version)?;
+    tx.execute(
+        "UPDATE comments SET retracted = ?1 WHERE op_id = ?2 AND issue_id = ?3",
+        params![retracted, comment.as_bytes(), issue_id.as_bytes()],
+    )?;
+    Ok(())
 }
 
 /// Labels compare without case. Writes already store them lowercased; this
