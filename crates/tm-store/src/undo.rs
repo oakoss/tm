@@ -58,6 +58,27 @@ impl Store {
         self.undo_with(actor, batch, true)
     }
 
+    /// The batches whose id starts or ends with `part`, hex digits without
+    /// case and with hyphens ignored. Ids begin with their time, so only the
+    /// end tells batches written close together apart.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
+    pub fn batches_matching(&self, part: &str) -> Result<Vec<Uuid>, StoreError> {
+        let hex: String = part.chars().filter(|c| *c != '-').collect();
+        if hex.is_empty() || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT DISTINCT batch FROM op_batches
+             WHERE substr(hex(batch), 1, length(?1)) = ?1 OR substr(hex(batch), -length(?1)) = ?1
+             LIMIT 5",
+        )?;
+        let rows = stmt.query_map([hex.to_ascii_uppercase()], |row| row.get::<_, Vec<u8>>(0))?;
+        rows.map(|batch| uuid_from(&batch?)).collect()
+    }
+
     fn undo_with(
         &mut self,
         actor: &Actor,
