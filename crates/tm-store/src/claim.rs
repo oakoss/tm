@@ -95,7 +95,7 @@ impl Store {
     }
 }
 
-fn current(conn: &Connection, issue: Uuid) -> Result<Option<Claim>, StoreError> {
+pub(crate) fn current(conn: &Connection, issue: Uuid) -> Result<Option<Claim>, StoreError> {
     let row = conn
         .query_row(
             "SELECT op_id, agent, on_behalf_of, expires_ms FROM claims WHERE issue_id = ?1",

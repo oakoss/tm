@@ -12,4 +12,5 @@ mod projects;
 mod ready;
 mod rebuild;
 mod support;
+mod undo;
 mod workspace;

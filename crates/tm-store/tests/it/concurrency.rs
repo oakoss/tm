@@ -90,6 +90,54 @@ fn of_many_processes_unlinking_one_link_only_one_writes() {
     assert_eq!(store.links(from).unwrap(), Vec::new());
 }
 
+const CHILD_BATCH: &str = "TM_STORE_TEST_CHILD_BATCH";
+
+#[test]
+fn of_many_processes_undoing_one_batch_only_one_writes() {
+    if let (Ok(db), Ok(batch)) = (std::env::var(CHILD_DB), std::env::var(CHILD_BATCH)) {
+        let mut store = Store::open(&PathBuf::from(db)).unwrap();
+        match store.undo(&jace(), Uuid::parse_str(&batch).unwrap()) {
+            Ok(_) | Err(tm_store::StoreError::UndoConflict { .. }) => {}
+            Err(err) => panic!("{err}"),
+        }
+        return;
+    }
+
+    let dir = TempDir::new();
+    let mut store = Store::open(&dir.db()).unwrap();
+    let (project, _) = store.create_project(&jace(), "CPL", "Core").unwrap();
+    let (issue, _) = store.create_issue(&jace(), project, "task", "t").unwrap();
+    let batch = store
+        .append(Draft {
+            project,
+            ..draft(issue, set_field("priority", json!("high")))
+        })
+        .unwrap()
+        .op_id;
+    drop(store);
+
+    run_children(
+        "concurrency::of_many_processes_undoing_one_batch_only_one_writes",
+        20,
+        |_, command| {
+            command
+                .env(CHILD_DB, dir.db())
+                .env(CHILD_BATCH, batch.to_string());
+        },
+    );
+
+    let store = Store::open(&dir.db()).unwrap();
+    let priority_writes: i64 = store
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM ops WHERE field = 'priority'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(priority_writes, 2, "the write and one undo");
+}
+
 #[test]
 fn fifty_processes_write_without_losing_operations() {
     if let (Ok(db), Ok(issue)) = (std::env::var(CHILD_DB), std::env::var(CHILD_ISSUE)) {

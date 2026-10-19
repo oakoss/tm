@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::{StoreError, project};
 
 /// What decides a field: the winning operation's position and clock.
-struct Version {
+pub(crate) struct Version {
     hlc: Hlc,
     replica_id: Uuid,
     op_id: Uuid,
@@ -27,6 +27,30 @@ struct Version {
 }
 
 impl Version {
+    /// A logged operation's version from its `ops` row: `hlc`, `replica_id`,
+    /// `op_id`, `base_seq`, `server_seq` and `server_received_ms`, in that
+    /// order from `first`.
+    pub(crate) fn from_row(row: &rusqlite::Row<'_>, first: usize) -> Result<Self, StoreError> {
+        Ok(Self {
+            hlc: Hlc::from_raw(rust_int(row.get(first)?)?),
+            replica_id: uuid_from(&row.get::<_, Vec<u8>>(first + 1)?)?,
+            op_id: uuid_from(&row.get::<_, Vec<u8>>(first + 2)?)?,
+            base_seq: rust_int(row.get(first + 3)?)?,
+            server_seq: row
+                .get::<_, Option<i64>>(first + 4)?
+                .map(rust_int)
+                .transpose()?,
+            server_received_ms: row
+                .get::<_, Option<i64>>(first + 5)?
+                .map(rust_int)
+                .transpose()?,
+        })
+    }
+
+    pub(crate) const fn op_id(&self) -> Uuid {
+        self.op_id
+    }
+
     fn of(op: &Op, server_seq: Option<u64>, server_received_ms: Option<u64>) -> Self {
         Self {
             hlc: op.hlc,
@@ -41,7 +65,7 @@ impl Version {
     /// ADR 0006: a pending edit shows over acknowledged ones on its own
     /// Replica; between acknowledged operations, one that saw the other wins,
     /// and concurrent ones go to the later capped clock.
-    fn beats(&self, current: &Self) -> bool {
+    pub(crate) fn beats(&self, current: &Self) -> bool {
         match (self.server_seq, current.server_seq) {
             (None, Some(_)) => true,
             (Some(_), None) => false,
