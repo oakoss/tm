@@ -26,7 +26,7 @@
 
 **A bare undo is the human's.**
 
-- `tm undo` with no batch reverts the newest candidate on this Replica: a batch whose Actor is the current human's name with no `on_behalf_of`, which is not an undo, is not undone, and holds no Project write.
+- `tm undo` with no batch reverts the newest candidate on this Replica: a batch whose Actor is the current human's name with no `on_behalf_of`, which is not an undo, is not undone, and holds no Project write and no import ([ADR 0013](0013-export-carries-the-log-and-issue-records.md)).
 - An Agent writing a bare `tm undo` is refused with `batch_required`, whose fix is `tm undo <batch>`; ADR 0010's reasoning still holds for Agents.
 - When the human has no candidate, the bare undo is refused with `not_found`, kind `batch`.
 - The newest candidate is undone or refused as it stands, never skipped. A refusal's `fix` names the next older candidate, so the human chooses to step past it.
