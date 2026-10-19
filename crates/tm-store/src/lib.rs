@@ -11,6 +11,7 @@ mod project;
 mod query;
 mod read;
 mod ready;
+mod record;
 mod schema;
 mod undo;
 mod validate;
@@ -37,6 +38,7 @@ pub use claim::Claim;
 pub use export::{Exported, Restored, read_export, snapshot};
 pub use read::{CommentView, Direction, IssueView, LinkView};
 pub use ready::Ready;
+pub use record::{CommentRecord, IssueRecord, LinkRecord, tm_source};
 pub use undo::{Restore, UndoPlan};
 
 /// How long a writer waits for another writer before giving up.

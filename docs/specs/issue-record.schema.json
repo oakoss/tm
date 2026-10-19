@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/oakoss/tm/blob/main/docs/specs/issue-record.schema.json",
+  "title": "tm issue record",
+  "description": "One line of a tm export or an adapter's output, version 1 (ADR 0013). A reference to another Issue is another record's source, a Key, or an Issue id. Times are RFC 3339.",
+  "type": "object",
+  "required": ["_type", "source", "project"],
+  "additionalProperties": false,
+  "properties": {
+    "_type": { "const": "issue" },
+    "source": {
+      "description": "<system>:<id>, such as beads:tm-u8g.10; a tm export writes tm:<Issue id>. A re-import finds the Issue by it.",
+      "type": "string",
+      "minLength": 1
+    },
+    "project": {
+      "description": "The key of the Issue's Project.",
+      "type": "string"
+    },
+    "key": {
+      "description": "The Issue's Key where it came from; shown, never assigned.",
+      "type": "string"
+    },
+    "type": {
+      "description": "An Issue type id, such as task.",
+      "type": "string"
+    },
+    "title": { "type": "string" },
+    "description": { "type": "string" },
+    "status": {
+      "description": "A Status id, such as in_progress.",
+      "type": "string"
+    },
+    "priority": { "enum": ["urgent", "high", "medium", "low", "none"] },
+    "assignee": { "type": "string" },
+    "reporter": {
+      "description": "Who created it; the import's runner when absent.",
+      "type": "string"
+    },
+    "updated_by": {
+      "description": "Who last changed it; a re-import writes as them, else as its runner.",
+      "type": "string"
+    },
+    "labels": { "type": "array", "items": { "type": "string" } },
+    "archived": { "type": "boolean" },
+    "parent": { "description": "A reference.", "type": "string" },
+    "links": {
+      "description": "Outward Links only.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "target"],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "description": "A Link type id, such as blocks.",
+            "type": "string"
+          },
+          "target": { "description": "A reference.", "type": "string" }
+        }
+      }
+    },
+    "comments": {
+      "description": "Shown comments; a retracted one is not carried.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "actor", "body"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "description": "Stable at the source.", "type": "string" },
+          "actor": { "type": "string" },
+          "on_behalf_of": {
+            "description": "The human an Agent wrote it for.",
+            "type": "string"
+          },
+          "body": { "type": "string" },
+          "at": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "fields": { "description": "Scheme fields by id.", "type": "object" },
+    "created": { "type": "string", "format": "date-time" },
+    "updated": { "type": "string", "format": "date-time" }
+  }
+}
