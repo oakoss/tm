@@ -120,13 +120,13 @@ fn a_release_must_name_the_current_claim() {
     let stranger = Uuid::now_v7();
     let err = store.release(&jace(), issue, stranger).unwrap_err();
     assert!(
-        matches!(err, StoreError::NotClaimHolder { current: None, .. }),
+        matches!(err, StoreError::NotClaimHolder { holder: None, .. }),
         "{err}"
     );
     let claim = store.take(&claude(), issue, None).unwrap();
     let err = store.release(&jace(), issue, stranger).unwrap_err();
     assert!(
-        matches!(err, StoreError::NotClaimHolder { current: Some(id), .. } if id == claim.id),
+        matches!(err, StoreError::NotClaimHolder { holder: Some(ref held), .. } if **held == claim),
         "{err}"
     );
     assert_eq!(store.claim(issue).unwrap().map(|c| c.id), Some(claim.id));
@@ -298,6 +298,11 @@ fn of_two_takes_that_saw_the_issue_unclaimed_the_first_acknowledged_wins() {
     assert_eq!(lost[0].op_id, ids[2]);
     assert!(lost[0].reason.starts_with("lost:"), "{}", lost[0].reason);
     assert!(lost[0].reason.contains("claude"), "{}", lost[0].reason);
+    assert!(
+        !lost[0].reason.contains(&claim.id.to_string()),
+        "the winner's token stays out of the reason: {}",
+        lost[0].reason
+    );
 }
 
 #[test]

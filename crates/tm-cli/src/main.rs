@@ -1,7 +1,9 @@
 //! The `tm` command.
 
+mod claim;
 mod comment;
 mod create;
+mod doctor;
 mod error;
 mod here;
 mod identity;
@@ -51,6 +53,25 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Claim an Issue for the Agent writing; prints the Claim id that
+    /// releases it.
+    Claim {
+        /// The Issue's Key or full id.
+        issue: String,
+        /// When the Claim lapses, such as 30m or 2h; recorded now, enforced
+        /// once Claims expire.
+        #[arg(long = "for", value_name = "DURATION", value_parser = claim::duration)]
+        ttl_ms: Option<u64>,
+    },
+    /// Release a Claim, named by the id `tm claim` printed.
+    Release {
+        /// The Issue's Key or full id.
+        issue: String,
+        claim: uuid::Uuid,
+    },
+    /// List logged operations that did not apply, and Claims another take or
+    /// release won.
+    Doctor,
     /// Comment on an Issue.
     Comment {
         /// The Issue's Key or full id.
@@ -168,7 +189,10 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             },
         }) => scheme_type(&Scheme::built_in(), &issue_type),
         Some(Command::Init { key, name, yes }) => init::run(init::Init { key, name, yes }, json),
+        Some(Command::Claim { issue, ttl_ms }) => claim::take(&issue, ttl_ms),
+        Some(Command::Release { issue, claim }) => claim::release(&issue, claim),
         Some(Command::Comment { issue, body }) => comment::run(&issue, &body),
+        Some(Command::Doctor) => doctor::run(),
         Some(Command::Create {
             issue_type,
             title,

@@ -92,7 +92,7 @@ pub enum StoreError {
     },
     #[error("only an Agent can take a Claim, and {actor} writes as a human")]
     NoAgent { actor: String },
-    #[error("Issue {issue} is held by {agent} for {on_behalf_of} (Claim {claim}{})", expires_ms.map_or_else(String::new, |ms| format!(", expiring at {ms} ms")))]
+    #[error("Issue {issue} is held by {agent} for {on_behalf_of}{}", expires_ms.map_or_else(String::new, |ms| format!(", expiring at {ms} ms")))]
     AlreadyClaimed {
         issue: Uuid,
         agent: String,
@@ -100,11 +100,12 @@ pub enum StoreError {
         claim: Uuid,
         expires_ms: Option<i64>,
     },
-    #[error("Claim {claim} does not hold Issue {issue}{}", current.map_or_else(|| "; it is unclaimed".to_owned(), |current| format!("; Claim {current} does")))]
+    #[error("Claim {claim} does not hold Issue {issue}{}", holder.as_ref().map_or_else(|| "; it is unclaimed".to_owned(), |held| format!("; {} holds it for {}", held.agent, held.on_behalf_of)))]
     NotClaimHolder {
         issue: Uuid,
         claim: Uuid,
-        current: Option<Uuid>,
+        /// The Claim holding the Issue, if any; its id is the holder's token.
+        holder: Option<Box<Claim>>,
     },
     #[error("Issue {issue} is missing required fields: {}", fields.join(", "))]
     MissingFields { issue: Uuid, fields: Vec<String> },
