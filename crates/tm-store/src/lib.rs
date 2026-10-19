@@ -841,84 +841,12 @@ impl Store {
         for draft in &drafts {
             draft.change.validate()?;
         }
-        let (now, now_ms) = self.now()?;
+        let now = self.now()?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         guard(&tx)?;
-        let mut hlc = last_hlc(&tx)?;
-        let replica: Vec<u8> =
-            tx.query_row("SELECT v FROM meta WHERE k = 'replica_id'", [], |row| {
-                row.get(0)
-            })?;
-        let replica_id = uuid_from(&replica)?;
-        let mut ops: Vec<Op> = Vec::with_capacity(drafts.len());
-        // Each Issue's state before the batch is the bar it is held to after:
-        // a batch may not make it worse, but an Issue that arrived incomplete
-        // or inconsistent stays editable.
-        let mut before = BTreeMap::new();
-        for draft in drafts {
-            if let Entry::Vacant(entry) = before.entry(draft.subject) {
-                entry.insert((
-                    validate::missing_fields(&tx, &self.scheme, draft.subject)?,
-                    validate::status_fits_type(&tx, &self.scheme, draft.subject)?,
-                ));
-            }
-            if let Change::Claim { action } = &draft.change {
-                claim::check_taker(&draft.actor, action)?;
-            }
-            if let Change::Retract { comment, .. } = &draft.change {
-                validate::check_retracter(&tx, draft.subject, &draft.actor, *comment)?;
-            }
-            let change = validate::check(&tx, &self.scheme, draft.subject, draft.change)?;
-            hlc = hlc.tick(now_ms);
-            let base_seq: i64 = tx.query_row(
-                "SELECT coalesce(max(server_seq), 0) FROM ops WHERE project = ?1",
-                [draft.project.to_string()],
-                |row| row.get(0),
-            )?;
-            let op = Op {
-                v: CURRENT_VERSION,
-                op_id: Uuid::now_v7(),
-                replica_id,
-                actor: draft.actor.name().to_owned(),
-                on_behalf_of: draft.actor.on_behalf_of().map(str::to_owned),
-                project: draft.project,
-                subject: draft.subject,
-                kind: change.kind().to_owned(),
-                hlc,
-                base_seq: rust_int(base_seq)?,
-                utc_ms: now.utc_ms,
-                offset_min: now.offset_min,
-                payload: serde_json::to_string(&change).map_err(OpError::from)?,
-            };
-            op.change()?;
-            // Inside the write transaction, so concurrent creates never share a Key.
-            let assigned_key = match change {
-                Change::Create => Some(project::next_key(&tx, op.project)?),
-                _ => None,
-            };
-            insert_op(&tx, &op, &change, assigned_key.as_deref())?;
-            let batch = ops.first().map_or(op.op_id, |first| first.op_id);
-            tx.execute(
-                "INSERT INTO op_batches (op_id, batch) VALUES (?1, ?2)",
-                [op.op_id.as_bytes(), batch.as_bytes()],
-            )?;
-            let effects = apply::Effects {
-                assigned_key: assigned_key.as_deref(),
-                ..apply::Effects::default()
-            };
-            if let Some(reason) = apply(&tx, &op, effects)? {
-                return Err(StoreError::Corrupt(format!(
-                    "a write this store checked did not apply in full: {reason}"
-                )));
-            }
-            if let Some(key) = &assigned_key {
-                project::count_key(&tx, key, op.project, op.op_id)?;
-            }
-            ops.push(op);
-        }
-        no_worse(&tx, &self.scheme, before)?;
+        let (ops, hlc) = write_drafts(&tx, &self.scheme, drafts, now, last_hlc(&tx)?)?;
         if let (Some(undid), Some(first)) = (undid, ops.first()) {
             tx.execute(
                 "INSERT INTO undo_batches (batch, undid) VALUES (?1, ?2)",
@@ -1132,6 +1060,90 @@ impl Store {
         tx.commit()?;
         Ok(unapplied)
     }
+}
+
+/// Checks, stamps, logs and applies `drafts` inside `tx`, after the clock's
+/// `hlc`; returns the operations and the clock after them.
+fn write_drafts(
+    tx: &Transaction<'_>,
+    scheme: &Scheme,
+    drafts: Vec<Draft>,
+    (now, now_ms): (WallTime, u64),
+    mut hlc: Hlc,
+) -> Result<(Vec<Op>, Hlc), StoreError> {
+    let replica: Vec<u8> =
+        tx.query_row("SELECT v FROM meta WHERE k = 'replica_id'", [], |row| {
+            row.get(0)
+        })?;
+    let replica_id = uuid_from(&replica)?;
+    let mut ops: Vec<Op> = Vec::with_capacity(drafts.len());
+    // Each Issue's state before the batch is the bar it is held to after:
+    // a batch may not make it worse, but an Issue that arrived incomplete
+    // or inconsistent stays editable.
+    let mut before = BTreeMap::new();
+    for draft in drafts {
+        if let Entry::Vacant(entry) = before.entry(draft.subject) {
+            entry.insert((
+                validate::missing_fields(tx, scheme, draft.subject)?,
+                validate::status_fits_type(tx, scheme, draft.subject)?,
+            ));
+        }
+        if let Change::Claim { action } = &draft.change {
+            claim::check_taker(&draft.actor, action)?;
+        }
+        if let Change::Retract { comment, .. } = &draft.change {
+            validate::check_retracter(tx, draft.subject, &draft.actor, *comment)?;
+        }
+        let change = validate::check(tx, scheme, draft.subject, draft.change)?;
+        hlc = hlc.tick(now_ms);
+        let base_seq: i64 = tx.query_row(
+            "SELECT coalesce(max(server_seq), 0) FROM ops WHERE project = ?1",
+            [draft.project.to_string()],
+            |row| row.get(0),
+        )?;
+        let op = Op {
+            v: CURRENT_VERSION,
+            op_id: Uuid::now_v7(),
+            replica_id,
+            actor: draft.actor.name().to_owned(),
+            on_behalf_of: draft.actor.on_behalf_of().map(str::to_owned),
+            project: draft.project,
+            subject: draft.subject,
+            kind: change.kind().to_owned(),
+            hlc,
+            base_seq: rust_int(base_seq)?,
+            utc_ms: now.utc_ms,
+            offset_min: now.offset_min,
+            payload: serde_json::to_string(&change).map_err(OpError::from)?,
+        };
+        op.change()?;
+        // Inside the write transaction, so concurrent creates never share a Key.
+        let assigned_key = match change {
+            Change::Create => Some(project::next_key(tx, op.project)?),
+            _ => None,
+        };
+        insert_op(tx, &op, &change, assigned_key.as_deref())?;
+        let batch = ops.first().map_or(op.op_id, |first| first.op_id);
+        tx.execute(
+            "INSERT INTO op_batches (op_id, batch) VALUES (?1, ?2)",
+            [op.op_id.as_bytes(), batch.as_bytes()],
+        )?;
+        let effects = apply::Effects {
+            assigned_key: assigned_key.as_deref(),
+            ..apply::Effects::default()
+        };
+        if let Some(reason) = apply(tx, &op, effects)? {
+            return Err(StoreError::Corrupt(format!(
+                "a write this store checked did not apply in full: {reason}"
+            )));
+        }
+        if let Some(key) = &assigned_key {
+            project::count_key(tx, key, op.project, op.op_id)?;
+        }
+        ops.push(op);
+    }
+    no_worse(tx, scheme, before)?;
+    Ok((ops, hlc))
 }
 
 /// Refuses a batch that left an Issue missing a field it had, or with a
