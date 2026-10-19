@@ -936,7 +936,8 @@ fn comments_plan(
                 plan.changed_comments.push(comment.id.clone());
             }
             let name = format!("comments/{}", comment.id);
-            // Back at the source: shown again if the import hid it, else tm's.
+            // Back at the source: shown again if the import hid it; one tm hid
+            // stays hidden, as a field changed only in tm keeps tm's value.
             if retracted && retraction_source(conn, issue, id)?.as_deref() == Some(&source) {
                 let change = Change::Retract {
                     comment: id,
@@ -944,12 +945,6 @@ fn comments_plan(
                 };
                 plan.push(draft(comment_author(conn, id)?, change), &source, now);
                 plan.written.push(name);
-            } else if retracted {
-                plan.conflicts.push(Conflict {
-                    field: name,
-                    tm: json!("retracted"),
-                    source: json!("shown"),
-                });
             }
             continue;
         }

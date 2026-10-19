@@ -210,7 +210,7 @@ fn records_output(
                 Some(Undo::Can) => writeln!(text, "{source}: undo with tm undo {batch}"),
                 Some(Undo::Cannot) => writeln!(
                     text,
-                    "{source}: batch {batch}, which {} cannot undo",
+                    "{source}: batch {batch}, which {} cannot undo as things stand",
                     output::printable(runner)
                 ),
                 Some(Undo::Unknown(reason)) => writeln!(
@@ -428,7 +428,7 @@ mod tests {
         let text = records_output(&imported, false, &undo, "jace").text;
         for line in [
             format!("beads:a: undo with tm undo {first}"),
-            format!("beads:a: batch {second}, which jace cannot undo"),
+            format!("beads:a: batch {second}, which jace cannot undo as things stand"),
             format!(
                 "beads:a: batch {third}; whether it can be undone was not checked: the store is busy"
             ),

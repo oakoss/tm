@@ -565,7 +565,11 @@ fn a_comment_back_at_the_source_is_shown_again_unless_tm_hid_it() {
         .unwrap();
     let again = import(&mut store, &records()).unwrap();
     assert_eq!(again.records[0].written, Vec::<String>::new());
-    assert_eq!(again.records[0].conflicts[0].field, "comments/c1");
+    assert_eq!(
+        again.records[0].conflicts,
+        [],
+        "tm's change alone keeps, as a field's does"
+    );
     assert!(store.comments(child).unwrap()[0].retracted, "tm hid it");
 }
 
