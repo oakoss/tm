@@ -9,6 +9,32 @@ pub(crate) const PROJECTION_VERSION: i64 = 8;
 /// Until tm v1 is released the log changes in place (ADR 0010).
 pub(crate) const STORE_FORMAT: i64 = 1;
 
+/// The `ops` columns in order; a store whose log has others is refused, since
+/// `CREATE TABLE IF NOT EXISTS` never adds a column.
+pub(crate) const OPS_COLUMNS: [&str; 21] = [
+    "seq",
+    "op_id",
+    "op_hash",
+    "v",
+    "kind",
+    "replica_id",
+    "actor",
+    "on_behalf_of",
+    "source",
+    "project",
+    "issue_id",
+    "field",
+    "elem",
+    "hlc",
+    "base_seq",
+    "utc_ms",
+    "offset_min",
+    "payload",
+    "server_seq",
+    "server_received_ms",
+    "assigned_key",
+];
+
 pub(crate) const LOG: &str = "
 CREATE TABLE IF NOT EXISTS meta (
   k TEXT PRIMARY KEY,
@@ -24,6 +50,7 @@ CREATE TABLE IF NOT EXISTS ops (
   replica_id BLOB NOT NULL,
   actor TEXT NOT NULL,
   on_behalf_of TEXT,
+  source TEXT,
   project TEXT NOT NULL,
   issue_id BLOB NOT NULL,
   field TEXT,
@@ -40,6 +67,9 @@ CREATE TABLE IF NOT EXISTS ops (
 
 CREATE INDEX IF NOT EXISTS ops_target ON ops (issue_id, field, elem);
 
+-- A re-import finds what it wrote before by source (ADR 0013).
+CREATE INDEX IF NOT EXISTS ops_by_source ON ops (source) WHERE source IS NOT NULL;
+
 -- Server order is per Project (one chain per Project, ADR 0006).
 CREATE UNIQUE INDEX IF NOT EXISTS ops_server_position ON ops (project, server_seq);
 
@@ -49,7 +79,7 @@ CREATE INDEX IF NOT EXISTS ops_by_replica ON ops (replica_id, hlc);
 -- Stored operations are immutable; only the columns the server fills in later
 -- may change.
 CREATE TRIGGER IF NOT EXISTS ops_immutable
-BEFORE UPDATE OF op_id, op_hash, v, kind, replica_id, actor, on_behalf_of, project, issue_id,
+BEFORE UPDATE OF op_id, op_hash, v, kind, replica_id, actor, on_behalf_of, source, project, issue_id,
                  field, elem, hlc, base_seq, utc_ms, offset_min, payload ON ops
 BEGIN
   SELECT RAISE(ABORT, 'stored operations are immutable');

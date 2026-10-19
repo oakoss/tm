@@ -258,6 +258,9 @@ pub struct Op {
     pub actor: String,
     /// The human an Agent writes for; none when the human writes.
     pub on_behalf_of: Option<String>,
+    /// Where an imported operation came from, such as `beads:tm-u8g.10`;
+    /// none for any other write (ADR 0013).
+    pub source: Option<String>,
     pub project: ProjectId,
     /// What the operation changes: an Issue, or a Project for Project kinds.
     pub subject: Uuid,
@@ -285,6 +288,9 @@ impl Op {
         if let Some(human) = &self.on_behalf_of {
             check_name("on_behalf_of", human)?;
         }
+        if let Some(source) = &self.source {
+            check_name("source", source)?;
+        }
         if self.payload.len() > MAX_PAYLOAD_BYTES {
             return Err(OpError::TooLarge(self.payload.len()));
         }
@@ -308,13 +314,8 @@ impl Op {
         buf.extend_from_slice(self.op_id.as_bytes());
         buf.extend_from_slice(self.replica_id.as_bytes());
         put_bytes(&mut buf, self.actor.as_bytes());
-        match &self.on_behalf_of {
-            Some(human) => {
-                buf.push(1);
-                put_bytes(&mut buf, human.as_bytes());
-            }
-            None => buf.push(0),
-        }
+        put_optional(&mut buf, self.on_behalf_of.as_deref());
+        put_optional(&mut buf, self.source.as_deref());
         put_bytes(&mut buf, self.project.to_string().as_bytes());
         buf.extend_from_slice(self.subject.as_bytes());
         put_bytes(&mut buf, self.kind.as_bytes());
@@ -353,6 +354,17 @@ fn put_bytes(buf: &mut Vec<u8>, bytes: &[u8]) {
     buf.extend_from_slice(bytes);
 }
 
+/// A presence byte, then the value when there is one.
+fn put_optional(buf: &mut Vec<u8>, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            buf.push(1);
+            put_bytes(buf, value.as_bytes());
+        }
+        None => buf.push(0),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,11 +372,13 @@ mod tests {
     type Mutation = Box<dyn Fn(&mut Op)>;
 
     /// Changing the envelope layout or hash input changes every Replica's
-    /// operation identities, so the values are pinned: a human's operation
-    /// and an Agent's.
-    const PINNED_OP_HASH: &str = "acb8ceb7219a0e25c8c2a45fb04d581757cc6f9fa57768e4dfd3660367bbdb93";
+    /// operation identities, so the values are pinned: a human's operation,
+    /// an Agent's and an imported one.
+    const PINNED_OP_HASH: &str = "a8955b9eb128f2db92a808af4e475a422bd2a61e9f6648a92b0b4c5dc029d2c8";
     const PINNED_OP_HASH_AGENT: &str =
-        "8792a963eeace336f49134d420a90a8f99c3fac3b40ccb06e6b9079ff6be0429";
+        "29e25b29652cf0e3df4c449c845e2ae89d960ca289235c51c16d07522fff66fc";
+    const PINNED_OP_HASH_IMPORTED: &str =
+        "26d70f3f0460e6d9b31b82fae2ec7c19a79c14d1f1c45bb5f4783228ea37cf13";
 
     /// A human's operation.
     fn sample() -> Op {
@@ -380,6 +394,7 @@ mod tests {
             replica_id: Uuid::from_u128(2),
             actor: "jace".into(),
             on_behalf_of: None,
+            source: None,
             project: ProjectId::from_uuid(Uuid::from_u128(4)),
             subject: Uuid::from_u128(3),
             kind: change.kind().into(),
@@ -475,6 +490,7 @@ mod tests {
             Box::new(|o| o.actor = "codex".into()),
             Box::new(|o| o.on_behalf_of = None),
             Box::new(|o| o.on_behalf_of = Some("ana".into())),
+            Box::new(|o| o.source = Some("beads:tm-1".into())),
             Box::new(|o| o.project = ProjectId::from_uuid(Uuid::from_u128(9))),
             Box::new(|o| o.subject = Uuid::from_u128(9)),
             Box::new(|o| o.kind = "add".into()),
@@ -493,7 +509,7 @@ mod tests {
 
     #[test]
     fn names_must_be_printable() {
-        let cases: [(Mutation, &str, &str); 4] = [
+        let cases: [(Mutation, &str, &str); 6] = [
             (Box::new(|o| o.actor = " ".into()), "actor", "is blank"),
             (
                 Box::new(|o| o.actor = "cl\naude".into()),
@@ -508,6 +524,16 @@ mod tests {
             (
                 Box::new(|o| o.on_behalf_of = Some("ja\u{7}ce".into())),
                 "on_behalf_of",
+                "has a control character",
+            ),
+            (
+                Box::new(|o| o.source = Some(String::new())),
+                "source",
+                "is blank",
+            ),
+            (
+                Box::new(|o| o.source = Some("beads:\ntm-1".into())),
+                "source",
                 "has a control character",
             ),
         ];
@@ -582,8 +608,19 @@ mod tests {
 
     #[test]
     fn op_hash_has_a_fixed_value() {
-        assert_eq!(hex(sample().op_hash()), PINNED_OP_HASH);
-        assert_eq!(hex(sample_agent().op_hash()), PINNED_OP_HASH_AGENT);
+        let imported = Op {
+            source: Some("beads:tm-u8g.10".into()),
+            ..sample()
+        };
+        let got = [sample(), sample_agent(), imported].map(|op| hex(op.op_hash()));
+        assert_eq!(
+            got,
+            [
+                PINNED_OP_HASH,
+                PINNED_OP_HASH_AGENT,
+                PINNED_OP_HASH_IMPORTED
+            ]
+        );
     }
 
     #[test]

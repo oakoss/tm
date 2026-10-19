@@ -6,6 +6,7 @@
 
 mod apply;
 mod claim;
+mod export;
 mod project;
 mod query;
 mod read;
@@ -33,6 +34,7 @@ use uuid::Uuid;
 use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
 pub use claim::Claim;
+pub use export::{Exported, Restored, read_export, snapshot};
 pub use read::{CommentView, Direction, IssueView, LinkView};
 pub use ready::Ready;
 pub use undo::{Restore, UndoPlan};
@@ -71,6 +73,16 @@ pub enum StoreError {
     ReadOnly,
     #[error("this store belongs to Workspace {stored}, not {given}")]
     WorkspaceMismatch { stored: Uuid, given: Uuid },
+    #[error(
+        "Workspace {workspace} already holds {held} operations that are not this export's; an export restores only into a Workspace with none"
+    )]
+    WorkspaceNotEmpty { workspace: Uuid, held: i64 },
+    #[error("line {line} of the export: {reason}")]
+    InvalidExport { line: usize, reason: String },
+    #[error("the export's operations are format {found}, and this tm reads {supported}")]
+    ExportFormat { found: u16, supported: u16 },
+    #[error("reading or writing an export: {0}")]
+    Io(#[source] std::io::Error),
     #[error("unknown field {field:?}; valid fields: {}", valid.join(", "))]
     UnknownField { field: String, valid: Vec<String> },
     #[error("{field} {reason}{}", if valid.is_empty() { String::new() } else { format!("; valid: {}", valid.join(", ")) })]
@@ -134,6 +146,10 @@ pub enum StoreError {
         "the store was written by a newer tm (format {found}, this tm reads {supported}); upgrade tm"
     )]
     NewerStore { found: i64, supported: i64 },
+    #[error(
+        "the store's log was written by a different build of tm, before its format last changed; recreate the store"
+    )]
+    FormatChanged,
     #[error("the operation at log position {seq} cannot be replayed: {source}")]
     Replay {
         seq: i64,
@@ -442,9 +458,10 @@ impl Store {
     }
 
     fn init(&mut self) -> Result<(), StoreError> {
+        self.check_log_columns()?;
         if self.is_set_up()? {
-            // Creates only what an older build of this format lacked; with
-            // nothing to create it takes no lock.
+            // Creates tables and indexes an older build lacked, never columns;
+            // with nothing to create it takes no lock.
             self.conn.execute_batch(schema::LOG)?;
             return Ok(());
         }
@@ -912,6 +929,22 @@ impl Store {
         Ok((data_version, max_seq))
     }
 
+    /// Refuses a log another build wrote with other columns: until v1 the
+    /// format changes in place, and such a store is recreated (ADR 0010).
+    fn check_log_columns(&self) -> Result<(), StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name FROM pragma_table_info('ops') ORDER BY cid")?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        if columns.is_empty() || columns == schema::OPS_COLUMNS {
+            Ok(())
+        } else {
+            Err(StoreError::FormatChanged)
+        }
+    }
+
     /// Whether the store is already set up for this binary. Read without the
     /// write lock, so opening such a store never waits on a writer.
     fn is_set_up(&self) -> Result<bool, StoreError> {
@@ -1083,33 +1116,39 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute_batch(schema::DROP_PROJECTIONS)?;
-        tx.execute_batch(schema::PROJECTIONS)?;
-        let rows = {
-            let mut stmt = tx.prepare(
-                "SELECT seq, op_id, op_hash, v, replica_id, actor, project, issue_id, kind, hlc,
-                        base_seq, utc_ms, offset_min, payload, server_seq, server_received_ms,
-                        assigned_key, on_behalf_of
-                 FROM ops
-                 ORDER BY server_seq IS NULL, server_seq, hlc, replica_id, op_id",
-            )?;
-            let rows = stmt.query_map([], StoredOp::read)?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
-        let mut unapplied = 0;
-        for row in &rows {
-            if !replay(&tx, row)? {
-                unapplied += 1;
-            }
-        }
-        unapplied += record_dangling_links(&tx)?;
-        tx.execute_batch(&format!(
-            "PRAGMA user_version = {}",
-            schema::PROJECTION_VERSION
-        ))?;
+        let unapplied = rebuild_in(&tx)?;
         tx.commit()?;
         Ok(unapplied)
     }
+}
+
+/// [`Store::rebuild`] inside a transaction the caller commits.
+fn rebuild_in(tx: &Transaction<'_>) -> Result<usize, StoreError> {
+    tx.execute_batch(schema::DROP_PROJECTIONS)?;
+    tx.execute_batch(schema::PROJECTIONS)?;
+    let rows = {
+        let mut stmt = tx.prepare(
+            "SELECT seq, op_id, op_hash, v, replica_id, actor, project, issue_id, kind, hlc,
+                    base_seq, utc_ms, offset_min, payload, server_seq, server_received_ms,
+                    assigned_key, on_behalf_of, source
+             FROM ops
+             ORDER BY server_seq IS NULL, server_seq, hlc, replica_id, op_id",
+        )?;
+        let rows = stmt.query_map([], StoredOp::read)?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    let mut unapplied = 0;
+    for row in &rows {
+        if !replay(tx, row)? {
+            unapplied += 1;
+        }
+    }
+    unapplied += record_dangling_links(tx)?;
+    tx.execute_batch(&format!(
+        "PRAGMA user_version = {}",
+        schema::PROJECTION_VERSION
+    ))?;
+    Ok(unapplied)
 }
 
 /// Checks, stamps, logs and applies `drafts` inside `tx`, after the clock's
@@ -1157,6 +1196,7 @@ fn write_drafts(
             replica_id,
             actor: draft.actor.name().to_owned(),
             on_behalf_of: draft.actor.on_behalf_of().map(str::to_owned),
+            source: None,
             project: draft.project,
             subject: draft.subject,
             kind: change.kind().to_owned(),
@@ -1354,10 +1394,11 @@ fn insert_op(
     assigned_key: Option<&str>,
 ) -> Result<(), StoreError> {
     tx.execute(
-        "INSERT INTO ops (op_id, op_hash, v, kind, replica_id, actor, on_behalf_of, project,
-                          issue_id, field, elem, hlc, base_seq, utc_ms, offset_min, payload,
-                          assigned_key)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+        "INSERT INTO ops (op_id, op_hash, v, kind, replica_id, actor, on_behalf_of, source,
+                          project, issue_id, field, elem, hlc, base_seq, utc_ms, offset_min,
+                          payload, assigned_key)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+                 ?18)",
         params![
             op.op_id.as_bytes(),
             op.op_hash(),
@@ -1366,6 +1407,7 @@ fn insert_op(
             op.replica_id.as_bytes(),
             op.actor,
             op.on_behalf_of,
+            op.source,
             op.project.to_string(),
             op.subject.as_bytes(),
             change.field(),
@@ -1401,6 +1443,7 @@ struct StoredOp {
     server_received_ms: Option<i64>,
     assigned_key: Option<String>,
     on_behalf_of: Option<String>,
+    source: Option<String>,
 }
 
 impl StoredOp {
@@ -1424,6 +1467,7 @@ impl StoredOp {
             server_received_ms: row.get(15)?,
             assigned_key: row.get(16)?,
             on_behalf_of: row.get(17)?,
+            source: row.get(18)?,
         })
     }
 
@@ -1436,6 +1480,7 @@ impl StoredOp {
             replica_id: uuid_from(&self.replica_id)?,
             actor: self.actor.clone(),
             on_behalf_of: self.on_behalf_of.clone(),
+            source: self.source.clone(),
             project: project_from(&self.project)?,
             subject: uuid_from(&self.issue_id)?,
             kind: self.kind.clone(),

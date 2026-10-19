@@ -292,7 +292,7 @@ Reading the results:
 
 ## Open questions
 
-- **Fresh clone with an unknown Workspace in Phase 1.** One option is to refuse with a structured error offering `tm import` from an export. Another is to create an empty local Workspace under the same id, but that lets two machines number the same Project, which is the collision ADR 0004 exists to prevent. This note recommends refusing until sync exists; the choice is the user's.
+- **Fresh clone with an unknown Workspace in Phase 1.** One option is to refuse with a structured error offering `tm import` from an export. Another is to create an empty local Workspace under the same id, but that lets two machines number the same Project, which is the collision ADR 0004 exists to prevent. This note recommends refusing until sync exists; the choice is the user's. Answered by [ADR 0013](../../decisions/0013-export-carries-the-log-and-issue-records.md): refused with `unknown_workspace`, whose fix is restoring an export.
 - **Which remote maps,** and whether forks share a Project.
 - **Does a child Project number its own Issues?**
 - **Is a Project key rename supported in v1?** It is cheap only if `ops.project` is an id.

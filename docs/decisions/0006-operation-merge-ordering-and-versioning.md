@@ -17,7 +17,7 @@ Each operation records three kinds of time, none standing in for another:
 | Field | Purpose |
 |---|---|
 | `hlc` | Hybrid logical clock as one sortable integer (`ms << 16 \| counter`, 16-bit counter), tie-broken by `replica_id` |
-| `utc_ms`, `offset_min` | When it happened, and the UTC offset where the Actor wrote it (the writing Replica's offset), for display |
+| `utc_ms`, `offset_min` | When it happened, and the UTC offset where the Actor wrote it (the writing Replica's offset), for display; for an imported operation, when it happened at the source ([ADR 0013](0013-export-carries-the-log-and-issue-records.md)) |
 | `server_seq`, `server_received_ms` | Authoritative order and server receive time, set when the server acknowledges it |
 
 - The clock is written in-house and its state lives in the store, read and written in the same `BEGIN IMMEDIATE` transaction as the operation. Every examined HLC crate keeps state in process memory, and `tm` runs as many short-lived processes.

@@ -5,6 +5,7 @@ mod comment;
 mod create;
 mod doctor;
 mod error;
+mod export;
 mod here;
 mod identity;
 mod init;
@@ -139,6 +140,20 @@ enum Command {
         /// The Issue's Key, such as CPL-42, or its full id.
         issue: String,
     },
+    /// Write this Workspace's log to stdout as JSONL, for `tm import`;
+    /// `--json` changes only how an error prints.
+    Export,
+    /// Restore an export into its Workspace on this machine, creating the
+    /// Workspace when this machine lacks it.
+    Import {
+        /// The export file, or `-` to read it from stdin.
+        file: String,
+        /// Check the file and the Workspace, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Rebuild every table from the log.
+    Rebuild,
     /// Undo one command's writes, named by the batch id it printed; with no
     /// batch, your own last command, stepping back each time.
     Undo {
@@ -178,6 +193,12 @@ fn main() -> ExitCode {
         Ok(cli) => cli,
         Err(err) => return parse_failed(json, &err),
     };
+    if matches!(cli.command, Some(Command::Export)) {
+        return match export::export() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => output::finish(json, Err(err), &[]),
+        };
+    }
     output::finish(json, run(cli.command, json), &[])
 }
 
@@ -223,6 +244,9 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Ready { limit }) => ready::run(limit),
         Some(Command::Show { issue }) => show::run(&issue),
         Some(Command::Undo { batch, dry_run }) => undo::run(batch.as_deref(), dry_run),
+        Some(Command::Export) => unreachable!("main writes the export itself"),
+        Some(Command::Import { file, dry_run }) => export::import(&file, dry_run),
+        Some(Command::Rebuild) => export::rebuild(),
     }
 }
 
