@@ -80,8 +80,8 @@ fn write(here: &mut Here, create: &Create) -> Result<(Output, Vec<String>), CliE
         }
         Err(err) => return Err(err.into()),
     };
-    let mut output = show::render(here, issue)?;
-    output.data["batch"] = json!(ops[0].op_id);
+    let shown = show::render(here, issue)?;
+    let output = here.undoable(shown, ops[0].op_id)?;
     Ok((output, identity.warnings))
 }
 

@@ -104,6 +104,13 @@ CREATE TABLE IF NOT EXISTS op_batches (
 ) STRICT, WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS op_batches_by_batch ON op_batches (batch);
+
+-- Which batch each undo reverted, so a bare undo steps back (ADR 0012). Local
+-- as op_batches is.
+CREATE TABLE IF NOT EXISTS undo_batches (
+  batch BLOB PRIMARY KEY,
+  undid BLOB NOT NULL
+) STRICT, WITHOUT ROWID;
 ";
 
 pub(crate) const DROP_PROJECTIONS: &str = "

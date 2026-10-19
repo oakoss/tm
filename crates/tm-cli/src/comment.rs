@@ -66,10 +66,7 @@ fn write(here: &mut Here, reference: &str, body: &str) -> Result<(Output, Vec<St
             "body": body,
             "utc_ms": op.utc_ms,
         },
-        "batch": op.op_id,
     });
-    Ok((
-        Output::new(format!("commented on {shown}\n"), data),
-        identity.warnings,
-    ))
+    let output = Output::new(format!("commented on {shown}\n"), data);
+    Ok((here.undoable(output, op.op_id)?, identity.warnings))
 }

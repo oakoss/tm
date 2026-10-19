@@ -1,17 +1,17 @@
 //! `undo`: one batch's writes reverted by appending operations that restore
 //! what each touched field and set element held before it (ADR 0010).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tm_core::op::{COMMENTS_FIELD, ClaimAction};
-use tm_core::{Actor, Change, Op, ProjectId, Scheme, link};
+use tm_core::{Actor, Change, Hlc, Op, ProjectId, Scheme, link};
 use uuid::Uuid;
 
 use crate::apply::{Version, issue_project, uuid_from};
-use crate::{Draft, Store, StoreError};
+use crate::{Draft, Store, StoreError, WallTime};
 
 /// One field or set element as undo finds it and would leave it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -58,6 +58,31 @@ impl Store {
         self.undo_with(actor, batch, true)
     }
 
+    /// Whether undoing `batch` would succeed. For the batch this Store just
+    /// wrote, the undo was tried inside its write; for any other, only the
+    /// plan is read, so a check the write makes can still refuse it.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
+    pub fn can_undo(&self, batch: Uuid) -> Result<bool, StoreError> {
+        if let Some(last) = self.last_write
+            && last.batch == batch
+            && self.write_mark()? == (last.data_version, last.max_seq)
+        {
+            return Ok(last.undoable);
+        }
+        match self.read(|store| plan(&store.conn, &store.scheme, batch)) {
+            Ok(_) => Ok(true),
+            Err(
+                StoreError::UnknownBatch(_)
+                | StoreError::UndoConflict { .. }
+                | StoreError::CannotUndo { .. },
+            ) => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
     /// The batches whose id starts or ends with `part`, hex digits without
     /// case and with hyphens ignored. Ids begin with their time, so only the
     /// end tells batches written close together apart.
@@ -86,16 +111,7 @@ impl Store {
         commit: bool,
     ) -> Result<(UndoPlan, Vec<Op>), StoreError> {
         let planned = self.read(|store| plan(&store.conn, &store.scheme, batch))?;
-        let drafts = planned
-            .changes
-            .iter()
-            .map(|(project, subject, change)| Draft {
-                actor: actor.clone(),
-                project: *project,
-                subject: *subject,
-                change: change.clone(),
-            })
-            .collect();
+        let drafts = planned.drafts(actor);
         let scheme = self.scheme.clone();
         let guard = |tx: &rusqlite::Transaction<'_>| match plan(tx, &scheme, batch)? {
             again if again == planned => Ok(()),
@@ -104,9 +120,145 @@ impl Store {
                 conflicts: again.restores,
             }),
         };
-        let ops = self.append_with(drafts, guard, commit)?;
+        let ops = self.append_with(drafts, guard, commit, Some(batch))?;
         Ok((planned, ops))
     }
+
+    /// The batches a bare undo by `human` may revert, newest first, at most
+    /// `limit`: written by `human` as themself, not an undo, not undone, and
+    /// with no Project write (ADR 0012).
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
+    pub fn undo_candidates(&self, human: &str, limit: usize) -> Result<Vec<Uuid>, StoreError> {
+        let undone = undone(&self.conn)?;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT b.batch FROM op_batches b JOIN ops o ON o.op_id = b.op_id
+             WHERE b.op_id = b.batch
+               AND b.batch NOT IN (SELECT batch FROM undo_batches)
+               AND NOT EXISTS (
+                 SELECT 1 FROM op_batches p JOIN ops po ON po.op_id = p.op_id
+                 WHERE p.batch = b.batch
+                   AND (po.actor <> ?1 OR po.on_behalf_of IS NOT NULL
+                        OR po.kind IN ('create_project', 'rename_project')))
+             ORDER BY o.seq DESC",
+        )?;
+        let mut rows = stmt.query([human])?;
+        let mut candidates = Vec::new();
+        while candidates.len() < limit {
+            let Some(row) = rows.next()? else { break };
+            let batch = uuid_from(&row.get::<_, Vec<u8>>(0)?)?;
+            if !undone.contains_key(&batch) {
+                candidates.push(batch);
+            }
+        }
+        Ok(candidates)
+    }
+}
+
+/// Every batch an undo standing against it has undone, with that batch's
+/// first seq. An undo stands while it applied in full and no undo of it
+/// stands; it is newer than what it undid, so the newest is settled first.
+fn undone(conn: &Connection) -> Result<BTreeMap<Uuid, i64>, StoreError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT u.batch, u.undid, d.seq FROM undo_batches u
+         JOIN ops o ON o.op_id = u.batch
+         JOIN ops d ON d.op_id = u.undid
+         WHERE NOT EXISTS (
+           SELECT 1 FROM op_batches x JOIN unapplied n ON n.op_id = x.op_id
+           WHERE x.batch = u.batch)
+         ORDER BY o.seq DESC",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut undone = BTreeMap::new();
+    while let Some(row) = rows.next()? {
+        let undo = uuid_from(&row.get::<_, Vec<u8>>(0)?)?;
+        if !undone.contains_key(&undo) {
+            undone.insert(uuid_from(&row.get::<_, Vec<u8>>(1)?)?, row.get(2)?);
+        }
+    }
+    Ok(undone)
+}
+
+/// The later batches whose writes a conflict check ignores: each undone batch
+/// newer than `first_seq`, with every undo of it, which together change
+/// nothing (ADR 0012). An undo of it that is itself undone is newer, so it is
+/// in the first set already.
+fn ignored_since(conn: &Connection, first_seq: i64) -> Result<BTreeSet<Uuid>, StoreError> {
+    let undone = undone(conn)?;
+    let later = |batch: &Uuid| undone.get(batch).is_some_and(|seq| *seq > first_seq);
+    let mut ignored: BTreeSet<Uuid> = undone
+        .keys()
+        .filter(|batch| later(batch))
+        .copied()
+        .collect();
+    let mut stmt = conn.prepare_cached("SELECT batch, undid FROM undo_batches")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let undo = uuid_from(&row.get::<_, Vec<u8>>(0)?)?;
+        let undid = uuid_from(&row.get::<_, Vec<u8>>(1)?)?;
+        if later(&undid) {
+            ignored.insert(undo);
+        }
+    }
+    Ok(ignored)
+}
+
+impl UndoPlan {
+    fn drafts(&self, actor: &Actor) -> Vec<Draft> {
+        self.changes
+            .iter()
+            .map(|(project, subject, change)| Draft {
+                actor: actor.clone(),
+                project: *project,
+                subject: *subject,
+                change: change.clone(),
+            })
+            .collect()
+    }
+}
+
+/// Whether `actor` could undo `batch` now: the undo is written inside `tx`
+/// with every check it would meet, then rolled back. A refusal is false; only
+/// a failure of the store itself fails the write being probed.
+pub(crate) fn probe(
+    tx: &Transaction<'_>,
+    scheme: &Scheme,
+    actor: &Actor,
+    batch: Uuid,
+    now: (WallTime, u64),
+    hlc: Hlc,
+) -> Result<bool, StoreError> {
+    tx.execute_batch("SAVEPOINT undo_probe")?;
+    let tried = plan(tx, scheme, batch).and_then(|plan| {
+        let drafts = plan.drafts(actor);
+        for draft in &drafts {
+            draft.change.validate()?;
+        }
+        crate::write_drafts(tx, scheme, drafts, now, hlc)
+    });
+    tx.execute_batch("ROLLBACK TO undo_probe; RELEASE undo_probe")?;
+    match tried {
+        Ok(_) => Ok(true),
+        Err(err) if failed(&err) => Err(err),
+        Err(_) => Ok(false),
+    }
+}
+
+/// An error the store hit, as opposed to a refusal of what was asked.
+const fn failed(err: &StoreError) -> bool {
+    matches!(
+        err,
+        StoreError::Busy(_)
+            | StoreError::Sqlite(_)
+            | StoreError::Corrupt(_)
+            | StoreError::Clock(_)
+            | StoreError::Replay { .. }
+            | StoreError::NewerStore { .. }
+            | StoreError::NotAStore(_)
+            | StoreError::ReadOnly
+    )
 }
 
 /// A logged operation of the batch.
@@ -173,9 +325,11 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
             }
         }
     }
+    let ignored = ignored_since(conn, first_seq)?;
     let batch_ops = BatchContext {
         first_seq,
         in_batch: &in_batch,
+        ignored: &ignored,
         scheme,
     };
     for (issue, field, elem) in targets {
@@ -291,19 +445,21 @@ fn release(
 struct BatchContext<'a> {
     first_seq: i64,
     in_batch: &'a BTreeSet<Uuid>,
+    ignored: &'a BTreeSet<Uuid>,
     scheme: &'a Scheme,
 }
 
 /// One target's operations, unapplied ones aside, with their versions.
 struct TargetOp {
     seq: i64,
+    batch: Option<Uuid>,
     version: Version,
     change: Change,
 }
 
 /// Restores one field or element to the winner among the operations before
 /// the batch, by the rule replay uses. A later operation on it from outside
-/// the batch is a conflict.
+/// the batch is a conflict, unless its batch is ignored.
 fn restore(
     conn: &Connection,
     (issue, field, elem): (Uuid, &str, &str),
@@ -319,7 +475,9 @@ fn restore(
             continue;
         }
         if target_op.seq > batch.first_seq {
-            written_since = true;
+            written_since |= target_op
+                .batch
+                .is_none_or(|op_batch| !batch.ignored.contains(&op_batch));
         } else if prior
             .as_ref()
             .is_none_or(|best| target_op.version.beats(&best.version))
@@ -365,10 +523,12 @@ fn target_ops(
     elem: &str,
 ) -> Result<Vec<TargetOp>, StoreError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT seq, hlc, replica_id, op_id, base_seq, server_seq, server_received_ms, payload
-         FROM ops WHERE issue_id = ?1 AND field = ?2 AND coalesce(elem, '') = ?3
-           AND op_id NOT IN (SELECT op_id FROM unapplied)
-         ORDER BY server_seq IS NULL, server_seq, hlc, replica_id, op_id",
+        "SELECT o.seq, o.hlc, o.replica_id, o.op_id, o.base_seq, o.server_seq,
+                o.server_received_ms, o.payload, b.batch
+         FROM ops o LEFT JOIN op_batches b ON b.op_id = o.op_id
+         WHERE o.issue_id = ?1 AND o.field = ?2 AND coalesce(o.elem, '') = ?3
+           AND o.op_id NOT IN (SELECT op_id FROM unapplied)
+         ORDER BY o.server_seq IS NULL, o.server_seq, o.hlc, o.replica_id, o.op_id",
     )?;
     let mut rows = stmt.query(params![issue.as_bytes(), field, elem])?;
     let mut ops = Vec::new();
@@ -376,6 +536,10 @@ fn target_ops(
         let payload: String = row.get(7)?;
         ops.push(TargetOp {
             seq: row.get(0)?,
+            batch: row
+                .get::<_, Option<Vec<u8>>>(8)?
+                .map(|batch| uuid_from(&batch))
+                .transpose()?,
             version: Version::from_row(row, 1)?,
             change: serde_json::from_str(&payload)
                 .map_err(|err| StoreError::Corrupt(format!("a logged payload: {err}")))?,

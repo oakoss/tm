@@ -60,9 +60,9 @@ pub(crate) fn take(reference: &str, ttl_ms: Option<u64>) -> Result<Output, CliEr
         let data = json!({
             "issue": { "id": issue, "key": key },
             "claim": view(&claim),
-            "batch": claim.id,
         });
-        Ok((Output::new(text, data), identity.warnings))
+        let output = here.undoable(Output::new(text, data), claim.id)?;
+        Ok((output, identity.warnings))
     })
 }
 

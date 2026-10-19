@@ -42,7 +42,10 @@ fn a_comment_is_given_or_read_from_stdin_and_shows_in_order() {
         .unwrap();
     let out = child.wait_with_output().unwrap();
     assert!(out.status.success(), "{out:?}");
-    assert_eq!(text(&out.stdout), "commented on TM-1\n");
+    assert!(
+        text(&out.stdout).starts_with("commented on TM-1\nundo this with: tm undo "),
+        "{out:?}"
+    );
 
     let out = tm(&scratch, &repo, &["--json", "show", "TM-1"]);
     let doc: Value = serde_json::from_slice(&out.stdout).unwrap();

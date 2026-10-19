@@ -220,6 +220,17 @@ pub struct Store {
     clock: Box<dyn Clock + Send>,
     scheme: Scheme,
     opened: bool,
+    last_write: Option<LastWrite>,
+}
+
+/// Whether undoing the last batch this Store wrote would succeed, as tried
+/// inside its write; it holds only while nothing has been written since.
+#[derive(Debug, Clone, Copy)]
+struct LastWrite {
+    batch: Uuid,
+    undoable: bool,
+    data_version: i64,
+    max_seq: i64,
 }
 
 impl Drop for Store {
@@ -409,6 +420,7 @@ impl Store {
             clock,
             scheme: Scheme::built_in(),
             opened: false,
+            last_write: None,
         };
         store.init()?;
         store.opened = true;
@@ -420,6 +432,7 @@ impl Store {
     #[must_use]
     pub fn with_scheme(mut self, scheme: Scheme) -> Self {
         self.scheme = scheme;
+        self.last_write = None;
         self
     }
 
@@ -825,121 +838,78 @@ impl Store {
         drafts: Vec<Draft>,
         guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
     ) -> Result<Vec<Op>, StoreError> {
-        self.append_with(drafts, guard, true)
+        self.append_with(drafts, guard, true, None)
     }
 
     /// [`Store::append_guarded`], rolled back instead of committed when
-    /// `commit` is false: every check runs, and nothing is kept.
+    /// `commit` is false: every check runs, and nothing is kept. With
+    /// `undid`, the batch is recorded as that batch's undo.
     fn append_with(
         &mut self,
         drafts: Vec<Draft>,
         guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
         commit: bool,
+        undid: Option<Uuid>,
     ) -> Result<Vec<Op>, StoreError> {
         for draft in &drafts {
             draft.change.validate()?;
         }
-        let (now, now_ms) = self.now()?;
+        let now = self.now()?;
+        // A batch of several writers has no one undoer to try it as.
+        let writer = drafts
+            .first()
+            .map(|first| first.actor.clone())
+            .filter(|writer| drafts.iter().all(|draft| draft.actor == *writer));
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         guard(&tx)?;
-        let mut hlc = last_hlc(&tx)?;
-        let replica: Vec<u8> =
-            tx.query_row("SELECT v FROM meta WHERE k = 'replica_id'", [], |row| {
-                row.get(0)
-            })?;
-        let replica_id = uuid_from(&replica)?;
-        let mut ops: Vec<Op> = Vec::with_capacity(drafts.len());
-        // Each Issue's state before the batch is the bar it is held to after:
-        // a batch may not make it worse, but an Issue that arrived incomplete
-        // or inconsistent stays editable.
-        let mut before = BTreeMap::new();
-        for draft in drafts {
-            if let Entry::Vacant(entry) = before.entry(draft.subject) {
-                entry.insert((
-                    validate::missing_fields(&tx, &self.scheme, draft.subject)?,
-                    validate::status_fits_type(&tx, &self.scheme, draft.subject)?,
-                ));
-            }
-            if let Change::Claim { action } = &draft.change {
-                claim::check_taker(&draft.actor, action)?;
-            }
-            if let Change::Retract { comment, .. } = &draft.change {
-                validate::check_retracter(&tx, draft.subject, &draft.actor, *comment)?;
-            }
-            let change = validate::check(&tx, &self.scheme, draft.subject, draft.change)?;
-            hlc = hlc.tick(now_ms);
-            let base_seq: i64 = tx.query_row(
-                "SELECT coalesce(max(server_seq), 0) FROM ops WHERE project = ?1",
-                [draft.project.to_string()],
-                |row| row.get(0),
-            )?;
-            let op = Op {
-                v: CURRENT_VERSION,
-                op_id: Uuid::now_v7(),
-                replica_id,
-                actor: draft.actor.name().to_owned(),
-                on_behalf_of: draft.actor.on_behalf_of().map(str::to_owned),
-                project: draft.project,
-                subject: draft.subject,
-                kind: change.kind().to_owned(),
-                hlc,
-                base_seq: rust_int(base_seq)?,
-                utc_ms: now.utc_ms,
-                offset_min: now.offset_min,
-                payload: serde_json::to_string(&change).map_err(OpError::from)?,
-            };
-            op.change()?;
-            // Inside the write transaction, so concurrent creates never share a Key.
-            let assigned_key = match change {
-                Change::Create => Some(project::next_key(&tx, op.project)?),
-                _ => None,
-            };
-            insert_op(&tx, &op, &change, assigned_key.as_deref())?;
-            let batch = ops.first().map_or(op.op_id, |first| first.op_id);
+        let (ops, hlc) = write_drafts(&tx, &self.scheme, drafts, now, last_hlc(&tx)?)?;
+        if let (Some(undid), Some(first)) = (undid, ops.first()) {
             tx.execute(
-                "INSERT INTO op_batches (op_id, batch) VALUES (?1, ?2)",
-                [op.op_id.as_bytes(), batch.as_bytes()],
+                "INSERT INTO undo_batches (batch, undid) VALUES (?1, ?2)",
+                [first.op_id.as_bytes(), undid.as_bytes()],
             )?;
-            let effects = apply::Effects {
-                assigned_key: assigned_key.as_deref(),
-                ..apply::Effects::default()
-            };
-            if let Some(reason) = apply(&tx, &op, effects)? {
-                return Err(StoreError::Corrupt(format!(
-                    "a write this store checked did not apply in full: {reason}"
-                )));
-            }
-            if let Some(key) = &assigned_key {
-                project::count_key(&tx, key, op.project, op.op_id)?;
-            }
-            ops.push(op);
         }
-        for (issue, (missing, fitted)) in before {
-            let fields: Vec<String> = validate::missing_fields(&tx, &self.scheme, issue)?
-                .into_iter()
-                .filter(|field| !missing.contains(field))
-                .collect();
-            if !fields.is_empty() {
-                return Err(StoreError::MissingFields { issue, fields });
-            }
-            if fitted && !validate::status_fits_type(&tx, &self.scheme, issue)? {
-                return Err(StoreError::Invalid {
-                    field: "status".into(),
-                    reason: "is not in the Workflow of the Issue's type".into(),
-                    valid: Vec::new(),
-                });
-            }
-        }
+        let probed = match (commit, writer, ops.first()) {
+            (true, Some(writer), Some(first)) => Some((
+                first.op_id,
+                undo::probe(&tx, &self.scheme, &writer, first.op_id, now, hlc)?,
+            )),
+            _ => None,
+        };
         tx.execute(
             "UPDATE meta SET v = ?1 WHERE k = 'last_hlc'",
             [sql_int(hlc.raw())?],
         )?;
         if commit {
             tx.commit()?;
+            // The write is committed; a mark that cannot be read only loses
+            // the answer, never the write.
+            self.last_write = probed.zip(self.write_mark().ok()).map(
+                |((batch, undoable), (data_version, max_seq))| LastWrite {
+                    batch,
+                    undoable,
+                    data_version,
+                    max_seq,
+                },
+            );
         }
         Ok(ops)
+    }
+
+    /// What changes when anyone writes: another connection's commit moves
+    /// `data_version`, and this one's moves the log's last seq.
+    fn write_mark(&self) -> Result<(i64, i64), StoreError> {
+        let data_version = self
+            .conn
+            .query_row("PRAGMA data_version", [], |row| row.get(0))?;
+        let max_seq = self
+            .conn
+            .query_row("SELECT coalesce(max(seq), 0) FROM ops", [], |row| {
+                row.get(0)
+            })?;
+        Ok((data_version, max_seq))
     }
 
     /// Whether the store is already set up for this binary. Read without the
@@ -1109,6 +1079,7 @@ impl Store {
     /// or fails its hash, which leaves the previous projections in place, or
     /// [`StoreError::Busy`].
     pub fn rebuild(&mut self) -> Result<usize, StoreError> {
+        self.last_write = None;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1139,6 +1110,116 @@ impl Store {
         tx.commit()?;
         Ok(unapplied)
     }
+}
+
+/// Checks, stamps, logs and applies `drafts` inside `tx`, after the clock's
+/// `hlc`; returns the operations and the clock after them.
+fn write_drafts(
+    tx: &Transaction<'_>,
+    scheme: &Scheme,
+    drafts: Vec<Draft>,
+    (now, now_ms): (WallTime, u64),
+    mut hlc: Hlc,
+) -> Result<(Vec<Op>, Hlc), StoreError> {
+    let replica: Vec<u8> =
+        tx.query_row("SELECT v FROM meta WHERE k = 'replica_id'", [], |row| {
+            row.get(0)
+        })?;
+    let replica_id = uuid_from(&replica)?;
+    let mut ops: Vec<Op> = Vec::with_capacity(drafts.len());
+    // Each Issue's state before the batch is the bar it is held to after:
+    // a batch may not make it worse, but an Issue that arrived incomplete
+    // or inconsistent stays editable.
+    let mut before = BTreeMap::new();
+    for draft in drafts {
+        if let Entry::Vacant(entry) = before.entry(draft.subject) {
+            entry.insert((
+                validate::missing_fields(tx, scheme, draft.subject)?,
+                validate::status_fits_type(tx, scheme, draft.subject)?,
+            ));
+        }
+        if let Change::Claim { action } = &draft.change {
+            claim::check_taker(&draft.actor, action)?;
+        }
+        if let Change::Retract { comment, .. } = &draft.change {
+            validate::check_retracter(tx, draft.subject, &draft.actor, *comment)?;
+        }
+        let change = validate::check(tx, scheme, draft.subject, draft.change)?;
+        hlc = hlc.tick(now_ms);
+        let base_seq: i64 = tx.query_row(
+            "SELECT coalesce(max(server_seq), 0) FROM ops WHERE project = ?1",
+            [draft.project.to_string()],
+            |row| row.get(0),
+        )?;
+        let op = Op {
+            v: CURRENT_VERSION,
+            op_id: Uuid::now_v7(),
+            replica_id,
+            actor: draft.actor.name().to_owned(),
+            on_behalf_of: draft.actor.on_behalf_of().map(str::to_owned),
+            project: draft.project,
+            subject: draft.subject,
+            kind: change.kind().to_owned(),
+            hlc,
+            base_seq: rust_int(base_seq)?,
+            utc_ms: now.utc_ms,
+            offset_min: now.offset_min,
+            payload: serde_json::to_string(&change).map_err(OpError::from)?,
+        };
+        op.change()?;
+        // Inside the write transaction, so concurrent creates never share a Key.
+        let assigned_key = match change {
+            Change::Create => Some(project::next_key(tx, op.project)?),
+            _ => None,
+        };
+        insert_op(tx, &op, &change, assigned_key.as_deref())?;
+        let batch = ops.first().map_or(op.op_id, |first| first.op_id);
+        tx.execute(
+            "INSERT INTO op_batches (op_id, batch) VALUES (?1, ?2)",
+            [op.op_id.as_bytes(), batch.as_bytes()],
+        )?;
+        let effects = apply::Effects {
+            assigned_key: assigned_key.as_deref(),
+            ..apply::Effects::default()
+        };
+        if let Some(reason) = apply(tx, &op, effects)? {
+            return Err(StoreError::Corrupt(format!(
+                "a write this store checked did not apply in full: {reason}"
+            )));
+        }
+        if let Some(key) = &assigned_key {
+            project::count_key(tx, key, op.project, op.op_id)?;
+        }
+        ops.push(op);
+    }
+    no_worse(tx, scheme, before)?;
+    Ok((ops, hlc))
+}
+
+/// Refuses a batch that left an Issue missing a field it had, or with a
+/// Status outside its type's Workflow when it fitted before.
+fn no_worse(
+    tx: &Transaction<'_>,
+    scheme: &Scheme,
+    before: BTreeMap<Uuid, (Vec<String>, bool)>,
+) -> Result<(), StoreError> {
+    for (issue, (missing, fitted)) in before {
+        let fields: Vec<String> = validate::missing_fields(tx, scheme, issue)?
+            .into_iter()
+            .filter(|field| !missing.contains(field))
+            .collect();
+        if !fields.is_empty() {
+            return Err(StoreError::MissingFields { issue, fields });
+        }
+        if fitted && !validate::status_fits_type(tx, scheme, issue)? {
+            return Err(StoreError::Invalid {
+                field: "status".into(),
+                reason: "is not in the Workflow of the Issue's type".into(),
+                valid: Vec::new(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The clock's last value. The log bounds it as well as `last_hlc`, so a lost
