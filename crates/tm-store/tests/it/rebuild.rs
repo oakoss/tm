@@ -10,7 +10,7 @@ use crate::support::{
     ManualClock, TempDir, claude, draft, dump, jace, links, new_issue, open, set_field,
 };
 
-const ISSUES: usize = 3;
+pub(crate) const ISSUES: usize = 3;
 /// A required built-in, two enumerated built-ins and a Scheme field.
 const FIELDS: [&str; 4] = ["title", "status", "priority", "area"];
 const STATUSES: [&str; 6] = [
@@ -27,7 +27,7 @@ const ELEMS: [&str; 3] = ["a", "b", "c"];
 const LINK_TYPES: [&str; 2] = ["blocks", "relates_to"];
 
 #[derive(Debug, Clone)]
-enum Action {
+pub(crate) enum Action {
     /// `pick` chooses the value; `None` clears the fields that may be cleared.
     Set {
         issue: usize,
@@ -62,7 +62,7 @@ enum Action {
     Tick(u8),
 }
 
-fn action() -> impl Strategy<Value = Action> {
+pub(crate) fn action() -> impl Strategy<Value = Action> {
     let issue = 0..ISSUES;
     prop_oneof![
         (issue.clone(), 0..FIELDS.len(), proptest::option::of(0u8..6))
@@ -104,7 +104,7 @@ fn value(field: &str, pick: Option<u8>) -> (Value, Value) {
     }
 }
 
-fn change(action: &Action) -> Option<(usize, Change)> {
+pub(crate) fn change(action: &Action) -> Option<(usize, Change)> {
     let member = |elem: usize| ("labels".to_owned(), ELEMS[elem].to_owned());
     Some(match action {
         Action::Set { issue, field, pick } => (

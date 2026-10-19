@@ -131,6 +131,41 @@ impl CliError {
     }
 }
 
+impl CliError {
+    /// A store, or an export, this command cannot use as it is.
+    fn unusable(err: StoreError, message: String) -> Self {
+        match err {
+            StoreError::NotAStore(path) => {
+                Self::new("not_a_store", message).with("path", path.display().to_string())
+            }
+            StoreError::ReadOnly => Self::new("read_only", message),
+            StoreError::WorkspaceMismatch { stored, given } => {
+                Self::new("workspace_mismatch", message)
+                    .with("stored", stored.to_string())
+                    .with("given", given.to_string())
+            }
+            StoreError::NewerStore { found, supported } => Self::new("upgrade_required", message)
+                .with("found", found)
+                .with("supported", supported)
+                .fix("upgrade tm"),
+            StoreError::FormatChanged => Self::new("store_format_changed", message),
+            StoreError::WorkspaceNotEmpty { held } => {
+                Self::new("workspace_not_empty", message).with("held", held)
+            }
+            StoreError::InvalidExport { line, .. } => {
+                Self::new("invalid_export", message).with("line", line)
+            }
+            StoreError::ExportFormat { found, supported } => {
+                Self::new("export_format_changed", message)
+                    .with("found", found)
+                    .with("supported", supported)
+            }
+            StoreError::Io(_) => Self::new("io", message),
+            other => Self::internal(variant(&other), message),
+        }
+    }
+}
+
 impl From<StoreError> for CliError {
     fn from(err: StoreError) -> Self {
         let message = err.to_string();
@@ -151,15 +186,15 @@ impl From<StoreError> for CliError {
             StoreError::KeysExhausted { key, .. } => {
                 Self::new("keys_exhausted", message).with("key", key)
             }
-            StoreError::NotAStore(path) => {
-                Self::new("not_a_store", message).with("path", path.display().to_string())
-            }
-            StoreError::ReadOnly => Self::new("read_only", message),
-            StoreError::WorkspaceMismatch { stored, given } => {
-                Self::new("workspace_mismatch", message)
-                    .with("stored", stored.to_string())
-                    .with("given", given.to_string())
-            }
+            err @ (StoreError::NotAStore(_)
+            | StoreError::ReadOnly
+            | StoreError::WorkspaceMismatch { .. }
+            | StoreError::NewerStore { .. }
+            | StoreError::FormatChanged
+            | StoreError::WorkspaceNotEmpty { .. }
+            | StoreError::InvalidExport { .. }
+            | StoreError::ExportFormat { .. }
+            | StoreError::Io(_)) => Self::unusable(err, message),
             StoreError::UnknownField { field, valid } => Self::new("unknown_field", message)
                 .with("field", field)
                 .with("valid", valid),
@@ -214,11 +249,6 @@ impl From<StoreError> for CliError {
                         .collect::<Vec<_>>(),
                 ),
             StoreError::Op(err) => Self::from(err),
-            StoreError::NewerStore { found, supported } => Self::new("upgrade_required", message)
-                .with("found", found)
-                .with("supported", supported)
-                .fix("upgrade tm"),
-            StoreError::FormatChanged => Self::new("store_format_changed", message),
             StoreError::Replay { source, seq, .. } => match *source {
                 StoreError::Op(OpError::UnsupportedVersion(found)) => {
                     Self::from(OpError::UnsupportedVersion(found))

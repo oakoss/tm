@@ -57,13 +57,14 @@ design.md promises that every command supports `--json` (or `TM_JSON=1`) "with a
 | A Project id already created, a Project key taken or used up | `duplicate_project`, `key_taken`, `keys_exhausted` |
 | Another writer holds the store | `busy` |
 | A store that cannot be used here | `read_only`, `not_a_store`, `workspace_mismatch` |
+| An export that is not one, holds another operation format, or meets a Workspace holding other operations ([ADR 0013](0013-export-carries-the-log-and-issue-records.md)) | `invalid_export` naming the line, `export_format_changed`, `workspace_not_empty` |
 | No repo file maps this repo to a Workspace | `no_workspace`, with fix `tm init` |
 | A repo file names a Workspace this machine lacks, or one that holds no store | `unknown_workspace`, `incomplete_workspace`, with the remedy in `message` |
 | `tm init` on a repo that already has a Workspace | `workspace_exists` |
 | No home directory, or a relative `TM_HOME` | `no_home` |
 | No human to write as, or a blank or non-UTF-8 `TM_ACTOR` or `TM_AGENT` | `no_identity` |
 | Two repo files, or one that does not parse | `invalid_repo_file` |
-| A path that cannot be read or written | `io`, naming the path |
+| A path, or an export stream, that cannot be read or written | `io`, naming the path when there is one |
 | A filter that does not parse or fit | the filter's own codes |
 | Anything else: a malformed stored row, a clock error, SQLite | `internal`, with `cause` |
 

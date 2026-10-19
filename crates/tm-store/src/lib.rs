@@ -6,6 +6,7 @@
 
 mod apply;
 mod claim;
+mod export;
 mod project;
 mod query;
 mod read;
@@ -33,6 +34,7 @@ use uuid::Uuid;
 use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
 pub use claim::Claim;
+pub use export::{Exported, Restored};
 pub use read::{CommentView, Direction, IssueView, LinkView};
 pub use ready::Ready;
 pub use undo::{Restore, UndoPlan};
@@ -71,6 +73,16 @@ pub enum StoreError {
     ReadOnly,
     #[error("this store belongs to Workspace {stored}, not {given}")]
     WorkspaceMismatch { stored: Uuid, given: Uuid },
+    #[error(
+        "the Workspace already holds {held} other operations; an export restores only into a Workspace with none"
+    )]
+    WorkspaceNotEmpty { held: i64 },
+    #[error("line {line} of the export: {reason}")]
+    InvalidExport { line: usize, reason: String },
+    #[error("the export's operations are format {found}, and this tm reads {supported}")]
+    ExportFormat { found: u16, supported: u16 },
+    #[error("reading or writing an export: {0}")]
+    Io(#[source] std::io::Error),
     #[error("unknown field {field:?}; valid fields: {}", valid.join(", "))]
     UnknownField { field: String, valid: Vec<String> },
     #[error("{field} {reason}{}", if valid.is_empty() { String::new() } else { format!("; valid: {}", valid.join(", ")) })]
@@ -1104,33 +1116,39 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute_batch(schema::DROP_PROJECTIONS)?;
-        tx.execute_batch(schema::PROJECTIONS)?;
-        let rows = {
-            let mut stmt = tx.prepare(
-                "SELECT seq, op_id, op_hash, v, replica_id, actor, project, issue_id, kind, hlc,
-                        base_seq, utc_ms, offset_min, payload, server_seq, server_received_ms,
-                        assigned_key, on_behalf_of, source
-                 FROM ops
-                 ORDER BY server_seq IS NULL, server_seq, hlc, replica_id, op_id",
-            )?;
-            let rows = stmt.query_map([], StoredOp::read)?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
-        let mut unapplied = 0;
-        for row in &rows {
-            if !replay(&tx, row)? {
-                unapplied += 1;
-            }
-        }
-        unapplied += record_dangling_links(&tx)?;
-        tx.execute_batch(&format!(
-            "PRAGMA user_version = {}",
-            schema::PROJECTION_VERSION
-        ))?;
+        let unapplied = rebuild_in(&tx)?;
         tx.commit()?;
         Ok(unapplied)
     }
+}
+
+/// [`Store::rebuild`] inside a transaction the caller commits.
+fn rebuild_in(tx: &Transaction<'_>) -> Result<usize, StoreError> {
+    tx.execute_batch(schema::DROP_PROJECTIONS)?;
+    tx.execute_batch(schema::PROJECTIONS)?;
+    let rows = {
+        let mut stmt = tx.prepare(
+            "SELECT seq, op_id, op_hash, v, replica_id, actor, project, issue_id, kind, hlc,
+                    base_seq, utc_ms, offset_min, payload, server_seq, server_received_ms,
+                    assigned_key, on_behalf_of, source
+             FROM ops
+             ORDER BY server_seq IS NULL, server_seq, hlc, replica_id, op_id",
+        )?;
+        let rows = stmt.query_map([], StoredOp::read)?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    let mut unapplied = 0;
+    for row in &rows {
+        if !replay(tx, row)? {
+            unapplied += 1;
+        }
+    }
+    unapplied += record_dangling_links(tx)?;
+    tx.execute_batch(&format!(
+        "PRAGMA user_version = {}",
+        schema::PROJECTION_VERSION
+    ))?;
+    Ok(unapplied)
 }
 
 /// Checks, stamps, logs and applies `drafts` inside `tx`, after the clock's
