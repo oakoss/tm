@@ -58,6 +58,24 @@ impl Store {
         self.undo_with(actor, batch, true)
     }
 
+    /// Whether undoing `batch` would restore anything. Read without the write
+    /// lock, so a write racing it can still make the undo refuse.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
+    pub fn can_undo(&self, batch: Uuid) -> Result<bool, StoreError> {
+        match self.read(|store| plan(&store.conn, &store.scheme, batch)) {
+            Ok(_) => Ok(true),
+            Err(
+                StoreError::UnknownBatch(_)
+                | StoreError::UndoConflict { .. }
+                | StoreError::CannotUndo { .. },
+            ) => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
     /// The batches whose id starts or ends with `part`, hex digits without
     /// case and with hyphens ignored. Ids begin with their time, so only the
     /// end tells batches written close together apart.

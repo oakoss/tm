@@ -4,21 +4,21 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
-use tm_core::link;
 use tm_core::op::COMMENTS_FIELD;
+use tm_core::{Actor, link};
 use tm_store::Restore;
 use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::here::{self, Here};
 use crate::identity;
-use crate::output::{Output, printable};
+use crate::output::{Output, printable, short};
 use crate::show;
 
 /// Fewer characters would too often match more than one batch.
 const MIN_PART: usize = 8;
 
-pub(crate) fn run(reference: &str, dry_run: bool) -> Result<Output, CliError> {
+pub(crate) fn run(reference: Option<&str>, dry_run: bool) -> Result<Output, CliError> {
     let mut here = here::open()?;
     let warnings = std::mem::take(&mut here.warnings);
     match undo(&mut here, reference, dry_run) {
@@ -33,18 +33,33 @@ pub(crate) fn run(reference: &str, dry_run: bool) -> Result<Output, CliError> {
 
 fn undo(
     here: &mut Here,
-    reference: &str,
+    reference: Option<&str>,
     dry_run: bool,
 ) -> Result<(Output, Vec<String>), CliError> {
-    let batch = batch(here, reference)?;
     let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
         .map_err(|message| CliError::new("no_identity", message))?;
-    let (plan, written) = if dry_run {
-        (here.store.undo_plan(&identity.actor, batch)?, None)
-    } else {
-        let (plan, ops) = here.store.undo(&identity.actor, batch)?;
-        (plan, ops.first().map(|op| op.op_id))
+    let (batch, next) = match reference {
+        Some(reference) => (batch(here, reference)?, None),
+        None => last(here, &identity.actor)?,
     };
+    let undone = if dry_run {
+        here.store
+            .undo_plan(&identity.actor, batch)
+            .map(|plan| (plan, None))
+    } else {
+        here.store
+            .undo(&identity.actor, batch)
+            .map(|(plan, ops)| (plan, ops.first().map(|op| op.op_id)))
+    };
+    let (plan, written) = undone.map_err(|err| {
+        let err = CliError::from(err);
+        match next {
+            Some(next) if matches!(err.code, "undo_conflict" | "cannot_undo") => {
+                err.fix(format!("tm undo {}", short(next)))
+            }
+            _ => err,
+        }
+    })?;
 
     // A Link is filed under one end, but both ends' `show` change.
     let touched: BTreeSet<Uuid> = plan
@@ -88,17 +103,43 @@ fn undo(
     for restore in &plan.restores {
         let _ = writeln!(text, "  {}", describe(restore, &name));
     }
-    if let Some(written) = written {
-        let _ = writeln!(text, "undo this with: tm undo {written}");
-    }
     let data = json!({
         "undone": batch,
         "dry_run": dry_run,
         "restored": restored,
         "issues": issues,
-        "batch": written,
+        "batch": null,
     });
-    Ok((Output::new(text, data), identity.warnings))
+    let output = Output::new(text, data);
+    let output = match written {
+        Some(written) => here.undoable(output, written)?,
+        None => output,
+    };
+    Ok((output, identity.warnings))
+}
+
+/// The newest batch a bare undo reverts, and the one before it, which a
+/// refusal offers instead (ADR 0012). An Agent must name its batch, since
+/// other sessions may write under its name.
+fn last(here: &Here, actor: &Actor) -> Result<(Uuid, Option<Uuid>), CliError> {
+    if actor.is_agent() {
+        return Err(CliError::new(
+            "batch_required",
+            format!(
+                "{} is an Agent, and other sessions may write as it; name the batch its write printed",
+                actor.name()
+            ),
+        )
+        .fix("tm undo <batch>"));
+    }
+    match here.store.undo_candidates(actor.name(), 2)?.as_slice() {
+        [] => Err(CliError::new(
+            "not_found",
+            format!("{} has nothing on this Replica to undo", actor.name()),
+        )
+        .with("kind", "batch")),
+        [newest, rest @ ..] => Ok((*newest, rest.first().copied())),
+    }
 }
 
 /// The other end of a restored Link, from its element `type/target`.

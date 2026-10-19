@@ -8,6 +8,7 @@ use tm_store::workspace::{self, Found};
 use uuid::Uuid;
 
 use crate::error::CliError;
+use crate::output::Output;
 
 pub(crate) struct Here {
     /// The repo file that applies, and the directory holding it.
@@ -64,6 +65,11 @@ pub(crate) fn open() -> Result<Here, CliError> {
 }
 
 impl Here {
+    /// A write that changed nothing gets no undo hint, since following it fails.
+    pub(crate) fn undoable(&self, output: Output, batch: Uuid) -> Result<Output, CliError> {
+        Ok(output.batched(batch, self.store.can_undo(batch)?))
+    }
+
     /// The Project the repo file maps the working directory to.
     ///
     /// # Errors

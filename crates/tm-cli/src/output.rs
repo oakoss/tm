@@ -1,12 +1,14 @@
 //! What a command prints: text for people, one JSON document for programs
 //! (ADR 0011).
 
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{self, Write as _};
 use std::os::fd::AsFd as _;
 use std::process::ExitCode;
 
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use crate::error::CliError;
 
@@ -27,6 +29,23 @@ impl Output {
             warnings: Vec::new(),
         }
     }
+
+    /// A write's result: `batch` in the data and, with `hint`, a last line
+    /// saying how to undo it (ADR 0012).
+    pub(crate) fn batched(mut self, batch: Uuid, hint: bool) -> Self {
+        self.data["batch"] = json!(batch);
+        if hint {
+            let _ = writeln!(self.text, "undo this with: tm undo {}", short(batch));
+        }
+        self
+    }
+}
+
+/// A batch id's last 12 hex digits: a `UUIDv7` begins with its time, so only
+/// the end tells batches written close together apart.
+pub(crate) fn short(batch: Uuid) -> String {
+    let hex = batch.simple().to_string();
+    hex[hex.len() - 12..].to_owned()
 }
 
 /// Stored text made safe to print: control characters, which could move the

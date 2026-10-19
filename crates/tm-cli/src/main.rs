@@ -139,10 +139,11 @@ enum Command {
         /// The Issue's Key, such as CPL-42, or its full id.
         issue: String,
     },
-    /// Undo one command's writes, named by the batch id it printed.
+    /// Undo one command's writes, named by the batch id it printed; with no
+    /// batch, your own last command, stepping back each time.
     Undo {
         /// The batch id, or a unique start or end of it, 8 characters or more.
-        batch: String,
+        batch: Option<String>,
         /// Show what would be restored, and write nothing.
         #[arg(long)]
         dry_run: bool,
@@ -221,7 +222,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Move { issue, status, set }) => moves::run(&issue, &status, &set),
         Some(Command::Ready { limit }) => ready::run(limit),
         Some(Command::Show { issue }) => show::run(&issue),
-        Some(Command::Undo { batch, dry_run }) => undo::run(&batch, dry_run),
+        Some(Command::Undo { batch, dry_run }) => undo::run(batch.as_deref(), dry_run),
     }
 }
 

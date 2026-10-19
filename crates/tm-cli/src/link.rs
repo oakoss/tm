@@ -88,9 +88,9 @@ fn write(
             "to": { "id": to, "key": key(to) },
             "present": present,
         },
-        "batch": op.op_id,
     });
-    Ok((Output::new(text, data), identity.warnings))
+    let output = here.undoable(Output::new(text, data), op.op_id)?;
+    Ok((output, identity.warnings))
 }
 
 /// `not_linked`, naming the Links the pair does hold.

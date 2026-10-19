@@ -99,8 +99,8 @@ fn write(
         })
         .collect();
     let ops = here.store.append_all(drafts)?;
-    let mut output = show::render(here, id)?;
-    output.data["batch"] = json!(ops[0].op_id);
+    let shown = show::render(here, id)?;
+    let output = here.undoable(shown, ops[0].op_id)?;
     Ok((output, identity.warnings))
 }
 

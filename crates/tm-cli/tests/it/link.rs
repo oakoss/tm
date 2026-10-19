@@ -71,7 +71,10 @@ fn a_link_written_from_either_end_is_one_link() {
 
     let out = tm(&scratch, &repo, &["unlink", "TM-1", "blocks", "TM-2"]);
     assert!(out.status.success(), "{out:?}");
-    assert_eq!(text(&out.stdout), "TM-1 no longer blocks TM-2\n");
+    assert!(
+        text(&out.stdout).starts_with("TM-1 no longer blocks TM-2\nundo this with: tm undo "),
+        "{out:?}"
+    );
     assert_eq!(count(&store, "SELECT count(*) FROM links"), 0);
 }
 

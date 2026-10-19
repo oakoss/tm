@@ -36,12 +36,21 @@ fn an_agent_claims_with_a_token_and_releases_with_it() {
 
     let out = as_agent(&scratch, &repo, &["claim", "tm-1"]);
     assert!(out.status.success(), "{out:?}");
-    let token = text(&out.stdout)
-        .rsplit(' ')
+    let shown = text(&out.stdout);
+    let token = shown
+        .lines()
         .next()
+        .and_then(|line| line.rsplit(' ').next())
         .unwrap()
-        .trim()
         .to_owned();
+    assert!(
+        shown
+            .lines()
+            .nth(1)
+            .unwrap()
+            .starts_with("undo this with: tm undo "),
+        "{shown}"
+    );
     assert!(
         text(&out.stdout)
             .starts_with("TM-1 claimed by claude for jace; release with: tm release TM-1 "),
