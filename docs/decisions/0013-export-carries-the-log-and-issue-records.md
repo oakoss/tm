@@ -39,7 +39,7 @@ design.md asks for a `tm export` that loses nothing, a `tm import` that reads a 
 - Outside a repo, restore creates the exported Workspace under `TM_HOME` (default `~/.tm`), so every repo mapping it works. Inside one, the repo file's Workspace must be the exported one, or the restore is refused with `workspace_mismatch` naming both, whose fix is `tm import --records FILE`; running `tm init` before restoring lands here, since init makes a new Workspace. A command run where the repo file names a Workspace this machine lacks, as on a fresh clone, is refused with `unknown_workspace`, whose fix is `tm import FILE`.
 - Into the exported Workspace holding other operations, restore is refused with `workspace_not_empty`, whose fix is `tm import --records FILE`. A file of another operation format is refused the same way, with the same fix.
 - A restore warns that the Workspace now lives on this machine too. Until sync, two live copies of one Workspace each assign the same next Keys, the collision [ADR 0004](0004-one-authority-assigns-keys.md) exists to prevent, so the copy restored from is to be retired.
-- `--records`, and every adapter, write the `issue` records as ordinary validated writes: pass one creates or updates each Issue, pass two sets parents and Links once every target exists. A record from a tm export carries `tm:<Issue id>` as its source. History stays in the source file; the flag is the caller's choice to leave it there.
+- `--records`, and every adapter, write the `issue` records as ordinary validated writes: pass one creates or updates each Issue, pass two sets parents and Links once every target exists. A `project` line creates its Project when no Project holds its key. A record from a tm export carries `tm:<Issue id>` as its source, and one naming an Issue this Workspace holds updates that Issue, so importing an older export of the same Workspace creates nothing. No import wrote that Issue's fields, so each one differing from tm is a conflict rather than a write, and nothing tm wrote since the export is overwritten. History stays in the source file; the flag is the caller's choice to leave it there.
 - `--dry-run` runs every check against a copy, taken in one locked read of an existing store, and writes no data; like any reader, it may leave SQLite's lock files beside the store.
 
 **Each imported operation names its source.**
@@ -53,7 +53,8 @@ design.md asks for a `tm export` that loses nothing, a `tm import` that reads a 
 
 **Imported writes carry the source's time and person.**
 
-- An imported operation's `utc_ms` is the source's time for it, and its Actor is the source's person mapped to a tm name; its `hlc` is still when this Replica wrote it. This narrows [ADR 0006](0006-operation-merge-ordering-and-versioning.md)'s `utc_ms`, "when it happened", to when it happened at the source.
+- An imported operation's `utc_ms` is the source's time for it, and its Actor is the source's person mapped to a tm name; its `hlc` is still when this Replica wrote it.
+- A new Issue's `create` is written as its reporter at its `created`, and each comment as its author at its own time. Every other write is the record's `updated_by` at its `updated`; with no `updated_by`, a new Issue's writes are its reporter's, and a re-import's are whoever runs it, since the reporter need not be who changed it. This narrows [ADR 0006](0006-operation-merge-ordering-and-versioning.md)'s `utc_ms`, "when it happened", to when it happened at the source.
 - A batch holding an operation with a source is never a bare-undo candidate, so a bare `tm undo` after an import reverts the human's own last command, not the last imported Issue. A named `tm undo <batch>` still reverts an import batch.
 
 ### Consequences

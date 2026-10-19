@@ -7,6 +7,7 @@
 mod apply;
 mod claim;
 mod export;
+mod import;
 mod project;
 mod query;
 mod read;
@@ -36,6 +37,7 @@ use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
 pub use claim::Claim;
 pub use export::{Exported, Restored, read_export, snapshot};
+pub use import::{Conflict, RecordOutcome, RecordsImported};
 pub use read::{CommentView, Direction, IssueView, LinkView};
 pub use ready::Ready;
 pub use record::{CommentRecord, IssueRecord, LinkRecord, tm_source};
@@ -79,12 +81,23 @@ pub enum StoreError {
         "Workspace {workspace} already holds {held} operations that are not this export's; an export restores only into a Workspace with none"
     )]
     WorkspaceNotEmpty { workspace: Uuid, held: i64 },
-    #[error("line {line} of the export: {reason}")]
+    #[error("line {line} of the file: {reason}")]
     InvalidExport { line: usize, reason: String },
     #[error("the export's operations are format {found}, and this tm reads {supported}")]
     ExportFormat { found: u16, supported: u16 },
     #[error("reading or writing an export: {0}")]
     Io(#[source] std::io::Error),
+    #[error(
+        "line {line} of the import, {record}: {cause}; what was written before it stays, so fix the line and import the file again"
+    )]
+    RecordRefused {
+        line: usize,
+        /// The refused record's source.
+        record: String,
+        cause: Box<StoreError>,
+    },
+    #[error("Issue {0} changed while it was being imported")]
+    ImportChanged(Uuid),
     #[error("unknown field {field:?}; valid fields: {}", valid.join(", "))]
     UnknownField { field: String, valid: Vec<String> },
     #[error("{field} {reason}{}", if valid.is_empty() { String::new() } else { format!("; valid: {}", valid.join(", ")) })]
@@ -225,7 +238,7 @@ impl Unapplied {
 }
 
 /// A change to write, before the store stamps it with identity and time.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Draft {
     pub actor: Actor,
     pub project: ProjectId,
@@ -869,6 +882,15 @@ impl Store {
         &mut self,
         drafts: Vec<(Draft, Provenance)>,
     ) -> Result<Vec<Op>, StoreError> {
+        self.append_imported_guarded(drafts, |_| Ok(()))
+    }
+
+    /// [`Store::append_imported`] after `guard` passes inside the write.
+    fn append_imported_guarded(
+        &mut self,
+        drafts: Vec<(Draft, Provenance)>,
+        guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
+    ) -> Result<Vec<Op>, StoreError> {
         for (_, provenance) in &drafts {
             check_wall(provenance.at).map_err(|reason| StoreError::Invalid {
                 field: "time".into(),
@@ -880,7 +902,7 @@ impl Store {
             .into_iter()
             .map(|(draft, provenance)| (draft, Some(provenance)))
             .collect();
-        self.append_with(drafts, |_| Ok(()), true, None)
+        self.append_with(drafts, guard, true, None)
     }
 
     /// [`Store::append_all`] after `guard` passes inside the same write

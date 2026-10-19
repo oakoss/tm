@@ -124,7 +124,7 @@ fn a_repo_mapped_to_another_workspace_or_a_damaged_file_is_refused() {
     assert_eq!(doc(&out)["line"], 2);
     assert_eq!(
         doc(&out)["message"],
-        "line 2 of the export: the line is not JSON, at column 2"
+        "line 2 of the file: the line is not JSON, at column 2"
     );
 }
 

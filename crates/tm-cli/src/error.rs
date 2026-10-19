@@ -132,6 +132,26 @@ impl CliError {
 }
 
 impl CliError {
+    /// A record import's refusal carries the refused write's own code and
+    /// details, placed in the file.
+    fn import(err: StoreError, message: String) -> Self {
+        match err {
+            StoreError::RecordRefused {
+                line,
+                record,
+                cause,
+            } => {
+                let mut refused = Self::from(*cause).with("line", line).with("record", record);
+                refused.message = message;
+                refused
+            }
+            StoreError::ImportChanged(issue) => Self::new("import_changed", message)
+                .with("issue", issue.to_string())
+                .fix("retry"),
+            other => Self::internal(variant(&other), message),
+        }
+    }
+
     /// A store, or an export, this command cannot use as it is.
     fn unusable(err: StoreError, message: String) -> Self {
         match err {
@@ -251,6 +271,9 @@ impl From<StoreError> for CliError {
                         .collect::<Vec<_>>(),
                 ),
             StoreError::Op(err) => Self::from(err),
+            err @ (StoreError::RecordRefused { .. } | StoreError::ImportChanged(_)) => {
+                Self::import(err, message)
+            }
             StoreError::Replay { source, seq, .. } => match *source {
                 StoreError::Op(OpError::UnsupportedVersion(found)) => {
                     Self::from(OpError::UnsupportedVersion(found))

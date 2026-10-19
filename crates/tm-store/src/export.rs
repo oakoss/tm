@@ -17,8 +17,8 @@ use crate::apply::{project_from, rust_int, sql_int, uuid_from};
 use crate::record::{IssueRecord, issue_records};
 use crate::{Store, StoreError, rebuild_in};
 
-const FORMAT: &str = "tm-export";
-const VERSION: u32 = 1;
+pub(crate) const FORMAT: &str = "tm-export";
+pub(crate) const VERSION: u32 = 1;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "_type", rename_all = "snake_case")]
@@ -366,7 +366,7 @@ fn parse(input: &mut dyn BufRead) -> Result<(Header, Vec<(usize, OpRecord)>), St
 
 /// Why a line is not a record, placed by column only, since serde counts
 /// lines within the one line it was given.
-fn unreadable(err: &serde_json::Error) -> String {
+pub(crate) fn unreadable(err: &serde_json::Error) -> String {
     let what = match err.classify() {
         serde_json::error::Category::Eof => "the line ends early".to_owned(),
         serde_json::error::Category::Syntax => "the line is not JSON".to_owned(),

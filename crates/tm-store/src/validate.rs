@@ -219,12 +219,12 @@ pub(crate) fn link_shape(link_type: &str, source: Uuid, target: Uuid) -> Result<
 }
 
 pub(crate) fn has_link(
-    tx: &Transaction<'_>,
+    conn: &rusqlite::Connection,
     link_type: &str,
     source: Uuid,
     target: Uuid,
 ) -> Result<bool, StoreError> {
-    Ok(tx
+    Ok(conn
         .query_row(
             "SELECT 1 FROM links WHERE type = ?1 AND src = ?2 AND dst = ?3",
             params![link_type, source.as_bytes(), target.as_bytes()],
