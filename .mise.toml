@@ -29,13 +29,10 @@ shell = "bash -c"
 
 [tasks.setup]
 description = "Bootstrap a fresh clone"
-# `bd bootstrap`, not `bd init`: init sets core.hooksPath (making git bypass
-# lefthook silently), rewrites AGENTS.md and makes its own commit. Bootstraps
-# only when `bd list` reports no database; with a remote, re-running bootstrap
-# dies with `database exists`. A missing `bd` is skipped with a notice; any
-# other `bd list` failure stops setup. lefthook installs last.
+# Work is tracked in tm, installed apart from the build being developed
+# (docs/contributing/task-tracking.md).
 run = [
-  "command -v bd >/dev/null || { echo 'setup: bd not installed; skipping beads bootstrap'; exit 0; }; if out=$(bd list 2>&1); then exit 0; else rc=$?; fi; case \"$out\" in *'no beads database found'*) bd bootstrap --yes;; *) printf 'setup: bd list failed (exit %s):\\n%s\\n' \"$rc\" \"$out\" >&2; exit 1;; esac",
+  "command -v tm >/dev/null || echo 'setup: tm is not installed; cargo install --locked --path crates/tm-cli'",
   "lefthook install",
 ]
 
