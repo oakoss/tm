@@ -617,7 +617,6 @@ fn the_actor_falls_back_to_git_and_is_required() {
 
 #[test]
 fn init_outside_a_repo_is_refused() {
-    // The scratch directory sits inside this checkout, so use the system's.
     let outside = std::env::temp_dir().join(format!("tm-cli-outside-{}", Uuid::now_v7()));
     fs::create_dir_all(&outside).unwrap();
     let outside = fs::canonicalize(&outside).unwrap();
