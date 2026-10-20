@@ -7,8 +7,8 @@ use tm_core::op::ClaimAction;
 use tm_core::scheme::{Category, Workflow};
 use tm_store::{Draft, StoreError};
 
-use crate::create::{split_pair, typed};
 use crate::error::CliError;
+use crate::fields::{set, split_pair, typed};
 use crate::here::{self, Here};
 use crate::identity;
 use crate::output::Output;
@@ -40,7 +40,7 @@ fn write(
     here: &mut Here,
     reference: &str,
     target: &str,
-    set: &[(String, String)],
+    fields: &[(String, String)],
 ) -> Result<(Output, Vec<String>), CliError> {
     let id = here.issue(reference)?;
     let scheme = here.store.scheme().clone();
@@ -74,15 +74,9 @@ fn write(
     let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
         .map_err(|message| CliError::new("no_identity", message))?;
 
-    let set_field = |field: &str, value| Change::SetField {
-        field: field.to_owned(),
-        label: String::new(),
-        value,
-        value_label: None,
-    };
-    let mut changes = vec![set_field("status", json!(status))];
-    for (field, value) in set {
-        changes.push(set_field(field, typed(&scheme, field, value)));
+    let mut changes = vec![set("status", json!(status))];
+    for (field, value) in fields {
+        changes.push(set(field, typed(&scheme, field, value)));
     }
     // A move into done or cancelled releases the Claim; a review status keeps
     // it (ADR 0009).

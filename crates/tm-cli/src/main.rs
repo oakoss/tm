@@ -6,6 +6,7 @@ mod create;
 mod doctor;
 mod error;
 mod export;
+mod fields;
 mod here;
 mod identity;
 mod init;
