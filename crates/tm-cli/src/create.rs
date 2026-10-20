@@ -7,7 +7,7 @@ use tm_store::{Draft, StoreError};
 use uuid::Uuid;
 
 use crate::error::CliError;
-use crate::fields::{self, set, split_pair, typed};
+use crate::fields::{self, quoted, set, split_pair, typed};
 use crate::here::{self, Here};
 use crate::identity;
 use crate::output::Output;
@@ -173,17 +173,4 @@ fn described(scheme: &Scheme, fields: &[String]) -> Vec<Value> {
             }
         })
         .collect()
-}
-
-/// `value` as one POSIX shell word.
-fn quoted(value: &str) -> String {
-    let plain = !value.is_empty()
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-_.,:/=@+%".contains(&b));
-    if plain {
-        value.to_owned()
-    } else {
-        format!("'{}'", value.replace('\'', r"'\''"))
-    }
 }

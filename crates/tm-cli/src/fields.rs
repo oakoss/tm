@@ -58,6 +58,19 @@ pub(crate) fn label(elem: &str, present: bool) -> Change {
     }
 }
 
+/// `value` as one POSIX shell word, for a fix to run as printed.
+pub(crate) fn quoted(value: &str) -> String {
+    let plain = !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.,:/=@+%".contains(&b));
+    if plain {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', r"'\''"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tm_core::scheme::Field;
