@@ -18,7 +18,8 @@ Agents start from `tm prime`, which the `SessionStart` hook in `.claude/settings
 
 - Starting work: `tm move TM-n in_progress`.
 - At ship: `tm move TM-n in_review`; at merge: `tm move TM-n done`. The commit link is a `Closes TM-n` trailer, or `Refs TM-n` for part of the work.
-- Changing a field without changing the Status: `tm move TM-n <its Status> --set field=value`.
+- Changing fields, labels or the parent: `tm edit TM-n --set field=value`, with `--set field=-` to read long text from stdin, `--unset`, `--label`, `--remove-label`, `--parent` and `--no-parent`.
+- The description holds the current plan; progress, what was learned and changes of plan go in `tm comment TM-n`, which keeps a dated trail an edit would overwrite.
 
 ## Keeping the data safe
 

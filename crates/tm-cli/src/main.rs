@@ -4,8 +4,10 @@ mod claim;
 mod comment;
 mod create;
 mod doctor;
+mod edit;
 mod error;
 mod export;
+mod fields;
 mod here;
 mod identity;
 mod init;
@@ -22,7 +24,7 @@ use std::fmt::Write as _;
 use std::process::ExitCode;
 
 use clap::error::ErrorKind;
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
 use serde_json::json;
 use tm_core::Scheme;
 use tm_core::scheme::Category;
@@ -98,6 +100,37 @@ enum Command {
         /// The parent Issue's Key or id.
         #[arg(long)]
         parent: Option<String>,
+    },
+    /// Change an Issue's fields, labels or parent in one write; the Status
+    /// changes with `tm move`.
+    #[command(group(
+        ArgGroup::new("changes")
+            .required(true)
+            .multiple(true)
+            .args(["set", "unset", "labels", "remove_labels", "parent", "no_parent"])
+    ))]
+    Edit {
+        /// The Issue's Key or full id.
+        issue: String,
+        /// Set a field, such as priority=high; FIELD=- reads the value from
+        /// stdin. Repeat for more.
+        #[arg(long, value_name = "FIELD=VALUE", value_parser = edit::field_value)]
+        set: Vec<(String, String)>,
+        /// Clear a field; repeat for more.
+        #[arg(long, value_name = "FIELD", value_parser = edit::unset_field)]
+        unset: Vec<String>,
+        /// Add a label; repeat for more.
+        #[arg(long = "label", value_name = "LABEL")]
+        labels: Vec<String>,
+        /// Remove a label; repeat for more.
+        #[arg(long = "remove-label", value_name = "LABEL")]
+        remove_labels: Vec<String>,
+        /// The new parent Issue's Key or id.
+        #[arg(long, conflicts_with = "no_parent")]
+        parent: Option<String>,
+        /// Remove the parent.
+        #[arg(long)]
+        no_parent: bool,
     },
     /// Link two Issues, read from either end: `tm link TM-1 blocks TM-2` or
     /// `tm link TM-2 is blocked by TM-1`.
@@ -250,6 +283,25 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             labels,
             parent,
         }),
+        Some(Command::Edit {
+            issue,
+            set,
+            unset,
+            labels,
+            remove_labels,
+            parent,
+            no_parent,
+        }) => edit::run(
+            &issue,
+            &edit::Edit {
+                set,
+                unset,
+                labels,
+                remove_labels,
+                parent,
+                no_parent,
+            },
+        ),
         Some(Command::Link { words }) => link::run(&words, true),
         Some(Command::Unlink { words }) => link::run(&words, false),
         Some(Command::List { filter, limit }) => list::run(&filter, limit, json),

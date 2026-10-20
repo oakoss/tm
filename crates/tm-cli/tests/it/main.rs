@@ -3,6 +3,7 @@
 mod claim;
 mod comment;
 mod create;
+mod edit;
 mod export;
 mod init;
 mod json;

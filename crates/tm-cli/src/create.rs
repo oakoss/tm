@@ -7,6 +7,7 @@ use tm_store::{Draft, StoreError};
 use uuid::Uuid;
 
 use crate::error::CliError;
+use crate::fields::{self, quoted, set, split_pair, typed};
 use crate::here::{self, Here};
 use crate::identity;
 use crate::output::Output;
@@ -31,13 +32,6 @@ pub(crate) fn field_value(pair: &str) -> Result<(String, String), String> {
         }
         _ => Ok((field, value)),
     }
-}
-
-/// `FIELD=VALUE`, split at the first `=`.
-pub(crate) fn split_pair(pair: &str) -> Result<(String, String), String> {
-    pair.split_once('=')
-        .map(|(field, value)| (field.to_owned(), value.to_owned()))
-        .ok_or_else(|| format!("expected FIELD=VALUE, such as priority=high, not {pair:?}"))
 }
 
 pub(crate) fn run(create: &Create) -> Result<Output, CliError> {
@@ -79,12 +73,6 @@ fn write(here: &mut Here, create: &Create) -> Result<(Output, Vec<String>), CliE
 /// The create, then each field given; the Status comes from the type's
 /// Workflow, so it is set only when the type is known.
 fn changes(scheme: &Scheme, create: &Create, parent: Option<Uuid>) -> Vec<Change> {
-    let set = |field: &str, value: Value| Change::SetField {
-        field: field.to_owned(),
-        label: String::new(),
-        value,
-        value_label: None,
-    };
     let mut changes = vec![Change::Create];
     if let Some(issue_type) = &create.issue_type {
         changes.push(set("type", json!(issue_type)));
@@ -102,31 +90,9 @@ fn changes(scheme: &Scheme, create: &Create, parent: Option<Uuid>) -> Vec<Change
         changes.push(set(field, typed(scheme, field, value)));
     }
     for label in &create.labels {
-        changes.push(Change::Add {
-            field: "labels".into(),
-            label: String::new(),
-            elem: label.clone(),
-            elem_label: None,
-        });
+        changes.push(fields::label(label, true));
     }
     changes
-}
-
-/// A `--set` value as the field's type stores it: a number or boolean where
-/// the Scheme says so, else the text. Text that does not parse is passed on
-/// for the store to refuse with the field's rules.
-pub(crate) fn typed(scheme: &Scheme, field: &str, value: &str) -> Value {
-    match scheme.field(field).map(|field| &field.field_type) {
-        Some(FieldType::Number) => value
-            .parse::<f64>()
-            .ok()
-            .and_then(serde_json::Number::from_f64)
-            .map_or_else(|| json!(value), Value::Number),
-        Some(FieldType::Boolean) => value
-            .parse::<bool>()
-            .map_or_else(|_| json!(value), Value::Bool),
-        _ => json!(value),
-    }
 }
 
 /// `missing_fields` with each field's allowed values. Without a type the
@@ -207,43 +173,4 @@ fn described(scheme: &Scheme, fields: &[String]) -> Vec<Value> {
             }
         })
         .collect()
-}
-
-/// `value` as one POSIX shell word.
-fn quoted(value: &str) -> String {
-    let plain = !value.is_empty()
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-_.,:/=@+%".contains(&b));
-    if plain {
-        value.to_owned()
-    } else {
-        format!("'{}'", value.replace('\'', r"'\''"))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use tm_core::scheme::Field;
-
-    use super::*;
-
-    #[test]
-    fn a_set_value_takes_the_type_its_field_stores() {
-        let mut scheme = Scheme::built_in();
-        scheme.fields.push(Field {
-            name: "points".into(),
-            label: "Points".into(),
-            field_type: FieldType::Number,
-            builtin: false,
-            derived: false,
-            required: false,
-            options: Vec::new(),
-        });
-        assert_eq!(typed(&scheme, "points", "3"), json!(3.0));
-        assert_eq!(typed(&scheme, "points", "three"), json!("three"));
-        assert_eq!(typed(&scheme, "archived", "true"), json!(true));
-        assert_eq!(typed(&scheme, "title", "true"), json!("true"));
-        assert_eq!(typed(&scheme, "nope", "1"), json!("1"));
-    }
 }
