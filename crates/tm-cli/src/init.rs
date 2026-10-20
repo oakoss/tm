@@ -141,6 +141,7 @@ pub(crate) fn run(init: Init, json: bool) -> Result<Output, CliError> {
             "file": target.display().to_string(),
             "batch": batch,
         }),
+        serialized: None,
         warnings: identity.warnings,
     })
 }

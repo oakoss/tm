@@ -18,6 +18,9 @@ pub(crate) const SCHEMA_VERSION: u32 = 1;
 pub(crate) struct Output {
     pub(crate) text: String,
     pub(crate) data: Value,
+    /// `data` already written as JSON; when set, `finish` prints it and
+    /// ignores `data`.
+    pub(crate) serialized: Option<String>,
     pub(crate) warnings: Vec<String>,
 }
 
@@ -26,7 +29,18 @@ impl Output {
         Self {
             text,
             data,
+            serialized: None,
             warnings: Vec::new(),
+        }
+    }
+
+    /// JSON output written straight from its parts: building a value of a
+    /// list's thousands of rows only to write it costs as much as reading
+    /// them.
+    pub(crate) fn serialized(data: String) -> Self {
+        Self {
+            serialized: Some(data),
+            ..Self::new(String::new(), Value::Null)
         }
     }
 
@@ -52,15 +66,21 @@ pub(crate) fn short(batch: Uuid) -> String {
 /// cursor or clear a terminal, and characters that disguise text appear
 /// escaped, as `\u{1b}` or `\u{202e}`; a tab passes through.
 pub(crate) fn printable(text: &str) -> String {
-    text.chars()
-        .map(|c| {
-            if (c.is_control() && c != '\t') || disguises(c) {
-                c.escape_default().to_string()
-            } else {
-                c.to_string()
-            }
-        })
-        .collect()
+    let escaped = |c: char| (c.is_control() && c != '\t') || disguises(c);
+    // Almost all text needs nothing escaped, and lists print it by the
+    // thousand.
+    if !text.chars().any(escaped) {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if escaped(c) {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Bidirectional controls, which reorder what is shown (CVE-2021-42574); line
@@ -132,6 +152,21 @@ pub(crate) fn finish(
     warnings: &[String],
 ) -> ExitCode {
     let (text, code) = match (json, result) {
+        // The keys in the order a JSON value sorts them, so the bytes match.
+        (
+            true,
+            Ok(Output {
+                serialized: Some(data),
+                warnings: own,
+                ..
+            }),
+        ) => (
+            format!(
+                "{{\"data\":{data},\"schema_version\":{SCHEMA_VERSION},\"warnings\":{}}}\n",
+                json!(warnings.iter().chain(&own).collect::<Vec<_>>())
+            ),
+            ExitCode::SUCCESS,
+        ),
         (true, Ok(output)) => (
             format!(
                 "{}\n",
