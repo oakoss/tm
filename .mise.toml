@@ -76,6 +76,10 @@ description = "Secret scan over full history — what CI's secret-scan job runs"
 # `--redact` keeps a matched secret out of world-readable CI logs.
 run = "gitleaks detect --no-banner --redact --source ."
 
+[tasks.coldstart]
+description = "Cold-start budget for read commands on a release build — what CI's cold-start job runs"
+run = "cargo test --release --locked -p tm-cli --test coldstart -- --ignored --nocapture"
+
 [tasks.test]
 description = "Tests — what CI's tests job runs"
 # `--all-targets` silently drops doctests, so the second command is not
