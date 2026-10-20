@@ -16,11 +16,11 @@
 ## Summary
 
 <!-- The problem first, as an observable symptom — then the change and
-     why this approach. Reference beads: "Closes tm-xxx." -->
+     why this approach. Reference Issues: "Closes TM-n." -->
 
 ## Notes
 
 <!-- Only what earned its place: why not the obvious alternative,
      accepted limitations, review findings dismissed with the evidence,
-     follow-up beads filed. Delete this section if there's nothing
+     follow-up Issues filed. Delete this section if there's nothing
      non-obvious. -->
