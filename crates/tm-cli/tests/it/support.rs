@@ -9,14 +9,14 @@ use tm_store::Store;
 use tm_store::workspace::Workspace;
 use uuid::Uuid;
 
-/// A scratch directory outside any other repo's reach: each fixture repo has
-/// its own `.git`, so discovery stops there.
+/// A scratch directory outside any other repo's reach. Not under the target
+/// directory: this repo maps itself in `.config/tm.toml`, and a command run
+/// outside a fixture repo would find that file.
 pub(crate) struct Scratch(pub(crate) PathBuf);
 
 impl Scratch {
     pub(crate) fn new() -> Self {
-        let path =
-            PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("tm-cli-{}", Uuid::now_v7()));
+        let path = std::env::temp_dir().join(format!("tm-cli-{}", Uuid::now_v7()));
         fs::create_dir_all(&path).unwrap();
         Self(fs::canonicalize(&path).unwrap())
     }
