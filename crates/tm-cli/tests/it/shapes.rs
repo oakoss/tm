@@ -127,8 +127,10 @@ fn move_answers_in_a_fixed_shape() {
             "direction": "outward",
             "name": "blocks",
             "other": {
+              "category": "todo",
               "id": "[id]",
-              "key": "TM-2"
+              "key": "TM-2",
+              "status": "todo"
             },
             "type": "blocks"
           }
@@ -304,8 +306,10 @@ fn undo_answers_in_a_fixed_shape() {
                 "direction": "outward",
                 "name": "blocks",
                 "other": {
+                  "category": "todo",
                   "id": "[id]",
-                  "key": "TM-2"
+                  "key": "TM-2",
+                  "status": "todo"
                 },
                 "type": "blocks"
               }

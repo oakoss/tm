@@ -5,10 +5,11 @@ use std::fmt::Write as _;
 
 use serde_json::{Value, json};
 use tm_core::scheme::FieldType;
-use tm_store::{CommentView, LinkView, Store};
+use tm_store::{CommentView, IssueView, LinkView, Store};
 use uuid::Uuid;
 
 use crate::error::CliError;
+use crate::follow;
 use crate::here::{self, Here};
 use crate::output::{Output, local_time, printable};
 
@@ -40,16 +41,16 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         let claim = store.claim(id)?;
         let links = store.links(id)?;
         let others: Vec<Uuid> = links.iter().map(|link| link.other).collect();
-        let keys: HashMap<Uuid, Option<String>> = store
+        let others: HashMap<Uuid, IssueView> = store
             .issues(&others)?
             .into_iter()
-            .map(|other| (other.id, other.key))
+            .map(|other| (other.id, other))
             .collect();
-        let links: Vec<(LinkView, Option<String>)> = links
+        let links: Vec<(LinkView, Option<IssueView>)> = links
             .into_iter()
             .map(|link| {
-                let key = keys.get(&link.other).cloned().flatten();
-                (link, key)
+                let other = others.get(&link.other).cloned();
+                (link, other)
             })
             .collect();
         let comments = store.comments(id)?;
@@ -69,11 +70,16 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
             "on_behalf_of": claim.on_behalf_of,
             "expires_ms": claim.expires_ms,
         })),
-        "links": links.iter().map(|(link, key)| json!({
+        "links": links.iter().map(|(link, other)| json!({
             "type": link.link_type,
             "direction": link.direction,
             "name": link.name,
-            "other": { "id": link.other, "key": key },
+            "other": {
+                "id": link.other,
+                "key": other.as_ref().and_then(|other| other.key.clone()),
+                "status": other.as_ref().and_then(|other| other.fields.get("status")),
+                "category": other.as_ref().and_then(|other| other.category),
+            },
         })).collect::<Vec<_>>(),
         "comments": comments.iter().map(comment_json).collect::<Vec<_>>(),
     });
@@ -101,14 +107,28 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
             claim.agent, claim.on_behalf_of, claim.id
         );
     }
-    for (link, key) in &links {
-        let other = key.clone().unwrap_or_else(|| link.other.to_string());
-        let _ = writeln!(text, "{} {other}", link.name);
+    for (link, other) in &links {
+        let _ = writeln!(text, "{}", link_line(link, other.as_ref()));
     }
     for comment in &comments {
         write_comment(&mut text, comment);
     }
     Ok(Output::new(text, data))
+}
+
+/// A Link by the other Issue's Key, with its Status when it is done or
+/// cancelled, so a Link to finished work does not read as open.
+fn link_line(link: &LinkView, other: Option<&IssueView>) -> String {
+    let name = other
+        .and_then(|other| other.key.clone())
+        .unwrap_or_else(|| link.other.to_string());
+    let finished = other
+        .filter(|other| follow::finished(other))
+        .and_then(|other| other.fields.get("status").and_then(Value::as_str));
+    match finished {
+        Some(status) => format!("{} {name} ({})", link.name, printable(status)),
+        None => format!("{} {name}", link.name),
+    }
 }
 
 /// One field: a parent by Key, a time stored in milliseconds in local time,

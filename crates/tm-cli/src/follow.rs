@@ -161,7 +161,7 @@ fn first(scheme: &Scheme, issue_type: &str, category: Category) -> Option<String
         .map(|status| status.id.clone())
 }
 
-fn finished(issue: &IssueView) -> bool {
+pub(crate) fn finished(issue: &IssueView) -> bool {
     matches!(issue.category, Some(Category::Done | Category::Cancelled))
 }
 
