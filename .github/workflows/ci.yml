@@ -58,6 +58,25 @@ jobs:
       - name: Test
         run: mise run test
 
+  cold-start:
+    name: Cold start (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - name: Harden and checkout
+        uses: $/.github/actions/harden-checkout
+
+      - name: Setup
+        uses: $/.github/actions/setup
+
+      # The budget is in build-plan.md's Phase 1 checks.
+      - name: Cold-start budget
+        run: mise run coldstart
+
   secret-scan:
     name: Secret Scan
     runs-on: ubuntu-latest
@@ -92,7 +111,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
-    needs: [static-analysis, tests, secret-scan, audit]
+    needs: [static-analysis, tests, cold-start, secret-scan, audit]
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1

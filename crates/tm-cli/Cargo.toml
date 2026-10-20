@@ -30,5 +30,9 @@ path = "src/main.rs"
 name = "it"
 path = "tests/it/main.rs"
 
+[[test]]
+name = "coldstart"
+path = "tests/coldstart.rs"
+
 [lints]
 workspace = true
