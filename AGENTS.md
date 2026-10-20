@@ -6,7 +6,7 @@
 
 ## Rules that override defaults
 
-**tm writes only what it owns.** It never runs `git commit`, never edits `AGENTS.md` or `CLAUDE.md`, never changes git config (including `core.hooksPath`), never writes per-machine values (hosts, URLs, tokens) into a tracked file, and writes anything outside its Workspace only after a confirmed diff. Code that breaks this is a bug, whatever the convenience.
+**tm writes only what it owns.** It never runs `git commit`, edits `AGENTS.md` or `CLAUDE.md` only to add its own lines on a human's confirmed yes ([ADR 0014](docs/decisions/0014-tm-adds-its-instruction-lines-only-on-a-humans-yes.md)), never changes git config (including `core.hooksPath`), never writes per-machine values (hosts, URLs, tokens) into a tracked file, and writes anything outside its Workspace only after a confirmed diff. Code that breaks this is a bug, whatever the convenience.
 
 **Check decisions before proposing.** [docs/decisions/](docs/decisions/) records choices that took measurement to reach, such as plain SQLite without a daemon and the operation log as the source of truth. Contradicting one means writing a superseding decision, not diverging quietly.
 

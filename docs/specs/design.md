@@ -113,8 +113,8 @@ Everything is soft-deleted: archived, hidden and restorable. `tm purge` is the o
 - `tm prime` prints a compact context block for SessionStart hooks: the Scheme, the caller's Claims, the ready queue, Notifications, and open Findings or Path Claims touching files in the current diff. It warns when an agent session has no identity set.
 - `tm remember "<insight>"` stores project memory that `tm prime` includes.
 - `tm setup <agent>` adds the hooks for prime, heartbeat and identity for Claude Code, Codex and others, and turns off the agent's built-in todo list so progress is tracked in one place. It shows the exact diff and writes nothing until confirmed; `tm setup <agent> --undo` removes exactly what it added.
-- Agent guidance ships as a skill inside the package (`tanstack-intent` convention) rather than edits to AGENTS.md or CLAUDE.md.
-- **Guarantees**: `tm` never runs `git commit`, never edits AGENTS.md or CLAUDE.md, never changes git config (including `core.hooksPath`), and writes files outside its Workspace only after a confirmed diff.
+- `tm guide` prints Agent guidance from the binary, so it matches the installed tm; `tm init` adds a short pointer to it in AGENTS.md or CLAUDE.md on a human's yes, or prints it for an Agent to apply ([ADR 0014](../decisions/0014-tm-adds-its-instruction-lines-only-on-a-humans-yes.md)).
+- **Guarantees**: `tm` never runs `git commit`, edits AGENTS.md or CLAUDE.md only to add its own lines on a human's confirmed yes ([ADR 0014](../decisions/0014-tm-adds-its-instruction-lines-only-on-a-humans-yes.md)), never changes git config (including `core.hooksPath`), and writes files outside its Workspace only after a confirmed diff.
 - MCP is optional and comes after v1.
 
 ### Identity
