@@ -1,12 +1,16 @@
 //! `tm move`: an Issue to another Status of its Workflow, with any `--set`
 //! fields written in the same batch.
 
-use serde_json::json;
-use tm_core::Change;
+use std::collections::BTreeSet;
+use std::fmt::Write as _;
+
+use serde_json::{Value, json};
 use tm_core::op::ClaimAction;
 use tm_core::scheme::{Category, Workflow};
-use tm_store::{Draft, StoreError};
+use tm_core::{Change, Op};
+use tm_store::{Draft, IssueView, StoreError};
 
+use crate::edit::{self, Changed};
 use crate::error::CliError;
 use crate::fields::{set, split_pair, typed};
 use crate::follow::{self, Starts};
@@ -43,6 +47,15 @@ fn write(
     target: &str,
     fields: &[(String, String)],
 ) -> Result<(Output, Vec<String>), CliError> {
+    let mut given = BTreeSet::new();
+    for (field, _) in fields {
+        if !given.insert(field) {
+            return Err(
+                CliError::new("invalid_value", format!("{field} is given more than once"))
+                    .with("field", field.as_str()),
+            );
+        }
+    }
     let id = here.issue(reference)?;
     let scheme = here.store.scheme().clone();
     let view = here.store.issue(id)?.ok_or_else(|| {
@@ -115,9 +128,39 @@ fn write(
             }
         }
     };
-    let shown = follow::report(&here.store, show::render(here, id)?, starts, id)?;
+    let mut shown = show::render(here, id)?;
+    shown.text = lines(&view, &changes, &ops);
+    let shown = follow::report(&here.store, shown, starts, id)?;
     let output = here.undoable(shown, ops[0].op_id)?;
     Ok((output, identity.warnings))
+}
+
+/// A line for each field the move set, as `tm edit` prints them, and one for
+/// a released Claim; `--json` keeps the whole Issue.
+fn lines(view: &IssueView, changes: &[Change], ops: &[Op]) -> String {
+    let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
+    let mut text = String::new();
+    for change in changes {
+        if let Change::SetField { field, value, .. } = change {
+            let before = view.fields.get(field).cloned().unwrap_or(Value::Null);
+            if edit::same(&before, value) {
+                continue;
+            }
+            let line = edit::summary(&Changed {
+                field: field.clone(),
+                before,
+                after: value.clone(),
+            });
+            let _ = writeln!(text, "{name}  {line}");
+        }
+    }
+    if ops.iter().any(|op| op.kind == "claim") {
+        let _ = writeln!(text, "{name}  Claim released");
+    }
+    if text.is_empty() {
+        let _ = writeln!(text, "{name}: nothing changed");
+    }
+    text
 }
 
 /// The Status `target` names in `workflow`, by id or label without case. A

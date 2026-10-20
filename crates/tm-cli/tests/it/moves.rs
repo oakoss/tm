@@ -61,6 +61,61 @@ fn move_sets_the_status_and_its_fields_in_one_batch() {
 }
 
 #[test]
+fn the_text_names_each_change_and_not_the_whole_issue() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let (issue, _) = store
+        .create_issue(&Actor::human("jace"), project, "task", "t")
+        .unwrap();
+    store
+        .take(&Actor::agent("claude", "jace"), issue, None)
+        .unwrap();
+
+    let out = tm(
+        &scratch,
+        &repo,
+        &["move", "TM-1", "done", "--set", "assignee=jace"],
+    );
+    let stdout = text(&out.stdout);
+    let (changes, undo) = stdout.split_once("undo this with: ").unwrap();
+    assert_eq!(
+        changes,
+        "TM-1  status: todo → done\nTM-1  assignee: (none) → jace\nTM-1  Claim released\n"
+    );
+    assert_eq!(undo.lines().count(), 1, "{stdout}");
+}
+
+#[test]
+fn the_text_leaves_out_what_did_not_change() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let (issue, _) = store
+        .create_issue(&Actor::human("jace"), project, "task", "t")
+        .unwrap();
+    store
+        .take(&Actor::agent("claude", "jace"), issue, None)
+        .unwrap();
+
+    let out = tm(
+        &scratch,
+        &repo,
+        &["move", "TM-1", "in_review", "--set", "priority=none"],
+    );
+    let stdout = text(&out.stdout);
+    assert!(
+        stdout.starts_with("TM-1  status: todo → in_review\nundo this with: "),
+        "a review Status keeps the Claim, and priority was already none: {stdout}"
+    );
+
+    let out = tm(&scratch, &repo, &["move", "TM-1", "in_review"]);
+    assert!(
+        text(&out.stdout).starts_with("TM-1: nothing changed\n"),
+        "{}",
+        text(&out.stdout)
+    );
+}
+
+#[test]
 fn a_category_or_unknown_target_is_refused_with_the_statuses_and_writes_nothing() {
     let scratch = Scratch::new();
     let (repo, mut store, project) = initialized(&scratch);
@@ -93,6 +148,23 @@ fn a_category_or_unknown_target_is_refused_with_the_statuses_and_writes_nothing(
             "{set}"
         );
     }
+    let (code, doc) = run(
+        &scratch,
+        &repo,
+        &[
+            "TM-1",
+            "done",
+            "--set",
+            "priority=high",
+            "--set",
+            "priority=none",
+        ],
+    );
+    assert_eq!(
+        (code, doc["error"].as_str()),
+        (Some(1), Some("invalid_value"))
+    );
+    assert_eq!(doc["field"], "priority");
     let (code, doc) = run(&scratch, &repo, &["TM-9", "done"]);
     assert_eq!((code, doc["error"].as_str()), (Some(1), Some("not_found")));
     assert_eq!(ops(&store), before);
