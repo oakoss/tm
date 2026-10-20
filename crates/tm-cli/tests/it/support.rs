@@ -70,7 +70,7 @@ pub(crate) fn git(scratch: &Scratch, dir: &Path, args: &[&str]) -> Output {
     output
 }
 
-/// A committed repo holding the files tm must never touch.
+/// A committed repo holding files tm must not touch unasked.
 pub(crate) fn fixture(scratch: &Scratch, name: &str) -> PathBuf {
     let repo = scratch.0.join(name);
     fs::create_dir_all(&repo).unwrap();

@@ -2,7 +2,7 @@
 
 Rules that override agent and tool defaults. `tm` must obey them, and so should anyone changing this repository.
 
-**tm writes only what it owns.** It never runs `git commit`, never edits `AGENTS.md` or `CLAUDE.md`, never changes git config (including `core.hooksPath`), never writes per-machine values (hosts, URLs, tokens) into a tracked file, and writes anything outside its Workspace only after a confirmed diff. Anything else is printed, never performed.
+**tm writes only what it owns.** It never runs `git commit`, edits `AGENTS.md` or `CLAUDE.md` only to add its own lines, shown first and confirmed by a human at a terminal ([ADR 0014](../decisions/0014-tm-adds-its-instruction-lines-only-on-a-humans-yes.md)), never changes git config (including `core.hooksPath`), never writes per-machine values (hosts, URLs, tokens) into a tracked file, and writes anything outside its Workspace only after a confirmed diff. Anything else is printed, never performed.
 
 **Never collapse "we didn't look" into "it's fine."** A check that could not run reports that it could not, distinctly from a check that ran and found nothing. `tm sync status` that cannot reach the server is not "synced"; a Finding whose code could not be read is not "fixed".
 
