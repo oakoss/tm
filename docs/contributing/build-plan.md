@@ -22,7 +22,7 @@ Done when:
 - an export → import round trip loses nothing
 - the 50-writer test (`BEGIN IMMEDIATE`, 5 s busy timeout) writes 500 of 500 rows on macOS and Linux CI
 - a sandboxed reader opens the snapshot under bubblewrap on Linux
-- read commands meet the cold-start budget, measured in CI by `mise run coldstart` on macOS and Linux: the median of 15 warm-cache runs of a release build, with identity read from git as a session-start hook reads it, is at most 40 ms for every read command on a 200-Issue Workspace, and on 10,000 Issues at most 60 ms for `--version`, `show` and `scheme show`, 150 ms for `prime`, and 200 ms for `list` and `ready`, which print every row; writes are timed in the same run but not budgeted
+- read commands meet the cold-start budget, measured in CI by `mise run coldstart` on macOS and Linux: the median of 15 warm-cache runs of a release build, with identity read from git as a session-start hook reads it, is at most 40 ms for every read command on a 200-Issue Workspace, and on 10,000 Issues at most 60 ms for `--version`, `show` and `scheme show`, and 150 ms for `prime`, `list` and `ready`, which grow with the Workspace; writes are timed in the same run but not budgeted
 
 ### Switch milestone: move this project from beads to tm
 
