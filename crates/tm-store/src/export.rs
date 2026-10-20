@@ -1,6 +1,8 @@
 //! The log as JSONL, and its restore (ADR 0013): a header, every Project,
-//! then every operation verbatim in replay order, so one log always exports
-//! the same bytes and each operation's hash still verifies.
+//! every operation verbatim in replay order, then a record per Issue as the
+//! Scheme reads it, so one log under one Scheme always exports the same bytes
+//! and each operation's hash still verifies. Restore reads only the
+//! operations.
 
 use std::collections::HashSet;
 use std::io::{BufRead, Write};
@@ -12,10 +14,11 @@ use tm_core::{Hlc, Op, ProjectId};
 use uuid::Uuid;
 
 use crate::apply::{project_from, rust_int, sql_int, uuid_from};
+use crate::record::{IssueRecord, issue_records};
 use crate::{Store, StoreError, rebuild_in};
 
-const FORMAT: &str = "tm-export";
-const VERSION: u32 = 1;
+pub(crate) const FORMAT: &str = "tm-export";
+pub(crate) const VERSION: u32 = 1;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "_type", rename_all = "snake_case")]
@@ -23,6 +26,7 @@ enum Record {
     Header(Header),
     Project(ProjectRecord),
     Op(Box<OpRecord>),
+    Issue(Box<IssueRecord>),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -94,6 +98,7 @@ impl OpRecord {
 pub struct Exported {
     pub projects: usize,
     pub ops: usize,
+    pub issues: usize,
 }
 
 /// What a restore did: wrote the log, or found it already here.
@@ -142,9 +147,15 @@ impl Store {
                 write_line(out, &Record::Op(Box::new(op_record(row)?)))?;
                 ops += 1;
             }
+            let issues = issue_records(&store.conn, &store.scheme)?;
+            let count = issues.len();
+            for issue in issues {
+                write_line(out, &Record::Issue(Box::new(issue)))?;
+            }
             Ok(Exported {
                 projects: projects.len(),
                 ops,
+                issues: count,
             })
         })
     }
@@ -307,8 +318,8 @@ fn op_record(row: &rusqlite::Row<'_>) -> Result<OpRecord, StoreError> {
     })
 }
 
-/// The header and the operations, each with its line number; Project lines
-/// are checked as records and otherwise skipped.
+/// The header and the operations, each with its line number; Project and
+/// Issue lines are checked as records and otherwise skipped.
 fn parse(input: &mut dyn BufRead) -> Result<(Header, Vec<(usize, OpRecord)>), StoreError> {
     let invalid = |line: usize, reason: String| StoreError::InvalidExport { line, reason };
     let mut header = None;
@@ -342,7 +353,7 @@ fn parse(input: &mut dyn BufRead) -> Result<(Header, Vec<(usize, OpRecord)>), St
             (Record::Header(_), Some(_)) => {
                 return Err(invalid(line, "a second header".into()));
             }
-            (Record::Project(_), Some(_)) => {}
+            (Record::Project(_) | Record::Issue(_), Some(_)) => {}
             (Record::Op(record), Some(_)) => {
                 check_op(&record, &mut seen).map_err(|reason| invalid(line, reason))?;
                 ops.push((line, *record));
@@ -355,7 +366,7 @@ fn parse(input: &mut dyn BufRead) -> Result<(Header, Vec<(usize, OpRecord)>), St
 
 /// Why a line is not a record, placed by column only, since serde counts
 /// lines within the one line it was given.
-fn unreadable(err: &serde_json::Error) -> String {
+pub(crate) fn unreadable(err: &serde_json::Error) -> String {
     let what = match err.classify() {
         serde_json::error::Category::Eof => "the line ends early".to_owned(),
         serde_json::error::Category::Syntax => "the line is not JSON".to_owned(),
@@ -371,8 +382,9 @@ fn unreadable(err: &serde_json::Error) -> String {
 }
 
 /// An operation line as restore trusts it: its hash fits its content, its id
-/// is not repeated, its payload parses, and its `field` and `elem` columns,
-/// which the hash does not cover and undo reads, are what the payload names.
+/// is not repeated, its time is one a write may record, its payload parses,
+/// and its `field` and `elem` columns, which the hash does not cover and undo
+/// reads, are what the payload names.
 fn check_op(record: &OpRecord, seen: &mut HashSet<Uuid>) -> Result<(), String> {
     if hex(&record.op().op_hash()) != record.op_hash {
         return Err(format!(
@@ -383,6 +395,12 @@ fn check_op(record: &OpRecord, seen: &mut HashSet<Uuid>) -> Result<(), String> {
     if !seen.insert(record.op_id) {
         return Err(format!("operation {} appears twice", record.op_id));
     }
+    // Held to what a write may record, so the restored store can export it.
+    crate::check_wall(crate::WallTime {
+        utc_ms: record.utc_ms,
+        offset_min: record.offset_min,
+    })
+    .map_err(|reason| format!("operation {}'s time: {reason}", record.op_id))?;
     let change = record
         .op()
         .change()

@@ -27,16 +27,7 @@ pub(crate) struct Here {
 /// `no_workspace` with the fix `tm init` when no repo file maps the
 /// directory, or the Workspace and store errors opening it.
 pub(crate) fn open() -> Result<Here, CliError> {
-    let cwd = std::env::current_dir()
-        .map_err(|err| CliError::new("io", format!("working directory: {err}")))?;
-    let home = workspace::home(std::env::var_os("TM_HOME"), std::env::home_dir())?;
-    let found = workspace::discover(&cwd)?.ok_or_else(|| {
-        CliError::new(
-            "no_workspace",
-            "no .config/tm.toml maps this directory to a Workspace",
-        )
-        .fix("tm init")
-    })?;
+    let (home, cwd, found) = find()?;
     let (_, store) = workspace::workspace_for(&home, &found)?;
     let unapplied = store
         .unapplied()?
@@ -62,6 +53,25 @@ pub(crate) fn open() -> Result<Here, CliError> {
         store,
         warnings,
     })
+}
+
+/// tm's home, the working directory and its repo file, with the store unopened.
+///
+/// # Errors
+///
+/// As [`open`], before the store is opened.
+pub(crate) fn find() -> Result<(PathBuf, PathBuf, Found), CliError> {
+    let cwd = std::env::current_dir()
+        .map_err(|err| CliError::new("io", format!("working directory: {err}")))?;
+    let home = workspace::home(std::env::var_os("TM_HOME"), std::env::home_dir())?;
+    let found = workspace::discover(&cwd)?.ok_or_else(|| {
+        CliError::new(
+            "no_workspace",
+            "no .config/tm.toml maps this directory to a Workspace",
+        )
+        .fix("tm init")
+    })?;
+    Ok((home, cwd, found))
 }
 
 impl Here {

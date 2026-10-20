@@ -11,7 +11,7 @@ use tm_core::{Actor, Change, Hlc, Op, ProjectId, Scheme, link};
 use uuid::Uuid;
 
 use crate::apply::{Version, issue_project, uuid_from};
-use crate::{Draft, Store, StoreError, WallTime};
+use crate::{Draft, Provenance, Store, StoreError, WallTime};
 
 /// One field or set element as undo finds it and would leave it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -125,8 +125,8 @@ impl Store {
     }
 
     /// The batches a bare undo by `human` may revert, newest first, at most
-    /// `limit`: written by `human` as themself, not an undo, not undone, and
-    /// with no Project write (ADR 0012).
+    /// `limit`: written by `human` as themself, not an undo, not undone, with
+    /// no Project write (ADR 0012) and nothing imported (ADR 0013).
     ///
     /// # Errors
     ///
@@ -140,7 +140,7 @@ impl Store {
                AND NOT EXISTS (
                  SELECT 1 FROM op_batches p JOIN ops po ON po.op_id = p.op_id
                  WHERE p.batch = b.batch
-                   AND (po.actor <> ?1 OR po.on_behalf_of IS NOT NULL
+                   AND (po.actor <> ?1 OR po.on_behalf_of IS NOT NULL OR po.source IS NOT NULL
                         OR po.kind IN ('create_project', 'rename_project')))
              ORDER BY o.seq DESC",
         )?;
@@ -206,14 +206,18 @@ fn ignored_since(conn: &Connection, first_seq: i64) -> Result<BTreeSet<Uuid>, St
 }
 
 impl UndoPlan {
-    fn drafts(&self, actor: &Actor) -> Vec<Draft> {
+    /// The undo's writes, which carry no source: an undo is the undoer's own.
+    fn drafts(&self, actor: &Actor) -> Vec<(Draft, Option<Provenance>)> {
         self.changes
             .iter()
-            .map(|(project, subject, change)| Draft {
-                actor: actor.clone(),
-                project: *project,
-                subject: *subject,
-                change: change.clone(),
+            .map(|(project, subject, change)| {
+                let draft = Draft {
+                    actor: actor.clone(),
+                    project: *project,
+                    subject: *subject,
+                    change: change.clone(),
+                };
+                (draft, None)
             })
             .collect()
     }
@@ -233,7 +237,7 @@ pub(crate) fn probe(
     tx.execute_batch("SAVEPOINT undo_probe")?;
     let tried = plan(tx, scheme, batch).and_then(|plan| {
         let drafts = plan.drafts(actor);
-        for draft in &drafts {
+        for (draft, _) in &drafts {
             draft.change.validate()?;
         }
         crate::write_drafts(tx, scheme, drafts, now, hlc)

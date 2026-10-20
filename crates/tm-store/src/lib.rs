@@ -7,10 +7,12 @@
 mod apply;
 mod claim;
 mod export;
+mod import;
 mod project;
 mod query;
 mod read;
 mod ready;
+mod record;
 mod schema;
 mod undo;
 mod validate;
@@ -35,8 +37,10 @@ use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
 pub use claim::Claim;
 pub use export::{Exported, Restored, read_export, snapshot};
+pub use import::{Conflict, RecordOutcome, RecordsImported};
 pub use read::{CommentView, Direction, IssueView, LinkView};
 pub use ready::Ready;
+pub use record::{CommentRecord, IssueRecord, LinkRecord, tm_source};
 pub use undo::{Restore, UndoPlan};
 
 /// How long a writer waits for another writer before giving up.
@@ -77,12 +81,26 @@ pub enum StoreError {
         "Workspace {workspace} already holds {held} operations that are not this export's; an export restores only into a Workspace with none"
     )]
     WorkspaceNotEmpty { workspace: Uuid, held: i64 },
-    #[error("line {line} of the export: {reason}")]
+    #[error("line {line} of the file: {reason}")]
     InvalidExport { line: usize, reason: String },
     #[error("the export's operations are format {found}, and this tm reads {supported}")]
     ExportFormat { found: u16, supported: u16 },
     #[error("reading or writing an export: {0}")]
     Io(#[source] std::io::Error),
+    #[error(
+        "line {line} of the import, {record}: {cause}; {}",
+        import::kept(written)
+    )]
+    RecordRefused {
+        line: usize,
+        /// The refused record's source.
+        record: String,
+        cause: Box<StoreError>,
+        /// The batches the import wrote before it, which stay.
+        written: Vec<Uuid>,
+    },
+    #[error("Issue {0} changed while it was being imported")]
+    ImportChanged(Uuid),
     #[error("unknown field {field:?}; valid fields: {}", valid.join(", "))]
     UnknownField { field: String, valid: Vec<String> },
     #[error("{field} {reason}{}", if valid.is_empty() { String::new() } else { format!("; valid: {}", valid.join(", ")) })]
@@ -223,12 +241,19 @@ impl Unapplied {
 }
 
 /// A change to write, before the store stamps it with identity and time.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Draft {
     pub actor: Actor,
     pub project: ProjectId,
     pub subject: Uuid,
     pub change: Change,
+}
+
+/// Where an imported change came from, and when it happened there (ADR 0013).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Provenance {
+    pub source: String,
+    pub at: WallTime,
 }
 
 pub struct Store {
@@ -848,6 +873,41 @@ impl Store {
         self.append_guarded(drafts, |_| Ok(()))
     }
 
+    /// [`Store::append_all`] for imported changes: each operation carries its
+    /// source and the time it happened there, while its clock is still this
+    /// Replica's. A bare undo never picks the batch (ADR 0013).
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Invalid`] for a time outside what an operation can hold,
+    /// or as [`Store::append_all`].
+    pub fn append_imported(
+        &mut self,
+        drafts: Vec<(Draft, Provenance)>,
+    ) -> Result<Vec<Op>, StoreError> {
+        self.append_imported_guarded(drafts, |_| Ok(()))
+    }
+
+    /// [`Store::append_imported`] after `guard` passes inside the write.
+    fn append_imported_guarded(
+        &mut self,
+        drafts: Vec<(Draft, Provenance)>,
+        guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
+    ) -> Result<Vec<Op>, StoreError> {
+        for (_, provenance) in &drafts {
+            check_wall(provenance.at).map_err(|reason| StoreError::Invalid {
+                field: "time".into(),
+                reason,
+                valid: Vec::new(),
+            })?;
+        }
+        let drafts = drafts
+            .into_iter()
+            .map(|(draft, provenance)| (draft, Some(provenance)))
+            .collect();
+        self.append_with(drafts, guard, true, None)
+    }
+
     /// [`Store::append_all`] after `guard` passes inside the same write
     /// transaction, so no other writer can change what it checked.
     fn append_guarded(
@@ -855,6 +915,7 @@ impl Store {
         drafts: Vec<Draft>,
         guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
     ) -> Result<Vec<Op>, StoreError> {
+        let drafts = drafts.into_iter().map(|draft| (draft, None)).collect();
         self.append_with(drafts, guard, true, None)
     }
 
@@ -863,20 +924,25 @@ impl Store {
     /// `undid`, the batch is recorded as that batch's undo.
     fn append_with(
         &mut self,
-        drafts: Vec<Draft>,
+        drafts: Vec<(Draft, Option<Provenance>)>,
         guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
         commit: bool,
         undid: Option<Uuid>,
     ) -> Result<Vec<Op>, StoreError> {
-        for draft in &drafts {
+        for (draft, _) in &drafts {
             draft.change.validate()?;
         }
         let now = self.now()?;
-        // A batch of several writers has no one undoer to try it as.
+        // A batch of several writers has no one undoer to try it as. An import
+        // writes a batch per record and names each, so none is probed.
         let writer = drafts
             .first()
-            .map(|first| first.actor.clone())
-            .filter(|writer| drafts.iter().all(|draft| draft.actor == *writer));
+            .map(|(first, _)| first.actor.clone())
+            .filter(|writer| {
+                drafts
+                    .iter()
+                    .all(|(draft, provenance)| draft.actor == *writer && provenance.is_none())
+            });
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -971,18 +1037,7 @@ impl Store {
     /// The clock's reading, and its milliseconds as the clock counts them.
     fn now(&self) -> Result<(WallTime, u64), StoreError> {
         let now = self.clock.now().map_err(StoreError::Clock)?;
-        let now_ms = u64::try_from(now.utc_ms)
-            .ok()
-            .filter(|ms| *ms <= MAX_MS)
-            .ok_or_else(|| {
-                StoreError::Clock(format!("{} ms is outside the supported range", now.utc_ms))
-            })?;
-        if now.offset_min.unsigned_abs() > MAX_OFFSET_MIN {
-            return Err(StoreError::Clock(format!(
-                "UTC offset of {} minutes is not a real offset",
-                now.offset_min
-            )));
-        }
+        let now_ms = check_wall(now).map_err(StoreError::Clock)?;
         Ok((now, now_ms))
     }
 
@@ -1151,12 +1206,28 @@ fn rebuild_in(tx: &Transaction<'_>) -> Result<usize, StoreError> {
     Ok(unapplied)
 }
 
+/// A wall time's milliseconds, if an operation can hold it.
+fn check_wall(wall: WallTime) -> Result<u64, String> {
+    let ms = u64::try_from(wall.utc_ms)
+        .ok()
+        .filter(|ms| *ms <= MAX_MS)
+        .ok_or_else(|| format!("{} ms is outside the supported range", wall.utc_ms))?;
+    if wall.offset_min.unsigned_abs() > MAX_OFFSET_MIN {
+        return Err(format!(
+            "UTC offset of {} minutes is not a real offset",
+            wall.offset_min
+        ));
+    }
+    Ok(ms)
+}
+
 /// Checks, stamps, logs and applies `drafts` inside `tx`, after the clock's
-/// `hlc`; returns the operations and the clock after them.
+/// `hlc`; returns the operations and the clock after them. An imported draft
+/// keeps its source and its time there; its clock is still now.
 fn write_drafts(
     tx: &Transaction<'_>,
     scheme: &Scheme,
-    drafts: Vec<Draft>,
+    drafts: Vec<(Draft, Option<Provenance>)>,
     (now, now_ms): (WallTime, u64),
     mut hlc: Hlc,
 ) -> Result<(Vec<Op>, Hlc), StoreError> {
@@ -1170,7 +1241,7 @@ fn write_drafts(
     // a batch may not make it worse, but an Issue that arrived incomplete
     // or inconsistent stays editable.
     let mut before = BTreeMap::new();
-    for draft in drafts {
+    for (draft, provenance) in drafts {
         if let Entry::Vacant(entry) = before.entry(draft.subject) {
             entry.insert((
                 validate::missing_fields(tx, scheme, draft.subject)?,
@@ -1190,20 +1261,21 @@ fn write_drafts(
             [draft.project.to_string()],
             |row| row.get(0),
         )?;
+        let (source, at) = provenance.map_or((None, now), |p| (Some(p.source), p.at));
         let op = Op {
             v: CURRENT_VERSION,
             op_id: Uuid::now_v7(),
             replica_id,
             actor: draft.actor.name().to_owned(),
             on_behalf_of: draft.actor.on_behalf_of().map(str::to_owned),
-            source: None,
+            source,
             project: draft.project,
             subject: draft.subject,
             kind: change.kind().to_owned(),
             hlc,
             base_seq: rust_int(base_seq)?,
-            utc_ms: now.utc_ms,
-            offset_min: now.offset_min,
+            utc_ms: at.utc_ms,
+            offset_min: at.offset_min,
             payload: serde_json::to_string(&change).map_err(OpError::from)?,
         };
         op.change()?;

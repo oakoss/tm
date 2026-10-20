@@ -144,10 +144,15 @@ enum Command {
     /// `--json` changes only how an error prints.
     Export,
     /// Restore an export into its Workspace on this machine, creating the
-    /// Workspace when this machine lacks it.
+    /// Workspace when this machine lacks it; with `--records`, write its
+    /// Issue records into this repo's Workspace instead.
     Import {
-        /// The export file, or `-` to read it from stdin.
+        /// The export or records file, or `-` to read it from stdin.
         file: String,
+        /// Write the file's Issue records as ordinary writes, keeping current
+        /// state and comments but not history.
+        #[arg(long)]
+        records: bool,
         /// Check the file and the Workspace, and write nothing.
         #[arg(long)]
         dry_run: bool,
@@ -245,7 +250,12 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Show { issue }) => show::run(&issue),
         Some(Command::Undo { batch, dry_run }) => undo::run(batch.as_deref(), dry_run),
         Some(Command::Export) => unreachable!("main writes the export itself"),
-        Some(Command::Import { file, dry_run }) => export::import(&file, dry_run),
+        Some(Command::Import {
+            file,
+            records: true,
+            dry_run,
+        }) => export::import_records(&file, dry_run),
+        Some(Command::Import { file, dry_run, .. }) => export::import(&file, dry_run),
         Some(Command::Rebuild) => export::rebuild(),
     }
 }

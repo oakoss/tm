@@ -1,6 +1,8 @@
 //! `tm export`, `tm import` and `tm rebuild`: the log out, back in, and the
 //! projections rebuilt from it (ADR 0013).
 
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -8,12 +10,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 use tm_store::workspace::{self, Workspace, WorkspaceError};
-use tm_store::{Restored, Store, StoreError};
+use tm_store::{RecordOutcome, RecordsImported, Restored, Store, StoreError};
 use uuid::Uuid;
 
-use crate::error::CliError;
-use crate::here;
+use crate::error::{CliError, RECORDS_FIX};
 use crate::output::{self, Output};
+use crate::{here, identity};
 
 /// Writes the export to stdout. It is JSONL in either mode, so nothing else
 /// is printed; a failure before it is written is the usual error.
@@ -51,13 +53,14 @@ pub(crate) fn import(file: &str, dry_run: bool) -> Result<Output, CliError> {
         return Err(CliError::new(
             "workspace_mismatch",
             format!(
-                "{} maps this repo to Workspace {}, but the export holds Workspace {workspace}; run tm import outside the repo to restore it under its own id",
+                "{} maps this repo to Workspace {}, but the export holds Workspace {workspace}; import its records into this one, or run tm import outside the repo to restore it under its own id",
                 found.path.display(),
                 found.file.workspace
             ),
         )
         .with("stored", found.file.workspace.to_string())
-        .with("given", workspace.to_string()));
+        .with("given", workspace.to_string())
+        .fix(RECORDS_FIX));
     }
 
     let target = Workspace::at(&home, workspace);
@@ -104,6 +107,157 @@ pub(crate) fn import(file: &str, dry_run: bool) -> Result<Output, CliError> {
         }
         Err(err) => Err(io_error(&target.dir, &err)),
     }
+}
+
+/// Writes a file's Issue records into the Workspace this repo maps (ADR
+/// 0013); a dry run copies its store before opening anything, since opening
+/// may rebuild it, and writes into the copy.
+pub(crate) fn import_records(file: &str, dry_run: bool) -> Result<Output, CliError> {
+    let bytes = read(file)?;
+    let (home, _, found) = here::find()?;
+    let identity = identity::resolve(identity::env, || identity::git_email(&found.dir))
+        .map_err(|message| CliError::new("no_identity", message))?;
+    let mut warnings = identity.warnings;
+    let (imported, undo) = if dry_run {
+        let target = workspace::locate(&home, &found)?;
+        let staged = Staged::new(&std::env::temp_dir())?;
+        tm_store::snapshot(&target.store_path(), &staged.store())?;
+        let mut copy = Store::open_existing(&staged.store(), target.id)?;
+        // The copy's batches, on success or refusal, are gone with it.
+        let mut imported = copy
+            .import_records(&mut bytes.as_slice(), &identity.actor)
+            .map_err(|err| match err {
+                StoreError::RecordRefused {
+                    line,
+                    record,
+                    cause,
+                    ..
+                } => StoreError::RecordRefused {
+                    line,
+                    record,
+                    cause,
+                    written: Vec::new(),
+                },
+                other => other,
+            })?;
+        for record in &mut imported.records {
+            record.batches.clear();
+        }
+        (imported, BTreeMap::new())
+    } else {
+        let mut here = here::open()?;
+        warnings.append(&mut here.warnings);
+        let imported = here
+            .store
+            .import_records(&mut bytes.as_slice(), &identity.actor)
+            .map_err(|err| CliError::from(err).warned(warnings.clone()))?;
+        // Tried as the runner, since an undo writes as whoever runs it and
+        // only a comment's author may retract it.
+        let mut undo = BTreeMap::new();
+        for batch in imported.records.iter().flat_map(|record| &record.batches) {
+            let state = match here.store.undo_plan(&identity.actor, *batch) {
+                Ok(_) => Undo::Can,
+                Err(
+                    err @ (StoreError::Busy(_)
+                    | StoreError::Sqlite(_)
+                    | StoreError::Clock(_)
+                    | StoreError::Corrupt(_)),
+                ) => Undo::Unknown(err.to_string()),
+                Err(_) => Undo::Cannot,
+            };
+            undo.insert(*batch, state);
+        }
+        (imported, undo)
+    };
+    let mut output = records_output(&imported, dry_run, &undo, identity.actor.name());
+    output.warnings.extend(warnings);
+    Ok(output)
+}
+
+/// Whether the runner could undo a batch an import wrote.
+enum Undo {
+    Can,
+    Cannot,
+    /// The check itself failed, saying nothing about the batch.
+    Unknown(String),
+}
+
+fn records_output(
+    imported: &RecordsImported,
+    dry_run: bool,
+    undo: &BTreeMap<Uuid, Undo>,
+    runner: &str,
+) -> Output {
+    let count =
+        |pick: fn(&RecordOutcome) -> bool| imported.records.iter().filter(|r| pick(r)).count();
+    let created = count(|record| record.created);
+    let updated = count(|record| {
+        !record.created && (!record.written.is_empty() || !record.removed.is_empty())
+    });
+    let unchanged = imported.records.len() - created - updated;
+    let mut text = format!(
+        "{} {} record{}: {created} created, {updated} updated, {unchanged} unchanged\n",
+        if dry_run { "would import" } else { "imported" },
+        imported.records.len(),
+        if imported.records.len() == 1 { "" } else { "s" },
+    );
+    // Writing to a String cannot fail; what a file names is escaped. A bare
+    // undo skips imports, so each record's batches are named.
+    for record in &imported.records {
+        let source = output::printable(&record.source);
+        for batch in &record.batches {
+            let _ = match undo.get(batch) {
+                Some(Undo::Can) => writeln!(text, "{source}: undo with tm undo {batch}"),
+                Some(Undo::Cannot) => writeln!(
+                    text,
+                    "{source}: batch {batch}, which {} cannot undo as things stand",
+                    output::printable(runner)
+                ),
+                Some(Undo::Unknown(reason)) => writeln!(
+                    text,
+                    "{source}: batch {batch}; whether it can be undone was not checked: {}",
+                    output::printable(reason)
+                ),
+                None => writeln!(text, "{source}: batch {batch}"),
+            };
+        }
+    }
+    let create = if dry_run { "would create" } else { "created" };
+    for key in &imported.projects {
+        let _ = writeln!(text, "{create} Project {}", output::printable(key));
+    }
+    for record in &imported.records {
+        let source = output::printable(&record.source);
+        for conflict in &record.conflicts {
+            let _ = writeln!(
+                text,
+                "conflict: {source} {}: kept tm's {}, the source has {}",
+                output::printable(&conflict.field),
+                output::printable(&conflict.tm.to_string()),
+                output::printable(&conflict.source.to_string()),
+            );
+        }
+        for comment in &record.changed_comments {
+            let _ = writeln!(
+                text,
+                "changed at the source, not rewritten: {source} comment {}",
+                output::printable(comment)
+            );
+        }
+    }
+    let data = json!({
+        "projects": imported.projects,
+        "records": imported.records,
+        "created": created,
+        "updated": updated,
+        "unchanged": unchanged,
+        "dry_run": dry_run,
+    });
+    let mut output = Output::new(text, data);
+    output.warnings.push(
+        "a record import keeps each Issue's current state and comments, not its history, operation ids or retracted comments".into(),
+    );
+    output
 }
 
 /// An existing Workspace's store; a directory without one, which may be
@@ -245,6 +399,43 @@ fn output(restored: &Restored, created: bool, dry_run: bool) -> Output {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_records_import_names_every_batch_it_wrote() {
+        let (first, second) = (Uuid::now_v7(), Uuid::now_v7());
+        let imported = RecordsImported {
+            projects: Vec::new(),
+            records: vec![RecordOutcome {
+                line: 1,
+                source: "beads:a".into(),
+                issue: Uuid::now_v7(),
+                created: true,
+                batches: vec![first, second],
+                written: vec!["title".into()],
+                removed: Vec::new(),
+                conflicts: Vec::new(),
+                changed_comments: Vec::new(),
+            }],
+        };
+        let third = Uuid::now_v7();
+        let mut imported = imported;
+        imported.records[0].batches.push(third);
+        let undo = BTreeMap::from([
+            (first, Undo::Can),
+            (second, Undo::Cannot),
+            (third, Undo::Unknown("the store is busy".into())),
+        ]);
+        let text = records_output(&imported, false, &undo, "jace").text;
+        for line in [
+            format!("beads:a: undo with tm undo {first}"),
+            format!("beads:a: batch {second}, which jace cannot undo as things stand"),
+            format!(
+                "beads:a: batch {third}; whether it can be undone was not checked: the store is busy"
+            ),
+        ] {
+            assert!(text.contains(&line), "{text}");
+        }
+    }
 
     #[test]
     fn a_published_store_takes_its_wal_with_it() {

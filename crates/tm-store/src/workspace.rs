@@ -344,6 +344,27 @@ fn read_repo_file(path: &Path) -> Result<RepoFile, WorkspaceError> {
 /// checked, or [`WorkspaceError::OpenStore`] naming the store for any other
 /// error opening it, [`StoreError::WorkspaceMismatch`] included.
 pub fn workspace_for(home: &Path, found: &Found) -> Result<(Workspace, Store), WorkspaceError> {
+    let workspace = locate(home, found)?;
+    let store_path = workspace.store_path();
+    match Store::open_existing(&store_path, workspace.id) {
+        Ok(store) => Ok((workspace, store)),
+        Err(StoreError::NotAStore(_)) => {
+            Err(WorkspaceError::IncompleteWorkspace { dir: workspace.dir })
+        }
+        Err(source) => Err(WorkspaceError::OpenStore {
+            path: store_path,
+            source: Box::new(source),
+        }),
+    }
+}
+
+/// The Workspace a repo file names, once its directory and store file are
+/// found on this machine, without opening the store.
+///
+/// # Errors
+///
+/// As [`workspace_for`], short of opening the store.
+pub fn locate(home: &Path, found: &Found) -> Result<Workspace, WorkspaceError> {
     let workspace = Workspace::at(home, found.file.workspace);
     let store_path = workspace.store_path();
     let incomplete = || WorkspaceError::IncompleteWorkspace {
@@ -376,12 +397,5 @@ pub fn workspace_for(home: &Path, found: &Found) -> Result<(Workspace, Store), W
         }
         Err(err) => return Err(io_error(&store_path)(err)),
     }
-    match Store::open_existing(&store_path, workspace.id) {
-        Ok(store) => Ok((workspace, store)),
-        Err(StoreError::NotAStore(_)) => Err(incomplete()),
-        Err(source) => Err(WorkspaceError::OpenStore {
-            path: store_path,
-            source: Box::new(source),
-        }),
-    }
+    Ok(workspace)
 }

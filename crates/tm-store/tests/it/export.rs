@@ -154,6 +154,70 @@ fn a_retracted_comment_keeps_its_words_through_a_restore() {
 }
 
 #[test]
+fn every_issue_is_exported_as_its_current_record() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = source(&dir, &clock);
+    let (child, parent) = (new_issue(&mut store), new_issue(&mut store));
+    clock.advance(1_500);
+    let add = |field: &str, elem: &str| tm_core::Change::Add {
+        field: field.into(),
+        label: String::new(),
+        elem: elem.into(),
+        elem_label: None,
+    };
+    let comment = |body: &str| tm_core::Change::Comment { body: body.into() };
+    store
+        .append_all(vec![
+            draft(child, set_field("priority", json!("high"))),
+            draft(child, set_field("parent", json!(parent.to_string()))),
+            draft(child, set_field("area", json!(3))),
+            draft(child, add("labels", "Backend")),
+            draft(child, add("tags", "x")),
+            draft(child, comment("shown")),
+        ])
+        .unwrap();
+    store.link(&jace(), "blocks", child, parent).unwrap();
+    let hidden = store.append(draft(child, comment("hidden"))).unwrap().op_id;
+    store.undo(&jace(), hidden).unwrap();
+    let shown = store.comments(child).unwrap()[0].id;
+
+    let records: Vec<Value> = lines(&export(&store))
+        .into_iter()
+        .filter(|record| record["_type"] == "issue")
+        .collect();
+    assert_eq!(records.len(), 2);
+    let tm = |id: Uuid| format!("tm:{id}");
+    assert_eq!(
+        records[0],
+        json!({
+            "_type": "issue",
+            "source": tm(child),
+            "project": "CPL",
+            "key": "CPL-1",
+            "type": "task",
+            "title": "t",
+            "status": "todo",
+            "priority": "high",
+            "reporter": "jace",
+            "labels": ["Backend"],
+            "parent": tm(parent),
+            "links": [{"type": "blocks", "target": tm(parent)}],
+            "comments": [{
+                "id": shown.to_string(),
+                "actor": "jace",
+                "body": "shown",
+                "at": "1970-01-01T00:00:02.5Z",
+            }],
+            "fields": {"area": 3, "tags": ["x"]},
+            "created": "1970-01-01T00:00:01Z",
+            "updated": "1970-01-01T00:00:02.5Z",
+        })
+    );
+    assert_eq!(records[1]["source"], tm(parent), "ordered by id");
+}
+
+#[test]
 fn a_snapshot_of_a_store_in_use_holds_what_its_wal_holds() {
     let (dir, other) = (TempDir::new(), TempDir::new());
     let clock = ManualClock::at(1_000);
@@ -227,6 +291,29 @@ fn a_store_holding_other_operations_or_another_workspace_is_refused() {
     );
 }
 
+/// An operation line for `op`, its hash matching, with no field or element.
+fn op_line(template: &Value, op: &tm_core::Op) -> Value {
+    let mut line = template.clone();
+    line["op_id"] = json!(op.op_id);
+    line["issue_id"] = json!(op.subject);
+    line["kind"] = json!(op.kind);
+    line["replica_id"] = json!(op.replica_id);
+    line["actor"] = json!(op.actor);
+    line["hlc"] = json!(op.hlc.raw());
+    line["base_seq"] = json!(op.base_seq);
+    line["utc_ms"] = json!(op.utc_ms);
+    line["offset_min"] = json!(op.offset_min);
+    line["payload"] = json!(op.payload);
+    line["field"] = Value::Null;
+    line["elem"] = Value::Null;
+    line["op_hash"] = json!(op.op_hash().iter().fold(String::new(), |mut hex, b| {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{b:02x}");
+        hex
+    }));
+    line
+}
+
 #[test]
 fn a_damaged_or_foreign_file_is_refused_by_line() {
     let (dir, other) = (TempDir::new(), TempDir::new());
@@ -236,8 +323,11 @@ fn a_damaged_or_foreign_file_is_refused_by_line() {
     let records = lines(&export(&store));
     let mut copy = empty(&other.db(), &clock, WORKSPACE);
 
+    let last = records
+        .iter()
+        .rposition(|record| record["_type"] == "op")
+        .unwrap();
     let mut tampered = records.clone();
-    let last = tampered.len() - 1;
     tampered[last]["payload"] = json!(
         tampered[last]["payload"]
             .as_str()
@@ -248,7 +338,7 @@ fn a_damaged_or_foreign_file_is_refused_by_line() {
         .restore(&mut to_bytes(&tampered).as_slice())
         .unwrap_err();
     assert!(
-        matches!(err, StoreError::InvalidExport { line, .. } if line == records.len()),
+        matches!(err, StoreError::InvalidExport { line, .. } if line == last + 1),
         "{err}"
     );
 
@@ -279,31 +369,24 @@ fn a_damaged_or_foreign_file_is_refused_by_line() {
         0,
     );
     op.project = serde_json::from_value(records[last]["project"].clone()).unwrap();
+    let line = |op: &tm_core::Op| op_line(&records[last], op);
+    let mut early = records.clone();
+    let mut before_epoch = op.clone();
+    before_epoch.utc_ms = -1;
+    early.insert(last + 1, line(&before_epoch));
+    let err = copy.restore(&mut to_bytes(&early).as_slice()).unwrap_err();
+    assert!(
+        matches!(&err, StoreError::InvalidExport { line, reason } if *line == last + 2 && reason.contains("time")),
+        "{err}"
+    );
+
     op.payload = "not json".into();
-    let mut line = records[last].clone();
-    line["op_id"] = json!(op.op_id);
-    line["issue_id"] = json!(op.subject);
-    line["kind"] = json!(op.kind);
-    line["replica_id"] = json!(op.replica_id);
-    line["actor"] = json!(op.actor);
-    line["hlc"] = json!(op.hlc.raw());
-    line["base_seq"] = json!(op.base_seq);
-    line["utc_ms"] = json!(op.utc_ms);
-    line["offset_min"] = json!(op.offset_min);
-    line["payload"] = json!(op.payload);
-    line["field"] = Value::Null;
-    line["elem"] = Value::Null;
-    line["op_hash"] = json!(op.op_hash().iter().fold(String::new(), |mut hex, b| {
-        use std::fmt::Write as _;
-        let _ = write!(hex, "{b:02x}");
-        hex
-    }));
-    unreadable.push(line);
+    unreadable.insert(last + 1, line(&op));
     let err = copy
         .restore(&mut to_bytes(&unreadable).as_slice())
         .unwrap_err();
     assert!(
-        matches!(&err, StoreError::InvalidExport { line, reason } if *line == unreadable.len() && reason.contains("parse")),
+        matches!(&err, StoreError::InvalidExport { line, reason } if *line == last + 2 && reason.contains("parse")),
         "{err}"
     );
 

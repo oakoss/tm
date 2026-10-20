@@ -20,6 +20,9 @@ const RESERVED: [&str; 6] = [
     "fix",
 ];
 
+/// What an export a restore refuses can still bring in (ADR 0013).
+pub(crate) const RECORDS_FIX: &str = "tm import --records FILE";
+
 #[derive(Debug)]
 pub(crate) struct CliError {
     pub(crate) code: &'static str,
@@ -132,6 +135,32 @@ impl CliError {
 }
 
 impl CliError {
+    /// A record import's refusal carries the refused write's own code and
+    /// details, placed in the file.
+    fn import(err: StoreError, message: String) -> Self {
+        match err {
+            StoreError::RecordRefused {
+                line,
+                record,
+                cause,
+                written,
+            } => {
+                let written: Vec<String> = written.iter().map(Uuid::to_string).collect();
+                let mut refused = Self::from(*cause)
+                    .with("line", line)
+                    .with("record", record)
+                    .with("written", written);
+                // The record's source and cause are the file's words.
+                refused.message = crate::output::printable(&message);
+                refused
+            }
+            StoreError::ImportChanged(issue) => Self::new("import_changed", message)
+                .with("issue", issue.to_string())
+                .fix("retry"),
+            other => Self::internal(variant(&other), message),
+        }
+    }
+
     /// A store, or an export, this command cannot use as it is.
     fn unusable(err: StoreError, message: String) -> Self {
         match err {
@@ -153,14 +182,17 @@ impl CliError {
                 Self::new("workspace_not_empty", message)
                     .with("workspace", workspace.to_string())
                     .with("held", held)
+                    .fix(RECORDS_FIX)
             }
             StoreError::InvalidExport { line, .. } => {
-                Self::new("invalid_export", message).with("line", line)
+                // The reason can quote the file.
+                Self::new("invalid_export", crate::output::printable(&message)).with("line", line)
             }
             StoreError::ExportFormat { found, supported } => {
                 Self::new("export_format_changed", message)
                     .with("found", found)
                     .with("supported", supported)
+                    .fix(RECORDS_FIX)
             }
             StoreError::Io(_) => Self::new("io", message),
             other => Self::internal(variant(&other), message),
@@ -251,6 +283,9 @@ impl From<StoreError> for CliError {
                         .collect::<Vec<_>>(),
                 ),
             StoreError::Op(err) => Self::from(err),
+            err @ (StoreError::RecordRefused { .. } | StoreError::ImportChanged(_)) => {
+                Self::import(err, message)
+            }
             StoreError::Replay { source, seq, .. } => match *source {
                 StoreError::Op(OpError::UnsupportedVersion(found)) => {
                     Self::from(OpError::UnsupportedVersion(found))

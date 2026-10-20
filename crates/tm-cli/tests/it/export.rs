@@ -57,6 +57,13 @@ fn a_fresh_clone_restores_its_workspace_from_an_export() {
     let out = elsewhere(&scratch, &home, &repo, &["--json", "list"]);
     assert_eq!(doc(&out)["error"], "unknown_workspace", "{out:?}");
     assert_eq!(doc(&out)["fix"], "tm import FILE");
+    let out = elsewhere(
+        &scratch,
+        &home,
+        &repo,
+        &["--json", "import", "--records", file, "--dry-run"],
+    );
+    assert_eq!(doc(&out)["error"], "unknown_workspace", "{out:?}");
 
     let out = elsewhere(
         &scratch,
@@ -94,6 +101,71 @@ fn a_fresh_clone_restores_its_workspace_from_an_export() {
 
     let out = elsewhere(&scratch, &home, &repo, &["--json", "import", file]);
     assert_eq!(doc(&out)["data"]["already_held"], true, "{out:?}");
+
+    elsewhere(
+        &scratch,
+        &home,
+        &repo,
+        &["create", "--type", "task", "--title", "since"],
+    );
+    let out = elsewhere(&scratch, &home, &repo, &["--json", "import", file]);
+    assert_eq!(doc(&out)["error"], "workspace_not_empty", "{out:?}");
+    assert_eq!(doc(&out)["fix"], "tm import --records FILE");
+}
+
+#[test]
+fn a_records_dry_run_leaves_the_store_unopened_and_output_escaped() {
+    let scratch = Scratch::new();
+    let (repo, file) = exported(&scratch);
+    let store = fs::read_dir(scratch.home().join("workspaces"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path()
+        .join("store.db");
+    rusqlite::Connection::open(&store)
+        .unwrap()
+        .execute_batch("PRAGMA user_version = 0")
+        .unwrap();
+
+    // A label tm never held, carrying a terminal escape, on an Issue of
+    // this Workspace: a conflict the summary prints.
+    let mut lines: Vec<Value> = text(&fs::read(&file).unwrap())
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let issue = lines
+        .iter_mut()
+        .find(|line| line["_type"] == "issue")
+        .unwrap();
+    issue["labels"] = serde_json::json!(["x\u{1b}[2J"]);
+    let crafted = scratch.0.join("crafted.jsonl");
+    let joined: Vec<String> = lines.iter().map(Value::to_string).collect();
+    fs::write(&crafted, joined.join("\n")).unwrap();
+
+    let out = tm(
+        &scratch,
+        &repo,
+        &[
+            "import",
+            "--records",
+            crafted.to_str().unwrap(),
+            "--dry-run",
+        ],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let printed = text(&out.stdout);
+    assert!(printed.contains("conflict: tm:"), "{printed}");
+    assert!(!printed.contains('\u{1b}'), "{printed:?}");
+    let version: i64 = rusqlite::Connection::open(&store)
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        version, 0,
+        "the dry run opened the real store, which rebuilt it"
+    );
 }
 
 #[test]
@@ -106,6 +178,7 @@ fn a_repo_mapped_to_another_workspace_or_a_damaged_file_is_refused() {
 
     let out = tm(&other, &repo, &["--json", "import", file]);
     assert_eq!(doc(&out)["error"], "workspace_mismatch", "{out:?}");
+    assert_eq!(doc(&out)["fix"], "tm import --records FILE");
     assert_eq!(out.status.code(), Some(1));
 
     let damaged = other.0.join("damaged.jsonl");
@@ -124,8 +197,135 @@ fn a_repo_mapped_to_another_workspace_or_a_damaged_file_is_refused() {
     assert_eq!(doc(&out)["line"], 2);
     assert_eq!(
         doc(&out)["message"],
-        "line 2 of the export: the line is not JSON, at column 2"
+        "line 2 of the file: the line is not JSON, at column 2"
     );
+}
+
+/// The refusals a restore meets name `--records`, which brings the Issues
+/// into this repo's Workspace, once.
+#[test]
+fn records_bring_an_export_into_a_workspace_a_restore_refuses() {
+    let scratch = Scratch::new();
+    let (_, file) = exported(&scratch);
+    let other = Scratch::new();
+    let (repo, _store, _) = initialized(&other);
+    let file = file.to_str().unwrap();
+
+    let out = tm(
+        &other,
+        &repo,
+        &["--json", "import", "--records", file, "--dry-run"],
+    );
+    assert_eq!(doc(&out)["data"]["created"], 2, "{out:?}");
+    assert_eq!(doc(&out)["data"]["dry_run"], true);
+    assert_eq!(
+        doc(&out)["data"]["records"][0]["batches"],
+        serde_json::json!([]),
+        "a dry run's batches do not exist"
+    );
+    let listed = |out: &Output| doc(out)["data"]["issues"].as_array().unwrap().len();
+    assert_eq!(
+        listed(&tm(&other, &repo, &["--json", "list"])),
+        0,
+        "a dry run writes nothing"
+    );
+
+    let out = tm(&other, &repo, &["--json", "import", "--records", file]);
+    let imported = doc(&out);
+    assert_eq!(imported["data"]["created"], 2, "{out:?}");
+    let batch = imported["data"]["records"][0]["batches"][0]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let out = tm(&other, &repo, &["--json", "undo", &batch, "--dry-run"]);
+    assert!(
+        out.status.success(),
+        "a named undo takes an import batch: {out:?}"
+    );
+    assert!(
+        imported["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("not its history"),
+        "{imported}"
+    );
+    let shown = doc(&tm(&other, &repo, &["--json", "show", "TM-1"]));
+    assert_eq!(shown["data"]["fields"]["title"], "first", "{shown}");
+    assert_eq!(shown["data"]["links"][0]["other"]["key"], "TM-2");
+
+    let out = tm(&other, &repo, &["import", "--records", file]);
+    assert!(
+        text(&out.stdout).starts_with("imported 2 records: 0 created, 0 updated, 2 unchanged"),
+        "{out:?}"
+    );
+
+    let out = tm(&other, &repo, &["--json", "import", file]);
+    assert_eq!(doc(&out)["error"], "workspace_mismatch");
+    let mut newer: Vec<Value> = text(&fs::read(file).unwrap())
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    newer[0]["op_format"] = serde_json::json!(99);
+    let newer_file = other.0.join("newer.jsonl");
+    let lines: Vec<String> = newer.iter().map(Value::to_string).collect();
+    fs::write(&newer_file, lines.join("\n")).unwrap();
+    let elsewhere = other.0.join("outside");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let out = tm(
+        &other,
+        &elsewhere,
+        &["--json", "import", newer_file.to_str().unwrap()],
+    );
+    assert_eq!(doc(&out)["error"], "export_format_changed", "{out:?}");
+    assert_eq!(doc(&out)["fix"], "tm import --records FILE");
+}
+
+#[test]
+fn a_refused_records_file_says_what_stays_and_prints_escaped() {
+    let scratch = Scratch::new();
+    let (repo, _store, _) = initialized(&scratch);
+    let record = |source: &str, parent: Option<&str>| {
+        let mut record = serde_json::json!({
+            "_type": "issue", "source": source, "project": "TM", "type": "task",
+            "title": "t", "status": "todo",
+        });
+        if let Some(parent) = parent {
+            record["parent"] = serde_json::json!(parent);
+        }
+        record.to_string()
+    };
+    let write = |name: &str, lines: &[String]| {
+        let path = scratch.0.join(name);
+        fs::write(&path, lines.join("\n")).unwrap();
+        path.to_str().unwrap().to_owned()
+    };
+
+    let missing = write(
+        "missing.jsonl",
+        &[record("b:1", None), record("b:2", Some("b:none"))],
+    );
+    let out = tm(
+        &scratch,
+        &repo,
+        &["--json", "import", "--records", &missing, "--dry-run"],
+    );
+    assert_eq!(doc(&out)["written"], serde_json::json!([]), "{out:?}");
+    assert!(
+        doc(&out)["message"]
+            .as_str()
+            .unwrap()
+            .contains("nothing was written"),
+        "a dry run's copy is gone: {out:?}"
+    );
+
+    let escaped = "b:\u{1b}[2J";
+    let twice = write(
+        "twice.jsonl",
+        &[record(escaped, None), record(escaped, None)],
+    );
+    let out = tm(&scratch, &repo, &["import", "--records", &twice]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(!text(&out.stderr).contains('\u{1b}'), "{out:?}");
 }
 
 #[test]

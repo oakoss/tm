@@ -3,7 +3,7 @@
 
 use serde_json::json;
 use tm_core::{Actor, Change, Hlc};
-use tm_store::{Draft, Store, StoreError};
+use tm_store::{Draft, Provenance, Store, StoreError, WallTime};
 use uuid::Uuid;
 
 use crate::support::{
@@ -661,4 +661,75 @@ fn a_batch_of_several_writers_is_judged_by_its_plan() {
         .op_id;
     assert!(store.can_undo(mixed).unwrap());
     undo(&mut store, mixed).unwrap();
+}
+
+#[test]
+fn an_imported_batch_keeps_its_source_and_time_and_only_a_named_undo_reverts_it() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(5_000));
+    let issue = new_issue(&mut store);
+    let at = WallTime {
+        utc_ms: 1_200,
+        offset_min: 60,
+    };
+    let imported = store
+        .append_imported(vec![(
+            draft(issue, set_field("priority", json!("high"))),
+            Provenance {
+                source: "beads:tm-1".into(),
+                at,
+            },
+        )])
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        (
+            imported.source.as_deref(),
+            imported.utc_ms,
+            imported.offset_min
+        ),
+        (Some("beads:tm-1"), 1_200, 60)
+    );
+    assert!(imported.hlc.ms() >= 5_000, "its clock is this Replica's");
+
+    let candidates = store.undo_candidates("jace", 10).unwrap();
+    assert!(!candidates.contains(&imported.op_id), "{candidates:?}");
+    assert_eq!(candidates.len(), 1, "only the create");
+
+    let (_, inverse) = store.undo(&jace(), imported.op_id).unwrap();
+    assert!(inverse.iter().all(|op| op.source.is_none()), "{inverse:?}");
+    assert_eq!(field(&store, issue, "priority"), Some(json!("none")));
+}
+
+#[test]
+fn an_imported_time_an_operation_cannot_hold_is_refused() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(5_000));
+    let issue = new_issue(&mut store);
+    let before = ops(&store);
+    for at in [
+        WallTime {
+            utc_ms: -1,
+            offset_min: 0,
+        },
+        WallTime {
+            utc_ms: 1_000,
+            offset_min: 26 * 60,
+        },
+    ] {
+        let err = store
+            .append_imported(vec![(
+                draft(issue, set_field("priority", json!("high"))),
+                Provenance {
+                    source: "beads:tm-1".into(),
+                    at,
+                },
+            )])
+            .unwrap_err();
+        assert!(
+            matches!(&err, StoreError::Invalid { field, .. } if field == "time"),
+            "{err:?}"
+        );
+    }
+    assert_eq!(ops(&store), before);
 }
