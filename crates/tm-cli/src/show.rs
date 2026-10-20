@@ -4,12 +4,13 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
+use tm_core::scheme::FieldType;
 use tm_store::{CommentView, LinkView, Store};
 use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::here::{self, Here};
-use crate::output::{Output, printable};
+use crate::output::{Output, local_time, printable};
 
 pub(crate) fn run(reference: &str) -> Result<Output, CliError> {
     let here = here::open()?;
@@ -85,16 +86,9 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         .unwrap_or("");
     let mut text = format!("{name}  {}\n", printable(title));
     for (field, value) in &view.fields {
-        if field == "title" {
-            continue;
+        if field != "title" {
+            write_field(&mut text, store, field, value, parent.as_ref());
         }
-        let shown = match (field.as_str(), &parent) {
-            ("parent", Some(parent)) => parent["key"]
-                .as_str()
-                .map_or_else(|| plain(&parent["id"]), str::to_owned),
-            _ => plain(value),
-        };
-        let _ = writeln!(text, "{field}: {}", printable(&shown));
     }
     for (field, members) in &view.sets {
         let shown: Vec<String> = members.values().map(|member| printable(member)).collect();
@@ -117,6 +111,37 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
     Ok(Output::new(text, data))
 }
 
+/// One field: a parent by Key, a time stored in milliseconds in local time,
+/// and text of several lines indented under the field's name.
+fn write_field(
+    text: &mut String,
+    store: &Store,
+    field: &str,
+    value: &Value,
+    parent: Option<&Value>,
+) {
+    let instant = store
+        .scheme()
+        .field(field)
+        .filter(|def| def.field_type == FieldType::Datetime)
+        .and(value.as_i64());
+    let shown = match (field, parent, instant) {
+        ("parent", Some(parent), _) => parent["key"]
+            .as_str()
+            .map_or_else(|| plain(&parent["id"]), str::to_owned),
+        (_, _, Some(utc_ms)) => local_time(utc_ms),
+        _ => plain(value),
+    };
+    if shown.contains('\n') {
+        let _ = writeln!(text, "{field}:");
+        for line in shown.lines() {
+            let _ = writeln!(text, "  {}", printable(line));
+        }
+    } else {
+        let _ = writeln!(text, "{field}: {}", printable(&shown));
+    }
+}
+
 /// A retracted comment keeps its place and author, not its words.
 fn comment_json(comment: &CommentView) -> Value {
     json!({
@@ -134,6 +159,7 @@ fn write_comment(text: &mut String, comment: &CommentView) {
         Some(human) => format!("{} for {human}", comment.actor),
         None => comment.actor.clone(),
     };
+    let by = format!("{by}, {}", local_time(comment.utc_ms));
     if comment.retracted {
         let _ = writeln!(text, "\n{by}: (retracted)");
         return;

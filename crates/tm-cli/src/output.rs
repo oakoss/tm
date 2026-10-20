@@ -49,17 +49,30 @@ pub(crate) fn short(batch: Uuid) -> String {
 }
 
 /// Stored text made safe to print: control characters, which could move the
-/// cursor or clear a terminal, appear escaped, as `\u{1b}` or `\n`.
+/// cursor or clear a terminal, appear escaped, as `\u{1b}` or `\n`; a tab
+/// passes through.
 pub(crate) fn printable(text: &str) -> String {
     text.chars()
         .map(|c| {
-            if c.is_control() {
+            if c.is_control() && c != '\t' {
                 c.escape_default().to_string()
             } else {
                 c.to_string()
             }
         })
         .collect()
+}
+
+/// An instant in this machine's time zone, to the minute.
+pub(crate) fn local_time(utc_ms: i64) -> String {
+    jiff::Timestamp::from_millisecond(utc_ms).map_or_else(
+        |_| utc_ms.to_string(),
+        |at| {
+            at.to_zoned(jiff::tz::TimeZone::system())
+                .strftime("%Y-%m-%d %H:%M %Z")
+                .to_string()
+        },
+    )
 }
 
 /// Whether to print JSON, decided before the arguments are parsed so a
