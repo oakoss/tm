@@ -5,7 +5,7 @@ use tm_core::{Actor, Change, ProjectId};
 use tm_store::{Draft, Store};
 use uuid::Uuid;
 
-use crate::support::{Scratch, fixture, initialized, text, tm};
+use crate::support::{Scratch, fixture, initialized, text, tm, tm_command};
 
 fn change(store: &mut Store, project: ProjectId, issue: Uuid, change: Change) {
     store
@@ -25,6 +25,87 @@ fn show(scratch: &Scratch, repo: &Path, reference: &str) -> (bool, Value) {
         out.status.success(),
         serde_json::from_slice(&out.stdout).unwrap(),
     )
+}
+
+/// Text output with each comment heading's time cut off.
+fn untimed(shown: &str) -> String {
+    shown
+        .lines()
+        .map(|line| match line.rsplit_once(", ") {
+            Some((by, rest)) if !line.starts_with(' ') && rest.contains(':') => {
+                format!("{by}{}", &rest[rest.rfind(':').unwrap_or(0)..])
+            }
+            _ => line.to_owned(),
+        })
+        .map(|line| line + "\n")
+        .collect()
+}
+
+/// An instant as `show` prints it in `zone`.
+fn in_zone(utc_ms: i64, zone: &str) -> String {
+    jiff::Timestamp::from_millisecond(utc_ms)
+        .unwrap()
+        .in_tz(zone)
+        .unwrap()
+        .strftime("%Y-%m-%d %H:%M %Z")
+        .to_string()
+}
+
+#[test]
+fn show_prints_times_in_local_time_and_text_across_lines() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let (issue, _) = store
+        .create_issue(&Actor::human("jace"), project, "task", "Readable")
+        .unwrap();
+    change(
+        &mut store,
+        project,
+        issue,
+        Change::SetField {
+            field: "description".into(),
+            label: String::new(),
+            value: json!("First line\n\n## Notes\n\tindented\u{1b}[2J"),
+            value_label: None,
+        },
+    );
+    change(
+        &mut store,
+        project,
+        issue,
+        Change::Comment { body: "hi".into() },
+    );
+    let (_, doc) = show(&scratch, &repo, "TM-1");
+    let created = doc["data"]["fields"]["created"].as_i64().unwrap();
+    let said = doc["data"]["comments"][0]["utc_ms"].as_i64().unwrap();
+
+    let out = tm_command()
+        .args(["show", "TM-1"])
+        .current_dir(&repo)
+        .env("TM_HOME", scratch.home())
+        .env("TM_ACTOR", "jace")
+        .env("TZ", "America/Chicago")
+        .output()
+        .unwrap();
+    let shown = text(&out.stdout);
+    let zone = "America/Chicago";
+    assert!(
+        shown.contains(&format!("\ncreated: {}\n", in_zone(created, zone))),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("\ndescription:\n  First line\n  \n  ## Notes\n  \tindented\\u{1b}[2J\n"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains(&format!("\njace, {}:\n  hi\n", in_zone(said, zone))),
+        "{shown}"
+    );
+    assert_eq!(
+        doc["data"]["fields"]["created"],
+        json!(created),
+        "JSON keeps milliseconds"
+    );
 }
 
 #[test]
@@ -195,7 +276,7 @@ fn show_names_links_from_this_end_and_gives_comments_in_order() {
     assert!(shown.contains(r"  \u{1b}[2Jcleared"), "{shown}");
     assert!(shown.contains("is blocked by TM-1\n"), "{shown}");
     assert!(
-        shown.contains("\njace:\n  first\n  second line\n\nclaude for jace:\n  on it\n"),
+        untimed(&shown).contains("\njace:\n  first\n  second line\n\nclaude for jace:\n  on it\n"),
         "{shown}"
     );
 
@@ -223,7 +304,7 @@ fn show_names_links_from_this_end_and_gives_comments_in_order() {
     );
     let out = tm(&scratch, &repo, &["show", "TM-2"]);
     assert!(
-        text(&out.stdout).contains("\nclaude for jace: (retracted)\n\njace:"),
+        untimed(&text(&out.stdout)).contains("\nclaude for jace: (retracted)\n\njace:"),
         "{out:?}"
     );
 }
