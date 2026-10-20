@@ -1,6 +1,6 @@
 //! The Workspace the working directory maps to, opened for a command.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tm_core::ProjectId;
 use tm_store::Store;
@@ -43,10 +43,7 @@ pub(crate) fn open() -> Result<Here, CliError> {
             if unapplied == 1 { "it" } else { "them" }
         )]
     };
-    let cwd = std::fs::canonicalize(&cwd).map_err(|err| {
-        CliError::new("io", format!("working directory: {err}"))
-            .with("path", cwd.display().to_string())
-    })?;
+    let cwd = canonical(&cwd)?;
     Ok(Here {
         found,
         cwd,
@@ -74,31 +71,50 @@ pub(crate) fn find() -> Result<(PathBuf, PathBuf, Found), CliError> {
     Ok((home, cwd, found))
 }
 
+/// The Project, and its key, that the repo file maps `cwd` to.
+///
+/// # Errors
+///
+/// `not_found` when the Workspace has no Project with the mapped key.
+pub(crate) fn mapped_project<'a>(
+    store: &Store,
+    found: &'a Found,
+    cwd: &Path,
+) -> Result<(ProjectId, &'a str), CliError> {
+    let relative = cwd.strip_prefix(&found.dir).unwrap_or(cwd);
+    let key = found.file.project_for(relative);
+    let project = store.project_by_key(key)?.ok_or_else(|| {
+        CliError::new(
+            "not_found",
+            format!(
+                "{} maps this directory to Project {key}, which this Workspace does not have",
+                found.path.display()
+            ),
+        )
+        .with("kind", "project")
+        .with("reference", key)
+    })?;
+    Ok((project, key))
+}
+
+/// The working directory as the repo file's directory is written, so one
+/// strips the other.
+pub(crate) fn canonical(cwd: &Path) -> Result<PathBuf, CliError> {
+    std::fs::canonicalize(cwd).map_err(|err| {
+        CliError::new("io", format!("working directory: {err}"))
+            .with("path", cwd.display().to_string())
+    })
+}
+
 impl Here {
     /// A write that changed nothing gets no undo hint, since following it fails.
     pub(crate) fn undoable(&self, output: Output, batch: Uuid) -> Result<Output, CliError> {
         Ok(output.batched(batch, self.store.can_undo(batch)?))
     }
 
-    /// The Project the repo file maps the working directory to.
-    ///
-    /// # Errors
-    ///
-    /// `not_found` when the Workspace has no Project with the mapped key.
+    /// As [`mapped_project`], for the working directory.
     pub(crate) fn project(&self) -> Result<ProjectId, CliError> {
-        let relative = self.cwd.strip_prefix(&self.found.dir).unwrap_or(&self.cwd);
-        let key = self.found.file.project_for(relative);
-        self.store.project_by_key(key)?.ok_or_else(|| {
-            CliError::new(
-                "not_found",
-                format!(
-                    "{} maps this directory to Project {key}, which this Workspace does not have",
-                    self.found.path.display()
-                ),
-            )
-            .with("kind", "project")
-            .with("reference", key)
-        })
+        mapped_project(&self.store, &self.found, &self.cwd).map(|(project, _)| project)
     }
 
     /// The Issue a Key, matched without case and through retired Project

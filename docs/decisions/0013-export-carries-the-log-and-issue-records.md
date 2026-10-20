@@ -78,4 +78,10 @@ Export, restore into a Workspace this machine lacks and export again gives ident
 - Amends ADR 0010's envelope: an operation's optional `source` joins it.
 - Amends ADR 0012's bare-undo candidate rule: a batch holding an operation with a source is not a candidate.
 - Narrows ADR 0006's `utc_ms` to when it happened at the source, for an imported operation.
-- Research: [import-export.md](../research/cli/import-export.md). The beads mapping is decided with the beads adapter.
+- Research: [import-export.md](../research/cli/import-export.md).
+- The beads adapter, `tm import --from beads`, reads `bd export` into the Project the working directory maps to and follows the research's mapping tables, with these choices:
+  - A type or Status without an exact counterpart keeps the original as a `beads-type:` or `beads-status:` label; `decision` becomes `design` and `milestone` becomes `task`.
+  - Priority 0 to 4 reads as urgent, high, medium, low and none, so a beads default of 2 is medium.
+  - `design`, `acceptance_criteria` and `notes` fold into the description under fixed headings until Scheme fields exist.
+  - The reporter is `owner`, else `created_by`; `assignee` is kept as beads writes it, not mapped to a tm identity; a close reason becomes a comment by the reporter at `closed_at`.
+  - Issues are created oldest first, so Keys follow creation order. A deleted Issue, an unmapped dependency and any field tm cannot hold are counted in the output, not refused.
