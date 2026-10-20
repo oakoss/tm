@@ -110,6 +110,108 @@ fn restoring_an_export_publishes_into_a_new_or_existing_workspace() {
     assert_eq!(titles(&path, workspace), ["one"], "existing Workspace");
 }
 
+fn doc(out: &std::process::Output) -> Value {
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|err| panic!("{err}: {out:?}"))
+}
+
+/// Runs `test` with the Workspace's directory and store unwritable, then
+/// makes them writable again so the scratch directory can be removed.
+fn unwritable(dir: &std::path::Path, test: impl FnOnce()) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mode = |path: &std::path::Path, mode| {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    };
+    mode(&dir.join("store.db"), 0o444);
+    mode(dir, 0o555);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
+    mode(dir, 0o755);
+    mode(&dir.join("store.db"), 0o644);
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+#[test]
+fn reads_fall_back_to_the_snapshot_where_the_store_is_refused() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    let (path, _) = snapshot(&scratch, &store);
+    drop(store);
+    create(&scratch, &repo);
+    let dir = path.parent().unwrap().to_path_buf();
+
+    unwritable(&dir, || {
+        let reads = [
+            &["list"][..],
+            &["ready"],
+            &["show", "TM-1"],
+            &["prime"],
+            &["doctor"],
+        ];
+        for read in reads {
+            let out = tm(&scratch, &repo, &[&["--json"], read].concat());
+            assert!(out.status.success(), "{read:?}: {out:?}");
+            let warning = doc(&out)["warnings"][0].as_str().unwrap().to_owned();
+            assert!(
+                warning.starts_with("read from the snapshot published "),
+                "{read:?}: {warning}"
+            );
+        }
+        let listed = doc(&tm(&scratch, &repo, &["--json", "list"]));
+        assert_eq!(listed["data"]["issues"][0]["key"], "TM-1");
+
+        let out = tm(
+            &scratch,
+            &repo,
+            &["--json", "create", "--type", "task", "--title", "two"],
+        );
+        assert!(!out.status.success());
+        assert_eq!(doc(&out)["error"], "read_only", "{out:?}");
+        assert_eq!(
+            doc(&out)["fix"],
+            "run it where this process may write the store"
+        );
+
+        let out = tm(&scratch, &repo, &["--json", "export"]);
+        assert!(!out.status.success(), "a backup is never the snapshot");
+        assert_eq!(doc(&out)["error"], "read_only", "{out:?}");
+    });
+}
+
+#[test]
+fn a_refused_store_without_a_snapshot_is_an_error() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    let (path, _) = snapshot(&scratch, &store);
+    drop(store);
+    fs::remove_file(&path).unwrap();
+
+    unwritable(path.parent().unwrap(), || {
+        let out = tm(&scratch, &repo, &["--json", "list"]);
+        assert!(!out.status.success());
+        assert_eq!(doc(&out)["error"], "read_only", "{out:?}");
+        assert_eq!(
+            doc(&out)["fix"],
+            "run any write where tm may write the store, which publishes one"
+        );
+    });
+}
+
+#[test]
+fn a_store_this_tm_cannot_read_is_not_read_from_the_snapshot() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    store
+        .connection()
+        .execute("UPDATE meta SET v = 99 WHERE k = 'format'", [])
+        .unwrap();
+    drop(store);
+
+    let out = tm(&scratch, &repo, &["--json", "list"]);
+    assert!(!out.status.success(), "{out:?}");
+    assert_eq!(doc(&out)["error"], "upgrade_required", "{out:?}");
+}
+
 #[test]
 fn a_failed_publish_is_a_warning_after_the_stores_own() {
     let scratch = Scratch::new();

@@ -198,6 +198,20 @@ pub enum StoreError {
     Filter(#[from] FilterError),
 }
 
+impl StoreError {
+    /// Whether opening an existing store failed because this process may not
+    /// open it, as in a sandbox that denies every write. SQLite reports a
+    /// missing file the same way, so the caller checks it exists first.
+    #[must_use]
+    pub fn is_refused(&self) -> bool {
+        match self {
+            Self::ReadOnly => true,
+            Self::Sqlite(err) => err.sqlite_error_code() == Some(ErrorCode::CannotOpen),
+            _ => false,
+        }
+    }
+}
+
 impl From<rusqlite::Error> for StoreError {
     fn from(err: rusqlite::Error) -> Self {
         if err.sqlite_error_code() == Some(ErrorCode::DatabaseBusy) {

@@ -20,6 +20,8 @@ use crate::{here, identity};
 /// Writes the export to stdout. It is JSONL in either mode, so nothing else
 /// is printed; a failure before it is written is the usual error.
 pub(crate) fn export() -> Result<(), CliError> {
+    // Not the snapshot: a backup must be current, and JSONL has no room to
+    // warn that it is not.
     let here = here::open()?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

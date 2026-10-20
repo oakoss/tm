@@ -1,14 +1,16 @@
 //! The Workspace the working directory maps to, opened for a command.
 
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use tm_core::ProjectId;
 use tm_store::Store;
-use tm_store::workspace::{self, Found, Workspace};
+use tm_store::workspace::{self, Found, Workspace, WorkspaceError};
 use uuid::Uuid;
 
 use crate::error::CliError;
-use crate::output::Output;
+use crate::output::{Output, local_time};
 
 pub(crate) struct Here {
     /// The repo file that applies, and the directory holding it.
@@ -19,6 +21,8 @@ pub(crate) struct Here {
     pub(crate) workspace: Workspace,
     /// Where the log ended when the store was opened.
     log_end: i64,
+    /// The warning that this is the snapshot, not the store, when it is.
+    pub(crate) snapshot: Option<String>,
     /// What every command reports, such as operations that did not apply.
     pub(crate) warnings: Vec<String>,
 }
@@ -54,7 +58,73 @@ pub(crate) fn not_published(cause: &dyn std::fmt::Display) -> String {
 /// directory, or the Workspace and store errors opening it.
 pub(crate) fn open() -> Result<Here, CliError> {
     let (home, cwd, found) = find()?;
-    let (workspace, store) = workspace::workspace_for(&home, &found)?;
+    match workspace::workspace_for(&home, &found) {
+        Ok((workspace, store)) => opened(found, &cwd, workspace, store),
+        Err(err) => Err(match refused(&err) {
+            Some(path) => CliError::new(
+                "read_only",
+                format!(
+                    "{}: this process may not open the store for writing, as in a sandbox",
+                    path.display()
+                ),
+            )
+            .fix("run it where this process may write the store"),
+            None => err.into(),
+        }),
+    }
+}
+
+/// [`open`] for a command that only reads. Where this process may not open
+/// the store, as in a sandbox that denies every write, it reads the snapshot
+/// the last write published, with a warning saying when.
+///
+/// # Errors
+///
+/// As [`open`], or `read_only` when no snapshot has been published.
+pub(crate) fn read() -> Result<Here, CliError> {
+    let (home, cwd, found) = find()?;
+    let store_path = match workspace::workspace_for(&home, &found) {
+        Ok((workspace, store)) => return opened(found, &cwd, workspace, store),
+        Err(err) => match refused(&err) {
+            Some(path) => path.to_path_buf(),
+            None => return Err(err.into()),
+        },
+    };
+    let workspace = workspace::locate(&home, &found)?;
+    let path = workspace.snapshot_path();
+    let Ok(published) = fs::metadata(&path).and_then(|metadata| metadata.modified()) else {
+        return Err(CliError::new(
+            "read_only",
+            format!(
+                "{}: this process may not open the store, as in a sandbox, and no snapshot has been published to read instead",
+                store_path.display()
+            ),
+        )
+        .fix("run any write where tm may write the store, which publishes one"));
+    };
+    let store = Store::open_snapshot(&path, workspace.id)?;
+    let mut here = opened(found, &cwd, workspace, store)?;
+    let published_ms = published
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |age| i64::try_from(age.as_millis()).unwrap_or(i64::MAX));
+    let published = format!(
+        "read from the snapshot published {}",
+        local_time(published_ms)
+    );
+    here.warnings.insert(0, published.clone());
+    here.snapshot = Some(published);
+    Ok(here)
+}
+
+/// The store this process was refused, when that is why opening failed.
+fn refused(err: &WorkspaceError) -> Option<&Path> {
+    match err {
+        WorkspaceError::OpenStore { path, source } if source.is_refused() => Some(path),
+        _ => None,
+    }
+}
+
+fn opened(found: Found, cwd: &Path, workspace: Workspace, store: Store) -> Result<Here, CliError> {
     let unapplied = store
         .unapplied()?
         .iter()
@@ -69,7 +139,7 @@ pub(crate) fn open() -> Result<Here, CliError> {
             if unapplied == 1 { "it" } else { "them" }
         )]
     };
-    let cwd = canonical(&cwd)?;
+    let cwd = canonical(cwd)?;
     let log_end = store.log_end()?;
     Ok(Here {
         found,
@@ -77,6 +147,7 @@ pub(crate) fn open() -> Result<Here, CliError> {
         store,
         workspace,
         log_end,
+        snapshot: None,
         warnings,
     })
 }
