@@ -79,6 +79,37 @@ impl Store {
         current(&self.conn, issue)
     }
 
+    /// The Claims `agent` holds for `on_behalf_of`, by Issue id; as with
+    /// [`Store::claim`], one past `expires_ms` still holds.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
+    pub fn claims_held(&self, agent: &str, on_behalf_of: &str) -> Result<Vec<Claim>, StoreError> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT issue_id, op_id, expires_ms FROM claims
+             WHERE agent = ?1 AND on_behalf_of = ?2 ORDER BY issue_id",
+        )?;
+        let rows = stmt.query_map(params![agent, on_behalf_of], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (issue, id, expires_ms) = row?;
+            Ok(Claim {
+                id: uuid_from(&id)?,
+                issue: uuid_from(&issue)?,
+                agent: agent.to_owned(),
+                on_behalf_of: on_behalf_of.to_owned(),
+                expires_ms,
+            })
+        })
+        .collect()
+    }
+
     fn claim_draft(
         &self,
         actor: Actor,

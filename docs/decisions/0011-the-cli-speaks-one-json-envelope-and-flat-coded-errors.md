@@ -35,6 +35,7 @@ design.md promises that every command supports `--json` (or `TM_JSON=1`) "with a
 - In JSON mode exactly one document goes to stdout and nothing to stderr, failures included. A usage error is a `usage` document and a panic an `internal` one.
 - Exit codes: 0 success, 1 a refusal or failure, 2 a usage error. The `error` code says which refusal. A panic writes its document and exits 1 rather than aborting.
 - In text mode, output names Issues by Key, errors and warnings go to stderr, and a prompt appears only when stdin and stdout are both terminals.
+- `tm prime` is the exception: it writes its warnings into its text on stdout, since a SessionStart hook passes only stdout to the Agent. It turns a missing identity or Project into a warning so the hook still prints; an error, such as no Workspace, still goes to stderr, which the Agent does not see.
 
 **Versioning.**
 

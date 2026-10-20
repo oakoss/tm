@@ -9,6 +9,7 @@ mod json;
 mod link;
 mod list;
 mod moves;
+mod prime;
 mod ready;
 mod scheme;
 mod shapes;

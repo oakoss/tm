@@ -76,6 +76,34 @@ fn a_held_issue_is_refused_even_under_the_holders_own_agent_name() {
 }
 
 #[test]
+fn an_agent_sees_only_the_claims_it_holds_for_its_human() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let (first, second, others, released) = (
+        new_issue(&mut store),
+        new_issue(&mut store),
+        new_issue(&mut store),
+        new_issue(&mut store),
+    );
+    let held = [
+        store.take(&claude(), second, Some(1)).unwrap(),
+        store.take(&claude(), first, None).unwrap(),
+    ];
+    store
+        .take(&Actor::agent("claude", "kim"), others, None)
+        .unwrap();
+    let gone = store.take(&claude(), released, None).unwrap();
+    store.release(&claude(), released, gone.id).unwrap();
+    clock.advance(10);
+
+    let mut expected = held.to_vec();
+    expected.sort_by_key(|claim| claim.issue);
+    assert_eq!(store.claims_held("claude", "jace").unwrap(), expected);
+    assert_eq!(store.claims_held("codex", "jace").unwrap(), []);
+}
+
+#[test]
 fn a_store_with_the_previous_claims_table_rebuilds_on_open() {
     let dir = TempDir::new();
     let claim = {

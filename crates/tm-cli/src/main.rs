@@ -13,6 +13,7 @@ mod link;
 mod list;
 mod moves;
 mod output;
+mod prime;
 mod ready;
 mod show;
 mod undo;
@@ -128,6 +129,8 @@ enum Command {
         #[arg(long, value_name = "FIELD=VALUE", value_parser = moves::field_value)]
         set: Vec<(String, String)>,
     },
+    /// Print the context an Agent session starts from, for a `SessionStart` hook.
+    Prime,
     /// List the work that can start now: unclaimed todo Issues no open Issue
     /// blocks, most urgent first, with what each would unblock.
     Ready {
@@ -251,6 +254,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Unlink { words }) => link::run(&words, false),
         Some(Command::List { filter, limit }) => list::run(&filter, limit),
         Some(Command::Move { issue, status, set }) => moves::run(&issue, &status, &set),
+        Some(Command::Prime) => prime::run(json),
         Some(Command::Ready { limit }) => ready::run(limit),
         Some(Command::Show { issue }) => show::run(&issue),
         Some(Command::Undo { batch, dry_run }) => undo::run(batch.as_deref(), dry_run),

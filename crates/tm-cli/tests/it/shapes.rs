@@ -6,7 +6,7 @@ use std::path::Path;
 use serde_json::Value;
 use tm_core::Actor;
 
-use crate::support::{Scratch, initialized, tm};
+use crate::support::{Scratch, initialized, tm, tm_command};
 
 fn run(scratch: &Scratch, repo: &Path, args: &[&str]) -> Value {
     let out = tm(scratch, repo, &[&["--json"], args].concat());
@@ -434,6 +434,157 @@ fn import_from_beads_answers_in_a_fixed_shape() {
         "a record import keeps each Issue's current state and comments, not its history, operation ids or retracted comments"
       ]
     }
+    "#);
+}
+
+#[test]
+fn prime_answers_in_a_fixed_shape() {
+    let (scratch, repo) = two_issues();
+    let doc = run(&scratch, &repo, &["prime"]);
+    insta::assert_json_snapshot!(doc, {
+        ".data.ready.issues[].id" => "[id]",
+        ".data.ready.issues[].fields.created" => "[ms]",
+        ".data.ready.issues[].fields.updated" => "[ms]",
+    }, @r#"
+    {
+      "data": {
+        "actor": {
+          "agent": false,
+          "name": "jace",
+          "on_behalf_of": null
+        },
+        "claims": [],
+        "project": "TM",
+        "ready": {
+          "issues": [
+            {
+              "category": "todo",
+              "fields": {
+                "archived": false,
+                "created": "[ms]",
+                "priority": "none",
+                "reporter": "jace",
+                "status": "todo",
+                "title": "first",
+                "type": "task",
+                "updated": "[ms]"
+              },
+              "id": "[id]",
+              "key": "TM-1",
+              "project": "TM",
+              "sets": {}
+            }
+          ],
+          "total": 1
+        },
+        "scheme": {
+          "name": "default",
+          "required": [
+            "type",
+            "title",
+            "status"
+          ],
+          "types": [
+            "epic",
+            "story",
+            "task",
+            "bug",
+            "sub_task",
+            "spike",
+            "design"
+          ],
+          "workflows": [
+            {
+              "name": "default",
+              "statuses": [
+                {
+                  "category": "triage",
+                  "id": "triage"
+                },
+                {
+                  "category": "todo",
+                  "id": "todo"
+                },
+                {
+                  "category": "active",
+                  "id": "in_progress"
+                },
+                {
+                  "category": "active",
+                  "id": "in_review"
+                },
+                {
+                  "category": "done",
+                  "id": "done"
+                },
+                {
+                  "category": "cancelled",
+                  "id": "cancelled"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "schema_version": 1,
+      "warnings": [
+        "this session writes as jace; an Agent sets TM_AGENT to its name"
+      ]
+    }
+    "#);
+}
+
+#[test]
+fn primes_claims_answer_in_a_fixed_shape() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let claude = Actor::agent("claude", "jace");
+    let (issue, _) = store
+        .create_issue(&Actor::human("jace"), project, "task", "held")
+        .unwrap();
+    store.take(&claude, issue, Some(3_600_000)).unwrap();
+    drop(store);
+    let out = tm_command()
+        .args(["--json", "prime"])
+        .current_dir(&repo)
+        .env("TM_HOME", scratch.home())
+        .env("TM_ACTOR", "jace")
+        .env("TM_AGENT", "claude")
+        .output()
+        .unwrap();
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    insta::assert_json_snapshot!(doc["data"]["claims"], {
+        "[].id" => "[id]",
+        "[].claim.id" => "[id]",
+        "[].claim.expires_ms" => "[ms]",
+        "[].fields.created" => "[ms]",
+        "[].fields.updated" => "[ms]",
+    }, @r#"
+    [
+      {
+        "category": "todo",
+        "claim": {
+          "agent": "claude",
+          "expires_ms": "[ms]",
+          "id": "[id]",
+          "on_behalf_of": "jace"
+        },
+        "fields": {
+          "archived": false,
+          "created": "[ms]",
+          "priority": "none",
+          "reporter": "jace",
+          "status": "todo",
+          "title": "held",
+          "type": "task",
+          "updated": "[ms]"
+        },
+        "id": "[id]",
+        "key": "TM-1",
+        "project": "TM",
+        "sets": {}
+      }
+    ]
     "#);
 }
 
