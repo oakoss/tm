@@ -1,7 +1,9 @@
 //! The cold-start budget (build-plan.md, Phase 1): each read command's median
 //! time over warm-cache runs of a release build, on Workspaces of 200 and
 //! 10,000 Issues, with identity read from git as a session-start hook reads
-//! it. Writes are timed and printed, not held to a budget yet.
+//! it; `list` and `prime` are also timed in a sandbox that denies every
+//! write, where they read the snapshot. Writes are timed and printed, not
+//! held to a budget yet.
 //!
 //! Run with `mise run coldstart`; plain `cargo test` skips it.
 
@@ -35,6 +37,15 @@ const READS: [(&[&str], u64, u64); 12] = [
     (&["--json", "scheme", "show"], 40, 60),
     (&["--json", "list"], 40, 150),
     (&["--json", "ready"], 40, 150),
+];
+
+/// The reads a sandboxed Agent makes first, from the snapshot, held to the
+/// same budgets.
+const SANDBOXED: [(&[&str], u64, u64); 4] = [
+    (&["prime"], 40, 150),
+    (&["list"], 40, 150),
+    (&["--json", "prime"], 40, 150),
+    (&["--json", "list"], 40, 150),
 ];
 
 struct Bench {
@@ -77,22 +88,44 @@ impl Bench {
     }
 
     fn tm(&self, args: &[&str]) -> Output {
-        let out = self
-            .command(env!("CARGO_BIN_EXE_tm"))
+        self.run_tm(false, args)
+    }
+
+    /// `tm`, or with `sandboxed` `tm` in a sandbox that denies every file
+    /// write, as an Agent may run it: `sandbox-exec` on macOS, `bwrap` with
+    /// the whole filesystem read-only elsewhere.
+    fn run_tm(&self, sandboxed: bool, args: &[&str]) -> Output {
+        let tm = env!("CARGO_BIN_EXE_tm");
+        let mut command = if !sandboxed {
+            self.command(tm)
+        } else if cfg!(target_os = "macos") {
+            let mut command = self.command("sandbox-exec");
+            command.args(["-p", "(version 1)(allow default)(deny file-write*)", tm]);
+            command
+        } else {
+            let mut command = self.command("bwrap");
+            command
+                .args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"])
+                .arg("--chdir")
+                .arg(&self.repo)
+                .args(["--", tm]);
+            command
+        };
+        let out = command
             .args(args)
             .output()
-            .unwrap();
+            .unwrap_or_else(|err| panic!("{command:?}: {err}"));
         assert!(out.status.success(), "tm {args:?}: {out:?}");
         out
     }
 
     /// The median of [`RUNS`] timed runs after one warm-up.
-    fn median(&self, args: &[&str]) -> Duration {
-        self.tm(args);
+    fn median(&self, sandboxed: bool, args: &[&str]) -> Duration {
+        self.run_tm(sandboxed, args);
         let mut times: Vec<Duration> = (0..RUNS)
             .map(|_| {
                 let started = Instant::now();
-                self.tm(args);
+                self.run_tm(sandboxed, args);
                 started.elapsed()
             })
             .collect();
@@ -164,7 +197,10 @@ impl Bench {
         }
         let started = Instant::now();
         store.append_all(drafts).unwrap();
-        started.elapsed()
+        let elapsed = started.elapsed();
+        let workspace = Workspace::at(&self.root.join("tm-home"), workspace);
+        store.publish_snapshot(&workspace.snapshot_path()).unwrap();
+        elapsed
     }
 }
 
@@ -207,19 +243,35 @@ fn run(size: usize, budget: impl Fn(u64, u64) -> u64) -> Vec<String> {
         json!({"name": "claude", "agent": true, "on_behalf_of": "jace@example.com"})
     );
 
+    let listed: serde_json::Value =
+        serde_json::from_slice(&bench.run_tm(true, &["--json", "list"]).stdout).unwrap();
+    assert!(
+        listed["warnings"][0]
+            .as_str()
+            .is_some_and(|warning| warning.starts_with("read from the snapshot published ")),
+        "a sandboxed read is the snapshot's: {}",
+        listed["warnings"]
+    );
+    assert!(listed["data"]["total"].as_u64() > Some(0));
+
+    let reads = READS
+        .iter()
+        .map(|read| (false, read))
+        .chain(SANDBOXED.iter().map(|read| (true, read)));
     // The first reads on a macOS CI runner have run twice as slow as later
     // ones, so every read gets an untimed pass before the timed one.
-    for (args, ..) in READS {
-        bench.median(args);
+    for (sandboxed, (args, ..)) in reads.clone() {
+        bench.median(sandboxed, args);
     }
 
     let mut over = Vec::new();
-    for (args, small, large) in READS {
-        let limit = budget(small, large);
-        let median = bench.median(args);
+    for (sandboxed, (args, small, large)) in reads {
+        let limit = budget(*small, *large);
+        let median = bench.median(sandboxed, args);
+        let kind = if sandboxed { "sandbox" } else { "read" };
         let verdict = if median > Duration::from_millis(limit) {
             over.push(format!(
-                "tm {} at {size} Issues: {:.1} ms, budget {limit} ms",
+                "tm {} ({kind}) at {size} Issues: {:.1} ms, budget {limit} ms",
                 args.join(" "),
                 ms(median)
             ));
@@ -228,7 +280,7 @@ fn run(size: usize, budget: impl Fn(u64, u64) -> u64) -> Vec<String> {
             "ok"
         };
         eprintln!(
-            "{size:>6}  read   tm {:<24} {:>7.1} ms  (budget {limit} ms) {verdict}",
+            "{size:>6}  {kind:<7}  tm {:<24} {:>7.1} ms  (budget {limit} ms) {verdict}",
             args.join(" "),
             ms(median)
         );
@@ -245,7 +297,7 @@ fn run(size: usize, budget: impl Fn(u64, u64) -> u64) -> Vec<String> {
             .collect();
         times.sort();
         eprintln!(
-            "{size:>6}  write  tm {name:<24} {:>7.1} ms  (not budgeted)",
+            "{size:>6}  write    tm {name:<24} {:>7.1} ms  (not budgeted)",
             ms(times[RUNS / 2])
         );
     }
