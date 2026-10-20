@@ -307,6 +307,7 @@ fn undo_answers_in_a_fixed_shape() {
             "sets": {}
           }
         ],
+        "released": [],
         "restored": [
           {
             "field": "status",

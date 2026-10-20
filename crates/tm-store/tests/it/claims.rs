@@ -104,6 +104,46 @@ fn an_agent_sees_only_the_claims_it_holds_for_its_human() {
 }
 
 #[test]
+fn a_write_guarded_on_a_claim_is_refused_once_the_claim_changes() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = new_issue(&mut store);
+    let done = || vec![draft(issue, set_field("status", json!("done")))];
+    let before = store.claim(issue).unwrap();
+
+    // Read unclaimed, then claimed before the write.
+    let claim = store.take(&claude(), issue, None).unwrap();
+    let err = store
+        .append_if_claim(done(), issue, before.map(|claim| claim.id))
+        .unwrap_err();
+    assert!(
+        matches!(err, StoreError::ClaimChanged(id) if id == issue),
+        "{err:?}"
+    );
+
+    // Read claimed, then released before the write.
+    store.release(&claude(), issue, claim.id).unwrap();
+    let err = store
+        .append_if_claim(done(), issue, Some(claim.id))
+        .unwrap_err();
+    assert!(
+        matches!(err, StoreError::ClaimChanged(id) if id == issue),
+        "{err:?}"
+    );
+    assert_eq!(
+        store.issue(issue).unwrap().unwrap().fields["status"],
+        json!("todo"),
+        "a refused write writes nothing"
+    );
+
+    store.append_if_claim(done(), issue, None).unwrap();
+    assert_eq!(
+        store.issue(issue).unwrap().unwrap().fields["status"],
+        json!("done")
+    );
+}
+
+#[test]
 fn a_store_with_the_previous_claims_table_rebuilds_on_open() {
     let dir = TempDir::new();
     let claim = {

@@ -67,6 +67,7 @@ fn undo(
         .iter()
         .flat_map(|restore| [Some(restore.issue), link_target(restore)])
         .flatten()
+        .chain(plan.released.iter().copied())
         .collect();
     let mut issues = Vec::new();
     let mut keys = HashMap::new();
@@ -103,10 +104,23 @@ fn undo(
     for restore in &plan.restores {
         let _ = writeln!(text, "  {}", describe(restore, &name));
     }
+    for issue in &plan.released {
+        let _ = writeln!(
+            text,
+            "  {}'s Claim stays released; its Agent takes it again with tm claim",
+            name(*issue)
+        );
+    }
+    let released: Vec<Value> = plan
+        .released
+        .iter()
+        .map(|issue| json!({ "id": issue, "key": keys.get(issue) }))
+        .collect();
     let data = json!({
         "undone": batch,
         "dry_run": dry_run,
         "restored": restored,
+        "released": released,
         "issues": issues,
         "batch": null,
     });
