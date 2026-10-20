@@ -114,8 +114,25 @@ pub(crate) fn item(view: &IssueView, projects: &HashMap<ProjectId, Option<String
 /// `KEY  status  priority  title`, the Key falling back to the id, on one
 /// line whatever the title holds.
 pub(crate) fn line(view: &IssueView) -> String {
+    line_within(view, usize::MAX)
+}
+
+/// [`line`] with the printed title cut to at most `title_bytes`, on a
+/// character boundary, ending in `…`.
+pub(crate) fn line_within(view: &IssueView, title_bytes: usize) -> String {
     let field = |name: &str| view.fields.get(name).and_then(Value::as_str).unwrap_or("-");
-    let title = printable(field("title"));
+    let mut title = printable(field("title"));
+    if title.len() > title_bytes {
+        let room = title_bytes.saturating_sub('…'.len_utf8());
+        let end = title
+            .char_indices()
+            .map(|(at, c)| at + c.len_utf8())
+            .take_while(|end| *end <= room)
+            .last()
+            .unwrap_or(0);
+        title.truncate(end);
+        title.push('…');
+    }
     format!(
         "{}  {}  {}  {title}",
         view.key.clone().unwrap_or_else(|| view.id.to_string()),
