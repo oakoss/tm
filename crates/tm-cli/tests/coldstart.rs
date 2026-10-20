@@ -207,6 +207,12 @@ fn run(size: usize, budget: impl Fn(u64, u64) -> u64) -> Vec<String> {
         json!({"name": "claude", "agent": true, "on_behalf_of": "jace@example.com"})
     );
 
+    // The first reads on a macOS CI runner have run twice as slow as later
+    // ones, so every read gets an untimed pass before the timed one.
+    for (args, ..) in READS {
+        bench.median(args);
+    }
+
     let mut over = Vec::new();
     for (args, small, large) in READS {
         let limit = budget(small, large);
