@@ -15,6 +15,7 @@ mod read;
 mod ready;
 mod record;
 mod schema;
+mod snapshot;
 mod undo;
 mod validate;
 pub mod workspace;
@@ -172,6 +173,10 @@ pub enum StoreError {
         "the store's log was written by a different build of tm, before its format last changed; recreate the store"
     )]
     FormatChanged,
+    #[error(
+        "the snapshot was published by a different build of tm (projection {found}, this tm reads {expected})"
+    )]
+    SnapshotVersion { found: i64, expected: i64 },
     #[error("the operation at log position {seq} cannot be replayed: {source}")]
     Replay {
         seq: i64,
@@ -281,7 +286,7 @@ struct LastWrite {
 impl Drop for Store {
     fn drop(&mut self) {
         // Best effort: a failed optimize costs query planning, never data.
-        // A store that failed to open is left as it was found.
+        // A store that failed to open, and a snapshot, are left as found.
         if self.opened {
             // Skipped, not waited for, while another process writes.
             let _ = self.conn.busy_timeout(Duration::ZERO);
@@ -356,7 +361,6 @@ impl Store {
     }
 
     fn check_existing(path: &Path, workspace: Uuid) -> Result<(), StoreError> {
-        let not_a_store = || StoreError::NotAStore(path.to_path_buf());
         let conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -364,6 +368,13 @@ impl Store {
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         conn.busy_timeout(BUSY_TIMEOUT)?;
+        Self::check(&conn, path, workspace)
+    }
+
+    /// Whether `conn` holds Workspace `workspace`'s tm store in a format
+    /// this build reads, checked without writing.
+    fn check(conn: &Connection, path: &Path, workspace: Uuid) -> Result<(), StoreError> {
+        let not_a_store = || StoreError::NotAStore(path.to_path_buf());
         let has_meta: bool = match conn.query_row(
             "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'meta')",
             [],
@@ -453,13 +464,7 @@ impl Store {
              PRAGMA foreign_keys = ON;
              PRAGMA recursive_triggers = ON;",
         )?;
-        // People are typed by hand, so filters and sorts compare them ignoring
-        // case; SQLite's NOCASE folds only A to Z. Uppercasing first makes
-        // ß match SS and final sigma match sigma.
-        conn.create_collation(query::FOLD, |a, b| {
-            let fold = |s: &str| s.to_uppercase().to_lowercase();
-            fold(a).cmp(&fold(b))
-        })?;
+        Self::collate(&conn)?;
         let mut store = Self {
             conn,
             clock,
@@ -470,6 +475,17 @@ impl Store {
         store.init()?;
         store.opened = true;
         Ok(store)
+    }
+
+    /// People are typed by hand, so filters and sorts compare them ignoring
+    /// case; SQLite's NOCASE folds only A to Z. Uppercasing first makes ß
+    /// match SS and final sigma match sigma.
+    fn collate(conn: &Connection) -> Result<(), StoreError> {
+        conn.create_collation(query::FOLD, |a, b| {
+            let fold = |s: &str| s.to_uppercase().to_lowercase();
+            fold(a).cmp(&fold(b))
+        })?;
+        Ok(())
     }
 
     /// Replaces the Scheme writes are checked against and reads are labelled

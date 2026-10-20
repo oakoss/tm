@@ -184,6 +184,16 @@ impl CliError {
                 .with("supported", supported)
                 .fix("upgrade tm"),
             StoreError::FormatChanged => Self::new("store_format_changed", message),
+            StoreError::SnapshotVersion { found, expected } => {
+                Self::new("snapshot_version", message)
+                    .with("found", found)
+                    .with("expected", expected)
+                    .fix(if found > expected {
+                        "upgrade tm"
+                    } else {
+                        "write once with this tm outside the sandbox to publish a new snapshot"
+                    })
+            }
             StoreError::WorkspaceNotEmpty { workspace, held } => {
                 Self::new("workspace_not_empty", message)
                     .with("workspace", workspace.to_string())
@@ -231,6 +241,7 @@ impl From<StoreError> for CliError {
             | StoreError::WorkspaceMismatch { .. }
             | StoreError::NewerStore { .. }
             | StoreError::FormatChanged
+            | StoreError::SnapshotVersion { .. }
             | StoreError::WorkspaceNotEmpty { .. }
             | StoreError::InvalidExport { .. }
             | StoreError::ExportFormat { .. }
