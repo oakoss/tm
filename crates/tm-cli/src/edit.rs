@@ -47,10 +47,10 @@ fn own_flag(field: &str) -> Result<(), String> {
 }
 
 /// A field's value before and after the edit, as `--json` reports it.
-struct Changed {
-    field: String,
-    before: Value,
-    after: Value,
+pub(crate) struct Changed {
+    pub(crate) field: String,
+    pub(crate) before: Value,
+    pub(crate) after: Value,
 }
 
 pub(crate) fn run(reference: &str, edit: &Edit) -> Result<Output, CliError> {
@@ -293,7 +293,7 @@ fn changes(
 
 /// Whether writing `after` over `before` would change nothing. A whole number
 /// reads back as an integer, and `typed` gives a float.
-fn same(before: &Value, after: &Value) -> bool {
+pub(crate) fn same(before: &Value, after: &Value) -> bool {
     before == after || before.as_f64().is_some_and(|b| after.as_f64() == Some(b))
 }
 
@@ -325,7 +325,7 @@ fn unsettable(scheme: &Scheme, view: &IssueView, name: &str) -> Result<(), CliEr
 
 /// One line for a change: old to new, or for text of several lines or more
 /// than a line's length, how many lines it went from and to.
-fn summary(change: &Changed) -> String {
+pub(crate) fn summary(change: &Changed) -> String {
     let shown = |value: &Value| match value {
         Value::Null => "(none)".to_owned(),
         Value::Array(items) if items.is_empty() => "(none)".to_owned(),

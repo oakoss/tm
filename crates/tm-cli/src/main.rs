@@ -161,7 +161,8 @@ enum Command {
     /// Starting work on it starts each parent still in triage or todo, in the
     /// same batch. Finishing its parent's last open child prints the move
     /// that closes the parent, and reopening a child of a finished parent
-    /// the move that reopens it; tm leaves both to you.
+    /// the move that reopens it; tm leaves both to you. It prints a line per
+    /// change; `tm show` or `--json` gives the whole Issue.
     Move {
         /// The Issue's Key or full id.
         issue: String,
