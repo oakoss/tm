@@ -52,6 +52,23 @@ pub(crate) fn open() -> Result<Here, CliError> {
     })
 }
 
+/// The path writes to Issues and Claims take: the store's warnings come
+/// before the identity warnings `write` returns, on success and failure.
+pub(crate) fn write(
+    write: impl FnOnce(&mut Here) -> Result<(Output, Vec<String>), CliError>,
+) -> Result<Output, CliError> {
+    let mut here = open()?;
+    let warnings = std::mem::take(&mut here.warnings);
+    match write(&mut here) {
+        Ok((mut output, identity_warnings)) => {
+            output.warnings = warnings;
+            output.warnings.extend(identity_warnings);
+            Ok(output)
+        }
+        Err(err) => Err(err.warned(warnings)),
+    }
+}
+
 /// tm's home, the working directory and its repo file, with the store unopened.
 ///
 /// # Errors

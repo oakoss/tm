@@ -41,16 +41,7 @@ pub(crate) fn split_pair(pair: &str) -> Result<(String, String), String> {
 }
 
 pub(crate) fn run(create: &Create) -> Result<Output, CliError> {
-    let mut here = here::open()?;
-    let warnings = std::mem::take(&mut here.warnings);
-    match write(&mut here, create) {
-        Ok((mut output, identity_warnings)) => {
-            output.warnings = warnings;
-            output.warnings.extend(identity_warnings);
-            Ok(output)
-        }
-        Err(err) => Err(err.warned(warnings)),
-    }
+    here::write(|here| write(here, create))
 }
 
 fn write(here: &mut Here, create: &Create) -> Result<(Output, Vec<String>), CliError> {

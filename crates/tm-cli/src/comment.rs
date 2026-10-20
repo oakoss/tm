@@ -12,16 +12,7 @@ use crate::identity;
 use crate::output::Output;
 
 pub(crate) fn run(reference: &str, body: &str) -> Result<Output, CliError> {
-    let mut here = here::open()?;
-    let warnings = std::mem::take(&mut here.warnings);
-    match write(&mut here, reference, body) {
-        Ok((mut output, identity_warnings)) => {
-            output.warnings = warnings;
-            output.warnings.extend(identity_warnings);
-            Ok(output)
-        }
-        Err(err) => Err(err.warned(warnings)),
-    }
+    here::write(|here| write(here, reference, body))
 }
 
 fn write(here: &mut Here, reference: &str, body: &str) -> Result<(Output, Vec<String>), CliError> {

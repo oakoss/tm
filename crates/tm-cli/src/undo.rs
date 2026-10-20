@@ -19,16 +19,7 @@ use crate::show;
 const MIN_PART: usize = 8;
 
 pub(crate) fn run(reference: Option<&str>, dry_run: bool) -> Result<Output, CliError> {
-    let mut here = here::open()?;
-    let warnings = std::mem::take(&mut here.warnings);
-    match undo(&mut here, reference, dry_run) {
-        Ok((mut output, identity_warnings)) => {
-            output.warnings = warnings;
-            output.warnings.extend(identity_warnings);
-            Ok(output)
-        }
-        Err(err) => Err(err.warned(warnings)),
-    }
+    here::write(|here| undo(here, reference, dry_run))
 }
 
 fn undo(

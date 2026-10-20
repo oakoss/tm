@@ -11,16 +11,7 @@ use crate::identity;
 use crate::output::Output;
 
 pub(crate) fn run(words: &[String], present: bool) -> Result<Output, CliError> {
-    let mut here = here::open()?;
-    let warnings = std::mem::take(&mut here.warnings);
-    match write(&mut here, words, present) {
-        Ok((mut output, identity_warnings)) => {
-            output.warnings = warnings;
-            output.warnings.extend(identity_warnings);
-            Ok(output)
-        }
-        Err(err) => Err(err.warned(warnings)),
-    }
+    here::write(|here| write(here, words, present))
 }
 
 fn write(
