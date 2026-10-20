@@ -2,7 +2,7 @@
 
 `tm` is a local-first issue tracker for one human and their AI agents: a Rust CLI and TUI with a later TypeScript web UI. The behavior it must have is in [docs/specs/design.md](docs/specs/design.md); the order it is built in is [docs/contributing/build-plan.md](docs/contributing/build-plan.md).
 
-`mise run setup` bootstraps a fresh clone. `mise run check`, `mise run test` and `mise run audit` are the local gates; CI runs the same tasks.
+`mise run setup` bootstraps a fresh clone. `mise run check`, `mise run test` and `mise run audit` are the local gates; CI runs the same tasks. `mise run ci` runs every CI job's task in turn, the cold-start budget included, which CI holds only on Linux.
 
 ## Rules that override defaults
 

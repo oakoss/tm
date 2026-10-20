@@ -88,3 +88,15 @@ run = [
   "cargo test --workspace --all-targets --locked",
   "cargo test --workspace --doc --locked",
 ]
+
+[tasks.ci]
+description = "Every CI job's task, in turn"
+# In turn, not as `depends`: mise runs dependencies in parallel, and the
+# cold-start budget timed beside a build measures the build.
+run = [
+  "mise run check",
+  "mise run test",
+  "mise run audit",
+  "mise run scan-secrets",
+  "mise run coldstart",
+]
