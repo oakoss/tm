@@ -111,7 +111,8 @@ pub(crate) fn rfc3339(ms: i64) -> Result<String, StoreError> {
         .map_err(|err| StoreError::Corrupt(format!("time {ms} ms: {err}")))
 }
 
-/// Every Issue's record, ordered by id, read inside the caller's snapshot.
+/// Every Issue's record, ordered by id, read inside the caller's read
+/// transaction.
 pub(crate) fn issue_records(
     conn: &Connection,
     scheme: &Scheme,

@@ -218,7 +218,7 @@ fn every_issue_is_exported_as_its_current_record() {
 }
 
 #[test]
-fn a_snapshot_of_a_store_in_use_holds_what_its_wal_holds() {
+fn a_copy_of_a_store_in_use_holds_what_its_wal_holds() {
     let (dir, other) = (TempDir::new(), TempDir::new());
     let clock = ManualClock::at(1_000);
     let mut store = source(&dir, &clock);
@@ -241,7 +241,7 @@ fn a_snapshot_of_a_store_in_use_holds_what_its_wal_holds() {
     let before = beside();
 
     let copy = other.db();
-    tm_store::snapshot(&dir.db(), &copy).unwrap();
+    tm_store::copy_store(&dir.db(), &copy).unwrap();
     assert_eq!(beside(), before, "nothing made beside the store");
     let copied = Store::open_with_clock(&copy, Box::new(clock.clone())).unwrap();
     assert_eq!(field(&copied, issue, "title"), Some(json!("in the wal")));

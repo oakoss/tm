@@ -111,7 +111,7 @@ pub struct Restored {
 }
 
 impl Store {
-    /// Writes the log to `out` as JSONL, read in one snapshot.
+    /// Writes the log to `out` as JSONL, read in one read transaction.
     ///
     /// # Errors
     ///
@@ -248,7 +248,7 @@ pub fn read_export(input: &mut dyn BufRead) -> Result<(Uuid, usize), StoreError>
 /// # Errors
 ///
 /// Any SQLite failure reading `from` or writing `to`.
-pub fn snapshot(from: &std::path::Path, to: &std::path::Path) -> Result<(), StoreError> {
+pub fn copy_store(from: &std::path::Path, to: &std::path::Path) -> Result<(), StoreError> {
     let conn = rusqlite::Connection::open_with_flags(
         from,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,

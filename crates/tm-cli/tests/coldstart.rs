@@ -2,7 +2,7 @@
 //! time over warm-cache runs of a release build, on Workspaces of 200 and
 //! 10,000 Issues, with identity read from git as a session-start hook reads
 //! it; `list` and `prime` are also timed in a sandbox that denies every
-//! write, where they read the snapshot. Writes are timed and printed, not
+//! write, where they read the Snapshot. Writes are timed and printed, not
 //! held to a budget yet.
 //!
 //! Run with `mise run coldstart`; plain `cargo test` skips it.
@@ -39,7 +39,7 @@ const READS: [(&[&str], u64, u64); 12] = [
     (&["--json", "ready"], 40, 150),
 ];
 
-/// The reads a sandboxed Agent makes first, from the snapshot, held to the
+/// The reads a sandboxed Agent makes first, from the Snapshot, held to the
 /// same budgets.
 const SANDBOXED: [(&[&str], u64, u64); 4] = [
     (&["prime"], 40, 150),
@@ -248,8 +248,8 @@ fn run(size: usize, budget: impl Fn(u64, u64) -> u64) -> Vec<String> {
     assert!(
         listed["warnings"][0]
             .as_str()
-            .is_some_and(|warning| warning.starts_with("read from the snapshot published ")),
-        "a sandboxed read is the snapshot's: {}",
+            .is_some_and(|warning| warning.starts_with("read from the Snapshot published ")),
+        "a sandboxed read is the Snapshot's: {}",
         listed["warnings"]
     );
     assert!(listed["data"]["total"].as_u64() > Some(0));

@@ -203,7 +203,7 @@ impl CliError {
                     .fix(if found > expected {
                         "upgrade tm"
                     } else {
-                        "write once with this tm outside the sandbox to publish a new snapshot"
+                        "run any write with this tm where it may write the store, which publishes a new Snapshot"
                     })
             }
             StoreError::WorkspaceNotEmpty { workspace, held } => {

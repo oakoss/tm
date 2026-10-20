@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 repository.workspace = true
 rust-version.workspace = true
-description = "SQLite store: the operation log, its table projections and the read-only snapshot."
+description = "SQLite store: the operation log, its table projections and the read-only Snapshot."
 
 [dependencies]
 jiff.workspace = true

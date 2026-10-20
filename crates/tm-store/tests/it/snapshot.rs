@@ -39,7 +39,7 @@ fn a_snapshot_holds_the_store_as_of_its_publish() {
     let snapshot = Store::open_snapshot(&workspace.snapshot_path(), workspace.id).unwrap();
     assert_eq!(titles(&snapshot), ["first"]);
     let found = snapshot.find("", Context { me: None }).unwrap();
-    assert_eq!(found.len(), 1, "filters run on the snapshot");
+    assert_eq!(found.len(), 1, "filters run on the Snapshot");
     drop(snapshot);
 
     store.publish_snapshot(&workspace.snapshot_path()).unwrap();
@@ -114,7 +114,7 @@ fn a_snapshot_opens_where_nothing_can_be_written_and_takes_no_writes() {
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
         .collect();
-    assert_eq!(before, after, "opening the snapshot made no file");
+    assert_eq!(before, after, "opening the Snapshot made no file");
 }
 
 #[test]

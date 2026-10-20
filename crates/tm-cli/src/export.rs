@@ -20,7 +20,7 @@ use crate::{here, identity};
 /// Writes the export to stdout. It is JSONL in either mode, so nothing else
 /// is printed; a failure before it is written is the usual error.
 pub(crate) fn export() -> Result<(), CliError> {
-    // Not the snapshot: a backup must be current, and JSONL has no room to
+    // Not the Snapshot: a backup must be current, and JSONL has no room to
     // warn that it is not.
     let here = here::open()?;
     let now = SystemTime::now()
@@ -79,7 +79,7 @@ pub(crate) fn import(file: &str, dry_run: bool) -> Result<Output, CliError> {
     })?;
     let mut store = if exists {
         has_store(&target)?;
-        tm_store::snapshot(&target.store_path(), &staged.store())?;
+        tm_store::copy_store(&target.store_path(), &staged.store())?;
         Store::open_existing(&staged.store(), workspace)?
     } else {
         let mut store = Store::open(&staged.store())?;
@@ -112,7 +112,7 @@ pub(crate) fn import(file: &str, dry_run: bool) -> Result<Output, CliError> {
     }
 }
 
-/// Restores into an existing Workspace's store, then publishes its snapshot.
+/// Restores into an existing Workspace's store, then publishes its Snapshot.
 fn restore_into(target: &Workspace, bytes: &[u8]) -> Result<Output, CliError> {
     let mut store = open_target(target)?;
     let restored = store.restore(&mut &*bytes)?;
@@ -163,7 +163,7 @@ pub(crate) fn import_records(
     let ((imported, dropped), undo) = if dry_run {
         let target = workspace::locate(&home, &found)?;
         let staged = Staged::new(&std::env::temp_dir())?;
-        tm_store::snapshot(&target.store_path(), &staged.store())?;
+        tm_store::copy_store(&target.store_path(), &staged.store())?;
         let mut copy = Store::open_existing(&staged.store(), target.id)?;
         // The copy's batches, on success or refusal, are gone with it.
         let key = project(&copy)?;

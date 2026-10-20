@@ -41,7 +41,7 @@ pub(crate) fn run() -> Result<Output, CliError> {
         }
     }
     // The unapplied warning every other command gives is this report's own
-    // subject; that it read the snapshot is not.
+    // subject; that it read the Snapshot is not.
     let mut output = Output::new(text, data);
     output.warnings.extend(here.snapshot);
     Ok(output)

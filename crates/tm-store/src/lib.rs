@@ -1,4 +1,4 @@
-//! SQLite store: the operation log, its table projections and the read-only snapshot.
+//! SQLite store: the operation log, its table projections and the read-only Snapshot.
 //!
 //! The log is the source of truth (ADR 0005). Every write appends one operation
 //! and applies it to the projection tables in the same `BEGIN IMMEDIATE`
@@ -39,7 +39,7 @@ use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
 pub use beads::BeadsImported;
 pub use claim::Claim;
-pub use export::{Exported, Restored, read_export, snapshot};
+pub use export::{Exported, Restored, copy_store, read_export};
 pub use import::{Conflict, RecordOutcome, RecordsImported};
 pub use read::{CommentView, Direction, IssueView, LinkView};
 pub use ready::Ready;
@@ -179,7 +179,7 @@ pub enum StoreError {
     )]
     FormatChanged,
     #[error(
-        "the snapshot was published by a different build of tm (projection {found}, this tm reads {expected})"
+        "the Snapshot was published by a different build of tm (projection {found}, this tm reads {expected})"
     )]
     SnapshotVersion { found: i64, expected: i64 },
     #[error("the operation at log position {seq} cannot be replayed: {source}")]
@@ -305,7 +305,7 @@ struct LastWrite {
 impl Drop for Store {
     fn drop(&mut self) {
         // Best effort: a failed optimize costs query planning, never data.
-        // A store that failed to open, and a snapshot, are left as found.
+        // A store that failed to open, and a Snapshot, are left as found.
         if self.opened {
             // Skipped, not waited for, while another process writes.
             let _ = self.conn.busy_timeout(Duration::ZERO);

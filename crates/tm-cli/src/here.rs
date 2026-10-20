@@ -21,14 +21,14 @@ pub(crate) struct Here {
     pub(crate) workspace: Workspace,
     /// Where the log ended when the store was opened.
     log_end: i64,
-    /// The warning that this is the snapshot, not the store, when it is.
+    /// The warning that this is the Snapshot, not the store, when it is.
     pub(crate) snapshot: Option<String>,
     /// What every command reports, such as operations that did not apply.
     pub(crate) warnings: Vec<String>,
 }
 
 impl Here {
-    /// Publishes the snapshot when this command committed a write.
+    /// Publishes the Snapshot when this command committed a write.
     pub(crate) fn publish(&self) -> Option<String> {
         match self.store.log_end() {
             Ok(end) if end == self.log_end => None,
@@ -37,7 +37,7 @@ impl Here {
     }
 }
 
-/// Publishes `workspace`'s snapshot from `store`. A failure is a warning, not
+/// Publishes `workspace`'s Snapshot from `store`. A failure is a warning, not
 /// an error: the write stands, and the next one publishes again.
 pub(crate) fn publish(store: &Store, workspace: &Workspace) -> Option<String> {
     store
@@ -47,7 +47,7 @@ pub(crate) fn publish(store: &Store, workspace: &Workspace) -> Option<String> {
 }
 
 pub(crate) fn not_published(cause: &dyn std::fmt::Display) -> String {
-    format!("the read-only snapshot was not updated: {cause}")
+    format!("the read-only Snapshot was not updated: {cause}")
 }
 
 /// Opens the store the repo file at or above the working directory names.
@@ -75,12 +75,12 @@ pub(crate) fn open() -> Result<Here, CliError> {
 }
 
 /// [`open`] for a command that only reads. Where this process may not open
-/// the store, as in a sandbox that denies every write, it reads the snapshot
+/// the store, as in a sandbox that denies every write, it reads the Snapshot
 /// the last write published, with a warning saying when.
 ///
 /// # Errors
 ///
-/// As [`open`], or `read_only` when no snapshot has been published.
+/// As [`open`], or `read_only` when no Snapshot has been published.
 pub(crate) fn read() -> Result<Here, CliError> {
     let (home, cwd, found) = find()?;
     let store_path = match workspace::workspace_for(&home, &found) {
@@ -96,7 +96,7 @@ pub(crate) fn read() -> Result<Here, CliError> {
         return Err(CliError::new(
             "read_only",
             format!(
-                "{}: this process may not open the store, as in a sandbox, and no snapshot has been published to read instead",
+                "{}: this process may not open the store, as in a sandbox, and no Snapshot has been published to read instead",
                 store_path.display()
             ),
         )
@@ -108,7 +108,7 @@ pub(crate) fn read() -> Result<Here, CliError> {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |age| i64::try_from(age.as_millis()).unwrap_or(i64::MAX));
     let published = format!(
-        "read from the snapshot published {}",
+        "read from the Snapshot published {}",
         local_time(published_ms)
     );
     here.warnings.insert(0, published.clone());

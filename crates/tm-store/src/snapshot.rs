@@ -1,4 +1,4 @@
-//! The read-only snapshot: a copy of the store published after writes, for
+//! The read-only Snapshot: a copy of the store published after writes, for
 //! readers that cannot write any file, such as a sandboxed Agent (ADR 0001).
 
 use std::fmt::Write as _;
@@ -11,18 +11,18 @@ use uuid::Uuid;
 
 use crate::{Store, StoreError, SystemClock, schema};
 
-/// Held while a snapshot is copied and renamed, so publishes land in the
+/// Held while a Snapshot is copied and renamed, so publishes land in the
 /// order their writes did and a slow one never replaces a newer copy.
 const LOCK: &str = "snapshot.lock";
 
-/// The prefix of a snapshot being copied; one left behind was interrupted.
+/// The prefix of a Snapshot being copied; one left behind was interrupted.
 const PARTIAL: &str = ".snapshot-";
 
 impl Store {
-    /// Opens the snapshot at `path` of Workspace `workspace`, read-only and
+    /// Opens the Snapshot at `path` of Workspace `workspace`, read-only and
     /// immutable: SQLite takes no lock and creates no file, so a reader that
     /// can write nothing opens it. Nothing is set up or rebuilt, so a
-    /// snapshot this build cannot read as it is is refused.
+    /// Snapshot this build cannot read as it is is refused.
     ///
     /// # Errors
     ///
@@ -59,7 +59,7 @@ impl Store {
         Ok(store)
     }
 
-    /// Publishes this store as the snapshot at `path`: copied beside it, then
+    /// Publishes this store as the Snapshot at `path`: copied beside it, then
     /// renamed over it, so a reader finds the old copy or the new one, never
     /// part of either. Then checkpoints the log, a natural point to make
     /// recent writes durable.

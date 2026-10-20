@@ -153,7 +153,7 @@ fn reads_fall_back_to_the_snapshot_where_the_store_is_refused() {
             assert!(out.status.success(), "{read:?}: {out:?}");
             let warning = doc(&out)["warnings"][0].as_str().unwrap().to_owned();
             assert!(
-                warning.starts_with("read from the snapshot published "),
+                warning.starts_with("read from the Snapshot published "),
                 "{read:?}: {warning}"
             );
         }
@@ -173,7 +173,7 @@ fn reads_fall_back_to_the_snapshot_where_the_store_is_refused() {
         );
 
         let out = tm(&scratch, &repo, &["--json", "export"]);
-        assert!(!out.status.success(), "a backup is never the snapshot");
+        assert!(!out.status.success(), "a backup is never the Snapshot");
         assert_eq!(doc(&out)["error"], "read_only", "{out:?}");
     });
 }
@@ -240,7 +240,7 @@ fn a_failed_publish_is_a_warning_after_the_stores_own() {
     assert_eq!(warnings[0], unapplied);
     assert!(
         warnings[1].as_str().unwrap().starts_with(&format!(
-            "the read-only snapshot was not updated: {}: ",
+            "the read-only Snapshot was not updated: {}: ",
             path.display()
         )),
         "{doc}"
