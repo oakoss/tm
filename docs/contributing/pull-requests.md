@@ -5,4 +5,4 @@ PR bodies follow [`.github/PULL_REQUEST_TEMPLATE.md`](../../.github/PULL_REQUEST
 - Squash-merge uses the PR title and body as the mainline commit message, so write the body as permanent history and delete the template's guidance comments.
 - The PR title is the commit subject: `type(scope): summary`.
 - No Claude session links in PR bodies or commit messages.
-- No Test plan checklist. Verification is `mise run check`, `mise run test`, `mise run audit` and the PR's Checks tab.
+- No Test plan checklist. Verification is the PR's Checks tab and `mise run ci`, which runs `check`, `test`, `audit`, `scan-secrets` and `coldstart` in turn.
