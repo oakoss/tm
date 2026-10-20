@@ -69,6 +69,7 @@ fn create_answers_in_a_fixed_shape() {
         "id": "[id]",
         "key": "TM-3",
         "links": [],
+        "next": [],
         "parent": {
           "id": "[id]",
           "key": "TM-1"
@@ -78,7 +79,8 @@ fn create_answers_in_a_fixed_shape() {
           "labels": {
             "ui": "ui"
           }
-        }
+        },
+        "started": []
       },
       "schema_version": 1,
       "warnings": []
@@ -131,9 +133,11 @@ fn move_answers_in_a_fixed_shape() {
             "type": "blocks"
           }
         ],
+        "next": [],
         "parent": null,
         "project": "TM",
-        "sets": {}
+        "sets": {},
+        "started": []
       },
       "schema_version": 1,
       "warnings": []

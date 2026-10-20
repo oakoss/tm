@@ -2,12 +2,13 @@
 
 use serde_json::{Value, json};
 use tm_core::Change;
-use tm_core::scheme::{FieldType, Scheme};
+use tm_core::scheme::{Category, FieldType, Scheme};
 use tm_store::{Draft, StoreError};
 use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::fields::{self, quoted, set, split_pair, typed};
+use crate::follow::{self, Starts};
 use crate::here::{self, Here};
 use crate::identity;
 use crate::output::Output;
@@ -49,6 +50,10 @@ fn write(here: &mut Here, create: &Create) -> Result<(Output, Vec<String>), CliE
     let scheme = here.store.scheme().clone();
     let issue = Uuid::now_v7();
     let changes = changes(&scheme, create, parent);
+    let active = create.issue_type.as_deref().is_some_and(|issue_type| {
+        status(&changes).and_then(|status| scheme.category(issue_type, status))
+            == Some(Category::Active)
+    });
     let drafts = changes
         .into_iter()
         .map(|change| Draft {
@@ -58,16 +63,33 @@ fn write(here: &mut Here, create: &Create) -> Result<(Output, Vec<String>), CliE
             change,
         })
         .collect();
-    let ops = match here.store.append_all(drafts) {
-        Ok(ops) => ops,
+    let written = match parent {
+        Some(parent) if active => here.store.append_with_lineage(drafts, parent, |lineage| {
+            follow::starts(&scheme, lineage, &identity.actor)
+        }),
+        _ => here
+            .store
+            .append_all(drafts)
+            .map(|ops| (ops, Starts::default())),
+    };
+    let (ops, starts) = match written {
+        Ok(written) => written,
         Err(StoreError::MissingFields { fields, .. }) => {
             return Err(missing(&scheme, create, fields));
         }
         Err(err) => return Err(err.into()),
     };
-    let shown = show::render(here, issue)?;
+    let shown = follow::report(&here.store, show::render(here, issue)?, starts, issue)?;
     let output = here.undoable(shown, ops[0].op_id)?;
     Ok((output, identity.warnings))
+}
+
+/// The Status `changes` leave, the last one set.
+fn status(changes: &[Change]) -> Option<&str> {
+    changes.iter().rev().find_map(|change| match change {
+        Change::SetField { field, value, .. } if field == "status" => value.as_str(),
+        _ => None,
+    })
 }
 
 /// The create, then each field given; the Status comes from the type's

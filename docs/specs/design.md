@@ -76,6 +76,7 @@ Key, type, title, description, status, Assignee, reporter, Agent and Claim, pare
 - **Default link types**: blocks, relates to, duplicates, derived from, causes, supersedes. Custom types have an outward name, an inward name and readiness behaviour (blocks, waits for all children, conditional on failure, or none).
 - **Gates** wait on outside events: a PR merging, CI passing, a timer, or a human resolving it.
 - Parent and child is separate from links and governed by the Scheme.
+- **Parents follow children.** When `tm move` or `tm create` puts a child in an active Status, each parent above it still in triage or todo moves to the first active Status of its own Workflow, in the same batch, so one undo reverts both; the output names each one. A parent never moves backwards and is never closed for its children, since it can carry work of its own: when a child finishes the last open one, tm prints the move that closes the parent, and when a child is open under a finished parent, the move that reopens it. Only these direct writes follow; an import or a merge records what happened elsewhere.
 - **Snooze**: `tm defer CPL-42 --until <date>` or `--until-activity` hides an Issue from the ready queue until the date or the next comment or change.
 - Links that would create a blocking cycle are refused, since a cycle silently empties the ready queue.
 - The ready queue shows what each Issue would unblock.
@@ -166,7 +167,7 @@ Off by default. An Issue can carry **Checks**: commands with an expected result.
   - all Sub-tasks done notifies the Assignee
   - a Finding going stale notifies the reviewed Issue's author
   - Claim expiry releases the Claim and records a comment
-  - parent follows children (first child active moves the parent to active; all done moves it to review)
+  - all children done moves the parent to review (starting the parent is built in; see Links and gates)
   - blocker cleared notifies the Assignee
   - stale in progress flags active Issues with no activity for N days
   - orphaned branch flags a merged branch whose Issue did not close
