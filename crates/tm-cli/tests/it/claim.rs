@@ -26,6 +26,99 @@ fn doc(out: &Output) -> Value {
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
+/// The Claim `tm show --json` gives the Issue.
+fn claim_of(scratch: &Scratch, repo: &Path, key: &str) -> Value {
+    doc(&tm(scratch, repo, &["--json", "show", key]))["data"]["claim"].clone()
+}
+
+#[test]
+fn a_move_to_done_or_cancelled_releases_the_claim_and_review_keeps_it() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    for title in ["shipped", "dropped"] {
+        store
+            .create_issue(&Actor::human("jace"), project, "task", title)
+            .unwrap();
+    }
+    drop(store);
+    for key in ["TM-1", "TM-2"] {
+        assert!(as_agent(&scratch, &repo, &["claim", key]).status.success());
+    }
+
+    for status in ["in_progress", "in_review"] {
+        let out = as_agent(&scratch, &repo, &["move", "TM-1", status]);
+        assert!(out.status.success(), "{out:?}");
+        assert!(claim_of(&scratch, &repo, "TM-1").is_object(), "{status}");
+    }
+    let moved = doc(&as_agent(
+        &scratch,
+        &repo,
+        &["--json", "move", "TM-1", "done"],
+    ));
+    assert_eq!(claim_of(&scratch, &repo, "TM-1"), Value::Null);
+    let out = as_agent(&scratch, &repo, &["move", "TM-2", "cancelled"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(claim_of(&scratch, &repo, "TM-2"), Value::Null);
+
+    let batch = moved["data"]["batch"].as_str().unwrap();
+    let out = as_agent(&scratch, &repo, &["undo", batch]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        text(&out.stdout)
+            .contains("  TM-1's Claim stays released; its Agent takes it again with tm claim\n"),
+        "{out:?}"
+    );
+    let shown = doc(&tm(&scratch, &repo, &["--json", "show", "TM-1"]));
+    assert_eq!(shown["data"]["fields"]["status"], "in_review");
+    assert_eq!(shown["data"]["claim"], Value::Null);
+
+    // Claimed again before the undo: no note that it stays released.
+    assert!(
+        as_agent(&scratch, &repo, &["claim", "TM-1"])
+            .status
+            .success()
+    );
+    let moved = doc(&as_agent(
+        &scratch,
+        &repo,
+        &["--json", "move", "TM-1", "done"],
+    ));
+    assert_eq!(claim_of(&scratch, &repo, "TM-1"), Value::Null);
+    assert!(
+        as_agent(&scratch, &repo, &["claim", "TM-1"])
+            .status
+            .success()
+    );
+    let batch = moved["data"]["batch"].as_str().unwrap();
+    let out = as_agent(&scratch, &repo, &["--json", "undo", batch]);
+    assert_eq!(doc(&out)["data"]["released"], json!([]), "{out:?}");
+}
+
+#[test]
+fn undoing_a_batch_that_only_released_a_claim_is_refused() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    store
+        .create_issue(&Actor::human("jace"), project, "task", "t")
+        .unwrap();
+    drop(store);
+    let claimed = doc(&as_agent(&scratch, &repo, &["--json", "claim", "TM-1"]));
+    let token = claimed["data"]["claim"]["id"].as_str().unwrap().to_owned();
+    let released = doc(&as_agent(
+        &scratch,
+        &repo,
+        &["--json", "release", "TM-1", &token],
+    ));
+    let batch = released["data"]["batch"].as_str().unwrap();
+    let out = as_agent(&scratch, &repo, &["--json", "undo", batch]);
+    assert_eq!(doc(&out)["error"], "cannot_undo", "{out:?}");
+    let message = doc(&out)["message"].as_str().unwrap_or("").to_owned();
+    assert!(
+        message.contains("it released a Claim; take the Issue again with tm claim"),
+        "{message}"
+    );
+}
+
 #[test]
 fn an_agent_claims_with_a_token_and_releases_with_it() {
     let scratch = Scratch::new();

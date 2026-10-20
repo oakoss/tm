@@ -3,8 +3,9 @@
 
 use serde_json::json;
 use tm_core::Change;
+use tm_core::op::ClaimAction;
 use tm_core::scheme::{Category, Workflow};
-use tm_store::Draft;
+use tm_store::{Draft, StoreError};
 
 use crate::create::{split_pair, typed};
 use crate::error::CliError;
@@ -12,6 +13,9 @@ use crate::here::{self, Here};
 use crate::identity;
 use crate::output::Output;
 use crate::show;
+
+/// Retries after another writer claims or releases the Issue mid-move.
+const MOVE_TRIES: usize = 2;
 
 /// `--set FIELD=VALUE` for a move: the Status is the move's target.
 pub(crate) fn field_value(pair: &str) -> Result<(String, String), String> {
@@ -89,16 +93,36 @@ fn write(
     for (field, value) in set {
         changes.push(set_field(field, typed(&scheme, field, value)));
     }
-    let drafts = changes
-        .into_iter()
-        .map(|change| Draft {
-            actor: identity.actor.clone(),
-            project: view.project,
-            subject: id,
-            change,
-        })
-        .collect();
-    let ops = here.store.append_all(drafts)?;
+    // A move into done or cancelled releases the Claim; a review status keeps
+    // it (ADR 0009).
+    let finished = workflow
+        .status(&status)
+        .is_some_and(|status| matches!(status.category, Category::Done | Category::Cancelled));
+    let draft = |change| Draft {
+        actor: identity.actor.clone(),
+        project: view.project,
+        subject: id,
+        change,
+    };
+    let mut tries = 0;
+    let ops = loop {
+        let mut drafts: Vec<Draft> = changes.iter().cloned().map(draft).collect();
+        if !finished {
+            break here.store.append_all(drafts)?;
+        }
+        // The release names the Claim read here, so the write refuses one that
+        // was claimed or released since and the move reads it again.
+        let held = here.store.claim(id)?.map(|claim| claim.id);
+        if let Some(claim) = held {
+            drafts.push(draft(Change::Claim {
+                action: ClaimAction::Release { claim },
+            }));
+        }
+        match here.store.append_if_claim(drafts, id, held) {
+            Err(StoreError::ClaimChanged(_)) if tries < MOVE_TRIES => tries += 1,
+            written => break written?,
+        }
+    };
     let shown = show::render(here, id)?;
     let output = here.undoable(shown, ops[0].op_id)?;
     Ok((output, identity.warnings))

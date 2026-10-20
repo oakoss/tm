@@ -31,6 +31,9 @@ pub struct Restore {
 pub struct UndoPlan {
     pub batch: Uuid,
     pub restores: Vec<Restore>,
+    /// Issues whose Claim the batch released alongside its other writes and
+    /// that no Claim holds now; only an Agent can take the Issue again.
+    pub released: Vec<Uuid>,
     changes: Vec<(ProjectId, Uuid, Change)>,
 }
 
@@ -42,7 +45,7 @@ impl Store {
     ///
     /// [`StoreError::UnknownBatch`], [`StoreError::UndoConflict`] naming every
     /// field or element a later batch wrote, [`StoreError::CannotUndo`] for a
-    /// Project write, a Claim release or a synced batch, or as
+    /// Project write, a batch that only released a Claim or a synced batch, or as
     /// [`Store::append_all`].
     pub fn undo_plan(&mut self, actor: &Actor, batch: Uuid) -> Result<UndoPlan, StoreError> {
         self.undo_with(actor, batch, false).map(|(plan, _)| plan)
@@ -291,6 +294,7 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
     let mut plan = UndoPlan {
         batch,
         restores: Vec::new(),
+        released: Vec::new(),
         changes: Vec::new(),
     };
     let mut conflicts = Vec::new();
@@ -306,6 +310,14 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
                 return Err(cannot("it wrote a Project, which undo does not revert"));
             }
             Change::Create => unreachable!("created Issues are archived above"),
+            // A Claim taken since holds the Issue, so nothing stays released.
+            Change::Claim {
+                action: ClaimAction::Release { .. },
+            } if ops.len() > 1 => {
+                if crate::claim::current(conn, op.issue)?.is_none() {
+                    plan.released.push(op.issue);
+                }
+            }
             Change::Claim {
                 action: ClaimAction::Release { .. },
             } => {

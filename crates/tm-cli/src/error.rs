@@ -154,11 +154,17 @@ impl CliError {
                 refused.message = crate::output::printable(&message);
                 refused
             }
-            StoreError::ImportChanged(issue) => Self::new("import_changed", message)
-                .with("issue", issue.to_string())
-                .fix("retry"),
+            StoreError::ImportChanged(issue) => Self::changed("import_changed", message, issue),
             other => Self::internal(variant(&other), message),
         }
+    }
+
+    /// An Issue another writer changed under this write, which a retry reads
+    /// again.
+    fn changed(code: &'static str, message: String, issue: Uuid) -> Self {
+        Self::new(code, message)
+            .with("issue", issue.to_string())
+            .fix("retry")
     }
 
     /// A store, or an export, this command cannot use as it is.
@@ -273,6 +279,7 @@ impl From<StoreError> for CliError {
                 claim,
                 holder,
             } => Self::not_claim_holder(message, issue, claim, holder.as_deref()),
+            StoreError::ClaimChanged(issue) => Self::changed("claim_changed", message, issue),
             StoreError::MissingFields { issue, fields } => Self::new("missing_fields", message)
                 .with("issue", issue.to_string())
                 .with(

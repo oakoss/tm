@@ -103,6 +103,8 @@ pub enum StoreError {
     },
     #[error("Issue {0} changed while it was being imported")]
     ImportChanged(Uuid),
+    #[error("Issue {0} was claimed or released while it was being written")]
+    ClaimChanged(Uuid),
     #[error("unknown field {field:?}; valid fields: {}", valid.join(", "))]
     UnknownField { field: String, valid: Vec<String> },
     #[error("{field} {reason}{}", if valid.is_empty() { String::new() } else { format!("; valid: {}", valid.join(", ")) })]
@@ -908,6 +910,28 @@ impl Store {
             .map(|(draft, provenance)| (draft, Some(provenance)))
             .collect();
         self.append_with(drafts, guard, true, None)
+    }
+
+    /// [`Store::append_all`], refused with [`StoreError::ClaimChanged`] and
+    /// nothing written unless `issue`'s Claim is still `held` when the write
+    /// begins, so drafts built from it, such as a move's release, hold true.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::ClaimChanged`], or as [`Store::append_all`].
+    pub fn append_if_claim(
+        &mut self,
+        drafts: Vec<Draft>,
+        issue: Uuid,
+        held: Option<Uuid>,
+    ) -> Result<Vec<Op>, StoreError> {
+        self.append_guarded(drafts, |tx| {
+            if claim::current(tx, issue)?.map(|claim| claim.id) == held {
+                Ok(())
+            } else {
+                Err(StoreError::ClaimChanged(issue))
+            }
+        })
     }
 
     /// [`Store::append_all`] after `guard` passes inside the same write

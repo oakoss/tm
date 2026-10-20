@@ -61,6 +61,7 @@ design.md promises that every command supports `--json` (or `TM_JSON=1`) "with a
 | An export or import file that is not one, an export of another operation format, or one meeting a Workspace holding other operations ([ADR 0013](0013-export-carries-the-log-and-issue-records.md)) | `invalid_export` naming the line, `export_format_changed`, `workspace_not_empty`; the last two, and `workspace_mismatch` from an import, with fix `tm import --records FILE` |
 | A record an import's write refuses | the refusal's own code, with `line` and `record` |
 | An Issue another writer changed while it was being imported | `import_changed`, with fix `retry` |
+| An Issue claimed or released while a move to done or cancelled was being written | `claim_changed`, with fix `retry` |
 | No repo file maps this repo to a Workspace | `no_workspace`, with fix `tm init` |
 | A repo file names a Workspace this machine lacks, or one that holds no store | `unknown_workspace`, `incomplete_workspace`, with the remedy in `message` |
 | `tm init` on a repo that already has a Workspace | `workspace_exists` |
