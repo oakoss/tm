@@ -11,7 +11,11 @@ use crate::support::{Scratch, initialized, tm, tm_command};
 fn run(scratch: &Scratch, repo: &Path, args: &[&str]) -> Value {
     let out = tm(scratch, repo, &[&["--json"], args].concat());
     assert!(out.status.success(), "{out:?}");
-    serde_json::from_slice(&out.stdout).unwrap()
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    // A parsed document rewrites its keys sorted, so this pins the bytes
+    // too, including a list's, which is written without a parse.
+    assert_eq!(String::from_utf8_lossy(&out.stdout), format!("{doc}\n"));
+    doc
 }
 
 /// A repo with TM-1 ("first") blocking TM-2 ("second").

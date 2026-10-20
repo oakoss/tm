@@ -53,6 +53,30 @@ fn keys(doc: &Value) -> Vec<String> {
 }
 
 #[test]
+fn json_list_and_ready_carry_the_stores_warnings() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    new(&mut store, project, "t");
+    store
+        .connection()
+        .execute(
+            "INSERT INTO unapplied (op_id, reason) VALUES (?1, ?2)",
+            (Uuid::now_v7().as_bytes().to_vec(), "unknown field"),
+        )
+        .unwrap();
+    for command in ["list", "ready"] {
+        let out = tm(&scratch, &repo, &["--json", command]);
+        assert!(out.status.success(), "{command}: {out:?}");
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(
+            doc["warnings"],
+            json!(["1 logged operation did not apply in full; tm doctor will list it"]),
+            "{command}"
+        );
+    }
+}
+
+#[test]
 fn with_no_filter_list_shows_the_open_work() {
     let scratch = Scratch::new();
     let (repo, mut store, project) = initialized(&scratch);

@@ -3,15 +3,15 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use serde_json::json;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::here;
-use crate::list::{item, line, project_keys};
+use crate::list::{Item, Listed, line, project_keys};
 use crate::output::Output;
 
-pub(crate) fn run(limit: Option<usize>) -> Result<Output, CliError> {
+pub(crate) fn run(limit: Option<usize>, json: bool) -> Result<Output, CliError> {
     let here = here::open()?;
     let read = here.store.read(|store| {
         let mut ready = store.ready()?;
@@ -33,18 +33,32 @@ pub(crate) fn run(limit: Option<usize>) -> Result<Output, CliError> {
         Err(err) => return Err(err.warned(here.warnings)),
     };
 
-    let mut items = Vec::with_capacity(views.len());
+    // Only the form printed is built, as for `tm list`.
+    if json {
+        let issues = ready
+            .iter()
+            .zip(&views)
+            .map(|(entry, view)| {
+                let unblocks = entry
+                    .unblocks
+                    .iter()
+                    .map(|id| json!({ "id": id, "key": keys.get(id).cloned().flatten() }))
+                    .collect();
+                let mut item = Item::of(view, &projects);
+                item.unblocks = Some(unblocks);
+                item
+            })
+            .collect();
+        return match (Listed { issues, total }).output() {
+            Ok(mut output) => {
+                output.warnings = here.warnings;
+                Ok(output)
+            }
+            Err(err) => Err(err.warned(here.warnings)),
+        };
+    }
     let mut text = String::new();
     for (entry, view) in ready.iter().zip(&views) {
-        let unblocks: Vec<_> = entry
-            .unblocks
-            .iter()
-            .map(|id| json!({ "id": id, "key": keys.get(id).cloned().flatten() }))
-            .collect();
-        let mut item = item(view, &projects);
-        item["unblocks"] = json!(unblocks);
-        items.push(item);
-
         let _ = write!(text, "{}", line(view));
         if !entry.unblocks.is_empty() {
             let named: Vec<String> = entry
@@ -66,7 +80,7 @@ pub(crate) fn run(limit: Option<usize>) -> Result<Output, CliError> {
     } else if views.len() < total {
         let _ = writeln!(text, "({} of {total} shown)", views.len());
     }
-    let mut output = Output::new(text, json!({ "issues": items, "total": total }));
+    let mut output = Output::new(text, Value::Null);
     output.warnings = here.warnings;
     Ok(output)
 }

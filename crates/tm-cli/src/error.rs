@@ -73,7 +73,7 @@ impl CliError {
         self
     }
 
-    fn internal(cause: &str, message: impl Into<String>) -> Self {
+    pub(crate) fn internal(cause: &str, message: impl Into<String>) -> Self {
         Self::new("internal", message).with("cause", cause)
     }
 

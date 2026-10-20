@@ -12,6 +12,7 @@ description = "A local-first issue tracker for one human and their AI agents"
 [dependencies]
 clap.workspace = true
 jiff.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tm-core.workspace = true
 tm-store.workspace = true
