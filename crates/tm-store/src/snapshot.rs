@@ -66,19 +66,24 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// [`StoreError::Io`] when the lock or the rename fails, or any SQLite
+    /// [`StoreError::Snapshot`] when the lock or the rename fails, or any SQLite
     /// failure copying the store.
     pub fn publish_snapshot(&self, path: &Path) -> Result<(), StoreError> {
         let dir = path.parent().unwrap_or_else(|| Path::new("."));
-        let lock = File::create(dir.join(LOCK)).map_err(StoreError::Io)?;
-        lock.lock().map_err(StoreError::Io)?;
+        let failed = |path: &Path| {
+            let path = path.to_path_buf();
+            move |source| StoreError::Snapshot { path, source }
+        };
+        let lock_path = dir.join(LOCK);
+        let lock = File::create(&lock_path).map_err(failed(&lock_path))?;
+        lock.lock().map_err(failed(&lock_path))?;
         remove_partial(dir);
         let partial = dir.join(format!("{PARTIAL}{}.db", Uuid::now_v7()));
         let copied = self
             .conn
             .execute("VACUUM INTO ?1", [uri(&partial)])
             .map_err(StoreError::from)
-            .and_then(|_| fs::rename(&partial, path).map_err(StoreError::Io));
+            .and_then(|_| fs::rename(&partial, path).map_err(failed(path)));
         if copied.is_err() {
             let _ = fs::remove_file(&partial);
         }

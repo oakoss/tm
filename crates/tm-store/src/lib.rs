@@ -90,6 +90,11 @@ pub enum StoreError {
     ExportFormat { found: u16, supported: u16 },
     #[error("reading or writing an export: {0}")]
     Io(#[source] std::io::Error),
+    #[error("{}: {source}", path.display())]
+    Snapshot {
+        path: std::path::PathBuf,
+        source: std::io::Error,
+    },
     #[error(
         "line {line} of the import, {record}: {cause}; {}",
         import::kept(written)
@@ -1029,12 +1034,21 @@ impl Store {
         let data_version = self
             .conn
             .query_row("PRAGMA data_version", [], |row| row.get(0))?;
-        let max_seq = self
+        Ok((data_version, self.log_end()?))
+    }
+
+    /// The log's last position: being append-only, only a committed write
+    /// moves it, never one rolled back.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure.
+    pub fn log_end(&self) -> Result<i64, StoreError> {
+        Ok(self
             .conn
             .query_row("SELECT coalesce(max(seq), 0) FROM ops", [], |row| {
                 row.get(0)
-            })?;
-        Ok((data_version, max_seq))
+            })?)
     }
 
     /// Refuses a log another build wrote with other columns: until v1 the

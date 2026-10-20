@@ -143,7 +143,10 @@ fn a_failed_publish_leaves_no_copy() {
     let (workspace, store) = Workspace::create(home.path(), Uuid::now_v7()).unwrap();
     fs::create_dir_all(workspace.snapshot_path().join("in-the-way")).unwrap();
     let failed = store.publish_snapshot(&workspace.snapshot_path());
-    assert!(matches!(failed, Err(StoreError::Io(_))), "{failed:?}");
+    assert!(
+        matches!(&failed, Err(StoreError::Snapshot { path, .. }) if *path == workspace.snapshot_path()),
+        "{failed:?}"
+    );
     let left: Vec<_> = fs::read_dir(&workspace.dir)
         .unwrap()
         .map(|entry| entry.unwrap().file_name())

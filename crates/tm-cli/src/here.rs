@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use tm_core::ProjectId;
 use tm_store::Store;
-use tm_store::workspace::{self, Found};
+use tm_store::workspace::{self, Found, Workspace};
 use uuid::Uuid;
 
 use crate::error::CliError;
@@ -16,8 +16,34 @@ pub(crate) struct Here {
     /// The working directory, resolved, for the path-to-Project mapping.
     pub(crate) cwd: PathBuf,
     pub(crate) store: Store,
+    pub(crate) workspace: Workspace,
+    /// Where the log ended when the store was opened.
+    log_end: i64,
     /// What every command reports, such as operations that did not apply.
     pub(crate) warnings: Vec<String>,
+}
+
+impl Here {
+    /// Publishes the snapshot when this command committed a write.
+    pub(crate) fn publish(&self) -> Option<String> {
+        match self.store.log_end() {
+            Ok(end) if end == self.log_end => None,
+            _ => publish(&self.store, &self.workspace),
+        }
+    }
+}
+
+/// Publishes `workspace`'s snapshot from `store`. A failure is a warning, not
+/// an error: the write stands, and the next one publishes again.
+pub(crate) fn publish(store: &Store, workspace: &Workspace) -> Option<String> {
+    store
+        .publish_snapshot(&workspace.snapshot_path())
+        .err()
+        .map(|err| not_published(&err))
+}
+
+pub(crate) fn not_published(cause: &dyn std::fmt::Display) -> String {
+    format!("the read-only snapshot was not updated: {cause}")
 }
 
 /// Opens the store the repo file at or above the working directory names.
@@ -28,7 +54,7 @@ pub(crate) struct Here {
 /// directory, or the Workspace and store errors opening it.
 pub(crate) fn open() -> Result<Here, CliError> {
     let (home, cwd, found) = find()?;
-    let (_, store) = workspace::workspace_for(&home, &found)?;
+    let (workspace, store) = workspace::workspace_for(&home, &found)?;
     let unapplied = store
         .unapplied()?
         .iter()
@@ -44,10 +70,13 @@ pub(crate) fn open() -> Result<Here, CliError> {
         )]
     };
     let cwd = canonical(&cwd)?;
+    let log_end = store.log_end()?;
     Ok(Here {
         found,
         cwd,
         store,
+        workspace,
+        log_end,
         warnings,
     })
 }
@@ -58,14 +87,20 @@ pub(crate) fn write(
     write: impl FnOnce(&mut Here) -> Result<(Output, Vec<String>), CliError>,
 ) -> Result<Output, CliError> {
     let mut here = open()?;
-    let warnings = std::mem::take(&mut here.warnings);
-    match write(&mut here) {
+    let mut warnings = std::mem::take(&mut here.warnings);
+    let written = write(&mut here);
+    let published = here.publish();
+    match written {
         Ok((mut output, identity_warnings)) => {
             output.warnings = warnings;
             output.warnings.extend(identity_warnings);
+            output.warnings.extend(published);
             Ok(output)
         }
-        Err(err) => Err(err.warned(warnings)),
+        Err(err) => {
+            warnings.extend(published);
+            Err(err.warned(warnings))
+        }
     }
 }
 

@@ -66,8 +66,7 @@ pub(crate) fn import(file: &str, dry_run: bool) -> Result<Output, CliError> {
     let target = Workspace::at(&home, workspace);
     let exists = fs::symlink_metadata(&target.dir).is_ok();
     if exists && !dry_run {
-        let restored = open_target(&target)?.restore(&mut bytes.as_slice())?;
-        return Ok(output(&restored, false, false));
+        return restore_into(&target, &bytes);
     }
     // Beside the Workspaces, so the rename stays on one filesystem; a dry
     // run renames nothing and leaves tm's home untouched.
@@ -99,14 +98,25 @@ pub(crate) fn import(file: &str, dry_run: bool) -> Result<Output, CliError> {
                 let _ = fs::remove_dir(&target.dir);
                 return Err(io_error(&target.dir, &err));
             }
-            Ok(output(&restored, true, false))
+            let mut output = output(&restored, true, false);
+            output.warnings.extend(match open_target(&target) {
+                Ok(store) => here::publish(&store, &target),
+                Err(err) => Some(here::not_published(&err.message)),
+            });
+            Ok(output)
         }
-        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-            let restored = open_target(&target)?.restore(&mut bytes.as_slice())?;
-            Ok(output(&restored, false, false))
-        }
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => restore_into(&target, &bytes),
         Err(err) => Err(io_error(&target.dir, &err)),
     }
+}
+
+/// Restores into an existing Workspace's store, then publishes its snapshot.
+fn restore_into(target: &Workspace, bytes: &[u8]) -> Result<Output, CliError> {
+    let mut store = open_target(target)?;
+    let restored = store.restore(&mut &*bytes)?;
+    let mut output = output(&restored, false, false);
+    output.warnings.extend(here::publish(&store, target));
+    Ok(output)
 }
 
 /// A tracker whose export `tm import --from` reads.
@@ -177,8 +187,10 @@ pub(crate) fn import_records(
         let mut here = here::open()?;
         warnings.append(&mut here.warnings);
         let key = project(&here.store).map_err(|err| err.warned(warnings.clone()))?;
-        let (imported, dropped) = write(&mut here.store, &key)
-            .map_err(|err| CliError::from(err).warned(warnings.clone()))?;
+        let written = write(&mut here.store, &key);
+        warnings.extend(here.publish());
+        let (imported, dropped) =
+            written.map_err(|err| CliError::from(err).warned(warnings.clone()))?;
         // Tried as the runner, since an undo writes as whoever runs it and
         // only a comment's author may retract it.
         let mut undo = BTreeMap::new();
@@ -392,7 +404,11 @@ pub(crate) fn rebuild() -> Result<Output, CliError> {
         if ops == 1 { "" } else { "s" }
     );
     let mut output = Output::new(text, json!({ "ops": ops, "unapplied": unapplied }));
-    output.warnings = here.warnings;
+    output.warnings = std::mem::take(&mut here.warnings);
+    // A rebuild rewrites the projections but leaves the log as it was.
+    output
+        .warnings
+        .extend(here::publish(&here.store, &here.workspace));
     Ok(output)
 }
 
