@@ -28,7 +28,7 @@ Done when:
 
 When Phase 1's checks pass:
 
-1. Import this project's beads backlog with the beads adapter and check counts, dependencies and statuses against `bd list --json --all --limit 0`, since plain `bd list` hides closed Issues.
+1. Run `bd export | tm import --from beads - --dry-run` to see what tm does not keep, then `bd export | tm import --from beads -`, and check counts, dependencies and statuses against `bd list --json --all --limit 0`, since plain `bd list` hides closed Issues.
 2. Freeze the beads data as a backup; do not delete it.
 3. Track all further work in `tm`, with agents using `tm prime` at session start.
 4. Run `tm export` daily into a dated file until the store has gone a month without data problems.
