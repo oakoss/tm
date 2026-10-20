@@ -84,9 +84,19 @@ struct ProjectLine {
     name: String,
 }
 
-struct Parsed {
+/// A file's lines, each with its line number.
+pub(crate) struct Parsed {
     projects: Vec<(usize, ProjectLine)>,
     issues: Vec<(usize, IssueRecord)>,
+}
+
+impl Parsed {
+    pub(crate) const fn issues(issues: Vec<(usize, IssueRecord)>) -> Self {
+        Self {
+            projects: Vec::new(),
+            issues,
+        }
+    }
 }
 
 /// The writes one record needs in one pass, and what they mean.
@@ -188,6 +198,15 @@ impl Store {
         runner: &Actor,
     ) -> Result<RecordsImported, StoreError> {
         let parsed = parse(input)?;
+        self.write_records(&parsed, runner)
+    }
+
+    /// Writes records already parsed, as [`Store::import_records`] does.
+    pub(crate) fn write_records(
+        &mut self,
+        parsed: &Parsed,
+        runner: &Actor,
+    ) -> Result<RecordsImported, StoreError> {
         for (line, record) in &parsed.issues {
             check_record(&self.scheme, record)
                 .map_err(|cause| refused(*line, &record.source, cause, (&[], &[])))?;
@@ -412,16 +431,8 @@ fn parse(input: &mut dyn BufRead) -> Result<Parsed, StoreError> {
                         format!("source {} is also line {first}'s", record.source),
                     ));
                 }
-                let mut ids = HashSet::new();
-                if let Some(comment) = record
-                    .comments
-                    .iter()
-                    .find(|comment| !ids.insert(&comment.id))
-                {
-                    return Err(invalid(
-                        line,
-                        format!("comment id {} appears twice", comment.id),
-                    ));
+                if let Some(id) = repeated_comment(&record) {
+                    return Err(invalid(line, format!("comment id {id} appears twice")));
                 }
                 parsed.issues.push((line, record));
             }
@@ -429,6 +440,17 @@ fn parse(input: &mut dyn BufRead) -> Result<Parsed, StoreError> {
         }
     }
     Ok(parsed)
+}
+
+/// A comment id the record gives twice, which a re-import could not tell
+/// apart.
+pub(crate) fn repeated_comment(record: &IssueRecord) -> Option<&str> {
+    let mut ids = HashSet::new();
+    record
+        .comments
+        .iter()
+        .find(|comment| !ids.insert(&comment.id))
+        .map(|comment| comment.id.as_str())
 }
 
 /// What a record gets wrong on its own, refused before anything is written.

@@ -5,6 +5,7 @@
 //! transaction; `rebuild` regenerates the projections from the log.
 
 mod apply;
+mod beads;
 mod claim;
 mod export;
 mod import;
@@ -35,6 +36,7 @@ use uuid::Uuid;
 
 use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
+pub use beads::BeadsImported;
 pub use claim::Claim;
 pub use export::{Exported, Restored, read_export, snapshot};
 pub use import::{Conflict, RecordOutcome, RecordsImported};
