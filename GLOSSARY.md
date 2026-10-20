@@ -159,3 +159,7 @@ _Avoid_: Device, node, machine, client
 **Workspace**:
 A self-contained store of Projects and their Schemes, either global to a machine or created separately for isolation.
 _Avoid_: Database, instance, org
+
+**Snapshot**:
+The read-only copy of a Workspace's store that each write publishes, which a reader that may not open the store, such as a sandboxed Agent, reads instead; it is as current as the last write that published it.
+_Avoid_: Backup, cache, mirror, export

@@ -22,7 +22,7 @@
 - **One Rust binary** for the CLI, the Ratatui TUI and `tm serve` ([ADR 0002](../decisions/0002-rust-core-with-typescript-web-ui.md)). One monorepo holds a Cargo workspace (`crates/tm-core`, `tm-store`, `tm-sync`, `tm-server`, `tm-tui`, and `tm-cli`, the published crate that builds the `tm` binary), the web app (`web/`, pnpm) and the npm wrapper (`npm/`). Internal crates are `publish = false`; splitting them keeps incremental builds fast. mise pins Rust, Node and pnpm and runs the tasks; git hooks are lefthook, configured by hand.
 - **Web UI** in TypeScript, React and TanStack, using the author's UI component library. Built assets are embedded in the binary; it talks to `tm serve` over JSON plus a server-sent change stream feeding a TanStack DB custom collection. TypeScript types are generated from the Rust types.
 - **Local store**: plain SQLite (bundled build), written directly by each `tm` process with `BEGIN IMMEDIATE` and a busy timeout; no daemon ([ADR 0001](../decisions/0001-local-store-is-plain-sqlite-without-a-daemon.md)). All database access sits in one storage module.
-- **Read-only snapshot**: after write batches the CLI publishes a never-modified copy that sandboxed agents open with `immutable=1`.
+- **Read-only Snapshot**: every write publishes a never-modified copy of the store beside it, by `VACUUM INTO` and rename. A read that may not open the store, as in a sandbox that denies every write, opens the Snapshot with `immutable=1` and warns with the time it was published; writes and `tm export` fail `read_only` instead.
 - **Operation log is the source of truth** ([ADR 0005](../decisions/0005-operation-log-is-the-source-of-truth.md)): every change is an append-only operation from v1, written in the same transaction as the tables it updates. The tables are projections that `tm rebuild` regenerates from the log; undo, history and sync all read the log.
 - **Invariants**: every operation has a unique ID; a take succeeds only on an unclaimed Issue, never on "already has that value"; links have deterministic keys; a Key is never reused, even after `tm purge`.
 - **`tm undo <batch>`** reverts one command's writes, named by the batch id every write reports or a unique start or end of it, by appending operations that restore their prior state ([ADR 0010](../decisions/0010-operations-record-who-an-agent-acts-for-and-undo-names-a-batch.md)). A human's bare `tm undo` reverts their own last command, and repeating it steps back ([ADR 0012](../decisions/0012-a-human-undoes-their-last-command-without-naming-it.md)).
@@ -204,7 +204,7 @@ Off by default. An Issue can carry **Checks**: commands with an expected result.
 
 ## Open items and risks
 
-- Sandboxed agents see data as of the last snapshot, and a crashed writer delays the next one.
+- Sandboxed agents see data as of the last Snapshot, and a writer that crashes or fails to publish delays the next one. A long-lived sandboxed reader, such as a TUI an Agent runs, keeps the Snapshot it opened until it reopens it.
 - Replaying offline operations on top of the server's and compacting the operation log are not yet designed.
 - Copilot and Cursor identity variables are unverified.
 - Many users alias `tm` to `tmux`; ship a longer second binary name as a fallback.

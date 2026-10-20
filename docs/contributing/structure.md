@@ -5,7 +5,7 @@ A virtual root manifest with every Rust package under `crates/`:
 | Crate | Holds | Published |
 |---|---|---|
 | `tm-core` | Domain model: Issues, Schemes, Workflows, the filter language. No I/O. | no |
-| `tm-store` | SQLite store, operation log, projections, read-only snapshot | no |
+| `tm-store` | SQLite store, operation log, projections, read-only Snapshot | no |
 | `tm-sync` | Operation exchange with `tm serve` | no |
 | `tm-server` | `tm serve`: JSON API and change stream | no |
 | `tm-tui` | Ratatui screens | no |

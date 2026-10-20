@@ -13,7 +13,7 @@ Ordered phases for building what [design.md](../specs/design.md) describes. Each
 - `create`, `list`, `show`, `move`, `comment`, `ready`, `claim`, `undo`; `--json` on all of them; structured errors.
 - A first cut of the filter language: field qualifiers, negation, lists, `@me`, `sort:`.
 - `tm prime`, `tm export`, `tm import` with the beads adapter.
-- Read-only snapshot publishing.
+- Read-only Snapshot publishing.
 - Bare `tm` without a terminal prints help.
 
 Done when:
@@ -21,8 +21,8 @@ Done when:
 - a rebuild-from-log property test shows the tables match the log
 - an export → import round trip loses nothing
 - the 50-writer test (`BEGIN IMMEDIATE`, 5 s busy timeout) writes 500 of 500 rows on macOS and Linux CI
-- a sandboxed reader opens the snapshot under bubblewrap on Linux
-- read commands meet the cold-start budget, measured in CI by `mise run coldstart` on macOS and Linux: the median of 15 warm-cache runs of a release build, with identity read from git as a session-start hook reads it, is at most 40 ms for every read command on a 200-Issue Workspace, and on 10,000 Issues at most 60 ms for `--version`, `show` and `scheme show`, and 150 ms for `prime`, `list` and `ready`, which grow with the Workspace; writes are timed in the same run but not budgeted
+- a sandboxed reader's `tm list` and `tm prime` read the Snapshot under bubblewrap on Linux and sandbox-exec on macOS
+- read commands meet the cold-start budget, measured in CI by `mise run coldstart` on macOS and Linux: the median of 15 warm-cache runs of a release build, with identity read from git as a session-start hook reads it, is at most 40 ms for every read command on a 200-Issue Workspace, and on 10,000 Issues at most 60 ms for `--version`, `show` and `scheme show`, and 150 ms for `prime`, `list` and `ready`, which grow with the Workspace; sandboxed `list` and `prime` meet the same budgets, and writes are timed in the same run but not budgeted
 
 ### Switch milestone: move this project from beads to tm
 
