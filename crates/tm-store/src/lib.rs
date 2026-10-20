@@ -8,6 +8,7 @@ mod apply;
 mod beads;
 mod claim;
 mod export;
+mod family;
 mod import;
 mod project;
 mod query;
@@ -944,7 +945,7 @@ impl Store {
             .into_iter()
             .map(|(draft, provenance)| (draft, Some(provenance)))
             .collect();
-        self.append_with(drafts, guard, true, None)
+        self.append_with(drafts, |tx| guard(tx).map(|()| Vec::new()), true, None)
     }
 
     /// [`Store::append_all`], refused with [`StoreError::ClaimChanged`] and
@@ -977,16 +978,17 @@ impl Store {
         guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
     ) -> Result<Vec<Op>, StoreError> {
         let drafts = drafts.into_iter().map(|draft| (draft, None)).collect();
-        self.append_with(drafts, guard, true, None)
+        self.append_with(drafts, |tx| guard(tx).map(|()| Vec::new()), true, None)
     }
 
     /// [`Store::append_guarded`], rolled back instead of committed when
     /// `commit` is false: every check runs, and nothing is kept. With
     /// `undid`, the batch is recorded as that batch's undo.
+    /// `guard` may add drafts read from inside the write.
     fn append_with(
         &mut self,
-        drafts: Vec<(Draft, Option<Provenance>)>,
-        guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
+        mut drafts: Vec<(Draft, Option<Provenance>)>,
+        guard: impl FnOnce(&Transaction<'_>) -> Result<Vec<Draft>, StoreError>,
         commit: bool,
         undid: Option<Uuid>,
     ) -> Result<Vec<Op>, StoreError> {
@@ -994,6 +996,13 @@ impl Store {
             draft.change.validate()?;
         }
         let now = self.now()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for draft in guard(&tx)? {
+            draft.change.validate()?;
+            drafts.push((draft, None));
+        }
         // A batch of several writers has no one undoer to try it as. An import
         // writes a batch per record and names each, so none is probed.
         let writer = drafts
@@ -1004,10 +1013,6 @@ impl Store {
                     .iter()
                     .all(|(draft, provenance)| draft.actor == *writer && provenance.is_none())
             });
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        guard(&tx)?;
         let (ops, hlc) = write_drafts(&tx, &self.scheme, drafts, now, last_hlc(&tx)?)?;
         if let (Some(undid), Some(first)) = (undid, ops.first()) {
             tx.execute(

@@ -8,6 +8,7 @@ mod edit;
 mod error;
 mod export;
 mod fields;
+mod follow;
 mod here;
 mod identity;
 mod init;
@@ -85,6 +86,9 @@ enum Command {
         body: String,
     },
     /// Create an Issue in the Project this directory maps to.
+    ///
+    /// Created in an active Status, such as with `--set status=in_progress`,
+    /// it starts each parent still in triage or todo, as `tm move` does.
     Create {
         /// The Issue type, such as task or bug; `tm scheme show` lists them.
         #[arg(long = "type")]
@@ -153,6 +157,11 @@ enum Command {
         limit: Option<usize>,
     },
     /// Move an Issue to a Status of its Workflow.
+    ///
+    /// Starting work on it starts each parent still in triage or todo, in the
+    /// same batch. Finishing its parent's last open child prints the move
+    /// that closes the parent, and reopening a child of a finished parent
+    /// the move that reopens it; tm leaves both to you.
     Move {
         /// The Issue's Key or full id.
         issue: String,

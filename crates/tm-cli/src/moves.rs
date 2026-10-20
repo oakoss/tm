@@ -9,6 +9,7 @@ use tm_store::{Draft, StoreError};
 
 use crate::error::CliError;
 use crate::fields::{set, split_pair, typed};
+use crate::follow::{self, Starts};
 use crate::here::{self, Here};
 use crate::identity;
 use crate::output::Output;
@@ -80,35 +81,41 @@ fn write(
     }
     // A move into done or cancelled releases the Claim; a review status keeps
     // it (ADR 0009).
-    let finished = workflow
-        .status(&status)
-        .is_some_and(|status| matches!(status.category, Category::Done | Category::Cancelled));
+    let category = workflow.status(&status).map(|status| status.category);
+    let finished = matches!(category, Some(Category::Done | Category::Cancelled));
     let draft = |change| Draft {
         actor: identity.actor.clone(),
         project: view.project,
         subject: id,
         change,
     };
-    let mut tries = 0;
-    let ops = loop {
-        let mut drafts: Vec<Draft> = changes.iter().cloned().map(draft).collect();
-        if !finished {
-            break here.store.append_all(drafts)?;
-        }
-        // The release names the Claim read here, so the write refuses one that
-        // was claimed or released since and the move reads it again.
-        let held = here.store.claim(id)?.map(|claim| claim.id);
-        if let Some(claim) = held {
-            drafts.push(draft(Change::Claim {
-                action: ClaimAction::Release { claim },
-            }));
-        }
-        match here.store.append_if_claim(drafts, id, held) {
-            Err(StoreError::ClaimChanged(_)) if tries < MOVE_TRIES => tries += 1,
-            written => break written?,
+    let drafts = || changes.iter().cloned().map(draft).collect::<Vec<_>>();
+    let (ops, starts) = if category == Some(Category::Active) {
+        here.store.append_with_lineage(drafts(), id, |lineage| {
+            let parents = lineage.iter().filter(|issue| issue.id != id);
+            follow::starts(&scheme, parents, &identity.actor)
+        })?
+    } else if !finished {
+        (here.store.append_all(drafts())?, Starts::default())
+    } else {
+        let mut tries = 0;
+        loop {
+            let mut drafts = drafts();
+            // The release names the Claim read here, so the write refuses one
+            // that was claimed or released since and the move reads it again.
+            let held = here.store.claim(id)?.map(|claim| claim.id);
+            if let Some(claim) = held {
+                drafts.push(draft(Change::Claim {
+                    action: ClaimAction::Release { claim },
+                }));
+            }
+            match here.store.append_if_claim(drafts, id, held) {
+                Err(StoreError::ClaimChanged(_)) if tries < MOVE_TRIES => tries += 1,
+                written => break (written?, Starts::default()),
+            }
         }
     };
-    let shown = show::render(here, id)?;
+    let shown = follow::report(&here.store, show::render(here, id)?, starts, id)?;
     let output = here.undoable(shown, ops[0].op_id)?;
     Ok((output, identity.warnings))
 }

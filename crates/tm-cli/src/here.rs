@@ -153,7 +153,8 @@ fn opened(found: Found, cwd: &Path, workspace: Workspace, store: Store) -> Resul
 }
 
 /// The path writes to Issues and Claims take: the store's warnings come
-/// before the identity warnings `write` returns, on success and failure.
+/// before the identity warnings `write` returns, on success and failure; on
+/// success the output's own follow, and a failed publish's last.
 pub(crate) fn write(
     write: impl FnOnce(&mut Here) -> Result<(Output, Vec<String>), CliError>,
 ) -> Result<Output, CliError> {
@@ -163,9 +164,10 @@ pub(crate) fn write(
     let published = here.publish();
     match written {
         Ok((mut output, identity_warnings)) => {
+            warnings.extend(identity_warnings);
+            warnings.append(&mut output.warnings);
+            warnings.extend(published);
             output.warnings = warnings;
-            output.warnings.extend(identity_warnings);
-            output.warnings.extend(published);
             Ok(output)
         }
         Err(err) => {

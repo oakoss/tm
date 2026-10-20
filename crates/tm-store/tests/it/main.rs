@@ -5,6 +5,7 @@ mod beads;
 mod claims;
 mod concurrency;
 mod export;
+mod family;
 mod fields;
 mod find;
 mod guards;

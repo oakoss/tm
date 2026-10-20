@@ -117,7 +117,7 @@ impl Store {
         let drafts = planned.drafts(actor);
         let scheme = self.scheme.clone();
         let guard = |tx: &rusqlite::Transaction<'_>| match plan(tx, &scheme, batch)? {
-            again if again == planned => Ok(()),
+            again if again == planned => Ok(Vec::new()),
             again => Err(StoreError::UndoConflict {
                 batch,
                 conflicts: again.restores,
