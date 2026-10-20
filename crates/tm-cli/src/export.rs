@@ -109,47 +109,75 @@ pub(crate) fn import(file: &str, dry_run: bool) -> Result<Output, CliError> {
     }
 }
 
-/// Writes a file's Issue records into the Workspace this repo maps (ADR
-/// 0013); a dry run copies its store before opening anything, since opening
-/// may rebuild it, and writes into the copy.
-pub(crate) fn import_records(file: &str, dry_run: bool) -> Result<Output, CliError> {
+/// A tracker whose export `tm import --from` reads.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub(crate) enum Adapter {
+    Beads,
+}
+
+/// What an import wrote, and what of the file it had no place for.
+type Written = (RecordsImported, Option<BTreeMap<String, usize>>);
+
+/// Writes a file's Issue records, or an adapter's conversion of its export,
+/// into the Workspace this repo maps (ADR 0013); a dry run copies its store
+/// before opening anything, since opening may rebuild it, and writes into the
+/// copy.
+pub(crate) fn import_records(
+    file: &str,
+    dry_run: bool,
+    adapter: Option<Adapter>,
+) -> Result<Output, CliError> {
     let bytes = read(file)?;
-    let (home, _, found) = here::find()?;
+    let (home, cwd, found) = here::find()?;
     let identity = identity::resolve(identity::env, || identity::git_email(&found.dir))
         .map_err(|message| CliError::new("no_identity", message))?;
-    let mut warnings = identity.warnings;
-    let (imported, undo) = if dry_run {
+    let cwd = here::canonical(&cwd)?;
+    // Records name their own Project; an adapter's go where `tm create`'s do.
+    let project = |store: &Store| match adapter {
+        None => Ok(String::new()),
+        Some(_) => here::mapped_project(store, &found, &cwd).map(|(_, key)| key.to_owned()),
+    };
+    let write = |store: &mut Store, project: &str| -> Result<Written, StoreError> {
+        match adapter {
+            None => store
+                .import_records(&mut bytes.as_slice(), &identity.actor)
+                .map(|imported| (imported, None)),
+            Some(Adapter::Beads) => store
+                .import_beads(&mut bytes.as_slice(), project, &identity.actor)
+                .map(|beads| (beads.imported, Some(beads.dropped))),
+        }
+    };
+    let mut warnings = identity.warnings.clone();
+    let ((imported, dropped), undo) = if dry_run {
         let target = workspace::locate(&home, &found)?;
         let staged = Staged::new(&std::env::temp_dir())?;
         tm_store::snapshot(&target.store_path(), &staged.store())?;
         let mut copy = Store::open_existing(&staged.store(), target.id)?;
         // The copy's batches, on success or refusal, are gone with it.
-        let mut imported = copy
-            .import_records(&mut bytes.as_slice(), &identity.actor)
-            .map_err(|err| match err {
-                StoreError::RecordRefused {
-                    line,
-                    record,
-                    cause,
-                    ..
-                } => StoreError::RecordRefused {
-                    line,
-                    record,
-                    cause,
-                    written: Vec::new(),
-                },
-                other => other,
-            })?;
+        let key = project(&copy)?;
+        let (mut imported, dropped) = write(&mut copy, &key).map_err(|err| match err {
+            StoreError::RecordRefused {
+                line,
+                record,
+                cause,
+                ..
+            } => StoreError::RecordRefused {
+                line,
+                record,
+                cause,
+                written: Vec::new(),
+            },
+            other => other,
+        })?;
         for record in &mut imported.records {
             record.batches.clear();
         }
-        (imported, BTreeMap::new())
+        ((imported, dropped), BTreeMap::new())
     } else {
         let mut here = here::open()?;
         warnings.append(&mut here.warnings);
-        let imported = here
-            .store
-            .import_records(&mut bytes.as_slice(), &identity.actor)
+        let key = project(&here.store).map_err(|err| err.warned(warnings.clone()))?;
+        let (imported, dropped) = write(&mut here.store, &key)
             .map_err(|err| CliError::from(err).warned(warnings.clone()))?;
         // Tried as the runner, since an undo writes as whoever runs it and
         // only a comment's author may retract it.
@@ -167,11 +195,26 @@ pub(crate) fn import_records(file: &str, dry_run: bool) -> Result<Output, CliErr
             };
             undo.insert(*batch, state);
         }
-        (imported, undo)
+        ((imported, dropped), undo)
     };
     let mut output = records_output(&imported, dry_run, &undo, identity.actor.name());
+    if let Some(dropped) = dropped {
+        not_kept(&mut output, &dropped);
+    }
     output.warnings.extend(warnings);
     Ok(output)
+}
+
+/// Names what an adapter read and tm has no place for, with how often.
+fn not_kept(output: &mut Output, dropped: &BTreeMap<String, usize>) {
+    if !dropped.is_empty() {
+        let counts: Vec<String> = dropped
+            .iter()
+            .map(|(what, times)| format!("{} ({times})", output::printable(what)))
+            .collect();
+        let _ = writeln!(output.text, "not kept: {}", counts.join(", "));
+    }
+    output.data["dropped"] = json!(dropped);
 }
 
 /// Whether the runner could undo a batch an import wrote.

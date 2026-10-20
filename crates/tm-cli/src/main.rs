@@ -145,14 +145,19 @@ enum Command {
     Export,
     /// Restore an export into its Workspace on this machine, creating the
     /// Workspace when this machine lacks it; with `--records`, write its
-    /// Issue records into this repo's Workspace instead.
+    /// Issue records into this repo's Workspace instead, and with `--from`,
+    /// another tracker's export as records.
     Import {
-        /// The export or records file, or `-` to read it from stdin.
+        /// The export, records file or tracker export, or `-` to read it from
+        /// stdin.
         file: String,
         /// Write the file's Issue records as ordinary writes, keeping current
         /// state and comments but not history.
         #[arg(long)]
         records: bool,
+        /// Write another tracker's export, such as `bd export`'s, as records.
+        #[arg(long, value_enum, conflicts_with = "records")]
+        from: Option<export::Adapter>,
         /// Check the file and the Workspace, and write nothing.
         #[arg(long)]
         dry_run: bool,
@@ -254,7 +259,14 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             file,
             records: true,
             dry_run,
-        }) => export::import_records(&file, dry_run),
+            ..
+        }) => export::import_records(&file, dry_run, None),
+        Some(Command::Import {
+            file,
+            from: Some(adapter),
+            dry_run,
+            ..
+        }) => export::import_records(&file, dry_run, Some(adapter)),
         Some(Command::Import { file, dry_run, .. }) => export::import(&file, dry_run),
         Some(Command::Rebuild) => export::rebuild(),
     }

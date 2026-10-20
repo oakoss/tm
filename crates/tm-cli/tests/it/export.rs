@@ -2,7 +2,9 @@ use std::fs;
 use std::path::Path;
 use std::process::{Output, Stdio};
 
-use serde_json::Value;
+use serde_json::{Value, json};
+use tm_core::Actor;
+use tm_store::workspace::{PathProject, RepoFile};
 
 use crate::support::{Scratch, initialized, text, tm, tm_command};
 
@@ -111,6 +113,139 @@ fn a_fresh_clone_restores_its_workspace_from_an_export() {
     let out = elsewhere(&scratch, &home, &repo, &["--json", "import", file]);
     assert_eq!(doc(&out)["error"], "workspace_not_empty", "{out:?}");
     assert_eq!(doc(&out)["fix"], "tm import --records FILE");
+}
+
+/// The store crate's copy of this repo's `bd export`.
+fn beads_export() -> String {
+    format!(
+        "{}/../tm-store/tests/fixtures/beads.jsonl",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+#[test]
+fn a_beads_export_lands_in_the_mapped_project_with_bd_readys_queue() {
+    let scratch = Scratch::new();
+    let (repo, _store, _) = initialized(&scratch);
+    let file = beads_export();
+
+    let out = tm(
+        &scratch,
+        &repo,
+        &["--json", "import", "--from", "beads", &file, "--dry-run"],
+    );
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(doc(&out)["data"]["created"], 16);
+    assert_eq!(
+        text(&tm(&scratch, &repo, &["ready"]).stdout),
+        "nothing is ready\n"
+    );
+
+    let out = tm(&scratch, &repo, &["import", "--from", "beads", &file]);
+    assert!(out.status.success(), "{out:?}");
+    let printed = text(&out.stdout);
+    assert!(
+        printed.starts_with("imported 16 records: 16 created, 0 updated, 0 unchanged"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains(
+            "not kept: dependency created_at (35), dependency created_by (35), started_at (7)"
+        ),
+        "{printed}"
+    );
+
+    let out = tm(&scratch, &repo, &["--json", "ready"]);
+    let keys: Vec<Value> = doc(&out)["data"]["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|issue| issue["key"].clone())
+        .collect();
+    let mut keys: Vec<&str> = keys.iter().filter_map(Value::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["TM-1", "TM-10", "TM-11", "TM-12", "TM-13", "TM-14"]);
+
+    let out = tm(
+        &scratch,
+        &repo,
+        &["--json", "import", "--from", "beads", &file],
+    );
+    assert_eq!(doc(&out)["data"]["unchanged"], 16, "{out:?}");
+}
+
+#[test]
+fn a_beads_import_files_into_the_project_its_directory_maps_to() {
+    let scratch = Scratch::new();
+    let (repo, mut store, _) = initialized(&scratch);
+    store
+        .create_project(&Actor::human("jace"), "TUI", "Terminal UI")
+        .unwrap();
+    let path = repo.join(".config/tm.toml");
+    let mut file = RepoFile::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    for (prefix, project) in [("crates/tui", "TUI"), ("crates/gone", "GONE")] {
+        file.paths.push(PathProject {
+            prefix: prefix.into(),
+            project: project.into(),
+        });
+        fs::create_dir_all(repo.join(prefix)).unwrap();
+    }
+    fs::write(&path, file.render()).unwrap();
+    let beads = scratch.0.join("beads.jsonl");
+    fs::write(&beads, r#"{"id":"b-1","title":"one"}"#).unwrap();
+    let beads = beads.to_str().unwrap();
+
+    for dry_run in [true, false] {
+        let mut args = vec!["--json", "import", "--from", "beads", beads];
+        if dry_run {
+            args.push("--dry-run");
+        }
+        let out = tm(&scratch, &repo.join("crates/gone"), &args);
+        let refused = doc(&out);
+        assert_eq!(
+            (&refused["error"], &refused["reference"]),
+            (&json!("not_found"), &json!("GONE")),
+            "{refused}"
+        );
+    }
+
+    let out = tm(
+        &scratch,
+        &repo.join("crates/tui"),
+        &["import", "--from", "beads", beads],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let out = tm(&scratch, &repo, &["--json", "show", "TUI-1"]);
+    assert_eq!(doc(&out)["data"]["fields"]["title"], "one", "{out:?}");
+}
+
+#[test]
+fn what_a_beads_import_does_not_keep_prints_escaped() {
+    let scratch = Scratch::new();
+    let (repo, _store, _) = initialized(&scratch);
+    let beads = scratch.0.join("beads.jsonl");
+    let bead = json!({"id": "b-1", "title": "one", "x\u{1b}[31mevil": "y"});
+    fs::write(&beads, bead.to_string()).unwrap();
+    let out = tm(
+        &scratch,
+        &repo,
+        &["import", "--from", "beads", beads.to_str().unwrap()],
+    );
+    let printed = text(&out.stdout);
+    assert!(printed.contains("not kept: x"), "{printed}");
+    assert!(!printed.contains('\u{1b}'), "{printed:?}");
+}
+
+#[test]
+fn from_and_records_together_is_a_usage_error() {
+    let scratch = Scratch::new();
+    let (repo, _store, _) = initialized(&scratch);
+    let out = tm(
+        &scratch,
+        &repo,
+        &["import", "--records", "--from", "beads", &beads_export()],
+    );
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
 }
 
 #[test]
