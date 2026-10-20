@@ -13,7 +13,7 @@ use crate::here::{self, Here};
 use crate::output::{Output, local_time, printable};
 
 pub(crate) fn run(reference: &str) -> Result<Output, CliError> {
-    let here = here::open()?;
+    let here = here::read()?;
     match here.issue(reference).and_then(|id| render(&here, id)) {
         Ok(mut output) => {
             output.warnings = here.warnings;

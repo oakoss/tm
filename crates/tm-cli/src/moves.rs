@@ -33,16 +33,7 @@ pub(crate) fn run(
     target: &str,
     set: &[(String, String)],
 ) -> Result<Output, CliError> {
-    let mut here = here::open()?;
-    let warnings = std::mem::take(&mut here.warnings);
-    match write(&mut here, reference, target, set) {
-        Ok((mut output, identity_warnings)) => {
-            output.warnings = warnings;
-            output.warnings.extend(identity_warnings);
-            Ok(output)
-        }
-        Err(err) => Err(err.warned(warnings)),
-    }
+    here::write(|here| write(here, reference, target, set))
 }
 
 fn write(

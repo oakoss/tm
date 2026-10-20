@@ -167,6 +167,18 @@ impl CliError {
             .fix("retry")
     }
 
+    fn missing_fields(message: String, issue: Uuid, fields: Vec<String>) -> Self {
+        Self::new("missing_fields", message)
+            .with("issue", issue.to_string())
+            .with(
+                "fields",
+                fields
+                    .into_iter()
+                    .map(|name| json!({ "name": name }))
+                    .collect::<Vec<_>>(),
+            )
+    }
+
     /// A store, or an export, this command cannot use as it is.
     fn unusable(err: StoreError, message: String) -> Self {
         match err {
@@ -184,6 +196,16 @@ impl CliError {
                 .with("supported", supported)
                 .fix("upgrade tm"),
             StoreError::FormatChanged => Self::new("store_format_changed", message),
+            StoreError::SnapshotVersion { found, expected } => {
+                Self::new("snapshot_version", message)
+                    .with("found", found)
+                    .with("expected", expected)
+                    .fix(if found > expected {
+                        "upgrade tm"
+                    } else {
+                        "run any write with this tm where it may write the store, which publishes a new Snapshot"
+                    })
+            }
             StoreError::WorkspaceNotEmpty { workspace, held } => {
                 Self::new("workspace_not_empty", message)
                     .with("workspace", workspace.to_string())
@@ -200,7 +222,7 @@ impl CliError {
                     .with("supported", supported)
                     .fix(RECORDS_FIX)
             }
-            StoreError::Io(_) => Self::new("io", message),
+            StoreError::Io(_) | StoreError::Snapshot { .. } => Self::new("io", message),
             other => Self::internal(variant(&other), message),
         }
     }
@@ -231,10 +253,12 @@ impl From<StoreError> for CliError {
             | StoreError::WorkspaceMismatch { .. }
             | StoreError::NewerStore { .. }
             | StoreError::FormatChanged
+            | StoreError::SnapshotVersion { .. }
             | StoreError::WorkspaceNotEmpty { .. }
             | StoreError::InvalidExport { .. }
             | StoreError::ExportFormat { .. }
-            | StoreError::Io(_)) => Self::unusable(err, message),
+            | StoreError::Io(_)
+            | StoreError::Snapshot { .. }) => Self::unusable(err, message),
             StoreError::UnknownField { field, valid } => Self::new("unknown_field", message)
                 .with("field", field)
                 .with("valid", valid),
@@ -280,15 +304,9 @@ impl From<StoreError> for CliError {
                 holder,
             } => Self::not_claim_holder(message, issue, claim, holder.as_deref()),
             StoreError::ClaimChanged(issue) => Self::changed("claim_changed", message, issue),
-            StoreError::MissingFields { issue, fields } => Self::new("missing_fields", message)
-                .with("issue", issue.to_string())
-                .with(
-                    "fields",
-                    fields
-                        .into_iter()
-                        .map(|name| json!({ "name": name }))
-                        .collect::<Vec<_>>(),
-                ),
+            StoreError::MissingFields { issue, fields } => {
+                Self::missing_fields(message, issue, fields)
+            }
             StoreError::Op(err) => Self::from(err),
             err @ (StoreError::RecordRefused { .. } | StoreError::ImportChanged(_)) => {
                 Self::import(err, message)

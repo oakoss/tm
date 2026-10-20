@@ -12,7 +12,7 @@ use crate::list::{Item, Listed, line, project_keys};
 use crate::output::Output;
 
 pub(crate) fn run(limit: Option<usize>, json: bool) -> Result<Output, CliError> {
-    let here = here::open()?;
+    let here = here::read()?;
     let read = here.store.read(|store| {
         let mut ready = store.ready()?;
         let total = ready.len();

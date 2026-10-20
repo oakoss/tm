@@ -31,7 +31,7 @@ pub(crate) const TITLE_BYTES: usize = 64;
 /// A read: prime prints what it can, so a hook never fails a session start
 /// over a missing identity or Project.
 pub(crate) fn run(json: bool) -> Result<Output, CliError> {
-    let here = here::open()?;
+    let here = here::read()?;
     let (actor, project, warnings) = context(&here);
     let read = here.store.read(|store| {
         let claims = match actor.as_ref().filter(|actor| actor.is_agent()) {

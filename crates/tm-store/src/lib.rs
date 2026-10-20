@@ -1,4 +1,4 @@
-//! SQLite store: the operation log, its table projections and the read-only snapshot.
+//! SQLite store: the operation log, its table projections and the read-only Snapshot.
 //!
 //! The log is the source of truth (ADR 0005). Every write appends one operation
 //! and applies it to the projection tables in the same `BEGIN IMMEDIATE`
@@ -15,6 +15,7 @@ mod read;
 mod ready;
 mod record;
 mod schema;
+mod snapshot;
 mod undo;
 mod validate;
 pub mod workspace;
@@ -38,7 +39,7 @@ use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
 pub use beads::BeadsImported;
 pub use claim::Claim;
-pub use export::{Exported, Restored, read_export, snapshot};
+pub use export::{Exported, Restored, copy_store, read_export};
 pub use import::{Conflict, RecordOutcome, RecordsImported};
 pub use read::{CommentView, Direction, IssueView, LinkView};
 pub use ready::Ready;
@@ -89,6 +90,11 @@ pub enum StoreError {
     ExportFormat { found: u16, supported: u16 },
     #[error("reading or writing an export: {0}")]
     Io(#[source] std::io::Error),
+    #[error("{}: {source}", path.display())]
+    Snapshot {
+        path: std::path::PathBuf,
+        source: std::io::Error,
+    },
     #[error(
         "line {line} of the import, {record}: {cause}; {}",
         import::kept(written)
@@ -172,6 +178,10 @@ pub enum StoreError {
         "the store's log was written by a different build of tm, before its format last changed; recreate the store"
     )]
     FormatChanged,
+    #[error(
+        "the Snapshot was published by a different build of tm (projection {found}, this tm reads {expected})"
+    )]
+    SnapshotVersion { found: i64, expected: i64 },
     #[error("the operation at log position {seq} cannot be replayed: {source}")]
     Replay {
         seq: i64,
@@ -186,6 +196,20 @@ pub enum StoreError {
     Sqlite(rusqlite::Error),
     #[error(transparent)]
     Filter(#[from] FilterError),
+}
+
+impl StoreError {
+    /// Whether opening an existing store failed because this process may not
+    /// open it, as in a sandbox that denies every write. SQLite reports a
+    /// missing file the same way, so the caller checks it exists first.
+    #[must_use]
+    pub fn is_refused(&self) -> bool {
+        match self {
+            Self::ReadOnly => true,
+            Self::Sqlite(err) => err.sqlite_error_code() == Some(ErrorCode::CannotOpen),
+            _ => false,
+        }
+    }
 }
 
 impl From<rusqlite::Error> for StoreError {
@@ -281,7 +305,7 @@ struct LastWrite {
 impl Drop for Store {
     fn drop(&mut self) {
         // Best effort: a failed optimize costs query planning, never data.
-        // A store that failed to open is left as it was found.
+        // A store that failed to open, and a Snapshot, are left as found.
         if self.opened {
             // Skipped, not waited for, while another process writes.
             let _ = self.conn.busy_timeout(Duration::ZERO);
@@ -356,7 +380,6 @@ impl Store {
     }
 
     fn check_existing(path: &Path, workspace: Uuid) -> Result<(), StoreError> {
-        let not_a_store = || StoreError::NotAStore(path.to_path_buf());
         let conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -364,6 +387,13 @@ impl Store {
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         conn.busy_timeout(BUSY_TIMEOUT)?;
+        Self::check(&conn, path, workspace)
+    }
+
+    /// Whether `conn` holds Workspace `workspace`'s tm store in a format
+    /// this build reads, checked without writing.
+    fn check(conn: &Connection, path: &Path, workspace: Uuid) -> Result<(), StoreError> {
+        let not_a_store = || StoreError::NotAStore(path.to_path_buf());
         let has_meta: bool = match conn.query_row(
             "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'meta')",
             [],
@@ -453,13 +483,7 @@ impl Store {
              PRAGMA foreign_keys = ON;
              PRAGMA recursive_triggers = ON;",
         )?;
-        // People are typed by hand, so filters and sorts compare them ignoring
-        // case; SQLite's NOCASE folds only A to Z. Uppercasing first makes
-        // ß match SS and final sigma match sigma.
-        conn.create_collation(query::FOLD, |a, b| {
-            let fold = |s: &str| s.to_uppercase().to_lowercase();
-            fold(a).cmp(&fold(b))
-        })?;
+        Self::collate(&conn)?;
         let mut store = Self {
             conn,
             clock,
@@ -470,6 +494,17 @@ impl Store {
         store.init()?;
         store.opened = true;
         Ok(store)
+    }
+
+    /// People are typed by hand, so filters and sorts compare them ignoring
+    /// case; SQLite's NOCASE folds only A to Z. Uppercasing first makes ß
+    /// match SS and final sigma match sigma.
+    fn collate(conn: &Connection) -> Result<(), StoreError> {
+        conn.create_collation(query::FOLD, |a, b| {
+            let fold = |s: &str| s.to_uppercase().to_lowercase();
+            fold(a).cmp(&fold(b))
+        })?;
+        Ok(())
     }
 
     /// Replaces the Scheme writes are checked against and reads are labelled
@@ -1013,12 +1048,21 @@ impl Store {
         let data_version = self
             .conn
             .query_row("PRAGMA data_version", [], |row| row.get(0))?;
-        let max_seq = self
+        Ok((data_version, self.log_end()?))
+    }
+
+    /// The log's last position: being append-only, only a committed write
+    /// moves it, never one rolled back.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure.
+    pub fn log_end(&self) -> Result<i64, StoreError> {
+        Ok(self
             .conn
             .query_row("SELECT coalesce(max(seq), 0) FROM ops", [], |row| {
                 row.get(0)
-            })?;
-        Ok((data_version, max_seq))
+            })?)
     }
 
     /// Refuses a log another build wrote with other columns: until v1 the

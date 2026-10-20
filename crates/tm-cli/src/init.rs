@@ -10,8 +10,8 @@ use tm_store::workspace::{self, RepoFile, Workspace};
 use uuid::Uuid;
 
 use crate::error::CliError;
-use crate::identity;
 use crate::output::Output;
+use crate::{here, identity};
 
 const REPO_FILE: &str = ".config/tm.toml";
 
@@ -122,6 +122,10 @@ pub(crate) fn run(init: Init, json: bool) -> Result<Output, CliError> {
                     ),
                 })
         });
+    let published = finished
+        .is_ok()
+        .then(|| here::publish(&store, &workspace))
+        .flatten();
     drop(store);
     let batch = match finished {
         Ok(batch) => batch,
@@ -142,7 +146,7 @@ pub(crate) fn run(init: Init, json: bool) -> Result<Output, CliError> {
             "batch": batch,
         }),
         serialized: None,
-        warnings: identity.warnings,
+        warnings: identity.warnings.into_iter().chain(published).collect(),
     })
 }
 

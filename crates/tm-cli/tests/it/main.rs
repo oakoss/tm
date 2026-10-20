@@ -15,5 +15,6 @@ mod scheme;
 mod shapes;
 mod show;
 mod smoke;
+mod snapshot;
 mod support;
 mod undo;

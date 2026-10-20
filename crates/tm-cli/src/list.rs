@@ -21,7 +21,7 @@ use crate::output::{Output, printable};
 const OPEN: &str = "-category:done,cancelled";
 
 pub(crate) fn run(filter: &[String], limit: Option<usize>, json: bool) -> Result<Output, CliError> {
-    let here = here::open()?;
+    let here = here::read()?;
     match list(&here, filter, limit, json) {
         Ok(mut output) => {
             output.warnings = here.warnings;

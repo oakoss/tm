@@ -36,7 +36,7 @@ pub(crate) fn duration(text: &str) -> Result<u64, String> {
 }
 
 pub(crate) fn take(reference: &str, ttl_ms: Option<u64>) -> Result<Output, CliError> {
-    with_here(|here| {
+    here::write(|here| {
         let issue = here.issue(reference)?;
         let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
             .map_err(|message| CliError::new("no_identity", message))?;
@@ -67,7 +67,7 @@ pub(crate) fn take(reference: &str, ttl_ms: Option<u64>) -> Result<Output, CliEr
 }
 
 pub(crate) fn release(reference: &str, claim: Uuid) -> Result<Output, CliError> {
-    with_here(|here| {
+    here::write(|here| {
         let issue = here.issue(reference)?;
         let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
             .map_err(|message| CliError::new("no_identity", message))?;
@@ -84,21 +84,6 @@ pub(crate) fn release(reference: &str, claim: Uuid) -> Result<Output, CliError> 
             identity.warnings,
         ))
     })
-}
-
-fn with_here(
-    write: impl FnOnce(&mut Here) -> Result<(Output, Vec<String>), CliError>,
-) -> Result<Output, CliError> {
-    let mut here = here::open()?;
-    let warnings = std::mem::take(&mut here.warnings);
-    match write(&mut here) {
-        Ok((mut output, identity_warnings)) => {
-            output.warnings = warnings;
-            output.warnings.extend(identity_warnings);
-            Ok(output)
-        }
-        Err(err) => Err(err.warned(warnings)),
-    }
 }
 
 fn key(here: &Here, issue: Uuid) -> Result<Option<String>, CliError> {

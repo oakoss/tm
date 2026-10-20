@@ -10,7 +10,7 @@ use crate::here;
 use crate::output::{Output, printable};
 
 pub(crate) fn run() -> Result<Output, CliError> {
-    let here = here::open()?;
+    let here = here::read()?;
     let (lost, problems): (Vec<Unapplied>, Vec<Unapplied>) = here
         .store
         .unapplied()?
@@ -40,6 +40,9 @@ pub(crate) fn run() -> Result<Output, CliError> {
             let _ = writeln!(text, "  {} {}", row.op_id, printable(&row.reason));
         }
     }
-    // The warning every other command gives is this report's own subject.
-    Ok(Output::new(text, data))
+    // The unapplied warning every other command gives is this report's own
+    // subject; that it read the Snapshot is not.
+    let mut output = Output::new(text, data);
+    output.warnings.extend(here.snapshot);
+    Ok(output)
 }

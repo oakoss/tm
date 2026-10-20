@@ -107,6 +107,12 @@ impl Workspace {
         self.dir.join("store.db")
     }
 
+    /// The read-only copy of the store, for readers that cannot write.
+    #[must_use]
+    pub fn snapshot_path(&self) -> PathBuf {
+        self.dir.join("snapshot.db")
+    }
+
     /// Creates the Workspace's directory and store. The directory must not
     /// exist yet, so two creates never share one; if the store cannot be
     /// made, the directory is removed so the same id can be created again.
