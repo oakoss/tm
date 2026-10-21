@@ -20,6 +20,7 @@ mod list;
 mod moves;
 mod output;
 mod prime;
+mod prompt;
 mod ready;
 mod recover;
 mod show;

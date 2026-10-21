@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
-use std::io::{self, BufRead, IsTerminal, Write as _};
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::output::Output;
+use crate::prompt::{ask, human, print_now, prompt, stopped};
 use crate::{fields, here, identity, instructions, recover};
 
 const REPO_FILE: &str = ".config/tm.toml";
@@ -447,10 +448,6 @@ fn check_key(key: &str) -> Result<(), String> {
     }
 }
 
-pub(crate) fn stopped() -> String {
-    "stopped at the prompt; nothing written".into()
-}
-
 /// A case-insensitive disk finds `.config/TM.toml` as `.config/tm.toml`, but
 /// git records the name on disk, which a case-sensitive clone does not find.
 fn check_spelling(found: &workspace::Found) -> Result<(), String> {
@@ -636,14 +633,6 @@ fn diff(text: &str) -> String {
     crate::diff::unified(REPO_FILE, None, text)
 }
 
-fn print_now(text: &str) -> Result<(), String> {
-    let mut stdout = io::stdout().lock();
-    stdout
-        .write_all(text.as_bytes())
-        .and_then(|()| stdout.flush())
-        .map_err(|err| format!("cannot write output: {err}"))
-}
-
 /// Shows the file and asks, unless `--yes` confirms it already. JSON mode
 /// shows and asks nothing.
 fn confirmed(text: &str, yes: bool, json: bool) -> Result<(), String> {
@@ -670,19 +659,6 @@ fn confirmed(text: &str, yes: bool, json: bool) -> Result<(), String> {
     }
 }
 
-/// A person at a terminal, the only one tm asks (ADR 0014): stdin and stdout
-/// are terminals and no Agent is detected.
-fn human() -> bool {
-    is_human(
-        io::stdin().is_terminal() && io::stdout().is_terminal(),
-        identity::agent_detected(identity::env),
-    )
-}
-
-fn is_human(terminal: bool, agent: bool) -> bool {
-    terminal && !agent
-}
-
 impl Init {
     /// Whether this run asks its questions: only a person, and neither
     /// `--json` nor `--yes`, which each ask nothing.
@@ -693,44 +669,6 @@ impl Init {
     fn asks_if(&self, json: bool, human: impl FnOnce() -> bool) -> bool {
         !json && !self.yes && human()
     }
-}
-
-/// Shows `shown` and asks `question` at the terminal, defaulting to no.
-fn ask(shown: &str, question: &str) -> Result<bool, String> {
-    print_now(shown)?;
-    eprint!("{question} [y/N] ");
-    answer(&mut io::stdin().lock())
-}
-
-/// A yes read from `input`; anything else, end of input included, is no.
-fn answer(input: &mut impl BufRead) -> Result<bool, String> {
-    let mut line = Vec::new();
-    let read = input
-        .read_until(b'\n', &mut line)
-        .map_err(|err| format!("cannot read the answer: {err}"))?;
-    if read == 0 {
-        eprintln!();
-    }
-    Ok(matches!(line.trim_ascii(), b"y" | b"Y" | b"yes"))
-}
-
-/// Asks `question` at the terminal for a line of text.
-fn prompt(question: &str) -> Result<Option<String>, String> {
-    eprint!("{question}");
-    line(&mut io::stdin().lock())
-}
-
-/// One line read from `input`, trimmed, or `None` at end of input.
-fn line(input: &mut impl BufRead) -> Result<Option<String>, String> {
-    let mut line = String::new();
-    let read = input
-        .read_line(&mut line)
-        .map_err(|err| format!("cannot read the answer: {err}"))?;
-    if read == 0 {
-        eprintln!();
-        return Ok(None);
-    }
-    Ok(Some(line.trim().to_owned()))
 }
 
 fn failed(path: &Path, err: &io::Error) -> String {
@@ -765,14 +703,10 @@ fn write_new(target: &PathBuf, text: &str) -> Result<(), CliError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Init, answer, default_key, is_human, line, named};
+    use super::{Init, default_key, named};
 
     #[test]
-    fn only_a_person_at_a_terminal_without_json_is_asked() {
-        assert!(is_human(true, false));
-        assert!(!is_human(false, false), "a pipe is never asked");
-        assert!(!is_human(true, true), "an Agent is never asked");
-
+    fn only_a_person_without_json_or_yes_is_asked() {
         let init = |yes| Init {
             key: None,
             name: None,
@@ -782,21 +716,6 @@ mod tests {
         assert!(!init(false).asks_if(true, || true), "--json is never asked");
         assert!(!init(true).asks_if(false, || true), "--yes is never asked");
         assert!(!init(false).asks_if(false, || false), "only a person");
-    }
-
-    #[test]
-    fn only_a_yes_is_yes() {
-        for (typed, yes) in [
-            ("y\n", true),
-            ("yes\n", true),
-            (" Y \n", true),
-            ("\n", false),
-            ("no\n", false),
-            ("yess\n", false),
-            ("", false),
-        ] {
-            assert_eq!(answer(&mut typed.as_bytes()), Ok(yes), "{typed:?}");
-        }
     }
 
     #[test]
@@ -923,12 +842,5 @@ mod tests {
                 "{typed:?}"
             );
         }
-    }
-
-    #[test]
-    fn a_line_is_trimmed_and_end_of_input_is_none() {
-        assert_eq!(line(&mut " ops \n".as_bytes()), Ok(Some("ops".into())));
-        assert_eq!(line(&mut "\n".as_bytes()), Ok(Some(String::new())));
-        assert_eq!(line(&mut "".as_bytes()), Ok(None));
     }
 }

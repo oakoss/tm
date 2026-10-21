@@ -11,14 +11,11 @@ use tm_store::{BeadsExport, Store};
 
 use crate::error::CliError;
 use crate::output::{self, Output};
+use crate::prompt::{Prompt, stopped};
 use crate::{export, fields};
 
 pub(crate) const MAKE_BEADS: &str = "bd export -o beads.jsonl";
 pub(crate) const IMPORT_BEADS: &str = "tm import --from beads beads.jsonl";
-
-/// Reads a line for a question; `None` at end of input.
-pub(crate) trait Prompt: FnMut(&str) -> Result<Option<String>, String> {}
-impl<F: FnMut(&str) -> Result<Option<String>, String>> Prompt for F {}
 
 /// What `tm init` does about a repo's `.beads/`.
 #[derive(Debug)]
@@ -215,7 +212,7 @@ fn ask_path<T>(
     let mut asking = question.to_owned();
     loop {
         let typed = prompt(&asking)
-            .and_then(|typed| typed.ok_or_else(crate::init::stopped))
+            .and_then(|typed| typed.ok_or_else(stopped))
             .map_err(crate::init::refused)?;
         if typed.is_empty() {
             return Ok(None);
