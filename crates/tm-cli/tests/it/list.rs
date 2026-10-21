@@ -115,6 +115,16 @@ fn with_no_filter_list_shows_the_open_work() {
 
     let (_, doc) = list(&scratch, &repo, &["category:done,cancelled"]);
     assert_eq!(keys(&doc), ["TM-4", "TM-5"]);
+
+    for args in [&["--all"][..], &["--all", "sort:priority"]] {
+        let (ok, doc) = list(&scratch, &repo, args);
+        assert!(ok, "{doc}");
+        assert_eq!(
+            keys(&doc),
+            ["TM-1", "TM-2", "TM-3", "TM-4", "TM-5"],
+            "every Status: {args:?}"
+        );
+    }
 }
 
 #[test]
