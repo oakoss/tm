@@ -43,13 +43,15 @@ fn write(here: &mut Here, create: &Create) -> Result<(Output, Vec<String>), CliE
     let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
         .map_err(|message| CliError::new("no_identity", message))?;
     let project = here.project()?;
+    fields::given_once(create.set.iter().map(|(field, _)| field))?;
+    let values = fields::read_stdin(&create.set, "leave the field out")?;
     let parent = match &create.parent {
         Some(reference) => Some(here.issue(reference)?),
         None => None,
     };
     let scheme = here.store.scheme().clone();
     let issue = Uuid::now_v7();
-    let changes = changes(&scheme, create, parent);
+    let changes = changes(&scheme, create, &values, parent);
     let active = create.issue_type.as_deref().is_some_and(|issue_type| {
         status(&changes).and_then(|status| scheme.category(issue_type, status))
             == Some(Category::Active)
@@ -75,7 +77,7 @@ fn write(here: &mut Here, create: &Create) -> Result<(Output, Vec<String>), CliE
     let (ops, starts) = match written {
         Ok(written) => written,
         Err(StoreError::MissingFields { fields, .. }) => {
-            return Err(missing(&scheme, create, fields));
+            return Err(missing(&scheme, create, &values, fields));
         }
         Err(err) => return Err(err.into()),
     };
@@ -92,9 +94,15 @@ fn status(changes: &[Change]) -> Option<&str> {
     })
 }
 
-/// The create, then each field given; the Status comes from the type's
-/// Workflow, so it is set only when the type is known.
-fn changes(scheme: &Scheme, create: &Create, parent: Option<Uuid>) -> Vec<Change> {
+/// The create, then each field given, `values` standing for `--set`; the
+/// Status comes from the type's Workflow, so it is set only when the type is
+/// known.
+fn changes(
+    scheme: &Scheme,
+    create: &Create,
+    values: &[(String, String)],
+    parent: Option<Uuid>,
+) -> Vec<Change> {
     let mut changes = vec![Change::Create];
     if let Some(issue_type) = &create.issue_type {
         changes.push(set("type", json!(issue_type)));
@@ -108,7 +116,7 @@ fn changes(scheme: &Scheme, create: &Create, parent: Option<Uuid>) -> Vec<Change
     if let Some(parent) = parent {
         changes.push(set("parent", json!(parent.to_string())));
     }
-    for (field, value) in &create.set {
+    for (field, value) in values {
         changes.push(set(field, typed(scheme, field, value)));
     }
     for label in &create.labels {
@@ -119,7 +127,13 @@ fn changes(scheme: &Scheme, create: &Create, parent: Option<Uuid>) -> Vec<Change
 
 /// `missing_fields` with each field's allowed values. Without a type the
 /// Status cannot be given, since it follows from the type, so it is not named.
-fn missing(scheme: &Scheme, create: &Create, fields: Vec<String>) -> CliError {
+/// The fix carries a value read from stdin as text, since stdin is spent.
+fn missing(
+    scheme: &Scheme,
+    create: &Create,
+    values: &[(String, String)],
+    fields: Vec<String>,
+) -> CliError {
     let no_type = fields.iter().any(|name| name == "type");
     let fields: Vec<String> = fields
         .into_iter()
@@ -135,7 +149,7 @@ fn missing(scheme: &Scheme, create: &Create, fields: Vec<String>) -> CliError {
     if let Some(title) = &create.title {
         flag("--title", title);
     }
-    for (field, value) in &create.set {
+    for (field, value) in values {
         flag("--set", &format!("{field}={value}"));
     }
     for label in &create.labels {

@@ -1,8 +1,13 @@
 //! Field changes as the writing commands build them from their flags.
 
+use std::collections::BTreeSet;
+use std::io::{self, IsTerminal as _, Read as _};
+
 use serde_json::{Value, json};
 use tm_core::Change;
 use tm_core::scheme::{FieldType, Scheme};
+
+use crate::error::CliError;
 
 /// `FIELD=VALUE`, split at the first `=`.
 pub(crate) fn split_pair(pair: &str) -> Result<(String, String), String> {
@@ -56,6 +61,80 @@ pub(crate) fn label(elem: &str, present: bool) -> Change {
             elem_label: None,
         }
     }
+}
+
+/// Refuses a field named twice, since the later value would silently win.
+pub(crate) fn given_once<'a>(fields: impl IntoIterator<Item = &'a String>) -> Result<(), CliError> {
+    let mut seen = BTreeSet::new();
+    for field in fields {
+        if !seen.insert(field) {
+            return Err(
+                CliError::new("invalid_value", format!("{field} is given more than once"))
+                    .with("field", field.as_str()),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `--set` values with a `-` read from stdin. Stdin is read once, never from
+/// a terminal, and a blank value is refused with `blank`'s advice.
+pub(crate) fn read_stdin(
+    set: &[(String, String)],
+    blank: &str,
+) -> Result<Vec<(String, String)>, CliError> {
+    let from_stdin: Vec<&str> = set
+        .iter()
+        .filter(|(_, value)| value == "-")
+        .map(|(field, _)| field.as_str())
+        .collect();
+    if from_stdin.len() > 1 {
+        return Err(CliError::new(
+            "invalid_value",
+            format!(
+                "only one field can read stdin, not {}",
+                from_stdin.join(", ")
+            ),
+        ));
+    }
+    let read = match from_stdin.first() {
+        Some(field) => Some(stdin(field, blank)?),
+        None => None,
+    };
+    Ok(set
+        .iter()
+        .map(|(field, value)| match (value.as_str(), &read) {
+            ("-", Some(read)) => (field.clone(), read.clone()),
+            _ => (field.clone(), value.clone()),
+        })
+        .collect())
+}
+
+fn stdin(field: &str, blank: &str) -> Result<String, CliError> {
+    let refused = |reason: &str| {
+        CliError::new("invalid_value", format!("{field} from stdin {reason}"))
+            .with("field", field)
+            .with("reason", reason)
+    };
+    let mut stdin = io::stdin();
+    if stdin.is_terminal() {
+        return Err(refused("is a terminal; pipe the value in"));
+    }
+    let mut read = String::new();
+    match stdin.read_to_string(&mut read) {
+        Ok(_) => {}
+        Err(err) if err.kind() == io::ErrorKind::InvalidData => {
+            return Err(refused("is not UTF-8"));
+        }
+        Err(err) => {
+            return Err(CliError::new("io", format!("stdin: {err}")).with("path", "-"));
+        }
+    }
+    let read = read.trim_end_matches(['\n', '\r']).to_owned();
+    if read.trim().is_empty() {
+        return Err(refused(&format!("is blank; {blank}")));
+    }
+    Ok(read)
 }
 
 /// `value` as one POSIX shell word, for a fix to run as printed.

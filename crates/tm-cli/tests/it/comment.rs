@@ -1,10 +1,7 @@
-use std::io::Write as _;
-use std::process::Stdio;
-
 use serde_json::Value;
 use tm_core::Actor;
 
-use crate::support::{Scratch, initialized, text, tm, tm_command};
+use crate::support::{Scratch, initialized, text, tm, tm_piped};
 
 #[test]
 fn a_comment_is_given_or_read_from_stdin_and_shows_in_order() {
@@ -22,25 +19,12 @@ fn a_comment_is_given_or_read_from_stdin_and_shows_in_order() {
     assert_eq!(doc["data"]["comment"]["actor"], "jace");
     assert_eq!(doc["data"]["batch"], doc["data"]["comment"]["id"]);
 
-    let mut child = tm_command()
-        .args(["comment", "TM-1", "-"])
-        .current_dir(&repo)
-        .env("TM_HOME", scratch.home())
-        .env("TM_ACTOR", "jace")
-        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"from stdin\nsecond line\n")
-        .unwrap();
-    let out = child.wait_with_output().unwrap();
+    let out = tm_piped(
+        &scratch,
+        &repo,
+        &["comment", "TM-1", "-"],
+        "from stdin\nsecond line\n",
+    );
     assert!(out.status.success(), "{out:?}");
     assert!(
         text(&out.stdout).starts_with("commented on TM-1\nundo this with: tm undo "),

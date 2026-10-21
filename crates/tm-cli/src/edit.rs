@@ -1,9 +1,7 @@
 //! `tm edit`: an Issue's fields, labels and parent, changed in one batch.
 
-use std::collections::BTreeSet;
 use std::collections::btree_map::Entry;
 use std::fmt::Write as _;
-use std::io::{IsTerminal as _, Read as _};
 
 use serde_json::{Value, json};
 use tm_core::Change;
@@ -132,66 +130,10 @@ fn refuse_status(reference: &str, edit: &Edit) -> Result<(), CliError> {
     }
 }
 
-/// Each `--set` value, with `-` read from stdin. Stdin is read once, never
-/// from a terminal, and a blank value is refused: `--unset` clears a field.
+/// Each `--set` value, with `-` read from stdin.
 fn values(edit: &Edit) -> Result<Vec<(String, String)>, CliError> {
-    let mut fields = BTreeSet::new();
-    for field in edit.set.iter().map(|(field, _)| field).chain(&edit.unset) {
-        if !fields.insert(field) {
-            return Err(
-                CliError::new("invalid_value", format!("{field} is given more than once"))
-                    .with("field", field.as_str()),
-            );
-        }
-    }
-    let from_stdin: Vec<&str> = edit
-        .set
-        .iter()
-        .filter(|(_, value)| value == "-")
-        .map(|(field, _)| field.as_str())
-        .collect();
-    if from_stdin.len() > 1 {
-        return Err(CliError::new(
-            "invalid_value",
-            format!(
-                "only one field can read stdin, not {}",
-                from_stdin.join(", ")
-            ),
-        ));
-    }
-    let read = match from_stdin.first() {
-        Some(field) => Some(stdin(field)?),
-        None => None,
-    };
-    Ok(edit
-        .set
-        .iter()
-        .map(|(field, value)| match (value.as_str(), &read) {
-            ("-", Some(read)) => (field.clone(), read.clone()),
-            _ => (field.clone(), value.clone()),
-        })
-        .collect())
-}
-
-fn stdin(field: &str) -> Result<String, CliError> {
-    let refused = |reason: &str| {
-        CliError::new("invalid_value", format!("{field} from stdin {reason}"))
-            .with("field", field)
-            .with("reason", reason)
-    };
-    let mut stdin = std::io::stdin();
-    if stdin.is_terminal() {
-        return Err(refused("is a terminal; pipe the value in"));
-    }
-    let mut read = String::new();
-    stdin
-        .read_to_string(&mut read)
-        .map_err(|err| CliError::new("io", format!("stdin: {err}")).with("path", "-"))?;
-    let read = read.trim_end_matches(['\n', '\r']).to_owned();
-    if read.trim().is_empty() {
-        return Err(refused("is blank; clear a field with --unset"));
-    }
-    Ok(read)
+    fields::given_once(edit.set.iter().map(|(field, _)| field).chain(&edit.unset))?;
+    fields::read_stdin(&edit.set, "clear a field with --unset")
 }
 
 /// The changes the flags ask for, leaving out any that would write a value

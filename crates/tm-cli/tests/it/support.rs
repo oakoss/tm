@@ -1,6 +1,7 @@
 //! Fixture repos and a `tm` that runs in them, shared by the suites.
 
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -112,16 +113,44 @@ pub(crate) fn tm_command() -> Command {
 
 /// `tm` in `dir`, writing as the human `jace` into the scratch home.
 pub(crate) fn tm(scratch: &Scratch, dir: &Path, args: &[&str]) -> Output {
-    tm_command()
+    jace(scratch, dir, args)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+/// [`tm`] with `input` on stdin.
+pub(crate) fn tm_piped(
+    scratch: &Scratch,
+    dir: &Path,
+    args: &[&str],
+    input: impl AsRef<[u8]>,
+) -> Output {
+    let mut child = jace(scratch, dir, args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_ref())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+fn jace(scratch: &Scratch, dir: &Path, args: &[&str]) -> Command {
+    let mut command = tm_command();
+    command
         .args(args)
         .current_dir(dir)
         .env("TM_HOME", scratch.home())
         .env("TM_ACTOR", "jace")
         .env("GIT_CONFIG_GLOBAL", scratch.git_config())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .stdin(Stdio::null())
-        .output()
-        .unwrap()
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    command
 }
 
 /// A repo mapped to a new Workspace with the Project TM, and its store.

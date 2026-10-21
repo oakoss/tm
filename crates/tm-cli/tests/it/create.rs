@@ -7,7 +7,7 @@ use tm_store::Store;
 use tm_store::workspace::{PathProject, RepoFile};
 use uuid::Uuid;
 
-use crate::support::{Scratch, initialized, text, tm};
+use crate::support::{Scratch, initialized, text, tm, tm_piped};
 
 fn create(scratch: &Scratch, dir: &Path, args: &[&str]) -> (bool, Value) {
     let out = tm(scratch, dir, &[&["create", "--json"], args].concat());
@@ -161,6 +161,67 @@ fn a_set_that_is_malformed_or_names_a_flagged_field_is_a_usage_error() {
         let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(doc["error"], "usage", "{set}: {doc}");
     }
+}
+
+#[test]
+fn a_field_reads_stdin_without_its_trailing_newline() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    let piped = |args: &[&str], input: &[u8]| {
+        let out = tm_piped(
+            &scratch,
+            &repo,
+            &[&["create", "--json", "--title", "t"], args].concat(),
+            input,
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    let task = ["--type", "task", "--set", "description=-"];
+
+    let doc = piped(&task, b"line one\nline two  \r\n");
+    assert_eq!(
+        doc["data"]["fields"]["description"], "line one\nline two  ",
+        "only trailing line breaks are dropped: {doc}"
+    );
+
+    let doc = piped(&["--set", "description=-"], b"a\nb'c\n");
+    assert_eq!(doc["error"], "missing_fields", "{doc}");
+    assert_eq!(
+        doc["fix"], "tm create --title=t --set='description=a\nb'\\''c' --type <type>",
+        "the fix carries the value stdin gave"
+    );
+
+    let doc = piped(&[&task[..], &["--set", "description=x"]].concat(), b"y");
+    assert_eq!(doc["error"], "invalid_value", "{doc}");
+    assert_eq!(doc["field"], "description");
+
+    let doc = piped(&task, b"\xff\n");
+    assert_eq!(doc["error"], "invalid_value", "{doc}");
+    assert_eq!(doc["reason"], "is not UTF-8");
+
+    let doc = piped(&task, b" \n");
+    assert_eq!(doc["error"], "invalid_value", "{doc}");
+    assert_eq!(doc["field"], "description");
+    assert!(
+        doc["reason"]
+            .as_str()
+            .unwrap()
+            .contains("leave the field out"),
+        "a blank value points to leaving the field out: {doc}"
+    );
+
+    let doc = piped(&[&task[..], &["--set", "assignee=-"]].concat(), b"x");
+    assert_eq!(doc["error"], "invalid_value", "{doc}");
+    assert_eq!(
+        doc["message"],
+        "only one field can read stdin, not description, assignee"
+    );
+
+    let issues: i64 = store
+        .connection()
+        .query_row("SELECT count(*) FROM issues", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(issues, 1, "a refused value creates nothing");
 }
 
 #[test]
