@@ -62,9 +62,14 @@ pub(crate) fn run(init: &Init, json: bool) -> Result<Output, CliError> {
     let config_dir = root.join(".config");
     check_config_dir(&root, &config_dir).map_err(refused)?;
     check_not_ignored(&root).map_err(refused)?;
-    let (key, name) = project(&root, init, json).map_err(refused)?;
-    let asks = human(json, init.yes).then_some(prompt);
-    let beads = recover::beads(&root, (&key, &name[..]), &identity.actor, asks)?;
+    let asks = init.asks(json);
+    let (key, name) = project(&root, init, asks).map_err(refused)?;
+    let beads = recover::beads(
+        &root,
+        (&key, &name[..]),
+        &identity.actor,
+        asks.then_some(prompt),
+    )?;
     let file = RepoFile {
         workspace: Uuid::now_v7(),
         project: key.clone(),
@@ -137,7 +142,7 @@ pub(crate) fn run(init: &Init, json: bool) -> Result<Output, CliError> {
     recover::write_beads(&mut created, &mut store, beads, &identity.actor);
     created.warnings.extend(here::publish(&store, &workspace));
     drop(store);
-    Ok(with_lines(created, &root, init.yes, json, &[REPO_FILE]))
+    Ok(with_lines(created, &root, asks, &[REPO_FILE]))
 }
 
 fn created(workspace: &Workspace, key: &str, target: &Path, batch: Uuid) -> Output {
@@ -159,8 +164,8 @@ fn created(workspace: &Workspace, key: &str, target: &Path, batch: Uuid) -> Outp
 }
 
 /// `output` with tm's instruction lines offered for the repo at `root`.
-fn with_lines(mut output: Output, root: &Path, yes: bool, json: bool, wrote: &[&str]) -> Output {
-    let offer = instructions::offer(root, human(json, yes), ask);
+fn with_lines(mut output: Output, root: &Path, asks: bool, wrote: &[&str]) -> Output {
+    let offer = instructions::offer(root, asks, ask);
     instructions::report(&mut output, offer, wrote);
     output
 }
@@ -240,7 +245,8 @@ fn already_mapped(
     if let Ok(relative) = found.path.strip_prefix(&root) {
         check_git_sees(&root, &relative.to_string_lossy()).map_err(refused)?;
     }
-    let ((workspace, store), restored) = opened(home, found, &root, human(json, init.yes))?;
+    let asks = init.asks(json);
+    let ((workspace, store), restored) = opened(home, found, &root, asks)?;
     let keys = std::iter::once(&found.file.project)
         .chain(found.file.paths.iter().map(|mapping| &mapping.project));
     for key in keys {
@@ -286,7 +292,7 @@ fn already_mapped(
         mapped.data["restored"] = restored.data;
         mapped.warnings = restored.warnings;
     }
-    Ok(with_lines(mapped, &root, init.yes, json, &[]))
+    Ok(with_lines(mapped, &root, asks, &[]))
 }
 
 /// The Workspace `found` names. One this machine lacks is restored from an
@@ -347,8 +353,8 @@ fn with_restored(err: CliError, restored: Output) -> CliError {
     err.warned(warnings).with("restored", restored.data)
 }
 
-/// The new Project's key and name, asked of a person at a terminal.
-fn project(root: &Path, init: &Init, json: bool) -> Result<(String, String), String> {
+/// The new Project's key and name, asked when `asks`.
+fn project(root: &Path, init: &Init, asks: bool) -> Result<(String, String), String> {
     let dir_name = root
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -357,7 +363,7 @@ fn project(root: &Path, init: &Init, json: bool) -> Result<(String, String), Str
         dir_name,
         init.key.clone(),
         init.name.clone(),
-        human(json, init.yes).then_some(prompt),
+        asks.then_some(prompt),
     )
 }
 
@@ -644,7 +650,7 @@ fn confirmed(text: &str, yes: bool, json: bool) -> Result<(), String> {
     if yes {
         return print_now(&diff(text));
     }
-    if !human(json, false) {
+    if !human() {
         print_now(&diff(text))?;
         return Err(format!(
             "{REPO_FILE} not written: confirm with --yes when not a person at a terminal"
@@ -658,18 +664,28 @@ fn confirmed(text: &str, yes: bool, json: bool) -> Result<(), String> {
 }
 
 /// A person at a terminal, the only one tm asks (ADR 0014): stdin and stdout
-/// are terminals, JSON is off, and no Agent is detected. `--yes` asks nothing.
-fn human(json: bool, yes: bool) -> bool {
+/// are terminals and no Agent is detected.
+fn human() -> bool {
     is_human(
-        json || yes,
         io::stdin().is_terminal() && io::stdout().is_terminal(),
         identity::agent_detected(identity::env),
     )
 }
 
-/// `quiet` is `--json` or `--yes`, either of which asks nothing.
-fn is_human(quiet: bool, terminal: bool, agent: bool) -> bool {
-    !quiet && terminal && !agent
+fn is_human(terminal: bool, agent: bool) -> bool {
+    terminal && !agent
+}
+
+impl Init {
+    /// Whether this run asks its questions: only a person, and neither
+    /// `--json` nor `--yes`, which each ask nothing.
+    fn asks(&self, json: bool) -> bool {
+        self.asks_if(json, human)
+    }
+
+    fn asks_if(&self, json: bool, human: impl FnOnce() -> bool) -> bool {
+        !json && !self.yes && human()
+    }
 }
 
 /// Shows `shown` and asks `question` at the terminal, defaulting to no.
@@ -742,17 +758,23 @@ fn write_new(target: &PathBuf, text: &str) -> Result<(), CliError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{answer, default_key, is_human, line, named};
+    use super::{Init, answer, default_key, is_human, line, named};
 
     #[test]
     fn only_a_person_at_a_terminal_without_json_is_asked() {
-        assert!(is_human(false, true, false));
-        assert!(
-            !is_human(true, true, false),
-            "--json or --yes is never asked"
-        );
-        assert!(!is_human(false, false, false), "a pipe is never asked");
-        assert!(!is_human(false, true, true), "an Agent is never asked");
+        assert!(is_human(true, false));
+        assert!(!is_human(false, false), "a pipe is never asked");
+        assert!(!is_human(true, true), "an Agent is never asked");
+
+        let init = |yes| Init {
+            key: None,
+            name: None,
+            yes,
+        };
+        assert!(init(false).asks_if(false, || true));
+        assert!(!init(false).asks_if(true, || true), "--json is never asked");
+        assert!(!init(true).asks_if(false, || true), "--yes is never asked");
+        assert!(!init(false).asks_if(false, || false), "only a person");
     }
 
     #[test]
