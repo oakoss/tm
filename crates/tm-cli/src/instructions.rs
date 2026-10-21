@@ -5,7 +5,7 @@
 use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -112,13 +112,22 @@ fn plan(found: Found) -> (Plan, bool) {
     (Plan::Settled(settled), replace)
 }
 
+/// A change not yet written, as the file's text when read and what it would
+/// become: still open, or confirmed by a human.
+enum Change {
+    Open(String, String),
+    Confirmed(String, String),
+}
+
 /// The offer's outcome, for [`report`].
 pub(crate) struct Offer {
     file: &'static str,
+    path: PathBuf,
     create: bool,
     /// The file holds an older block, so the lines go in its place.
     replace: bool,
     state: State,
+    change: Option<Change>,
     hook: bool,
     warnings: Vec<String>,
 }
@@ -182,14 +191,11 @@ fn splice(current: &str) -> Result<Splice, String> {
     }
 }
 
-/// Offers the lines for the repo at `root`. When `asks`, a human sees the
-/// diff and `ask` decides; otherwise the reader is only told, and nothing is
-/// written. A failure leaves the file alone and is reported, never fatal.
-pub(crate) fn offer(
-    root: &Path,
-    asks: bool,
-    ask: impl FnOnce(&str, &str) -> Result<bool, String>,
-) -> Offer {
+/// What the lines need in the repo at `root`, read and decided but neither
+/// asked nor written: [`Offer::ask`] puts it to a human, and [`Offer::write`]
+/// carries out a yes. Until then the reader is only told. A failure leaves
+/// the file alone and is reported, never fatal.
+pub(crate) fn offer(root: &Path) -> Offer {
     let (file, meta) = target(root);
     let path = root.join(file);
     let create = meta.is_none();
@@ -220,57 +226,71 @@ pub(crate) fn offer(
         readonly,
         current,
     });
-    let settle = |current: String, after: String, told: State| {
-        if !asks {
-            return told;
-        }
-        let question = if create {
-            format!("Create {file} with tm's lines?")
-        } else {
-            format!("Add tm's lines to {file}?")
-        };
-        let shown = crate::diff::unified(file, (!create).then_some(current.as_str()), &after);
-        match ask(&shown, &question) {
-            Ok(false) => State::Declined,
-            // The file may have been edited while the prompt waited; writing
-            // the text computed before asking would lose that edit.
-            Ok(true)
-                if !create
-                    && fs::read_to_string(&path).ok().as_deref() != Some(current.as_str()) =>
-            {
-                warnings.push(format!(
-                    "{file} changed while tm asked, so tm left it alone"
-                ));
-                told
-            }
-            Ok(true) => match write(&path, &after, create) {
-                Ok(()) => State::Added,
-                Err(err) => {
-                    warnings.push(format!("writing {file} failed: {err}"));
-                    State::WriteFailed
-                }
-            },
-            Err(err) => {
-                warnings.push(format!("cannot ask about {file}: {err}"));
-                told
-            }
-        }
-    };
-    let state = match planned {
-        Plan::Settled(state) => state,
+    let (state, change) = match planned {
+        Plan::Settled(state) => (state, None),
         Plan::Change {
             current,
             after,
             told,
-        } => settle(current, after, told),
+        } => (told, Some(Change::Open(current, after))),
     };
     Offer {
         file,
+        path,
         create,
         replace,
         state,
+        change,
         hook,
         warnings,
+    }
+}
+
+impl Offer {
+    /// Puts an open change to a human, who sees its diff; `ask` decides.
+    pub(crate) fn ask(&mut self, ask: impl FnOnce(&str, &str) -> Result<bool, String>) {
+        let Some(Change::Open(current, after)) = self.change.take() else {
+            return;
+        };
+        let file = self.file;
+        let question = if self.create {
+            format!("Create {file} with tm's lines?")
+        } else {
+            format!("Add tm's lines to {file}?")
+        };
+        let before = (!self.create).then_some(current.as_str());
+        match ask(&crate::diff::unified(file, before, &after), &question) {
+            Ok(true) => self.change = Some(Change::Confirmed(current, after)),
+            Ok(false) => self.state = State::Declined,
+            Err(err) => {
+                self.warnings
+                    .push(format!("cannot ask about {file}: {err}"));
+                self.change = Some(Change::Open(current, after));
+            }
+        }
+    }
+
+    /// Writes the change a human said yes to.
+    pub(crate) fn write(&mut self) {
+        let Some(Change::Confirmed(current, after)) = self.change.take() else {
+            return;
+        };
+        let file = self.file;
+        // The file may have been edited since tm read it; writing the text
+        // computed then would lose that edit.
+        if !self.create && fs::read_to_string(&self.path).ok() != Some(current) {
+            self.warnings.push(format!(
+                "{file} changed after tm asked, so tm left it alone"
+            ));
+            return;
+        }
+        self.state = match write(&self.path, &after, self.create) {
+            Ok(()) => State::Added,
+            Err(err) => {
+                self.warnings.push(format!("writing {file} failed: {err}"));
+                State::WriteFailed
+            }
+        };
     }
 }
 
@@ -349,6 +369,7 @@ pub(crate) fn report(output: &mut Output, offer: Offer) {
         state,
         hook,
         warnings,
+        ..
     } = offer;
     output.warnings.extend(warnings);
     let text = &mut output.text;
@@ -469,6 +490,20 @@ mod tests {
         assert_eq!(unread, (settled(State::Unreadable), false));
     }
 
+    /// An offer asked when `asks` and written, as `tm init` does in turn.
+    fn offered(
+        dir: &Path,
+        asks: bool,
+        ask: impl FnOnce(&str, &str) -> Result<bool, String>,
+    ) -> Offer {
+        let mut offered = offer(dir);
+        if asks {
+            offered.ask(ask);
+        }
+        offered.write();
+        offered
+    }
+
     fn never(_: &str, _: &str) -> Result<bool, String> {
         panic!("only a human is asked")
     }
@@ -564,9 +599,9 @@ mod tests {
         fs::write(&path, "# Repo\n").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
 
-        let told = offer(&dir, false, never);
+        let told = offered(&dir, false, never);
         assert_eq!((told.file, told.state), ("CLAUDE.md", State::ToAdd));
-        let declined = offer(&dir, true, |_, _| Ok(false));
+        let declined = offered(&dir, true, |_, _| Ok(false));
         assert_eq!(declined.state, State::Declined);
         assert_eq!(fs::read_to_string(&path).unwrap(), "# Repo\n");
         assert_eq!(
@@ -576,7 +611,7 @@ mod tests {
         );
 
         let mut shown = String::new();
-        let added = offer(&dir, true, |diff, question| {
+        let added = offered(&dir, true, |diff, question| {
             shown = format!("{diff}{question}");
             Ok(true)
         });
@@ -602,17 +637,17 @@ mod tests {
             "{}",
             output.text
         );
-        assert_eq!(offer(&dir, true, never).state, State::Present);
+        assert_eq!(offered(&dir, true, never).state, State::Present);
 
         fs::write(&path, "# Repo\n").unwrap();
-        let raced = offer(&dir, true, |_, _| {
+        let raced = offered(&dir, true, |_, _| {
             fs::write(&path, "# Repo\nedited while asked\n").unwrap();
             Ok(true)
         });
         assert_eq!(raced.state, State::ToAdd);
         assert_eq!(
             raced.warnings,
-            ["CLAUDE.md changed while tm asked, so tm left it alone"]
+            ["CLAUDE.md changed after tm asked, so tm left it alone"]
         );
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
@@ -626,7 +661,7 @@ mod tests {
     fn a_new_file_is_offered_as_created() {
         let dir = scratch();
         let mut asked = (String::new(), String::new());
-        let made = offer(&dir, true, |diff, question| {
+        let made = offered(&dir, true, |diff, question| {
             asked = (diff.to_owned(), question.to_owned());
             Ok(true)
         });
@@ -643,7 +678,7 @@ mod tests {
         assert_eq!(fs::read_to_string(dir.join("AGENTS.md")).unwrap(), block());
 
         fs::remove_file(dir.join("AGENTS.md")).unwrap();
-        let output = reported(offer(&dir, false, never));
+        let output = reported(offered(&dir, false, never));
         assert_eq!(output.data["instructions"]["create"], true);
         assert!(
             output
@@ -652,6 +687,15 @@ mod tests {
             "{}",
             output.text
         );
+
+        // A file that appears between the yes and the write is not replaced.
+        let path = dir.join("AGENTS.md");
+        let mut raced = offer(&dir);
+        raced.ask(|_, _| Ok(true));
+        fs::write(&path, "# mine\n").unwrap();
+        raced.write();
+        assert_eq!(raced.state, State::WriteFailed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "# mine\n");
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -660,7 +704,7 @@ mod tests {
         let dir = scratch();
         let old_block = format!("{START}\nold\n{END}\n");
         fs::write(dir.join("AGENTS.md"), format!("# Repo\n\n{old_block}")).unwrap();
-        let output = reported(offer(&dir, false, never));
+        let output = reported(offered(&dir, false, never));
         assert_eq!(output.data["instructions"]["state"], "to_replace");
         let told = "Replace tm's markers and the lines between them in AGENTS.md with:\n";
         assert!(output.text.starts_with(told), "{}", output.text);
@@ -681,7 +725,7 @@ mod tests {
         let outside = scratch();
         symlink(outside.join("elsewhere.md"), dir.join("AGENTS.md")).unwrap();
         fs::write(dir.join("CLAUDE.md"), "# Repo\n").unwrap();
-        let linked = offer(&dir, true, never);
+        let linked = offered(&dir, true, never);
         assert_eq!((linked.file, linked.state), ("AGENTS.md", State::Linked));
         assert!(
             linked.warnings[0].starts_with("cannot read the file AGENTS.md points to"),
@@ -701,12 +745,12 @@ mod tests {
         symlink(&real, dir.join("AGENTS.md")).unwrap();
         fs::write(&real, block()).unwrap();
         assert_eq!(
-            offer(&dir, true, never).state,
+            offered(&dir, true, never).state,
             State::Present,
             "a link to a file with the lines is read through"
         );
         fs::write(&real, format!("{START}\nold\n{END}\n")).unwrap();
-        let older = reported(offer(&dir, true, never));
+        let older = reported(offered(&dir, true, never));
         assert_eq!(older.data["instructions"]["state"], "linked");
         assert!(
             older.text.contains(
@@ -728,7 +772,7 @@ mod tests {
     fn a_failure_is_a_warning_and_still_reports_the_lines_and_hook() {
         let dir = scratch();
         fs::create_dir(dir.join("AGENTS.md")).unwrap();
-        let unreadable = reported(offer(&dir, true, never));
+        let unreadable = reported(offered(&dir, true, never));
         assert_eq!(unreadable.data["instructions"]["state"], "unreadable");
         assert!(
             unreadable.warnings[0].starts_with("cannot read AGENTS.md"),
@@ -748,7 +792,7 @@ mod tests {
 
         fs::write(dir.join("AGENTS.md"), format!("{START}\nold\n{END}\n")).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
-        let replacing = reported(offer(&dir, true, |_, _| Ok(true)));
+        let replacing = reported(offered(&dir, true, |_, _| Ok(true)));
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(replacing.data["instructions"]["state"], "write_failed");
         assert!(
@@ -761,7 +805,7 @@ mod tests {
 
         fs::write(dir.join("AGENTS.md"), "# Repo\n").unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
-        let failed = offer(&dir, true, |_, _| Ok(true));
+        let failed = offered(&dir, true, |_, _| Ok(true));
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(failed.state, State::WriteFailed);
         assert!(
@@ -783,7 +827,7 @@ mod tests {
 
         let path = dir.join("AGENTS.md");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
-        let protected = reported(offer(&dir, true, never));
+        let protected = reported(offered(&dir, true, never));
         assert_eq!(protected.data["instructions"]["state"], "read_only");
         assert!(
             protected
@@ -797,7 +841,7 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         fs::write(&path, format!("{START}\nold\n{END}\n")).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
-        let older = reported(offer(&dir, true, never));
+        let older = reported(offered(&dir, true, never));
         assert_eq!(older.data["instructions"]["replace"], true);
         assert!(
             older
@@ -809,7 +853,7 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
 
         fs::write(&path, format!("{START}\nold\n{END}\n")).unwrap();
-        let unasked = offer(&dir, true, |_, _| Err("closed".into()));
+        let unasked = offered(&dir, true, |_, _| Err("closed".into()));
         assert_eq!(unasked.needs_commit(), Some("AGENTS.md"));
         let unasked = reported(unasked);
         assert_eq!(unasked.data["instructions"]["state"], "to_replace");

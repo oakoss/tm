@@ -78,6 +78,7 @@ pub(crate) fn run(init: &Init, json: bool) -> Result<Output, CliError> {
     };
     let text = file.render();
     confirmed(&text, init.yes, json).map_err(refused)?;
+    let lines = lines(&root, asks);
     let made_config = match fs::create_dir(&config_dir) {
         Ok(()) => true,
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => false,
@@ -143,7 +144,7 @@ pub(crate) fn run(init: &Init, json: bool) -> Result<Output, CliError> {
     recover::write_beads(&mut created, &mut store, beads, &identity.actor);
     created.warnings.extend(here::publish(&store, &workspace));
     drop(store);
-    Ok(with_lines(created, &root, asks, &[REPO_FILE]))
+    Ok(with_lines(created, lines, &[REPO_FILE]))
 }
 
 fn created(workspace: &Workspace, key: &str, target: &Path, batch: Uuid) -> Output {
@@ -164,10 +165,20 @@ fn created(workspace: &Workspace, key: &str, target: &Path, batch: Uuid) -> Outp
     )
 }
 
-/// `output` with tm's instruction lines offered for the repo at `root`, and
+/// tm's instruction lines for the repo at `root`, put to a person when
+/// `asks`; nothing is written until [`with_lines`].
+fn lines(root: &Path, asks: bool) -> instructions::Offer {
+    let mut offer = instructions::offer(root);
+    if asks {
+        offer.ask(ask);
+    }
+    offer
+}
+
+/// `output` with the instruction lines written on a yes and reported, and
 /// the files to commit, `wrote` among them.
-fn with_lines(mut output: Output, root: &Path, asks: bool, wrote: &[&str]) -> Output {
-    let offer = instructions::offer(root, asks, ask);
+fn with_lines(mut output: Output, mut offer: instructions::Offer, wrote: &[&str]) -> Output {
+    offer.write();
     let mut commit = wrote.to_vec();
     commit.extend(offer.needs_commit());
     instructions::report(&mut output, offer);
@@ -300,7 +311,7 @@ fn already_mapped(
         mapped.data["restored"] = restored.data;
         mapped.warnings = restored.warnings;
     }
-    Ok(with_lines(mapped, &root, asks, &[]))
+    Ok(with_lines(mapped, lines(&root, asks), &[]))
 }
 
 /// The Workspace `found` names. One this machine lacks is restored from an
