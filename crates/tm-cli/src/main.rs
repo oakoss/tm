@@ -95,7 +95,8 @@ enum Command {
         issue_type: Option<String>,
         #[arg(long)]
         title: Option<String>,
-        /// Set a field, such as priority=high; repeat for more.
+        /// Set a field, such as priority=high; FIELD=- reads the value from
+        /// stdin. Repeat for more.
         #[arg(long, value_name = "FIELD=VALUE", value_parser = create::field_value)]
         set: Vec<(String, String)>,
         /// Add a label; repeat for more.
@@ -286,7 +287,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             set,
             labels,
             parent,
-        }) => create::run(&create::Create {
+        }) => create::run(create::Create {
             issue_type,
             title,
             set,

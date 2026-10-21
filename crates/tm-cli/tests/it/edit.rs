@@ -1,13 +1,12 @@
-use std::io::Write as _;
 use std::path::Path;
-use std::process::{Output, Stdio};
+use std::process::Output;
 
 use serde_json::{Value, json};
 use tm_core::scheme::{Field, FieldType, Scheme};
 use tm_core::{Actor, Change};
 use tm_store::{Draft, Store};
 
-use crate::support::{Scratch, initialized, text, tm, tm_command};
+use crate::support::{Scratch, initialized, text, tm, tm_piped};
 
 fn run(scratch: &Scratch, repo: &Path, args: &[&str]) -> (Option<i32>, Value) {
     let out = tm(scratch, repo, &[&["--json", "edit"], args].concat());
@@ -20,25 +19,7 @@ fn run(scratch: &Scratch, repo: &Path, args: &[&str]) -> (Option<i32>, Value) {
 
 /// `tm edit` with `input` on stdin.
 fn piped(scratch: &Scratch, repo: &Path, args: &[&str], input: &str) -> Output {
-    let mut child = tm_command()
-        .args([&["--json", "edit"], args].concat())
-        .current_dir(repo)
-        .env("TM_HOME", scratch.home())
-        .env("TM_ACTOR", "jace")
-        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
-    child.wait_with_output().unwrap()
+    tm_piped(scratch, repo, &[&["--json", "edit"], args].concat(), input)
 }
 
 fn ops(store: &Store) -> i64 {
@@ -184,12 +165,14 @@ fn an_edit_refuses_what_another_command_or_the_store_owns() {
     let (_, doc) = run(&scratch, &repo, &["TM-1", "--parent", "TM-2"]);
     assert_eq!(doc["error"], "cycle", "{doc}");
 
-    let (_, doc) = run(
-        &scratch,
-        &repo,
-        &["TM-2", "--set", "priority=high", "--unset", "priority"],
-    );
-    assert_eq!(doc["error"], "invalid_value", "{doc}");
+    for twice in [
+        &["TM-2", "--set", "assignee=a", "--unset", "assignee"][..],
+        &["TM-2", "--set", "assignee=a", "--set", "assignee=b"],
+    ] {
+        let (_, doc) = run(&scratch, &repo, twice);
+        assert_eq!(doc["error"], "invalid_value", "{doc}");
+        assert_eq!(doc["message"], "assignee is given more than once");
+    }
 
     for usage in [
         &["TM-2"][..],

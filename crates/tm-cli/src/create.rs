@@ -35,14 +35,18 @@ pub(crate) fn field_value(pair: &str) -> Result<(String, String), String> {
     }
 }
 
-pub(crate) fn run(create: &Create) -> Result<Output, CliError> {
+pub(crate) fn run(create: Create) -> Result<Output, CliError> {
     here::write(|here| write(here, create))
 }
 
-fn write(here: &mut Here, create: &Create) -> Result<(Output, Vec<String>), CliError> {
+fn write(here: &mut Here, mut create: Create) -> Result<(Output, Vec<String>), CliError> {
     let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
         .map_err(|message| CliError::new("no_identity", message))?;
     let project = here.project()?;
+    fields::given_once(create.set.iter().map(|(field, _)| field))?;
+    // Stdin is spent once read, so from here on `set` holds what it gave.
+    create.set = fields::read_stdin(&create.set, "leave the field out")?;
+    let create = &create;
     let parent = match &create.parent {
         Some(reference) => Some(here.issue(reference)?),
         None => None,
