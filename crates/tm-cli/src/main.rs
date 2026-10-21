@@ -62,7 +62,8 @@ enum Command {
         /// The Project name; defaults to the repo directory's name.
         #[arg(long)]
         name: Option<String>,
-        /// Write the file without asking; needed when not at a terminal.
+        /// Write .config/tm.toml without asking, and only show tm's instruction
+        /// lines; needed when not at a terminal.
         #[arg(long)]
         yes: bool,
     },
