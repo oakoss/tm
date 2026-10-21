@@ -43,14 +43,7 @@ pub(crate) fn resolve(
         Some(human) => human,
         None => email()?,
     };
-    let detected: Vec<&str> = HARNESSES
-        .iter()
-        .filter(|(_, vars)| {
-            vars.iter()
-                .any(|name| var(name).is_some_and(|v| v.map_or(true, |v| !v.is_empty())))
-        })
-        .map(|(agent, _)| *agent)
-        .collect();
+    let detected = harnesses(&var);
     let mut warnings = Vec::new();
     let agent = match (set(&var, "TM_AGENT")?, detected.as_slice()) {
         (Some(named), _) => Some(named),
@@ -69,6 +62,24 @@ pub(crate) fn resolve(
         None => Actor::human(&human),
     };
     Ok(Identity { actor, warnings })
+}
+
+/// Whether an Agent is writing, by `TM_AGENT` or a harness's variables. A
+/// `TM_AGENT` set at all counts, even blank, so doubt never prompts an Agent.
+pub(crate) fn agent_detected(var: impl Fn(&str) -> Option<Var>) -> bool {
+    var("TM_AGENT").is_some() || !harnesses(&var).is_empty()
+}
+
+/// The Agents whose harness variables are set, in [`HARNESSES`] order.
+fn harnesses(var: &impl Fn(&str) -> Option<Var>) -> Vec<&'static str> {
+    HARNESSES
+        .iter()
+        .filter(|(_, vars)| {
+            vars.iter()
+                .any(|name| var(name).is_some_and(|v| v.map_or(true, |v| !v.is_empty())))
+        })
+        .map(|(agent, _)| *agent)
+        .collect()
 }
 
 /// A variable's value, or the bytes of one that is not valid UTF-8.
@@ -235,6 +246,26 @@ mod tests {
         .unwrap_err();
         assert!(refused.contains("not valid UTF-8"), "{refused}");
         assert_eq!(writer(&[("TM_ACTOR", "ja\u{fffd}ce")]).0, "ja\u{fffd}ce");
+    }
+
+    #[test]
+    fn an_agent_is_detected_whenever_resolve_would_find_one_or_tm_agent_is_set() {
+        let detected = |vars: &[(&str, &str)]| {
+            agent_detected(|name| {
+                vars.iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| Ok((*v).to_owned()))
+            })
+        };
+        assert!(!detected(&[]));
+        assert!(!detected(&[("TM_ACTOR", "kim"), ("CLAUDECODE", "1")]));
+        assert!(!detected(&[("CLAUDE_CODE_SESSION_ID", "")]));
+        assert!(detected(&[("CODEX_THREAD_ID", "t")]));
+        assert!(detected(&[("TM_AGENT", "reviewer")]));
+        assert!(
+            detected(&[("TM_AGENT", " ")]),
+            "a blank TM_AGENT still counts"
+        );
     }
 
     #[test]

@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::output::Output;
-use crate::{here, identity};
+use crate::{here, identity, instructions};
 
 const REPO_FILE: &str = ".config/tm.toml";
 
@@ -53,7 +53,7 @@ pub(crate) fn run(init: Init, json: bool) -> Result<Output, CliError> {
     })?;
     let home = workspace::home(std::env::var_os("TM_HOME"), std::env::home_dir())?;
     if let Some(found) = workspace::discover(&cwd)? {
-        return already_mapped(&home, &found, &init);
+        return already_mapped(&home, &found, &init, json);
     }
     check_not_below_home_repo(&cwd, &root).map_err(refused)?;
     let (key, name) = project(&root, init.key, init.name).map_err(refused)?;
@@ -131,7 +131,7 @@ pub(crate) fn run(init: Init, json: bool) -> Result<Output, CliError> {
         Ok(batch) => batch,
         Err(err) => return Err(clean_up_after(err, &workspace, undo_config)),
     };
-    Ok(Output {
+    let created = Output {
         text: format!(
             "Created Workspace {} at {} with Project {key}, and wrote {REPO_FILE}\n",
             workspace.id,
@@ -147,7 +147,15 @@ pub(crate) fn run(init: Init, json: bool) -> Result<Output, CliError> {
         }),
         serialized: None,
         warnings: identity.warnings.into_iter().chain(published).collect(),
-    })
+    };
+    Ok(with_lines(created, &root, init.yes, json, &[REPO_FILE]))
+}
+
+/// `output` with tm's instruction lines offered for the repo at `root`.
+fn with_lines(mut output: Output, root: &Path, yes: bool, json: bool, wrote: &[&str]) -> Output {
+    let offer = instructions::offer(root, human(json, yes), ask);
+    instructions::report(&mut output, offer, wrote);
+    output
 }
 
 /// Removes the Workspace a failed `init` made, naming whatever it could not.
@@ -212,8 +220,14 @@ fn check_not_below_home_repo(cwd: &Path, root: &Path) -> Result<(), String> {
 }
 
 /// Reports the mapping a repo file already makes, after checking that git
-/// shares the file and that its Workspace and every Project it names exist.
-fn already_mapped(home: &Path, found: &workspace::Found, init: &Init) -> Result<Output, CliError> {
+/// shares the file and that its Workspace and every Project it names exist,
+/// and offers tm's instruction lines.
+fn already_mapped(
+    home: &Path,
+    found: &workspace::Found,
+    init: &Init,
+    json: bool,
+) -> Result<Output, CliError> {
     check_spelling(found).map_err(refused)?;
     let root = workspace::repo_root(&found.dir)?.unwrap_or_else(|| found.dir.clone());
     if let Ok(relative) = found.path.strip_prefix(&root) {
@@ -241,7 +255,7 @@ fn already_mapped(home: &Path, found: &workspace::Found, init: &Init) -> Result<
     if init.key.is_some() || init.name.is_some() {
         text.push_str("--key and --name apply only when a Workspace is created; nothing changed\n");
     }
-    Ok(Output::new(
+    let mapped = Output::new(
         text,
         json!({
             "created": false,
@@ -250,7 +264,8 @@ fn already_mapped(home: &Path, found: &workspace::Found, init: &Init) -> Result<
             "project": found.file.project,
             "file": found.path.display().to_string(),
         }),
-    ))
+    );
+    Ok(with_lines(mapped, &root, init.yes, json, &[]))
 }
 
 /// The new Project's key and name, each defaulting to the repo directory's.
@@ -467,32 +482,54 @@ fn confirmed(text: &str, yes: bool, json: bool) -> Result<(), String> {
             Err(format!("{REPO_FILE} not written: confirm with --yes"))
         };
     }
-    print_now(&diff(text))?;
-    if yes || confirm()? {
+    if yes {
+        return print_now(&diff(text));
+    }
+    if !human(json, false) {
+        print_now(&diff(text))?;
+        return Err(format!(
+            "{REPO_FILE} not written: confirm with --yes when not a person at a terminal"
+        ));
+    }
+    if ask(&diff(text), &format!("Write {REPO_FILE}?"))? {
         Ok(())
     } else {
         Err(format!("{REPO_FILE} not written"))
     }
 }
 
-/// Asks at a terminal; anywhere else, such as an agent's shell, `--yes` is
-/// the confirmation.
-fn confirm() -> Result<bool, String> {
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(format!(
-            "{REPO_FILE} not written: confirm with --yes when not at a terminal"
-        ));
-    }
-    eprint!("Write {REPO_FILE}? [y/N] ");
-    let mut answer = Vec::new();
-    let read = io::stdin()
-        .lock()
-        .read_until(b'\n', &mut answer)
+/// A person at a terminal, the only one tm asks (ADR 0014): stdin and stdout
+/// are terminals, JSON is off, and no Agent is detected. `--yes` asks nothing.
+fn human(json: bool, yes: bool) -> bool {
+    is_human(
+        json || yes,
+        io::stdin().is_terminal() && io::stdout().is_terminal(),
+        identity::agent_detected(identity::env),
+    )
+}
+
+/// `quiet` is `--json` or `--yes`, either of which asks nothing.
+fn is_human(quiet: bool, terminal: bool, agent: bool) -> bool {
+    !quiet && terminal && !agent
+}
+
+/// Shows `shown` and asks `question` at the terminal, defaulting to no.
+fn ask(shown: &str, question: &str) -> Result<bool, String> {
+    print_now(shown)?;
+    eprint!("{question} [y/N] ");
+    answer(&mut io::stdin().lock())
+}
+
+/// A yes read from `input`; anything else, end of input included, is no.
+fn answer(input: &mut impl BufRead) -> Result<bool, String> {
+    let mut line = Vec::new();
+    let read = input
+        .read_until(b'\n', &mut line)
         .map_err(|err| format!("cannot read the answer: {err}"))?;
     if read == 0 {
         eprintln!();
     }
-    Ok(matches!(answer.trim_ascii(), b"y" | b"Y" | b"yes"))
+    Ok(matches!(line.trim_ascii(), b"y" | b"Y" | b"yes"))
 }
 
 fn failed(path: &Path, err: &io::Error) -> String {
@@ -523,4 +560,35 @@ fn write_new(target: &PathBuf, text: &str) -> Result<(), CliError> {
                 target,
             ),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{answer, is_human};
+
+    #[test]
+    fn only_a_person_at_a_terminal_without_json_is_asked() {
+        assert!(is_human(false, true, false));
+        assert!(
+            !is_human(true, true, false),
+            "--json or --yes is never asked"
+        );
+        assert!(!is_human(false, false, false), "a pipe is never asked");
+        assert!(!is_human(false, true, true), "an Agent is never asked");
+    }
+
+    #[test]
+    fn only_a_yes_is_yes() {
+        for (typed, yes) in [
+            ("y\n", true),
+            ("yes\n", true),
+            (" Y \n", true),
+            ("\n", false),
+            ("no\n", false),
+            ("yess\n", false),
+            ("", false),
+        ] {
+            assert_eq!(answer(&mut typed.as_bytes()), Ok(yes), "{typed:?}");
+        }
+    }
 }

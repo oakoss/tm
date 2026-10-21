@@ -13,6 +13,7 @@ mod guide;
 mod here;
 mod identity;
 mod init;
+mod instructions;
 mod link;
 mod list;
 mod moves;
@@ -49,6 +50,11 @@ struct Cli {
 enum Command {
     /// Create a Workspace for this repo and map the repo to it in
     /// .config/tm.toml, after showing the file.
+    ///
+    /// It also offers a pointer to `tm guide` for AGENTS.md or CLAUDE.md,
+    /// written only on a yes from a person at a terminal, and prints the
+    /// `SessionStart` hook that runs `tm prime`; an Agent is given both to add
+    /// itself.
     Init {
         /// The Project key, such as TM; defaults to the repo directory's name.
         #[arg(long)]
