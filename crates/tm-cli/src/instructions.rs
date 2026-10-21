@@ -332,9 +332,16 @@ fn hook_settings() -> Value {
     })
 }
 
-/// Adds the offer to `output`: what happened to the lines, the hook to add,
-/// and which files to commit, `wrote` among them.
-pub(crate) fn report(output: &mut Output, offer: Offer, wrote: &[&str]) {
+impl Offer {
+    /// The instruction file, when tm wrote it or someone is to.
+    pub(crate) fn needs_commit(&self) -> Option<&'static str> {
+        (!matches!(self.state, State::Present | State::Declined)).then_some(self.file)
+    }
+}
+
+/// Adds the offer to `output`: what happened to the lines and the hook to
+/// add.
+pub(crate) fn report(output: &mut Output, offer: Offer) {
     let Offer {
         file,
         create,
@@ -391,13 +398,6 @@ pub(crate) fn report(output: &mut Output, offer: Offer, wrote: &[&str]) {
             "For Claude Code to start each session from tm prime, add to {SETTINGS}:\n{settings}"
         );
     }
-    let mut commit: Vec<&str> = wrote.to_vec();
-    if !matches!(state, State::Present | State::Declined) {
-        commit.push(file);
-    }
-    if !commit.is_empty() {
-        let _ = writeln!(text, "Commit {}", commit.join(" and "));
-    }
     output.data["instructions"] = json!({
         "file": file,
         "create": create,
@@ -410,7 +410,6 @@ pub(crate) fn report(output: &mut Output, offer: Offer, wrote: &[&str]) {
     } else {
         Value::Null
     };
-    output.data["commit"] = json!(commit);
 }
 
 #[cfg(test)]
@@ -474,9 +473,9 @@ mod tests {
         panic!("only a human is asked")
     }
 
-    fn reported(offer: Offer, wrote: &[&str]) -> Output {
+    fn reported(offer: Offer) -> Output {
         let mut output = Output::new(String::new(), json!({}));
-        report(&mut output, offer, wrote);
+        report(&mut output, offer);
         output
     }
 
@@ -570,13 +569,11 @@ mod tests {
         let declined = offer(&dir, true, |_, _| Ok(false));
         assert_eq!(declined.state, State::Declined);
         assert_eq!(fs::read_to_string(&path).unwrap(), "# Repo\n");
-        let output = reported(declined, &[]);
         assert_eq!(
-            output.data["commit"],
-            json!([]),
+            declined.needs_commit(),
+            None,
             "a no leaves nothing to commit"
         );
-        assert!(!output.text.contains("Commit"), "{}", output.text);
 
         let mut shown = String::new();
         let added = offer(&dir, true, |diff, question| {
@@ -598,15 +595,12 @@ mod tests {
             0o640,
             "the rewrite keeps the file's permissions"
         );
-        let output = reported(added, &[".config/tm.toml"]);
+        assert_eq!(added.needs_commit(), Some("CLAUDE.md"));
+        let output = reported(added);
         assert!(
             output.text.starts_with("Added tm's lines to CLAUDE.md\n"),
             "{}",
             output.text
-        );
-        assert_eq!(
-            output.data["commit"],
-            json!([".config/tm.toml", "CLAUDE.md"])
         );
         assert_eq!(offer(&dir, true, never).state, State::Present);
 
@@ -649,7 +643,7 @@ mod tests {
         assert_eq!(fs::read_to_string(dir.join("AGENTS.md")).unwrap(), block());
 
         fs::remove_file(dir.join("AGENTS.md")).unwrap();
-        let output = reported(offer(&dir, false, never), &[]);
+        let output = reported(offer(&dir, false, never));
         assert_eq!(output.data["instructions"]["create"], true);
         assert!(
             output
@@ -666,7 +660,7 @@ mod tests {
         let dir = scratch();
         let old_block = format!("{START}\nold\n{END}\n");
         fs::write(dir.join("AGENTS.md"), format!("# Repo\n\n{old_block}")).unwrap();
-        let output = reported(offer(&dir, false, never), &[]);
+        let output = reported(offer(&dir, false, never));
         assert_eq!(output.data["instructions"]["state"], "to_replace");
         let told = "Replace tm's markers and the lines between them in AGENTS.md with:\n";
         assert!(output.text.starts_with(told), "{}", output.text);
@@ -695,7 +689,7 @@ mod tests {
             linked.warnings
         );
         assert!(!outside.join("elsewhere.md").exists());
-        let output = reported(linked, &[]);
+        let output = reported(linked);
         assert!(
             output.text.contains("AGENTS.md is a symlink"),
             "{}",
@@ -712,7 +706,7 @@ mod tests {
             "a link to a file with the lines is read through"
         );
         fs::write(&real, format!("{START}\nold\n{END}\n")).unwrap();
-        let older = reported(offer(&dir, true, never), &[]);
+        let older = reported(offer(&dir, true, never));
         assert_eq!(older.data["instructions"]["state"], "linked");
         assert!(
             older.text.contains(
@@ -734,7 +728,7 @@ mod tests {
     fn a_failure_is_a_warning_and_still_reports_the_lines_and_hook() {
         let dir = scratch();
         fs::create_dir(dir.join("AGENTS.md")).unwrap();
-        let unreadable = reported(offer(&dir, true, never), &[]);
+        let unreadable = reported(offer(&dir, true, never));
         assert_eq!(unreadable.data["instructions"]["state"], "unreadable");
         assert!(
             unreadable.warnings[0].starts_with("cannot read AGENTS.md"),
@@ -754,7 +748,7 @@ mod tests {
 
         fs::write(dir.join("AGENTS.md"), format!("{START}\nold\n{END}\n")).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
-        let replacing = reported(offer(&dir, true, |_, _| Ok(true)), &[]);
+        let replacing = reported(offer(&dir, true, |_, _| Ok(true)));
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(replacing.data["instructions"]["state"], "write_failed");
         assert!(
@@ -779,8 +773,8 @@ mod tests {
             fs::read_to_string(dir.join("AGENTS.md")).unwrap(),
             "# Repo\n"
         );
-        let output = reported(failed, &[]);
-        assert_eq!(output.data["commit"], json!(["AGENTS.md"]));
+        assert_eq!(failed.needs_commit(), Some("AGENTS.md"));
+        let output = reported(failed);
         assert!(
             output.text.starts_with("Add these lines to AGENTS.md:\n"),
             "a failed write still gives the lines: {}",
@@ -789,7 +783,7 @@ mod tests {
 
         let path = dir.join("AGENTS.md");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
-        let protected = reported(offer(&dir, true, never), &[]);
+        let protected = reported(offer(&dir, true, never));
         assert_eq!(protected.data["instructions"]["state"], "read_only");
         assert!(
             protected
@@ -803,7 +797,7 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         fs::write(&path, format!("{START}\nold\n{END}\n")).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
-        let older = reported(offer(&dir, true, never), &[]);
+        let older = reported(offer(&dir, true, never));
         assert_eq!(older.data["instructions"]["replace"], true);
         assert!(
             older
@@ -815,10 +809,11 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
 
         fs::write(&path, format!("{START}\nold\n{END}\n")).unwrap();
-        let unasked = reported(offer(&dir, true, |_, _| Err("closed".into())), &[]);
+        let unasked = offer(&dir, true, |_, _| Err("closed".into()));
+        assert_eq!(unasked.needs_commit(), Some("AGENTS.md"));
+        let unasked = reported(unasked);
         assert_eq!(unasked.data["instructions"]["state"], "to_replace");
         assert_eq!(unasked.warnings, ["cannot ask about AGENTS.md: closed"]);
-        assert_eq!(unasked.data["commit"], json!(["AGENTS.md"]));
         fs::remove_dir_all(&dir).unwrap();
     }
 

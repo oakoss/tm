@@ -163,10 +163,17 @@ fn created(workspace: &Workspace, key: &str, target: &Path, batch: Uuid) -> Outp
     )
 }
 
-/// `output` with tm's instruction lines offered for the repo at `root`.
+/// `output` with tm's instruction lines offered for the repo at `root`, and
+/// the files to commit, `wrote` among them.
 fn with_lines(mut output: Output, root: &Path, asks: bool, wrote: &[&str]) -> Output {
     let offer = instructions::offer(root, asks, ask);
-    instructions::report(&mut output, offer, wrote);
+    let mut commit = wrote.to_vec();
+    commit.extend(offer.needs_commit());
+    instructions::report(&mut output, offer);
+    if !commit.is_empty() {
+        let _ = writeln!(output.text, "Commit {}", commit.join(" and "));
+    }
+    output.data["commit"] = json!(commit);
     output
 }
 
