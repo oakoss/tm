@@ -57,6 +57,57 @@ enum Splice {
     Replace(String),
 }
 
+/// What [`offer`] found in the repo, all [`plan`] needs to decide.
+struct Found {
+    linked: bool,
+    readonly: bool,
+    /// The file's text, or the state a failed read leaves it in.
+    current: Result<String, State>,
+}
+
+/// What the lines need: nothing more to do, or a change a human may confirm,
+/// which otherwise leaves the reader with `told`.
+#[derive(Debug, PartialEq, Eq)]
+enum Plan {
+    Settled(State),
+    Change {
+        current: String,
+        after: String,
+        told: State,
+    },
+}
+
+/// Decides from what was found, touching nothing. `replace` is whether the
+/// file holds an older block, so the lines go in its place.
+fn plan(found: Found) -> (Plan, bool) {
+    let current = match found.current {
+        Ok(current) => current,
+        Err(state) => return (Plan::Settled(state), false),
+    };
+    let (after, told) = match splice(&current) {
+        Err(_) => return (Plan::Settled(State::Malformed), false),
+        Ok(Splice::Present) => return (Plan::Settled(State::Present), false),
+        Ok(Splice::Add(after)) => (after, State::ToAdd),
+        Ok(Splice::Replace(after)) => (after, State::ToReplace),
+    };
+    let replace = told == State::ToReplace;
+    let settled = if found.linked {
+        State::Linked
+    } else if found.readonly {
+        State::ReadOnly
+    } else {
+        return (
+            Plan::Change {
+                current,
+                after,
+                told,
+            },
+            replace,
+        );
+    };
+    (Plan::Settled(settled), replace)
+}
+
 /// The offer's outcome, for [`report`].
 pub(crate) struct Offer {
     file: &'static str,
@@ -168,7 +219,7 @@ pub(crate) fn offer(
     let linked = meta
         .as_ref()
         .is_some_and(|meta| meta.file_type().is_symlink());
-    let read = match &meta {
+    let current = match &meta {
         None => Ok(String::new()),
         Some(_) => fs::read_to_string(&path).map_err(|err| {
             if linked {
@@ -183,6 +234,11 @@ pub(crate) fn offer(
     let readonly = meta
         .as_ref()
         .is_some_and(|meta| meta.permissions().readonly());
+    let (planned, replace) = plan(Found {
+        linked,
+        readonly,
+        current,
+    });
     let settle = |current: String, after: String, told: State| {
         if !asks {
             return told;
@@ -218,16 +274,13 @@ pub(crate) fn offer(
             }
         }
     };
-    let spliced = read.map(|current| (splice(&current), current));
-    let replace = matches!(spliced, Ok((Ok(Splice::Replace(_)), _)));
-    let state = match spliced {
-        Err(state) => state,
-        Ok((Err(_), _)) => State::Malformed,
-        Ok((Ok(Splice::Present), _)) => State::Present,
-        Ok((Ok(_), _)) if linked => State::Linked,
-        Ok((Ok(_), _)) if readonly => State::ReadOnly,
-        Ok((Ok(Splice::Add(after)), current)) => settle(current, after, State::ToAdd),
-        Ok((Ok(Splice::Replace(after)), current)) => settle(current, after, State::ToReplace),
+    let state = match planned {
+        Plan::Settled(state) => state,
+        Plan::Change {
+            current,
+            after,
+            told,
+        } => settle(current, after, told),
     };
     Offer {
         file,
@@ -389,6 +442,50 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tm-instructions-{}", Uuid::now_v7()));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn the_plan_needs_no_filesystem() {
+        let planned = |current: Result<&str, State>, linked, readonly| {
+            plan(Found {
+                linked,
+                readonly,
+                current: current.map(str::to_owned),
+            })
+        };
+        let change = |current: &str, after: String, told| Plan::Change {
+            current: current.to_owned(),
+            after,
+            told,
+        };
+        let settled = Plan::Settled;
+        let (block, repo) = (block(), "# Repo\n");
+        let older = format!("{repo}{START}\nold\n{END}\n");
+        let malformed = format!("{END}\n{START}\n");
+
+        let add = change("", block.clone(), State::ToAdd);
+        assert_eq!(planned(Ok(""), false, false), (add, false));
+        let add = change(repo, format!("{repo}\n{block}"), State::ToAdd);
+        assert_eq!(planned(Ok(repo), false, false), (add, false));
+        let swap = change(&older, format!("{repo}{block}"), State::ToReplace);
+        assert_eq!(planned(Ok(&older), false, false), (swap, true));
+        let present = (settled(State::Present), false);
+        assert_eq!(planned(Ok(&block), false, false), present);
+        assert_eq!(planned(Ok(&block), true, true), present, "nothing to write");
+        let malformed = planned(Ok(&malformed), false, false);
+        assert_eq!(malformed, (settled(State::Malformed), false));
+
+        let linked = (settled(State::Linked), false);
+        assert_eq!(planned(Ok(repo), true, false), linked);
+        let both = planned(Ok(repo), true, true);
+        assert_eq!(both, linked, "a link is never written");
+        assert!(planned(Ok(&older), true, false).1, "says replace");
+        let readonly = settled(State::ReadOnly);
+        assert_eq!(planned(Ok(repo), false, true), (readonly, false));
+        assert!(planned(Ok(&older), false, true).1, "says replace");
+
+        let unread = planned(Err(State::Unreadable), false, false);
+        assert_eq!(unread, (settled(State::Unreadable), false));
     }
 
     fn never(_: &str, _: &str) -> Result<bool, String> {
