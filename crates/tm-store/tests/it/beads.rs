@@ -254,6 +254,31 @@ fn a_file_naming_one_issue_twice_or_one_depending_on_itself_writes_nothing() {
 }
 
 #[test]
+fn a_time_the_store_would_refuse_is_refused_when_read() {
+    let comment = json!({"id": "c-1", "issue_id": "b-1", "author": "jace", "text": "hi",
+        "created_at": "noon"});
+    let bead = |extra: Value| {
+        let mut bead = json!({"id": "b-1", "title": "one"});
+        bead.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        bead
+    };
+    for (bead, at) in [
+        (bead(json!({"created_at": "noon"})), "noon"),
+        (bead(json!({"updated_at": "later"})), "later"),
+        (bead(json!({"comments": [comment]})), "noon"),
+    ] {
+        let err = tm_store::read_beads(&mut lines(&[bead]).as_bytes(), "CPL").unwrap_err();
+        assert!(
+            matches!(&err, StoreError::InvalidExport { line: 1, reason }
+                if reason.starts_with(&format!("{at:?} is not an RFC 3339 time"))),
+            "{err:?}"
+        );
+    }
+}
+
+#[test]
 fn keys_follow_creation_order_not_the_files_newest_first_order() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_900_000_000_000));
