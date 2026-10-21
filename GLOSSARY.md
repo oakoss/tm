@@ -11,7 +11,7 @@ Any tracked unit of work, whatever its type.
 _Avoid_: Item, work item, ticket, bead
 
 **Key**:
-The human-readable identifier of an Issue, made of its Project's prefix and a number, such as CPL-42; earlier Keys stay valid as aliases.
+The human-readable identifier of an Issue, made of its Project key and a number, such as CPL-42; earlier Keys stay valid as aliases.
 _Avoid_: ID, number, handle
 
 **Link**:
@@ -105,7 +105,7 @@ _Avoid_: Alert, inbox item
 ### Organisation
 
 **Project**:
-A named container of Issues that may contain other Projects.
+A named container of Issues that may contain other Projects. Its Project key, an uppercase letter then 1 to 9 uppercase letters or digits such as CPL, begins each of its Issues' Keys.
 _Avoid_: Repo
 
 **View**:
