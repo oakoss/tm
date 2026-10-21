@@ -129,8 +129,8 @@ pub(crate) fn next_key(tx: &Transaction<'_>, project: ProjectId) -> Result<Strin
 }
 
 /// Counts `key`'s number as given in `project`, whether or not its create
-/// applied, so a number is never handed out twice. A prefix another Project
-/// holds never named anything here and is not counted.
+/// applied, so a number is never handed out twice. A Project key another
+/// Project holds never named anything here and is not counted.
 pub(crate) fn count_key(
     tx: &Transaction<'_>,
     key: &str,

@@ -275,7 +275,9 @@ fn a_repo_file_git_would_ignore_is_refused() {
         &["commit", "--quiet", "-am", "ignore .config"],
     );
     let before = snapshot(&repo);
-    let output = tm(&scratch, &repo, &["init", "--key", "TM", "--yes"]);
+    // The bad key shows the repo is checked before the key, so a person at a
+    // terminal is refused before being asked for one.
+    let output = tm(&scratch, &repo, &["init", "--key", "1x", "--yes"]);
     assert!(!output.status.success());
     let stderr = text(&output.stderr);
     assert!(stderr.contains("git ignores"), "{stderr}");
@@ -548,13 +550,13 @@ fn a_repo_file_naming_a_missing_workspace_is_reported() {
 }
 
 #[test]
-fn the_key_defaults_to_the_directory_name() {
+fn the_key_defaults_to_the_directory_names_initials() {
     let scratch = Scratch::new();
     let repo = fixture(&scratch, "my-repo");
     let output = tm(&scratch, &repo, &["init", "--yes"]);
     assert!(output.status.success(), "{output:?}");
     assert!(
-        text(&output.stdout).contains("+project = \"MYREPO\""),
+        text(&output.stdout).contains("+project = \"MR\""),
         "{output:?}"
     );
 

@@ -56,14 +56,18 @@ enum Command {
     /// `SessionStart` hook that runs `tm prime`; an Agent is given both to add
     /// itself.
     Init {
-        /// The Project key, such as TM; defaults to the repo directory's name.
+        /// The Project key, such as TM. A person at a terminal without --yes is
+        /// asked for it; otherwise it defaults to the initials of the repo
+        /// directory's name, or the first 3 letters of a one-word name.
         #[arg(long)]
         key: Option<String>,
-        /// The Project name; defaults to the repo directory's name.
+        /// The Project name. A person at a terminal without --yes is asked
+        /// for it; otherwise it defaults to the repo directory's name.
         #[arg(long)]
         name: Option<String>,
-        /// Write .config/tm.toml without asking, and only show tm's instruction
-        /// lines; needed when not at a terminal.
+        /// Ask nothing: use --key and --name or their defaults, write
+        /// .config/tm.toml, and only show tm's instruction lines; needed when
+        /// not at a terminal.
         #[arg(long)]
         yes: bool,
     },
@@ -293,7 +297,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
                 issue_type: Some(issue_type),
             },
         }) => scheme_type(&Scheme::built_in(), &issue_type),
-        Some(Command::Init { key, name, yes }) => init::run(init::Init { key, name, yes }, json),
+        Some(Command::Init { key, name, yes }) => init::run(&init::Init { key, name, yes }, json),
         Some(Command::Claim { issue, ttl_ms }) => claim::take(&issue, ttl_ms),
         Some(Command::Release { issue, claim }) => claim::release(&issue, claim),
         Some(Command::Comment { issue, body }) => comment::run(&issue, &body),
