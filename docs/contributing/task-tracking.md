@@ -25,7 +25,7 @@ Agents start from `tm prime`, which the `SessionStart` hook in `.claude/settings
 
 ## Keeping the data safe
 
-- Until the store has gone a month without data problems, from 2026-10-20, write `tm export` daily to a dated file under `exports/` in tm's home.
+- Until the store has gone a month without data problems, from 2026-10-20, run `tm export --dated` daily. It writes `exports/<Workspace id>/<date>.jsonl` in tm's home, and writes nothing when the log has not changed. To run it on every commit instead, add `tm export --dated >/dev/null` to your own `.git/hooks/post-commit`; tm never installs a hook.
 - Until v1 the log format changes in place without a version bump, so a build with a changed format can misread this store rather than refuse it ([ADR 0010](../decisions/0010-operations-record-who-an-agent-acts-for-and-undo-names-a-batch.md)). A pull request that changes the format moves this store across: the installed `tm` runs `tm export`; with `.config/tm.toml` moved aside, since `tm init` otherwise reuses the Workspace it names, the new build runs `tm init --key TM` and `tm import --records`; the pull request commits the new `.config/tm.toml`; and only then is the installed `tm` updated.
 
 ## Beads, frozen

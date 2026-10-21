@@ -24,11 +24,7 @@ pub(crate) fn export() -> Result<(), CliError> {
     // Not the Snapshot: a backup must be current, and JSONL has no room to
     // warn that it is not.
     let here = here::open()?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
-        .unwrap_or(0);
+    let now = now_ms();
     let stdout_error = |err: io::Error| CliError::new("io", format!("stdout: {err}"));
     let mut out = io::BufWriter::new(output::stdout().map_err(stdout_error)?);
     let written = match here.store.export(&mut out, now) {
@@ -39,6 +35,109 @@ pub(crate) fn export() -> Result<(), CliError> {
         }
     };
     output::quiet_on_broken_pipe(written).map_err(stdout_error)
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
+        .unwrap_or(0)
+}
+
+/// Writes the export to tm's home as `exports/<Workspace>/<local date>.jsonl`,
+/// replacing that day's, unless it matches the newest one there. It is read
+/// back with `tm import`'s check before it takes the dated name, so a backup
+/// that could not be restored fails now rather than when it is needed.
+pub(crate) fn dated() -> Result<Output, CliError> {
+    let here = here::open()?;
+    let home = workspace::home(std::env::var_os("TM_HOME"), std::env::home_dir())?;
+    let dir = home.join("exports").join(here.workspace.id.to_string());
+    fs::create_dir_all(&dir).map_err(|err| io_error(&dir, &err))?;
+    // Held from before the log is read until the rename, so an export that
+    // read an older log cannot land after a newer one.
+    let lock_path = dir.join(".lock");
+    let lock = fs::File::create(&lock_path).map_err(|err| io_error(&lock_path, &err))?;
+    lock.lock().map_err(|err| io_error(&lock_path, &err))?;
+    let staged = Staged::new(&dir)?;
+    let copy = staged.path("export.jsonl");
+    let exported = fs::File::create(&copy)
+        .map_err(|err| io_error(&copy, &err))
+        .and_then(|file| {
+            let mut out = io::BufWriter::new(file);
+            let exported = here.store.export(&mut out, now_ms())?;
+            out.into_inner()
+                .map_err(io::IntoInnerError::into_error)
+                .and_then(|file| file.sync_all())
+                .map_err(|err| io_error(&copy, &err))?;
+            Ok(exported)
+        })?;
+    let bytes = fs::read(&copy).map_err(|err| io_error(&copy, &err))?;
+    let (workspace, ops) = tm_store::read_export(&mut bytes.as_slice())?;
+    if workspace != here.workspace.id || ops != exported.ops {
+        return Err(CliError::internal(
+            "export_mismatch",
+            format!(
+                "{} read back as Workspace {workspace} with {ops} operations, not {} with {}",
+                copy.display(),
+                here.workspace.id,
+                exported.ops
+            ),
+        ));
+    }
+    let today = jiff::Zoned::now().date();
+    let newest = newest_export(&dir, today)?;
+    // Kept only while it would still restore, header included.
+    let unchanged = newest
+        .as_ref()
+        .and_then(|newest| fs::read(newest).ok())
+        .is_some_and(|held| {
+            tm_store::read_export(&mut held.as_slice()).ok() == Some((workspace, ops))
+                && after_header(&held) == after_header(&bytes)
+        });
+    let file = if let (true, Some(newest)) = (unchanged, newest) {
+        newest
+    } else {
+        let target = dir.join(format!("{today}.jsonl"));
+        fs::rename(&copy, &target).map_err(|err| io_error(&target, &err))?;
+        target
+    };
+    let text = if unchanged {
+        format!("Nothing changed since {}; wrote nothing\n", file.display())
+    } else {
+        format!("Wrote {} ({ops} operations)\n", file.display())
+    };
+    Ok(Output::new(
+        text,
+        json!({ "file": file.display().to_string(), "ops": ops, "written": !unchanged }),
+    ))
+}
+
+/// The newest dated export in `dir` up to `today`; one dated later, left by
+/// a clock that ran ahead, is passed over.
+fn newest_export(dir: &Path, today: jiff::civil::Date) -> Result<Option<PathBuf>, CliError> {
+    let entries = fs::read_dir(dir).map_err(|err| io_error(dir, &err))?;
+    Ok(entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter_map(|path| {
+            let date = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .and_then(|stem| jiff::civil::Date::strptime("%Y-%m-%d", stem).ok())?;
+            (path.extension().is_some_and(|ext| ext == "jsonl") && date <= today)
+                .then_some((date, path))
+        })
+        .max()
+        .map(|(_, path)| path))
+}
+
+/// An export without its header line, which carries the time it was made.
+fn after_header(export: &[u8]) -> &[u8] {
+    export
+        .iter()
+        .position(|&byte| byte == b'\n')
+        .map_or(&[][..], |end| &export[end + 1..])
 }
 
 /// Restores an export into its Workspace on this machine, creating it when
@@ -402,7 +501,11 @@ impl Staged {
     }
 
     pub(crate) fn store(&self) -> PathBuf {
-        self.dir.join("store.db")
+        self.path("store.db")
+    }
+
+    pub(crate) fn path(&self, name: &str) -> PathBuf {
+        self.dir.join(name)
     }
 }
 
