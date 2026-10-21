@@ -26,6 +26,85 @@ fn doc(out: &Output) -> Value {
     serde_json::from_slice(&out.stdout).unwrap_or_else(|err| panic!("{err}: {out:?}"))
 }
 
+#[test]
+fn a_dated_export_lands_in_tms_home_once_per_change() {
+    let scratch = Scratch::new();
+    let (repo, _store, _) = initialized(&scratch);
+    let dated = |scratch: &Scratch| {
+        let out = tm(scratch, &repo, &["--json", "export", "--dated"]);
+        assert!(out.status.success(), "{out:?}");
+        doc(&out)["data"].clone()
+    };
+
+    let first = dated(&scratch);
+    assert_eq!(first["written"], true, "{first}");
+    let file = Path::new(first["file"].as_str().unwrap()).to_owned();
+    assert!(
+        file.starts_with(scratch.home().join("exports")),
+        "under tm's home: {}",
+        file.display()
+    );
+    let date = file.file_stem().unwrap().to_str().unwrap();
+    assert!(
+        jiff::civil::Date::strptime("%Y-%m-%d", date).is_ok(),
+        "named by date: {date}"
+    );
+    let written = fs::read(&file).unwrap();
+    assert_eq!(
+        tm_store::read_export(&mut written.as_slice()).unwrap().1 as u64,
+        first["ops"].as_u64().unwrap(),
+        "readable as an export"
+    );
+
+    let again = dated(&scratch);
+    assert_eq!(again["written"], false, "nothing changed: {again}");
+    assert_eq!(again["file"], first["file"]);
+    assert_eq!(fs::read(&file).unwrap(), written, "left as it was");
+
+    let out = tm(
+        &scratch,
+        &repo,
+        &["create", "--type", "task", "--title", "new"],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let changed = dated(&scratch);
+    assert_eq!(changed["written"], true, "{changed}");
+    assert_eq!(
+        changed["file"], first["file"],
+        "the same day's file, replaced"
+    );
+    assert!(changed["ops"].as_u64() > first["ops"].as_u64());
+    let dir = file.parent().unwrap();
+    let staged: Vec<_> = fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().starts_with(".tm-import-"))
+        .collect();
+    assert_eq!(
+        staged,
+        Vec::<std::ffi::OsString>::new(),
+        "no staged copy left"
+    );
+
+    let out = tm(&scratch, &repo, &["export", "--dated"]);
+    assert_eq!(
+        text(&out.stdout),
+        format!("Nothing changed since {}; wrote nothing\n", file.display())
+    );
+
+    // A file dated after today, from a clock that ran ahead, is passed over.
+    fs::write(dir.join("2999-01-01.jsonl"), &written).unwrap();
+    assert_eq!(dated(&scratch)["written"], false);
+
+    // A backup whose header would not restore is replaced, though its body matches.
+    let held = fs::read_to_string(&file).unwrap();
+    let body = held.split_once('\n').unwrap().1;
+    fs::write(&file, format!("{{not a header\n{body}")).unwrap();
+    assert_eq!(dated(&scratch)["written"], true);
+    let restored = fs::read(&file).unwrap();
+    assert!(tm_store::read_export(&mut restored.as_slice()).is_ok());
+}
+
 /// A repo with two Issues, a Link, a comment and its retraction; and its
 /// export, saved to a file.
 fn exported(scratch: &Scratch) -> (std::path::PathBuf, std::path::PathBuf) {

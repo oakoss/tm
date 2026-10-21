@@ -219,9 +219,14 @@ enum Command {
         /// The Issue's Key, such as CPL-42, or its full id.
         issue: String,
     },
-    /// Write this Workspace's log to stdout as JSONL, for `tm import`;
+    /// Write this Workspace's log to stdout as JSONL, for `tm import`; there
     /// `--json` changes only how an error prints.
-    Export,
+    Export {
+        /// Write it to tm's home as exports/<Workspace>/<date>.jsonl instead,
+        /// unless nothing changed since the newest one there.
+        #[arg(long)]
+        dated: bool,
+    },
     /// Restore an export into its Workspace on this machine, creating the
     /// Workspace when this machine lacks it; with `--records`, write its
     /// Issue records into this repo's Workspace instead, and with `--from`,
@@ -282,7 +287,7 @@ fn main() -> ExitCode {
         Ok(cli) => cli,
         Err(err) => return parse_failed(json, &err),
     };
-    if matches!(cli.command, Some(Command::Export)) {
+    if matches!(cli.command, Some(Command::Export { dated: false })) {
         return match export::export() {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => output::finish(json, Err(err), &[]),
@@ -354,7 +359,8 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Ready { limit }) => ready::run(limit, json),
         Some(Command::Show { issue }) => show::run(&issue),
         Some(Command::Undo { batch, dry_run }) => undo::run(batch.as_deref(), dry_run),
-        Some(Command::Export) => unreachable!("main writes the export itself"),
+        Some(Command::Export { dated: true }) => export::dated(),
+        Some(Command::Export { dated: false }) => unreachable!("main writes the export itself"),
         Some(Command::Import {
             file,
             records: true,
