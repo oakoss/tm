@@ -7,6 +7,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::Path;
 
+use serde::Serialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -22,8 +23,9 @@ fn block() -> String {
     format!("{START}\n{LINE}\n{END}\n")
 }
 
-/// What became of the lines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What became of the lines, named in `--json` in snake case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum State {
     /// Already in the file as they are now.
     Present,
@@ -39,32 +41,28 @@ pub(crate) enum State {
     Malformed,
     /// The file is a symlink, so tm left it alone rather than write elsewhere.
     Linked,
+    /// The file is read-only, so tm left it alone without asking.
+    ReadOnly,
     /// The file could not be read, so it was left alone.
     Unreadable,
     /// A human said yes, but the write failed.
     WriteFailed,
 }
 
-impl State {
-    fn id(self) -> &'static str {
-        match self {
-            Self::Present => "present",
-            Self::Added => "added",
-            Self::Declined => "declined",
-            Self::ToAdd => "to_add",
-            Self::ToReplace => "to_replace",
-            Self::Malformed => "malformed",
-            Self::Linked => "linked",
-            Self::Unreadable => "unreadable",
-            Self::WriteFailed => "write_failed",
-        }
-    }
+/// What [`splice`] makes of a file: the text it would become, if any.
+#[derive(Debug, PartialEq, Eq)]
+enum Splice {
+    Present,
+    Add(String),
+    Replace(String),
 }
 
 /// The offer's outcome, for [`report`].
 pub(crate) struct Offer {
     file: &'static str,
     create: bool,
+    /// The file holds an older block, so the lines go in its place.
+    replace: bool,
     state: State,
     hook: bool,
     warnings: Vec<String>,
@@ -82,24 +80,23 @@ fn target(root: &Path) -> (&'static str, Option<fs::Metadata>) {
     ("AGENTS.md", None)
 }
 
-/// `current` with the lines between their markers, or `None` when it has
-/// them already.
+/// `current` with the lines between their markers.
 ///
 /// # Errors
 ///
 /// When the markers are out of order or appear more than once, since
 /// replacing between them could cut the owner's own text.
-fn splice(current: &str) -> Result<Option<String>, String> {
+fn splice(current: &str) -> Result<Splice, String> {
     let lines = block();
     match (current.matches(START).count(), current.matches(END).count()) {
-        (0, 0) if current.is_empty() => Ok(Some(lines)),
+        (0, 0) if current.is_empty() => Ok(Splice::Add(lines)),
         (0, 0) => {
             let gap = if current.ends_with('\n') {
                 "\n"
             } else {
                 "\n\n"
             };
-            Ok(Some(format!("{current}{gap}{lines}")))
+            Ok(Splice::Add(format!("{current}{gap}{lines}")))
         }
         (1, 1) => {
             let start = current.find(START).unwrap_or_default();
@@ -113,7 +110,11 @@ fn splice(current: &str) -> Result<Option<String>, String> {
                 lines.trim_end_matches('\n'),
                 &current[end..]
             );
-            Ok((spliced != current).then_some(spliced))
+            Ok(if spliced == current {
+                Splice::Present
+            } else {
+                Splice::Replace(spliced)
+            })
         }
         _ => Err(format!("{START} and {END} must each appear once")),
     }
@@ -162,60 +163,65 @@ pub(crate) fn offer(
     let create = meta.is_none();
     let mut warnings = Vec::new();
     let hook = needs_hook(root, &mut warnings);
+    // A symlink is read through, to see whether its file needs the lines,
+    // but never written through.
+    let linked = meta
+        .as_ref()
+        .is_some_and(|meta| meta.file_type().is_symlink());
     let read = match &meta {
         None => Ok(String::new()),
-        Some(meta) if meta.file_type().is_symlink() => Err(State::Linked),
         Some(_) => fs::read_to_string(&path).map_err(|err| {
+            if linked {
+                warnings.push(format!("cannot read the file {file} points to: {err}"));
+                return State::Linked;
+            }
             warnings.push(format!("cannot read {file}: {err}"));
             State::Unreadable
         }),
     };
+    // A rename would replace a read-only file whatever its mode says.
     let readonly = meta
         .as_ref()
         .is_some_and(|meta| meta.permissions().readonly());
-    // What the reader is told to do with the lines when tm does not write them.
-    let told = |current: &str| {
-        if current.contains(START) {
-            State::ToReplace
-        } else {
-            State::ToAdd
+    let settle = |current: String, after: String, told: State| {
+        if !asks {
+            return told;
         }
-    };
-    let state = match read.map(|current| (splice(&current), current)) {
-        Err(state) => state,
-        Ok((Err(_), _)) => State::Malformed,
-        Ok((Ok(None), _)) => State::Present,
-        Ok((Ok(Some(_)), current)) if !asks => told(&current),
-        Ok((Ok(Some(after)), current)) => {
-            let question = if create {
-                format!("Create {file} with tm's lines?")
-            } else {
-                format!("Add tm's lines to {file}?")
-            };
-            match ask(&diff(file, create, &current, &after), &question) {
-                Ok(false) => State::Declined,
-                // A rename would replace the file whatever its mode says.
-                Ok(true) if readonly => {
-                    warnings.push(format!("{file} is read-only, so tm left it alone"));
+        let question = if create {
+            format!("Create {file} with tm's lines?")
+        } else {
+            format!("Add tm's lines to {file}?")
+        };
+        match ask(&diff(file, create, &current, &after), &question) {
+            Ok(false) => State::Declined,
+            Ok(true) => match write(&path, &after, create) {
+                Ok(()) => State::Added,
+                Err(err) => {
+                    warnings.push(format!("writing {file} failed: {err}"));
                     State::WriteFailed
                 }
-                Ok(true) => match write(&path, &after, create) {
-                    Ok(()) => State::Added,
-                    Err(err) => {
-                        warnings.push(format!("writing {file} failed: {err}"));
-                        State::WriteFailed
-                    }
-                },
-                Err(err) => {
-                    warnings.push(format!("cannot ask about {file}: {err}"));
-                    told(&current)
-                }
+            },
+            Err(err) => {
+                warnings.push(format!("cannot ask about {file}: {err}"));
+                told
             }
         }
+    };
+    let spliced = read.map(|current| (splice(&current), current));
+    let replace = matches!(spliced, Ok((Ok(Splice::Replace(_)), _)));
+    let state = match spliced {
+        Err(state) => state,
+        Ok((Err(_), _)) => State::Malformed,
+        Ok((Ok(Splice::Present), _)) => State::Present,
+        Ok((Ok(_), _)) if linked => State::Linked,
+        Ok((Ok(_), _)) if readonly => State::ReadOnly,
+        Ok((Ok(Splice::Add(after)), current)) => settle(current, after, State::ToAdd),
+        Ok((Ok(Splice::Replace(after)), current)) => settle(current, after, State::ToReplace),
     };
     Offer {
         file,
         create,
+        replace,
         state,
         hook,
         warnings,
@@ -286,6 +292,7 @@ pub(crate) fn report(output: &mut Output, offer: Offer, wrote: &[&str]) {
     let Offer {
         file,
         create,
+        replace,
         state,
         hook,
         warnings,
@@ -293,17 +300,27 @@ pub(crate) fn report(output: &mut Output, offer: Offer, wrote: &[&str]) {
     output.warnings.extend(warnings);
     let text = &mut output.text;
     let lines = block();
+    // Where the file holds an older block, adding would leave two.
+    let todo = |place: &str| {
+        if replace {
+            format!("replace tm's markers and the lines between them in {place} with")
+        } else {
+            format!("add these lines to {place}")
+        }
+    };
     let _ = match state {
         State::Present | State::Declined => Ok(()),
         State::Added => writeln!(text, "Added tm's lines to {file}"),
         State::ToAdd if create => write!(text, "Create {file} with these lines:\n{lines}"),
-        State::ToAdd | State::Unreadable | State::WriteFailed => {
+        State::ToAdd | State::ToReplace | State::Unreadable | State::WriteFailed if replace => {
+            write!(
+                text,
+                "Replace tm's markers and the lines between them in {file} with:\n{lines}"
+            )
+        }
+        State::ToAdd | State::ToReplace | State::Unreadable | State::WriteFailed => {
             write!(text, "Add these lines to {file}:\n{lines}")
         }
-        State::ToReplace => write!(
-            text,
-            "Replace the lines between tm's markers in {file} with:\n{lines}"
-        ),
         State::Malformed => write!(
             text,
             "{file} has tm's markers out of order or more than once, so it was left alone; \
@@ -311,8 +328,13 @@ pub(crate) fn report(output: &mut Output, offer: Offer, wrote: &[&str]) {
         ),
         State::Linked => write!(
             text,
-            "{file} is a symlink, so tm left it alone; add these lines to the file it \
-             points to:\n{lines}"
+            "{file} is a symlink, so tm left it alone; {}:\n{lines}",
+            todo("the file it points to")
+        ),
+        State::ReadOnly => write!(
+            text,
+            "{file} is read-only, so tm left it alone; {}:\n{lines}",
+            todo("it")
         ),
     };
     if hook {
@@ -333,8 +355,9 @@ pub(crate) fn report(output: &mut Output, offer: Offer, wrote: &[&str]) {
     output.data["instructions"] = json!({
         "file": file,
         "create": create,
+        "replace": replace,
         "lines": lines,
-        "state": state.id(),
+        "state": state,
     });
     output.data["hook"] = if hook {
         json!({ "file": SETTINGS, "settings": hook_settings() })
@@ -369,23 +392,31 @@ mod tests {
 
     #[test]
     fn the_lines_go_after_the_owners_text_once() {
-        assert_eq!(splice("").unwrap(), Some(block()));
+        assert_eq!(splice("").unwrap(), Splice::Add(block()));
         assert_eq!(
             splice("# Repo\n").unwrap(),
-            Some(format!("# Repo\n\n{}", block()))
+            Splice::Add(format!("# Repo\n\n{}", block()))
         );
         assert_eq!(
             splice("# Repo").unwrap(),
-            Some(format!("# Repo\n\n{}", block()))
+            Splice::Add(format!("# Repo\n\n{}", block()))
         );
-        let once = splice("# Repo\n").unwrap().unwrap();
-        assert_eq!(splice(&once).unwrap(), None, "a rerun changes nothing");
+        let Splice::Add(once) = splice("# Repo\n").unwrap() else {
+            panic!("the lines are added")
+        };
+        assert_eq!(
+            splice(&once).unwrap(),
+            Splice::Present,
+            "a rerun changes nothing"
+        );
     }
 
     #[test]
     fn old_lines_between_the_markers_are_replaced_and_nothing_else() {
         let old = format!("# Repo\n\n{START}\nold pointer\n{END}\n\n## More\n");
-        let new = splice(&old).unwrap().unwrap();
+        let Splice::Replace(new) = splice(&old).unwrap() else {
+            panic!("an older block is replaced")
+        };
         assert_eq!(
             new,
             format!("# Repo\n\n{START}\n{LINE}\n{END}\n\n## More\n")
@@ -497,15 +528,19 @@ mod tests {
     #[test]
     fn an_older_block_is_given_to_an_agent_to_replace() {
         let dir = scratch();
-        fs::write(dir.join("AGENTS.md"), format!("{START}\nold\n{END}\n")).unwrap();
+        let old_block = format!("{START}\nold\n{END}\n");
+        fs::write(dir.join("AGENTS.md"), format!("# Repo\n\n{old_block}")).unwrap();
         let output = reported(offer(&dir, false, never), &[]);
         assert_eq!(output.data["instructions"]["state"], "to_replace");
-        assert!(
-            output
-                .text
-                .starts_with("Replace the lines between tm's markers in AGENTS.md with:\n"),
-            "{}",
-            output.text
+        let told = "Replace tm's markers and the lines between them in AGENTS.md with:\n";
+        assert!(output.text.starts_with(told), "{}", output.text);
+
+        let given = &output.text[told.len()..told.len() + block().len()];
+        let followed = format!("# Repo\n\n{given}");
+        assert_eq!(
+            splice(&followed).unwrap(),
+            Splice::Present,
+            "doing as told leaves the lines in place: {followed}"
         );
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -518,12 +553,42 @@ mod tests {
         fs::write(dir.join("CLAUDE.md"), "# Repo\n").unwrap();
         let linked = offer(&dir, true, never);
         assert_eq!((linked.file, linked.state), ("AGENTS.md", State::Linked));
+        assert!(
+            linked.warnings[0].starts_with("cannot read the file AGENTS.md points to"),
+            "{:?}",
+            linked.warnings
+        );
         assert!(!outside.join("elsewhere.md").exists());
         let output = reported(linked, &[]);
         assert!(
             output.text.contains("AGENTS.md is a symlink"),
             "{}",
             output.text
+        );
+
+        let real = outside.join("real.md");
+        fs::remove_file(dir.join("AGENTS.md")).unwrap();
+        symlink(&real, dir.join("AGENTS.md")).unwrap();
+        fs::write(&real, block()).unwrap();
+        assert_eq!(
+            offer(&dir, true, never).state,
+            State::Present,
+            "a link to a file with the lines is read through"
+        );
+        fs::write(&real, format!("{START}\nold\n{END}\n")).unwrap();
+        let older = reported(offer(&dir, true, never), &[]);
+        assert_eq!(older.data["instructions"]["state"], "linked");
+        assert!(
+            older.text.contains(
+                "left it alone; replace tm's markers and the lines between them in the file it \
+                 points to"
+            ),
+            "{}",
+            older.text
+        );
+        assert_eq!(
+            fs::read_to_string(&real).unwrap(),
+            format!("{START}\nold\n{END}\n")
         );
         fs::remove_dir_all(&dir).unwrap();
         fs::remove_dir_all(&outside).unwrap();
@@ -551,6 +616,19 @@ mod tests {
         );
         fs::remove_dir(dir.join("AGENTS.md")).unwrap();
 
+        fs::write(dir.join("AGENTS.md"), format!("{START}\nold\n{END}\n")).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        let replacing = reported(offer(&dir, true, |_, _| Ok(true)), &[]);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(replacing.data["instructions"]["state"], "write_failed");
+        assert!(
+            replacing.text.starts_with(
+                "Replace tm's markers and the lines between them in AGENTS.md with:\n"
+            ),
+            "a failed write over an older block says to replace it: {}",
+            replacing.text
+        );
+
         fs::write(dir.join("AGENTS.md"), "# Repo\n").unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
         let failed = offer(&dir, true, |_, _| Ok(true));
@@ -575,13 +653,29 @@ mod tests {
 
         let path = dir.join("AGENTS.md");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
-        let protected = offer(&dir, true, |_, _| Ok(true));
-        assert_eq!(protected.state, State::WriteFailed);
-        assert_eq!(
-            protected.warnings,
-            ["AGENTS.md is read-only, so tm left it alone"]
+        let protected = reported(offer(&dir, true, never), &[]);
+        assert_eq!(protected.data["instructions"]["state"], "read_only");
+        assert!(
+            protected
+                .text
+                .starts_with("AGENTS.md is read-only, so tm left it alone; add these lines"),
+            "{}",
+            protected.text
         );
+        assert_eq!(protected.data["instructions"]["replace"], false);
         assert_eq!(fs::read_to_string(&path).unwrap(), "# Repo\n");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::write(&path, format!("{START}\nold\n{END}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        let older = reported(offer(&dir, true, never), &[]);
+        assert_eq!(older.data["instructions"]["replace"], true);
+        assert!(
+            older
+                .text
+                .contains("left it alone; replace tm's markers and the lines between them in it"),
+            "{}",
+            older.text
+        );
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
 
         fs::write(&path, format!("{START}\nold\n{END}\n")).unwrap();

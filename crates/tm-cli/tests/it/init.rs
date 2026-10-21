@@ -854,6 +854,7 @@ fn json_init_names_the_file_lines_hook_and_what_to_commit() {
         serde_json::json!({
             "file": "CLAUDE.md",
             "create": false,
+            "replace": false,
             "lines": format!("{START}\n{LINE}\n{END}\n"),
             "state": "to_add",
         })
