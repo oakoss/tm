@@ -3,6 +3,7 @@
 mod claim;
 mod comment;
 mod create;
+mod diff;
 mod doctor;
 mod edit;
 mod error;
@@ -19,6 +20,7 @@ mod list;
 mod moves;
 mod output;
 mod prime;
+mod prompt;
 mod ready;
 mod recover;
 mod show;

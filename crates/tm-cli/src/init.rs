@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
-use std::io::{self, BufRead, IsTerminal, Write as _};
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::output::Output;
+use crate::prompt::{ask, human, print_now, prompt, stopped};
 use crate::{fields, here, identity, instructions, recover};
 
 const REPO_FILE: &str = ".config/tm.toml";
@@ -62,9 +63,14 @@ pub(crate) fn run(init: &Init, json: bool) -> Result<Output, CliError> {
     let config_dir = root.join(".config");
     check_config_dir(&root, &config_dir).map_err(refused)?;
     check_not_ignored(&root).map_err(refused)?;
-    let (key, name) = project(&root, init, json).map_err(refused)?;
-    let asks = human(json, init.yes).then_some(prompt);
-    let beads = recover::beads(&root, (&key, &name[..]), &identity.actor, asks)?;
+    let asks = init.asks(json);
+    let (key, name) = project(&root, init, asks).map_err(refused)?;
+    let beads = recover::beads(
+        &root,
+        (&key, &name[..]),
+        &identity.actor,
+        asks.then_some(prompt),
+    )?;
     let file = RepoFile {
         workspace: Uuid::now_v7(),
         project: key.clone(),
@@ -72,6 +78,7 @@ pub(crate) fn run(init: &Init, json: bool) -> Result<Output, CliError> {
     };
     let text = file.render();
     confirmed(&text, init.yes, json).map_err(refused)?;
+    let lines = lines(&root, asks);
     let made_config = match fs::create_dir(&config_dir) {
         Ok(()) => true,
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => false,
@@ -137,7 +144,7 @@ pub(crate) fn run(init: &Init, json: bool) -> Result<Output, CliError> {
     recover::write_beads(&mut created, &mut store, beads, &identity.actor);
     created.warnings.extend(here::publish(&store, &workspace));
     drop(store);
-    Ok(with_lines(created, &root, init.yes, json, &[REPO_FILE]))
+    Ok(with_lines(created, lines, &[REPO_FILE]))
 }
 
 fn created(workspace: &Workspace, key: &str, target: &Path, batch: Uuid) -> Output {
@@ -158,10 +165,27 @@ fn created(workspace: &Workspace, key: &str, target: &Path, batch: Uuid) -> Outp
     )
 }
 
-/// `output` with tm's instruction lines offered for the repo at `root`.
-fn with_lines(mut output: Output, root: &Path, yes: bool, json: bool, wrote: &[&str]) -> Output {
-    let offer = instructions::offer(root, human(json, yes), ask);
-    instructions::report(&mut output, offer, wrote);
+/// tm's instruction lines for the repo at `root`, put to a person when
+/// `asks`; nothing is written until [`with_lines`].
+fn lines(root: &Path, asks: bool) -> instructions::Offer {
+    let mut offer = instructions::offer(root);
+    if asks {
+        offer.ask(ask);
+    }
+    offer
+}
+
+/// `output` with the instruction lines written on a yes and reported, and
+/// the files to commit, `wrote` among them.
+fn with_lines(mut output: Output, mut offer: instructions::Offer, wrote: &[&str]) -> Output {
+    offer.write();
+    let mut commit = wrote.to_vec();
+    commit.extend(offer.needs_commit());
+    instructions::report(&mut output, offer);
+    if !commit.is_empty() {
+        let _ = writeln!(output.text, "Commit {}", commit.join(" and "));
+    }
+    output.data["commit"] = json!(commit);
     output
 }
 
@@ -240,7 +264,8 @@ fn already_mapped(
     if let Ok(relative) = found.path.strip_prefix(&root) {
         check_git_sees(&root, &relative.to_string_lossy()).map_err(refused)?;
     }
-    let ((workspace, store), restored) = opened(home, found, &root, human(json, init.yes))?;
+    let asks = init.asks(json);
+    let ((workspace, store), restored) = opened(home, found, &root, asks)?;
     let keys = std::iter::once(&found.file.project)
         .chain(found.file.paths.iter().map(|mapping| &mapping.project));
     for key in keys {
@@ -286,7 +311,7 @@ fn already_mapped(
         mapped.data["restored"] = restored.data;
         mapped.warnings = restored.warnings;
     }
-    Ok(with_lines(mapped, &root, init.yes, json, &[]))
+    Ok(with_lines(mapped, lines(&root, asks), &[]))
 }
 
 /// The Workspace `found` names. One this machine lacks is restored from an
@@ -347,8 +372,8 @@ fn with_restored(err: CliError, restored: Output) -> CliError {
     err.warned(warnings).with("restored", restored.data)
 }
 
-/// The new Project's key and name, asked of a person at a terminal.
-fn project(root: &Path, init: &Init, json: bool) -> Result<(String, String), String> {
+/// The new Project's key and name, asked when `asks`.
+fn project(root: &Path, init: &Init, asks: bool) -> Result<(String, String), String> {
     let dir_name = root
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -357,7 +382,7 @@ fn project(root: &Path, init: &Init, json: bool) -> Result<(String, String), Str
         dir_name,
         init.key.clone(),
         init.name.clone(),
-        human(json, init.yes).then_some(prompt),
+        asks.then_some(prompt),
     )
 }
 
@@ -432,10 +457,6 @@ fn check_key(key: &str) -> Result<(), String> {
             "{key:?} is not a Project key: a letter, then 1 to 9 letters or digits"
         ))
     }
-}
-
-pub(crate) fn stopped() -> String {
-    "stopped at the prompt; nothing written".into()
 }
 
 /// A case-insensitive disk finds `.config/TM.toml` as `.config/tm.toml`, but
@@ -620,25 +641,7 @@ fn git_failed(command: &str, output: &std::process::Output) -> String {
 }
 
 fn diff(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut out = format!(
-        "--- /dev/null\n+++ b/{REPO_FILE}\n@@ -0,0 +1,{} @@\n",
-        lines.len()
-    );
-    for line in lines {
-        out.push('+');
-        out.push_str(line);
-        out.push('\n');
-    }
-    out
-}
-
-fn print_now(text: &str) -> Result<(), String> {
-    let mut stdout = io::stdout().lock();
-    stdout
-        .write_all(text.as_bytes())
-        .and_then(|()| stdout.flush())
-        .map_err(|err| format!("cannot write output: {err}"))
+    crate::diff::unified(REPO_FILE, None, text)
 }
 
 /// Shows the file and asks, unless `--yes` confirms it already. JSON mode
@@ -654,7 +657,7 @@ fn confirmed(text: &str, yes: bool, json: bool) -> Result<(), String> {
     if yes {
         return print_now(&diff(text));
     }
-    if !human(json, false) {
+    if !human() {
         print_now(&diff(text))?;
         return Err(format!(
             "{REPO_FILE} not written: confirm with --yes when not a person at a terminal"
@@ -667,57 +670,16 @@ fn confirmed(text: &str, yes: bool, json: bool) -> Result<(), String> {
     }
 }
 
-/// A person at a terminal, the only one tm asks (ADR 0014): stdin and stdout
-/// are terminals, JSON is off, and no Agent is detected. `--yes` asks nothing.
-fn human(json: bool, yes: bool) -> bool {
-    is_human(
-        json || yes,
-        io::stdin().is_terminal() && io::stdout().is_terminal(),
-        identity::agent_detected(identity::env),
-    )
-}
-
-/// `quiet` is `--json` or `--yes`, either of which asks nothing.
-fn is_human(quiet: bool, terminal: bool, agent: bool) -> bool {
-    !quiet && terminal && !agent
-}
-
-/// Shows `shown` and asks `question` at the terminal, defaulting to no.
-fn ask(shown: &str, question: &str) -> Result<bool, String> {
-    print_now(shown)?;
-    eprint!("{question} [y/N] ");
-    answer(&mut io::stdin().lock())
-}
-
-/// A yes read from `input`; anything else, end of input included, is no.
-fn answer(input: &mut impl BufRead) -> Result<bool, String> {
-    let mut line = Vec::new();
-    let read = input
-        .read_until(b'\n', &mut line)
-        .map_err(|err| format!("cannot read the answer: {err}"))?;
-    if read == 0 {
-        eprintln!();
+impl Init {
+    /// Whether this run asks its questions: only a person, and neither
+    /// `--json` nor `--yes`, which each ask nothing.
+    fn asks(&self, json: bool) -> bool {
+        self.asks_if(json, human)
     }
-    Ok(matches!(line.trim_ascii(), b"y" | b"Y" | b"yes"))
-}
 
-/// Asks `question` at the terminal for a line of text.
-fn prompt(question: &str) -> Result<Option<String>, String> {
-    eprint!("{question}");
-    line(&mut io::stdin().lock())
-}
-
-/// One line read from `input`, trimmed, or `None` at end of input.
-fn line(input: &mut impl BufRead) -> Result<Option<String>, String> {
-    let mut line = String::new();
-    let read = input
-        .read_line(&mut line)
-        .map_err(|err| format!("cannot read the answer: {err}"))?;
-    if read == 0 {
-        eprintln!();
-        return Ok(None);
+    fn asks_if(&self, json: bool, human: impl FnOnce() -> bool) -> bool {
+        !json && !self.yes && human()
     }
-    Ok(Some(line.trim().to_owned()))
 }
 
 fn failed(path: &Path, err: &io::Error) -> String {
@@ -752,32 +714,19 @@ fn write_new(target: &PathBuf, text: &str) -> Result<(), CliError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{answer, default_key, is_human, line, named};
+    use super::{Init, default_key, named};
 
     #[test]
-    fn only_a_person_at_a_terminal_without_json_is_asked() {
-        assert!(is_human(false, true, false));
-        assert!(
-            !is_human(true, true, false),
-            "--json or --yes is never asked"
-        );
-        assert!(!is_human(false, false, false), "a pipe is never asked");
-        assert!(!is_human(false, true, true), "an Agent is never asked");
-    }
-
-    #[test]
-    fn only_a_yes_is_yes() {
-        for (typed, yes) in [
-            ("y\n", true),
-            ("yes\n", true),
-            (" Y \n", true),
-            ("\n", false),
-            ("no\n", false),
-            ("yess\n", false),
-            ("", false),
-        ] {
-            assert_eq!(answer(&mut typed.as_bytes()), Ok(yes), "{typed:?}");
-        }
+    fn only_a_person_without_json_or_yes_is_asked() {
+        let init = |yes| Init {
+            key: None,
+            name: None,
+            yes,
+        };
+        assert!(init(false).asks_if(false, || true));
+        assert!(!init(false).asks_if(true, || true), "--json is never asked");
+        assert!(!init(true).asks_if(false, || true), "--yes is never asked");
+        assert!(!init(false).asks_if(false, || false), "only a person");
     }
 
     #[test]
@@ -904,12 +853,5 @@ mod tests {
                 "{typed:?}"
             );
         }
-    }
-
-    #[test]
-    fn a_line_is_trimmed_and_end_of_input_is_none() {
-        assert_eq!(line(&mut " ops \n".as_bytes()), Ok(Some("ops".into())));
-        assert_eq!(line(&mut "\n".as_bytes()), Ok(Some(String::new())));
-        assert_eq!(line(&mut "".as_bytes()), Ok(None));
     }
 }
