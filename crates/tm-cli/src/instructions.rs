@@ -20,7 +20,11 @@ const SETTINGS: &str = ".claude/settings.json";
 const LOCAL_SETTINGS: &str = ".claude/settings.local.json";
 
 fn block() -> String {
-    format!("{START}\n{LINE}\n{END}\n")
+    ending_lines("\n")
+}
+
+fn ending_lines(eol: &str) -> String {
+    format!("{START}{eol}{LINE}{eol}{END}{eol}")
 }
 
 /// What became of the lines, named in `--json` in snake case.
@@ -138,14 +142,20 @@ fn target(root: &Path) -> (&'static str, Option<fs::Metadata>) {
 /// When the markers are out of order or appear more than once, since
 /// replacing between them could cut the owner's own text.
 fn splice(current: &str) -> Result<Splice, String> {
-    let lines = block();
+    // CRLF if the file has any, so new lines match it.
+    let eol = if current.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let lines = ending_lines(eol);
     match (current.matches(START).count(), current.matches(END).count()) {
         (0, 0) if current.is_empty() => Ok(Splice::Add(lines)),
         (0, 0) => {
             let gap = if current.ends_with('\n') {
-                "\n"
+                eol.to_owned()
             } else {
-                "\n\n"
+                eol.repeat(2)
             };
             Ok(Splice::Add(format!("{current}{gap}{lines}")))
         }
@@ -155,17 +165,18 @@ fn splice(current: &str) -> Result<Splice, String> {
             if end < start + START.len() {
                 return Err(format!("{END} comes before {START}"));
             }
+            // Either line ending counts as present, since an editor may
+            // convert the lines a person or Agent pasted.
+            if current[start..end].replace("\r\n", "\n") == block().trim_end_matches('\n') {
+                return Ok(Splice::Present);
+            }
             let spliced = format!(
                 "{}{}{}",
                 &current[..start],
-                lines.trim_end_matches('\n'),
+                lines.strip_suffix(eol).unwrap_or(&lines),
                 &current[end..]
             );
-            Ok(if spliced == current {
-                Splice::Present
-            } else {
-                Splice::Replace(spliced)
-            })
+            Ok(Splice::Replace(spliced))
         }
         _ => Err(format!("{START} and {END} must each appear once")),
     }
@@ -487,6 +498,36 @@ mod tests {
             splice(&once).unwrap(),
             Splice::Present,
             "a rerun changes nothing"
+        );
+    }
+
+    #[test]
+    fn a_crlf_file_keeps_its_line_endings() {
+        let crlf = ending_lines("\r\n");
+        for present in [
+            format!("# Repo\r\n{crlf}"),
+            format!("# Repo\r\n\r\n{}", block()),
+            format!("# Repo\n{crlf}"),
+        ] {
+            assert_eq!(
+                splice(&present).unwrap(),
+                Splice::Present,
+                "either line ending is present: {present:?}"
+            );
+        }
+        assert_eq!(
+            splice("# Repo\r\n").unwrap(),
+            Splice::Add(format!("# Repo\r\n\r\n{crlf}"))
+        );
+        assert_eq!(
+            splice("# Repo").unwrap(),
+            Splice::Add(format!("# Repo\n\n{}", block())),
+            "no CRLF seen, so LF"
+        );
+        let older = format!("# Repo\r\n{START}\r\nold\r\n{END}\r\n");
+        assert_eq!(
+            splice(&older).unwrap(),
+            Splice::Replace(format!("# Repo\r\n{crlf}"))
         );
     }
 
