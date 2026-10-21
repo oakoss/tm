@@ -22,3 +22,7 @@
 - Contributor map (invariants, structure, conventions, pull requests): [docs/contributing/index.md](docs/contributing/index.md)
 - Docs layout (decisions, specs, research, contributing): [docs/README.md](docs/README.md)
 - Research behind the design, with sources and scripts: [docs/research/](docs/research/)
+
+<!-- tm:start -->
+This repo tracks its work in tm. Run `tm guide` for how to work with it.
+<!-- tm:end -->
