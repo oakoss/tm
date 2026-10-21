@@ -79,6 +79,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
                 "key": other.as_ref().and_then(|other| other.key.clone()),
                 "status": other.as_ref().and_then(|other| other.fields.get("status")),
                 "category": other.as_ref().and_then(|other| other.category),
+                "archived": other.as_ref().map(follow::archived),
             },
         })).collect::<Vec<_>>(),
         "comments": comments.iter().map(comment_json).collect::<Vec<_>>(),
@@ -116,18 +117,26 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
     Ok(Output::new(text, data))
 }
 
-/// A Link by the other Issue's Key, with its Status when it is done or
-/// cancelled, so a Link to finished work does not read as open.
+/// A Link by the other Issue's Key, marked when the ready queue no longer
+/// counts the other Issue, so it does not read as open.
 fn link_line(link: &LinkView, other: Option<&IssueView>) -> String {
     let name = other
         .and_then(|other| other.key.clone())
         .unwrap_or_else(|| link.other.to_string());
-    let finished = other
+    let mut marks = Vec::new();
+    if let Some(status) = other
         .filter(|other| follow::finished(other))
-        .and_then(|other| other.fields.get("status").and_then(Value::as_str));
-    match finished {
-        Some(status) => format!("{} {name} ({})", link.name, printable(status)),
-        None => format!("{} {name}", link.name),
+        .and_then(|other| other.fields.get("status").and_then(Value::as_str))
+    {
+        marks.push(printable(status));
+    }
+    if other.is_some_and(follow::archived) {
+        marks.push("archived".to_owned());
+    }
+    if marks.is_empty() {
+        format!("{} {name}", link.name)
+    } else {
+        format!("{} {name} ({})", link.name, marks.join(", "))
     }
 }
 

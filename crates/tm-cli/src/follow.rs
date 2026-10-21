@@ -170,7 +170,7 @@ fn open(issue: &IssueView) -> bool {
     !finished(issue) && !archived(issue)
 }
 
-fn archived(issue: &IssueView) -> bool {
+pub(crate) fn archived(issue: &IssueView) -> bool {
     issue.fields.get("archived") == Some(&json!(true))
 }
 
