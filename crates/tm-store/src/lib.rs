@@ -38,7 +38,7 @@ use uuid::Uuid;
 
 use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
-pub use beads::BeadsImported;
+pub use beads::{BeadsExport, BeadsImported, read_beads};
 pub use claim::Claim;
 pub use export::{Exported, Restored, copy_store, read_export};
 pub use import::{Conflict, RecordOutcome, RecordsImported};

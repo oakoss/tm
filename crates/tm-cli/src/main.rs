@@ -20,6 +20,7 @@ mod moves;
 mod output;
 mod prime;
 mod ready;
+mod recover;
 mod show;
 mod undo;
 
@@ -55,6 +56,10 @@ enum Command {
     /// written only on a yes from a person at a terminal, and prints the
     /// `SessionStart` hook that runs `tm prime`; an Agent is given both to add
     /// itself.
+    ///
+    /// A person at a terminal is also asked for an export to restore a fresh
+    /// clone's Workspace from, and in a repo with .beads/ for a `bd export`
+    /// to import into the new one; anyone else is told the commands.
     Init {
         /// The Project key, such as TM. A person at a terminal without --yes is
         /// asked for it; otherwise it defaults to the initials of the repo

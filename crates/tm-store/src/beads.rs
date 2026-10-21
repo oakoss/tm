@@ -54,6 +54,37 @@ pub struct BeadsImported {
 
 type Dropped = BTreeMap<String, usize>;
 
+/// A `bd export` read and checked for Project `project`, nothing written yet.
+#[derive(Debug)]
+pub struct BeadsExport {
+    issues: Vec<(usize, IssueRecord)>,
+    dropped: Dropped,
+}
+
+/// Reads `bd export`'s Issues as records for Project `project`.
+///
+/// # Errors
+///
+/// [`StoreError::InvalidExport`] for a line that is not a beads Issue or
+/// holds a time that is not RFC 3339.
+pub fn read_beads(input: &mut dyn BufRead, project: &str) -> Result<BeadsExport, StoreError> {
+    let (issues, dropped) = records(input, project)?;
+    // The write would refuse these too; refusing them here needs no store.
+    for (line, issue) in &issues {
+        let times = [&issue.created, &issue.updated]
+            .into_iter()
+            .chain(issue.comments.iter().map(|comment| &comment.at));
+        for at in times.flatten() {
+            at.parse::<jiff::Timestamp>()
+                .map_err(|err| StoreError::InvalidExport {
+                    line: *line,
+                    reason: format!("{at:?} is not an RFC 3339 time: {err}"),
+                })?;
+        }
+    }
+    Ok(BeadsExport { issues, dropped })
+}
+
 impl Store {
     /// Writes `bd export`'s Issues into Project `project` as records, so a
     /// re-import compares three ways like any other.
@@ -68,9 +99,24 @@ impl Store {
         project: &str,
         runner: &Actor,
     ) -> Result<BeadsImported, StoreError> {
-        let (issues, dropped) = records(input, project)?;
-        let imported = self.write_records(&Parsed::issues(issues), runner)?;
-        Ok(BeadsImported { imported, dropped })
+        self.write_beads(read_beads(input, project)?, runner)
+    }
+
+    /// Writes an export [`read_beads`] checked.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::import_records`].
+    pub fn write_beads(
+        &mut self,
+        export: BeadsExport,
+        runner: &Actor,
+    ) -> Result<BeadsImported, StoreError> {
+        let imported = self.write_records(&Parsed::issues(export.issues), runner)?;
+        Ok(BeadsImported {
+            imported,
+            dropped: export.dropped,
+        })
     }
 }
 

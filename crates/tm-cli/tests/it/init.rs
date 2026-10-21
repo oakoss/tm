@@ -540,13 +540,91 @@ fn a_repo_file_naming_a_missing_workspace_is_reported() {
     };
     fs::create_dir_all(repo.join(".config")).unwrap();
     fs::write(repo.join(".config/tm.toml"), file.render()).unwrap();
+    git(&scratch, &repo, &["add", ".config/tm.toml"]);
+    git(&scratch, &repo, &["commit", "--quiet", "-m", "map"]);
     let output = tm(&scratch, &repo, &["init", "--yes"]);
     assert!(!output.status.success());
-    assert!(text(&output.stderr).contains(&id.to_string()), "{output:?}");
+    let stderr = text(&output.stderr);
+    assert!(stderr.contains(&id.to_string()), "{output:?}");
+    assert!(
+        stderr.contains(
+            "; if nobody has an export, a person may start a new Workspace instead: git rm -q :/.config/tm.toml, tm init, git add :/.config/tm.toml, then commit"
+        ),
+        "says how to start over: {stderr}"
+    );
+    let deep = repo.join("src/deep");
+    fs::create_dir_all(&deep).unwrap();
+    let output = tm(&scratch, &deep, &["--json", "init", "--yes"]);
+    let doc: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(doc["error"], "unknown_workspace", "{output:?}");
+    assert_eq!(doc["fix"], "tm import FILE");
+    let steps = serde_json::json!([
+        "git rm -q :/.config/tm.toml",
+        "tm init",
+        "git add :/.config/tm.toml"
+    ]);
+    assert_eq!(doc["start_over"], steps);
     assert!(
         !scratch.home().exists(),
         "a fresh clone gets no new Workspace"
     );
+    // The first step works as printed from where init ran.
+    git(&scratch, &deep, &["rm", "-q", ":/.config/tm.toml"]);
+    assert!(!repo.join(".config/tm.toml").exists());
+
+    // A mapping kept in a subproject is named from the repo root.
+    let sub = repo.join("svc/a");
+    fs::create_dir_all(sub.join(".config")).unwrap();
+    fs::write(sub.join(".config/tm.toml"), file.render()).unwrap();
+    git(&scratch, &repo, &["add", "svc/a/.config/tm.toml"]);
+    git(&scratch, &repo, &["commit", "--quiet", "-m", "map svc/a"]);
+    let output = tm(&scratch, &sub, &["--json", "init", "--yes"]);
+    let doc: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        doc["start_over"][0], "git rm -q :/svc/a/.config/tm.toml",
+        "{output:?}"
+    );
+    git(&scratch, &sub, &["rm", "-q", ":/svc/a/.config/tm.toml"]);
+    assert!(!sub.join(".config/tm.toml").exists());
+}
+
+#[test]
+fn a_repo_with_beads_is_told_how_to_bring_them_in() {
+    let scratch = Scratch::new();
+    let repo = fixture(&scratch, "repo");
+    fs::create_dir(repo.join(".beads")).unwrap();
+    let output = tm(&scratch, &repo, &["init", "--key", "TM", "--yes"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        text(&output.stdout).contains(
+            "To bring beads' Issues into tm, run:\n  bd export -o beads.jsonl\n  tm import --from beads beads.jsonl\n"
+        ),
+        "{output:?}"
+    );
+
+    let repo = fixture(&scratch, "json");
+    fs::create_dir(repo.join(".beads")).unwrap();
+    let made = tm(&scratch, &repo, &["--json", "init", "--key", "JS", "--yes"]);
+    assert!(made.status.success(), "{made:?}");
+    let doc: serde_json::Value = serde_json::from_slice(&made.stdout).unwrap();
+    assert_eq!(
+        doc["data"]["beads"],
+        serde_json::json!({
+            "state": "to_import",
+            "file": null,
+            "commands": ["bd export -o beads.jsonl", "tm import --from beads beads.jsonl"],
+        })
+    );
+    let listed = tm(&scratch, &repo, &["--json", "list"]);
+    let listed: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(listed["data"]["total"], 0, "nothing is imported unasked");
+
+    let repo = fixture(&scratch, "plain");
+    fs::write(repo.join(".beads"), "not a directory").unwrap();
+    let made = tm(&scratch, &repo, &["--json", "init", "--key", "PL", "--yes"]);
+    assert!(made.status.success(), "{made:?}");
+    let doc: serde_json::Value = serde_json::from_slice(&made.stdout).unwrap();
+    assert_eq!(doc["data"].get("beads"), None, "only a directory counts");
 }
 
 #[test]
