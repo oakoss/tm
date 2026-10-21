@@ -16,6 +16,8 @@ Agents start from `tm prime`, which the `SessionStart` hook in `.claude/settings
 
 ## Flow
 
+`tm guide` prints the general habits; this repo's own steps are:
+
 - Starting work: `tm move TM-n in_progress`.
 - At ship: `tm move TM-n in_review`; at merge: `tm move TM-n done`. The commit link is a `Closes TM-n` trailer, or `Refs TM-n` for part of the work.
 - Changing fields, labels or the parent: `tm edit TM-n --set field=value`, with `--set field=-` to read long text from stdin, `--unset`, `--label`, `--remove-label`, `--parent` and `--no-parent`.

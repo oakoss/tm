@@ -1,0 +1,43 @@
+How to work with tm
+
+This repo tracks its work as Issues in tm. Keep each Issue telling the
+truth about the work, so the next session, human or Agent, can pick it up.
+
+Find work
+  tm prime                   who you write as, your Claims, the work in
+                             progress and the ready queue
+  tm ready                   the work that can start now, most urgent first
+  tm show KEY                one Issue: its fields, Links and comments
+
+Start
+  tm claim KEY               an Agent claims the Issue it takes on
+  tm move KEY in_progress    move it when work starts, not when it ends
+
+Keep it current
+  The description holds the current plan. Change it with
+    tm edit KEY --set description=-      (reads the text from stdin)
+  Progress, what was learned and changes of plan go in comments, which
+  keep a dated trail an edit would overwrite:
+    tm comment KEY -                     (reads the text from stdin)
+  Other fields, labels and the parent change with tm edit; the Status
+  changes only with tm move.
+
+New work found along the way
+  tm create --type task --title TEXT --parent KEY
+  tm link KEY blocks OTHER               to order it
+
+Finish
+  tm move KEY in_review                  when it is ready for review
+  tm move KEY done                       when it has landed; this
+                                         releases its Claim
+
+Mistakes
+  tm undo BATCH              undoes a command that printed
+                             "undo this with: tm undo BATCH"
+  tm undo                    a human undoes their own last command; run it
+                             again to step further back
+
+Agents
+  Add --json to a command for one JSON document; an error carries a code,
+  and a fix to run where there is one. A write's BATCH, for tm undo, is
+  data.batch. tm export always writes JSONL.

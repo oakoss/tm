@@ -9,6 +9,7 @@ mod error;
 mod export;
 mod fields;
 mod follow;
+mod guide;
 mod here;
 mod identity;
 mod init;
@@ -79,6 +80,9 @@ enum Command {
     /// release won.
     Doctor,
     /// Comment on an Issue.
+    ///
+    /// Comments keep a dated trail an edit would overwrite: progress, what
+    /// was learned and changes of plan.
     Comment {
         /// The Issue's Key or full id.
         issue: String,
@@ -108,6 +112,9 @@ enum Command {
     },
     /// Change an Issue's fields, labels or parent in one write; the Status
     /// changes with `tm move`.
+    ///
+    /// The description holds the current plan; record progress against it
+    /// with `tm comment`.
     #[command(group(
         ArgGroup::new("changes")
             .required(true)
@@ -175,6 +182,9 @@ enum Command {
     },
     /// Print the context an Agent session starts from, for a `SessionStart` hook.
     Prime,
+    /// Print how to work with tm: finding, starting, recording and finishing
+    /// work.
+    Guide,
     /// List the work that can start now: unclaimed todo Issues no open Issue
     /// blocks, most urgent first, with what each would unblock.
     Ready {
@@ -318,6 +328,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::List { filter, limit }) => list::run(&filter, limit, json),
         Some(Command::Move { issue, status, set }) => moves::run(&issue, &status, &set),
         Some(Command::Prime) => prime::run(json),
+        Some(Command::Guide) => Ok(guide::run()),
         Some(Command::Ready { limit }) => ready::run(limit, json),
         Some(Command::Show { issue }) => show::run(&issue),
         Some(Command::Undo { batch, dry_run }) => undo::run(batch.as_deref(), dry_run),

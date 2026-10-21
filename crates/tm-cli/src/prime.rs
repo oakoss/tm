@@ -13,6 +13,7 @@ use tm_store::{Claim, IssueView};
 use uuid::Uuid;
 
 use crate::error::CliError;
+use crate::guide::HABITS;
 use crate::here;
 use crate::identity;
 use crate::list::{item, line_within, project_keys};
@@ -99,6 +100,10 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
         &ready,
         total,
     );
+    let _ = writeln!(text, "Habits (tm guide has the rest):");
+    for habit in HABITS {
+        let _ = writeln!(text, "  {habit}");
+    }
 
     let data = json!({
         "project": project,
@@ -117,6 +122,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
             "issues": ready.iter().map(|view| item(view, &projects)).collect::<Vec<_>>(),
             "total": total,
         },
+        "habits": HABITS,
     });
     let mut output = Output::new(text, data);
     if json {

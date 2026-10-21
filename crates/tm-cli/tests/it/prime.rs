@@ -13,8 +13,9 @@ use uuid::Uuid;
 
 use crate::support::{Scratch, initialized, text, tm, tm_command};
 
-/// tm-u8g.9's budget: prime for a 200-Issue Workspace fits in 4 KB.
-const BUDGET_BYTES: usize = 4096;
+/// Prime for a 200-Issue Workspace, every title at its cut, fits in 4.5 KB,
+/// about 1.1k tokens: tm-u8g.9's 4 KB, plus room for the habit lines.
+const BUDGET_BYTES: usize = 4608;
 
 /// `tm` as the Agent `claude` writing for `jace`.
 fn as_claude(scratch: &Scratch, repo: &Path, args: &[&str]) -> Output {
@@ -246,6 +247,14 @@ fn prime_without_an_identity_still_gives_the_scheme_and_ready_queue() {
         shown.contains("In progress (0):\n  none\nReady (1):\n  TM-1  todo  none  first\n"),
         "{shown}"
     );
+    assert!(
+        shown.ends_with(
+            "Habits (tm guide has the rest):\n  tm move KEY in_progress when work starts\n  \
+             the description holds the current plan; tm edit changes it\n  \
+             tm comment KEY for progress, what was learned and changes of plan\n"
+        ),
+        "{shown}"
+    );
 }
 
 #[test]
@@ -322,4 +331,10 @@ fn json_prime_keeps_warnings_out_of_the_data() {
     );
     assert_eq!(doc["data"]["project"], "TM");
     assert_eq!(doc["data"]["ready"]["total"], 0);
+    let shown = text(&tm(&scratch, &repo, &["prime"]).stdout);
+    let habits: Vec<String> = under(&shown, "Habits (tm guide has the rest):")
+        .iter()
+        .map(|line| line.trim().to_owned())
+        .collect();
+    assert_eq!(doc["data"]["habits"], json!(habits));
 }

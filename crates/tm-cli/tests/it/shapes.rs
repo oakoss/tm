@@ -457,6 +457,7 @@ fn prime_answers_in_a_fixed_shape() {
     let (scratch, repo) = two_issues();
     let doc = run(&scratch, &repo, &["prime"]);
     insta::assert_json_snapshot!(doc, {
+        ".data.habits" => "[habits]",
         ".data.ready.issues[].id" => "[id]",
         ".data.ready.issues[].fields.created" => "[ms]",
         ".data.ready.issues[].fields.updated" => "[ms]",
@@ -469,6 +470,7 @@ fn prime_answers_in_a_fixed_shape() {
           "on_behalf_of": null
         },
         "claims": [],
+        "habits": "[habits]",
         "in_progress": {
           "issues": [],
           "total": 0
