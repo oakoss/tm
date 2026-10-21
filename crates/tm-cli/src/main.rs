@@ -3,6 +3,7 @@
 mod claim;
 mod comment;
 mod create;
+mod diff;
 mod doctor;
 mod edit;
 mod error;

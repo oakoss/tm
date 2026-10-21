@@ -620,17 +620,7 @@ fn git_failed(command: &str, output: &std::process::Output) -> String {
 }
 
 fn diff(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut out = format!(
-        "--- /dev/null\n+++ b/{REPO_FILE}\n@@ -0,0 +1,{} @@\n",
-        lines.len()
-    );
-    for line in lines {
-        out.push('+');
-        out.push_str(line);
-        out.push('\n');
-    }
-    out
+    crate::diff::unified(REPO_FILE, None, text)
 }
 
 fn print_now(text: &str) -> Result<(), String> {

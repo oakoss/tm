@@ -171,36 +171,6 @@ fn splice(current: &str) -> Result<Splice, String> {
     }
 }
 
-/// The lines a splice removes and adds, as a diff a human confirms.
-fn diff(file: &str, create: bool, before: &str, after: &str) -> String {
-    let old = if create {
-        "/dev/null".to_owned()
-    } else {
-        format!("a/{file}")
-    };
-    let mut out = format!("--- {old}\n+++ b/{file}\n");
-    let (before, after): (Vec<&str>, Vec<&str>) =
-        (before.lines().collect(), after.lines().collect());
-    let same_start = before
-        .iter()
-        .zip(&after)
-        .take_while(|(a, b)| a == b)
-        .count();
-    let same_end = before[same_start..]
-        .iter()
-        .rev()
-        .zip(after[same_start..].iter().rev())
-        .take_while(|(a, b)| a == b)
-        .count();
-    for line in &before[same_start..before.len() - same_end] {
-        let _ = writeln!(out, "-{line}");
-    }
-    for line in &after[same_start..after.len() - same_end] {
-        let _ = writeln!(out, "+{line}");
-    }
-    out
-}
-
 /// Offers the lines for the repo at `root`. When `asks`, a human sees the
 /// diff and `ask` decides; otherwise the reader is only told, and nothing is
 /// written. A failure leaves the file alone and is reported, never fatal.
@@ -248,7 +218,8 @@ pub(crate) fn offer(
         } else {
             format!("Add tm's lines to {file}?")
         };
-        match ask(&diff(file, create, &current, &after), &question) {
+        let shown = crate::diff::unified(file, (!create).then_some(current.as_str()), &after);
+        match ask(&shown, &question) {
             Ok(false) => State::Declined,
             // The file may have been edited while the prompt waited; writing
             // the text computed before asking would lose that edit.
@@ -530,8 +501,8 @@ mod tests {
             format!("# Repo\n\n{START}\n{LINE}\n{END}\n\n## More\n")
         );
         assert_eq!(
-            diff("AGENTS.md", false, &old, &new),
-            format!("--- a/AGENTS.md\n+++ b/AGENTS.md\n-old pointer\n+{LINE}\n")
+            crate::diff::unified("AGENTS.md", Some(&old), &new),
+            format!("--- a/AGENTS.md\n+++ b/AGENTS.md\n@@ -4 +4 @@\n-old pointer\n+{LINE}\n")
         );
     }
 
