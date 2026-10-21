@@ -948,14 +948,7 @@ impl Store {
         guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
     ) -> Result<Vec<Op>, StoreError> {
         for (draft, provenance) in &drafts {
-            // A Claim is who works on an Issue now, not history to bring in.
-            if matches!(draft.change, Change::Claim { .. }) {
-                return Err(StoreError::Invalid {
-                    field: tm_core::op::CLAIM_FIELD.into(),
-                    reason: "cannot be imported".into(),
-                    valid: Vec::new(),
-                });
-            }
+            validate::check_importable(&draft.change)?;
             check_wall(provenance.at).map_err(|reason| StoreError::Invalid {
                 field: "time".into(),
                 reason,
@@ -1349,18 +1342,12 @@ fn write_drafts(
                 validate::status_fits_type(tx, scheme, draft.subject)?,
             ));
         }
-        if let Change::Claim { action } = &draft.change {
-            claim::check_taker(&draft.actor, action)?;
-        }
-        if let Change::Retract { comment, .. } = &draft.change {
-            validate::check_retracter(tx, draft.subject, &draft.actor, *comment)?;
-        }
         let (source, at) = provenance.map_or((None, now), |p| (Some(p.source), p.at));
-        let change = validate::check(tx, scheme, draft.subject, draft.change)?;
-        // At the time the operation records, so replay reaches the same verdict.
-        if let Change::Claim { action } = &change {
-            claim::check(tx, draft.subject, action, at.utc_ms)?;
-        }
+        let writing = validate::Writing {
+            actor: &draft.actor,
+            at_ms: at.utc_ms,
+        };
+        let change = validate::check(tx, scheme, &writing, draft.subject, draft.change)?;
         hlc = hlc.tick(now_ms);
         let base_seq: i64 = tx.query_row(
             "SELECT coalesce(max(server_seq), 0) FROM ops WHERE project = ?1",

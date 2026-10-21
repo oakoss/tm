@@ -12,7 +12,7 @@ use tm_store::{
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, TempDir, claude, draft, insert_acked, jace, new_issue, open, remote_op,
+    ManualClock, TempDir, claude, draft, held, insert_acked, jace, new_issue, open, remote_op,
     run_children, set_field,
 };
 
@@ -41,13 +41,13 @@ fn a_take_holds_the_issue_until_its_token_releases_it() {
     let issue = new_issue(&mut store);
     let claim = store.take(&claude(), issue, Some(HOUR_MS)).unwrap();
     assert_eq!(claim.expires_ms, Some(1_000 + 3_600_000));
-    assert_eq!(store.claim(issue).unwrap(), Some(claim.clone()));
+    assert_eq!(held(&store, issue), Some(claim.clone()));
     store.release(&claude(), issue, claim.id).unwrap();
-    assert_eq!(store.claim(issue).unwrap(), None);
+    assert_eq!(held(&store, issue), None);
     let again = store
         .take(&Actor::agent("codex", "jace"), issue, None)
         .unwrap();
-    assert_eq!(store.claim(issue).unwrap(), Some(again));
+    assert_eq!(held(&store, issue), Some(again));
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn a_write_guarded_on_a_claim_is_refused_once_the_claim_changes() {
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
     let done = || vec![draft(issue, set_field("status", json!("done")))];
-    let before = store.claim(issue).unwrap();
+    let before = held(&store, issue);
 
     // Read unclaimed, then claimed before the write.
     let claim = store.take(&claude(), issue, None).unwrap();
@@ -167,7 +167,7 @@ fn a_store_with_the_previous_claims_table_rebuilds_on_open() {
         claim
     };
     let store = open(&dir.db(), &ManualClock::at(1_000));
-    assert_eq!(store.claim(claim.issue).unwrap(), Some(claim));
+    assert_eq!(held(&store, claim.issue), Some(claim));
 }
 
 #[test]
@@ -182,7 +182,7 @@ fn an_agents_claim_is_held_for_the_human_it_writes_for() {
         .unwrap_err();
     assert!(err.to_string().contains("held by claude for jace"), "{err}");
     assert_eq!(store.rebuild().unwrap(), 0);
-    assert_eq!(store.claim(issue).unwrap(), Some(claim));
+    assert_eq!(held(&store, issue), Some(claim));
 }
 
 #[test]
@@ -205,10 +205,10 @@ fn a_release_must_name_the_current_claim() {
     let claim = store.take(&claude(), issue, None).unwrap();
     let err = store.release(&jace(), issue, stranger).unwrap_err();
     assert!(
-        matches!(err, StoreError::NotClaimHolder { holder: Holder::Holds(ref held), .. } if **held == claim),
+        matches!(&err, StoreError::NotClaimHolder { holder: Holder::Current(state), .. } if **state == ClaimState::Held(claim.clone())),
         "{err}"
     );
-    assert_eq!(store.claim(issue).unwrap().map(|c| c.id), Some(claim.id));
+    assert_eq!(held(&store, issue).map(|c| c.id), Some(claim.id));
 }
 
 #[test]
@@ -248,7 +248,7 @@ fn only_an_agent_takes_a_claim_and_the_take_names_it() {
             "{bad:?}: {err}"
         );
     }
-    assert_eq!(store.claim(issue).unwrap(), None);
+    assert_eq!(held(&store, issue), None);
 }
 
 #[test]
@@ -283,14 +283,14 @@ fn a_take_needs_an_expiry_and_a_live_issue() {
     let missing = Uuid::now_v7();
     for err in [
         store.take(&claude(), missing, None).unwrap_err(),
-        store.claim(missing).unwrap_err(),
+        store.claim_state(missing).unwrap_err(),
     ] {
         assert!(
             matches!(err, StoreError::UnknownIssue(id) if id == missing),
             "{err}"
         );
     }
-    assert_eq!(store.claim(issue).unwrap(), None);
+    assert_eq!(held(&store, issue), None);
 }
 
 #[test]
@@ -336,9 +336,9 @@ fn a_pulled_take_is_held_to_the_rules_that_need_no_state_but_not_to_archiving() 
         set_aside.iter().all(|u| !u.is_lost_claim()),
         "{set_aside:?}"
     );
-    assert_eq!(store.claim(blank).unwrap(), None);
+    assert_eq!(held(&store, blank), None);
     assert_eq!(
-        store.claim(archived).unwrap().map(|c| c.id),
+        held(&store, archived).map(|c| c.id),
         Some(ids[6]),
         "a merge may archive an Issue someone took"
     );
@@ -370,7 +370,7 @@ fn of_two_takes_that_saw_the_issue_unclaimed_the_first_acknowledged_wins() {
         ],
     );
     assert_eq!(store.rebuild().unwrap(), 1);
-    let claim = store.claim(issue).unwrap().unwrap();
+    let claim = held(&store, issue).unwrap();
     assert_eq!((claim.id, claim.agent.as_str()), (ids[1], "claude"));
     let lost = store.unapplied().unwrap();
     assert_eq!(lost.len(), 1);
@@ -407,7 +407,7 @@ fn a_take_or_release_against_a_claim_no_longer_current_loses() {
     let stale_release = remote_op(8, issue, &release(Uuid::now_v7()), Hlc::new(1_012, 0), 2);
     insert_acked(&store, &stale_release, 5, 2_000);
     assert_eq!(store.rebuild().unwrap(), 2);
-    assert_eq!(store.claim(issue).unwrap(), None);
+    assert_eq!(held(&store, issue), None);
     let lost = store.unapplied().unwrap();
     assert_eq!(
         lost.iter().map(|u| u.op_id).collect::<Vec<_>>(),
@@ -434,7 +434,7 @@ fn a_pulled_take_over_a_claim_with_no_expiry_loses() {
     );
     insert_acked(&store, &over, 3, 2_000);
     assert_eq!(store.rebuild().unwrap(), 1);
-    assert_eq!(store.claim(issue).unwrap().map(|c| c.id), Some(ids[1]));
+    assert_eq!(held(&store, issue).map(|c| c.id), Some(ids[1]));
     let lost = store.unapplied().unwrap();
     assert_eq!(lost[0].op_id, over.op_id);
     assert!(lost[0].is_lost_claim(), "{lost:?}");
@@ -445,7 +445,7 @@ fn a_pulled_take_over_a_claim_wins_only_once_its_time_is_past_the_expiry() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = Uuid::now_v7();
-    let held = Change::Claim {
+    let lapsing = Change::Claim {
         action: ClaimAction::Take {
             agent: "claude".into(),
             ttl_ms: Some(8),
@@ -453,7 +453,7 @@ fn a_pulled_take_over_a_claim_wins_only_once_its_time_is_past_the_expiry() {
         },
     };
     // claude's take is written at 1_002, so it lapses at 1_010.
-    let ids = insert_all(&store, &[(issue, Change::Create), (issue, held)]);
+    let ids = insert_all(&store, &[(issue, Change::Create), (issue, lapsing)]);
     let early = remote_op(
         8,
         issue,
@@ -474,7 +474,7 @@ fn a_pulled_take_over_a_claim_wins_only_once_its_time_is_past_the_expiry() {
     let lost = store.unapplied().unwrap();
     assert_eq!(lost[0].op_id, early.op_id);
     assert!(lost[0].is_lost_claim(), "{lost:?}");
-    let claim = store.claim(issue).unwrap().unwrap();
+    let claim = held(&store, issue).unwrap();
     assert_eq!((claim.id, claim.agent.as_str()), (late.op_id, "gemini"));
 }
 
@@ -487,16 +487,16 @@ fn a_lapsed_claim_stops_holding_and_another_agent_takes_it_over() {
     let lapsing = store.take(&claude(), issue, Some(HOUR_MS)).unwrap();
     let codex = Actor::agent("codex", "jace");
     clock.set(lapsing.expires_ms.unwrap() - 1);
-    assert_eq!(store.claim(issue).unwrap(), Some(lapsing.clone()));
+    assert_eq!(held(&store, issue), Some(lapsing.clone()));
     assert_eq!(store.claims_by("claude", "jace").unwrap().held.len(), 1);
     let err = store.take(&codex, issue, None).unwrap_err();
     assert!(matches!(err, StoreError::AlreadyClaimed { .. }), "{err}");
 
     clock.advance(1);
-    assert_eq!(store.claim(issue).unwrap(), None);
+    assert_eq!(held(&store, issue), None);
     assert_eq!(store.claims_by("claude", "jace").unwrap().held, []);
     let over = store.take(&codex, issue, None).unwrap();
-    assert_eq!(store.claim(issue).unwrap(), Some(over.clone()));
+    assert_eq!(held(&store, issue), Some(over.clone()));
     let err = store.release(&claude(), issue, lapsing.id).unwrap_err();
     assert!(
         matches!(&err, StoreError::NotClaimHolder { holder: Holder::TookOver(held), .. } if **held == over),
@@ -509,13 +509,9 @@ fn a_lapsed_claim_stops_holding_and_another_agent_takes_it_over() {
     );
 
     assert_eq!(store.rebuild().unwrap(), 0);
-    assert_eq!(store.claim(issue).unwrap(), Some(over.clone()));
+    assert_eq!(held(&store, issue), Some(over.clone()));
     store.undo(&jace(), over.id).unwrap();
-    assert_eq!(
-        store.claim(issue).unwrap(),
-        None,
-        "undo restores no lapsed Claim"
-    );
+    assert_eq!(held(&store, issue), None, "undo restores no lapsed Claim");
 }
 
 #[test]
@@ -541,6 +537,34 @@ fn a_take_naming_no_claim_or_the_wrong_one_is_refused_over_a_lapsed_claim() {
 }
 
 #[test]
+fn an_imported_claim_is_refused_before_the_batch_s_times() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = new_issue(&mut store);
+    let at = |utc_ms| Provenance {
+        source: "test".into(),
+        at: WallTime {
+            utc_ms,
+            offset_min: 0,
+        },
+    };
+    let claim = Draft {
+        actor: claude(),
+        ..draft(issue, take("claude", None))
+    };
+    let err = store
+        .append_imported(vec![
+            (claim, at(500)),
+            (draft(issue, set_field("title", json!("u"))), at(-1)),
+        ])
+        .unwrap_err();
+    assert!(
+        matches!(&err, StoreError::Invalid { reason, .. } if reason == "cannot be imported"),
+        "{err}"
+    );
+}
+
+#[test]
 fn a_claim_is_never_imported() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
@@ -563,7 +587,7 @@ fn a_claim_is_never_imported() {
         matches!(&err, StoreError::Invalid { reason, .. } if reason == "cannot be imported"),
         "{err}"
     );
-    assert_eq!(store.claim(issue).unwrap(), None);
+    assert_eq!(held(&store, issue), None);
 }
 
 #[test]
@@ -591,7 +615,7 @@ fn a_lapsed_claim_reads_as_lapsed_until_its_holder_releases_it() {
     );
     let err = store.release(&claude(), issue, Uuid::now_v7()).unwrap_err();
     assert!(
-        matches!(&err, StoreError::NotClaimHolder { holder: Holder::Lapsed(held), .. } if **held == lapsing),
+        matches!(&err, StoreError::NotClaimHolder { holder: Holder::Current(state), .. } if **state == ClaimState::Lapsed(lapsing.clone())),
         "{err}"
     );
     assert!(
@@ -619,7 +643,7 @@ fn a_lapsed_claim_reads_as_lapsed_until_its_holder_releases_it() {
     let codex = store
         .take(&Actor::agent("codex", "jace"), issue, None)
         .unwrap();
-    assert_eq!(store.claim(issue).unwrap(), Some(codex));
+    assert_eq!(held(&store, issue), Some(codex));
 }
 
 #[test]
@@ -633,10 +657,7 @@ fn a_pending_take_loses_to_one_the_server_acknowledged_first() {
     let theirs = remote_op(8, issue, &take("codex", None), Hlc::new(1_005, 0), 1);
     insert_acked(&store, &theirs, 2, 2_000);
     assert_eq!(store.rebuild().unwrap(), 1);
-    assert_eq!(
-        store.claim(issue).unwrap().map(|c| c.id),
-        Some(theirs.op_id)
-    );
+    assert_eq!(held(&store, issue).map(|c| c.id), Some(theirs.op_id));
     assert_eq!(store.unapplied().unwrap()[0].op_id, mine.id);
 }
 
@@ -714,11 +735,7 @@ fn race(shared_name: bool) {
                 .env(CHILD_REPORT, &reports[i]);
         },
     );
-    let winner = Store::open(&dir.db())
-        .unwrap()
-        .claim(issue)
-        .unwrap()
-        .unwrap();
+    let winner = held(&Store::open(&dir.db()).unwrap(), issue).unwrap();
     let outcomes: Vec<String> = reports
         .iter()
         .map(|report| std::fs::read_to_string(report).unwrap())

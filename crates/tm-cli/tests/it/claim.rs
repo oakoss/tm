@@ -278,6 +278,10 @@ fn a_lapsed_claim_is_shown_as_lapsed_and_another_agent_takes_it() {
     let shown = text(&out.stdout);
     assert!(shown.contains("Claim by claude for jace lapsed"), "{out:?}");
     assert!(!shown.contains("any Agent may take it"), "{out:?}");
+    let stranger = Uuid::now_v7().to_string();
+    let out = as_agent(&scratch, &repo, &["--json", "release", "TM-3", &stranger]);
+    assert_eq!(doc(&out)["holder"]["state"], "lapsed", "{out:?}");
+    assert_eq!(doc(&out)["holder"]["agent"], "claude", "{out:?}");
     let out = as_agent(&scratch, &repo, &["prime"]);
     let shown = text(&out.stdout);
     assert!(shown.contains("Your lapsed Claims"), "{out:?}");

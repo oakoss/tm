@@ -1,10 +1,11 @@
 //! `tm claim` and `tm release`: an Agent's hold on an Issue, and its token.
 
 use serde_json::json;
-use tm_store::Claim;
+use tm_store::{Claim, IssueView};
 use uuid::Uuid;
 
 use crate::error::CliError;
+use crate::follow;
 use crate::here::{self, Here};
 use crate::identity;
 use crate::output::Output;
@@ -59,7 +60,7 @@ pub(crate) fn take(reference: &str, ttl_ms: Option<u64>) -> Result<Output, CliEr
         );
         let data = json!({
             "issue": { "id": issue, "key": key },
-            "claim": view(&claim),
+            "claim": claim_json(&claim),
         });
         let output = here.undoable(Output::new(text, data), claim.id)?;
         Ok((output, identity.warnings))
@@ -90,13 +91,20 @@ fn key(here: &Here, issue: Uuid) -> Result<Option<String>, CliError> {
     Ok(here.store.issue(issue)?.and_then(|view| view.key))
 }
 
-fn view(claim: &Claim) -> serde_json::Value {
+/// A Claim as every command's `--json` gives it.
+pub(crate) fn claim_json(claim: &Claim) -> serde_json::Value {
     json!({
         "id": claim.id,
         "agent": claim.agent,
         "on_behalf_of": claim.on_behalf_of,
         "expires_ms": claim.expires_ms,
     })
+}
+
+/// Whether an Agent may take a lapsed Claim on `issue`: a take is refused on
+/// an archived Issue.
+pub(crate) fn takeable(issue: &IssueView) -> bool {
+    !follow::archived(issue)
 }
 
 #[cfg(test)]

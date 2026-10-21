@@ -10,7 +10,8 @@ use uuid::Uuid;
 
 use crate::rebuild::{Action, ISSUES, action, change};
 use crate::support::{
-    ManualClock, TempDir, claude, draft, dump, field, jace, new_issue, open, remote_op, set_field,
+    ManualClock, TempDir, claude, draft, dump, field, held, jace, new_issue, open, remote_op,
+    set_field,
 };
 
 const WORKSPACE: Uuid = Uuid::from_u128(0x0190_a000_0000_7000_8000_0000_0000_0001);
@@ -74,7 +75,7 @@ fn play(store: &mut Store, issues: &[Uuid], action: &Action, clock: &ManualClock
             };
         }
         Action::Claim { issue, release } => {
-            let held = store.claim(issues[*issue]).unwrap();
+            let held = held(store, issues[*issue]);
             let _ = match (release, held) {
                 (true, Some(claim)) => store.release(&jace(), issues[*issue], claim.id).map(|_| ()),
                 _ => store.take(&claude(), issues[*issue], None).map(|_| ()),

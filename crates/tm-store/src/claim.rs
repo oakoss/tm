@@ -57,6 +57,22 @@ impl ClaimState {
             Self::Held(claim) | Self::Lapsed(claim) => claim,
         }
     }
+
+    #[must_use]
+    pub fn held(&self) -> Option<&Claim> {
+        match self {
+            Self::Held(claim) => Some(claim),
+            Self::Lapsed(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn lapsed(&self) -> Option<&Claim> {
+        match self {
+            Self::Lapsed(claim) => Some(claim),
+            Self::Held(_) => None,
+        }
+    }
 }
 
 /// An Agent's Claims for one human, split by whether each has lapsed.
@@ -70,32 +86,25 @@ pub struct AgentClaims {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Holder {
     Unclaimed,
-    Holds(Box<Claim>),
-    Lapsed(Box<Claim>),
+    Current(Box<ClaimState>),
     /// Took the Issue over from the released Claim once that lapsed.
     TookOver(Box<Claim>),
-}
-
-impl Holder {
-    #[must_use]
-    pub fn claim(&self) -> Option<&Claim> {
-        match self {
-            Self::Unclaimed => None,
-            Self::Holds(claim) | Self::Lapsed(claim) | Self::TookOver(claim) => Some(claim),
-        }
-    }
 }
 
 impl std::fmt::Display for Holder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unclaimed => write!(f, "it is unclaimed"),
-            Self::Holds(held) => write!(f, "{} holds it for {}", held.agent, held.on_behalf_of),
-            Self::Lapsed(held) => write!(
-                f,
-                "{}'s Claim for {} on it has lapsed",
-                held.agent, held.on_behalf_of
-            ),
+            Self::Current(state) => match &**state {
+                ClaimState::Held(held) => {
+                    write!(f, "{} holds it for {}", held.agent, held.on_behalf_of)
+                }
+                ClaimState::Lapsed(held) => write!(
+                    f,
+                    "{}'s Claim for {} on it has lapsed",
+                    held.agent, held.on_behalf_of
+                ),
+            },
             Self::TookOver(held) => write!(
                 f,
                 "it lapsed and {} took the Issue over for {}",
@@ -157,24 +166,12 @@ impl Store {
         self.append(draft)
     }
 
-    /// The Claim holding `issue`, or none once it has lapsed.
+    /// The Claim on `issue`, held or lapsed, read against one clock reading.
     ///
     /// # Errors
     ///
     /// [`StoreError::UnknownIssue`], [`StoreError::Clock`], any SQLite
     /// failure, or [`StoreError::Corrupt`] for a malformed row.
-    pub fn claim(&self, issue: Uuid) -> Result<Option<Claim>, StoreError> {
-        Ok(match self.claim_state(issue)? {
-            Some(ClaimState::Held(claim)) => Some(claim),
-            _ => None,
-        })
-    }
-
-    /// The Claim on `issue`, held or lapsed, read against one clock reading.
-    ///
-    /// # Errors
-    ///
-    /// As [`Store::claim`].
     pub fn claim_state(&self, issue: Uuid) -> Result<Option<ClaimState>, StoreError> {
         issue_project(&self.conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?;
         let now_ms = self.utc_ms()?;
@@ -363,8 +360,7 @@ pub(crate) fn check(
                 holder: match held {
                     None => Holder::Unclaimed,
                     Some(held) if took_over(tx, &held, *claim)? => Holder::TookOver(Box::new(held)),
-                    Some(held) if held.lapsed(at_ms) => Holder::Lapsed(Box::new(held)),
-                    Some(held) => Holder::Holds(Box::new(held)),
+                    Some(held) => Holder::Current(Box::new(ClaimState::at(held, at_ms))),
                 },
             },
         });

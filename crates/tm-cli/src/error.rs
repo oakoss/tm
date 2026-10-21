@@ -7,7 +7,7 @@ use tm_core::OpError;
 use tm_core::filter::FilterError;
 use tm_core::op::{CURRENT_VERSION, MAX_PAYLOAD_BYTES};
 use tm_store::workspace::WorkspaceError;
-use tm_store::{Holder, StoreError};
+use tm_store::{ClaimState, Holder, StoreError};
 use uuid::Uuid;
 
 /// Keys the document itself uses, which details never take.
@@ -118,18 +118,20 @@ impl CliError {
     }
 
     fn not_claim_holder(message: String, issue: Uuid, claim: Uuid, holder: &Holder) -> Self {
-        let state = match holder {
+        let held = match holder {
             Holder::Unclaimed => None,
-            Holder::Holds(_) => Some("holds"),
-            Holder::Lapsed(_) => Some("lapsed"),
-            Holder::TookOver(_) => Some("took_over"),
+            Holder::Current(state) => Some(match &**state {
+                ClaimState::Held(held) => (held, "holds"),
+                ClaimState::Lapsed(held) => (held, "lapsed"),
+            }),
+            Holder::TookOver(held) => Some((&**held, "took_over")),
         };
         Self::new("not_claim_holder", message)
             .with("issue", issue.to_string())
             .with("claim", claim.to_string())
             .with(
                 "holder",
-                holder.claim().zip(state).map(|(held, state)| {
+                held.map(|(held, state)| {
                     json!({
                         "agent": held.agent,
                         "on_behalf_of": held.on_behalf_of,

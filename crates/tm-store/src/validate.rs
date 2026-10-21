@@ -7,7 +7,7 @@ use std::collections::{HashMap, VecDeque};
 
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::Value;
-use tm_core::op::COMMENTS_FIELD;
+use tm_core::op::{CLAIM_FIELD, COMMENTS_FIELD};
 use tm_core::scheme::{Field, FieldType, Scheme, is_date, priority_rank};
 use tm_core::{Actor, Change, link};
 use uuid::Uuid;
@@ -15,14 +15,36 @@ use uuid::Uuid;
 use crate::StoreError;
 use crate::apply::uuid_from;
 
-/// Checks `change` against the Scheme and the Issue's current state, and fills
-/// in the display labels the operation records.
+/// Who writes a change, and when the operation records it.
+pub(crate) struct Writing<'a> {
+    pub(crate) actor: &'a Actor,
+    pub(crate) at_ms: i64,
+}
+
+/// Refuses a change no import may bring in, checked before anything else
+/// about the batch.
+pub(crate) fn check_importable(change: &Change) -> Result<(), StoreError> {
+    match change {
+        // A Claim is who works on an Issue now, not history to bring in.
+        Change::Claim { .. } => Err(StoreError::Invalid {
+            field: CLAIM_FIELD.into(),
+            reason: "cannot be imported".into(),
+            valid: Vec::new(),
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// Checks `change` against its writer, the Scheme and the Issue's current
+/// state, and fills in the display labels the operation records.
 pub(crate) fn check(
     tx: &Transaction<'_>,
     scheme: &Scheme,
+    writing: &Writing<'_>,
     issue_id: Uuid,
     change: Change,
 ) -> Result<Change, StoreError> {
+    check_writer(tx, writing, issue_id, &change)?;
     if change.is_project() {
         return check_project(change);
     }
@@ -66,8 +88,11 @@ pub(crate) fn check(
                 elem_label,
             })
         }
-        // Needs the operation's time, so claim::check runs where it is known.
-        Change::Claim { action } => Ok(Change::Claim { action }),
+        // At the time the operation records, so replay reaches the same verdict.
+        Change::Claim { action } => {
+            crate::claim::check(tx, issue_id, &action, writing.at_ms)?;
+            Ok(Change::Claim { action })
+        }
         Change::Retract { comment, retracted } => {
             comment_author(tx, issue_id, comment)?;
             Ok(Change::Retract { comment, retracted })
@@ -131,9 +156,23 @@ fn comment_author(
     })
 }
 
+/// The rules a change kind sets on who writes it and how.
+fn check_writer(
+    tx: &Transaction<'_>,
+    writing: &Writing<'_>,
+    issue_id: Uuid,
+    change: &Change,
+) -> Result<(), StoreError> {
+    match change {
+        Change::Claim { action } => crate::claim::check_taker(writing.actor, action),
+        Change::Retract { comment, .. } => check_retracter(tx, issue_id, writing.actor, *comment),
+        _ => Ok(()),
+    }
+}
+
 /// Only a comment's author, or the human an Agent wrote it for, may retract
 /// it or bring it back.
-pub(crate) fn check_retracter(
+fn check_retracter(
     tx: &Transaction<'_>,
     issue_id: Uuid,
     writer: &Actor,

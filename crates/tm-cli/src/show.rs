@@ -5,14 +5,14 @@ use std::fmt::Write as _;
 
 use serde_json::{Value, json};
 use tm_core::scheme::FieldType;
-use tm_store::{Claim, ClaimState, CommentView, IssueView, LinkView, Store};
+use tm_store::{ClaimState, CommentView, IssueView, LinkView, Store};
 use uuid::Uuid;
 
+use crate::claim::{self, claim_json};
 use crate::error::CliError;
 use crate::follow;
 use crate::here::{self, Here};
 use crate::output::{Output, local_time, printable};
-use crate::prime::claim_json;
 
 pub(crate) fn run(reference: &str) -> Result<Output, CliError> {
     let here = here::read()?;
@@ -28,7 +28,7 @@ pub(crate) fn run(reference: &str) -> Result<Output, CliError> {
 /// An Issue as `show` prints it; `create` prints the Issue it made the same way.
 pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
     let store = &here.store;
-    let (view, project, parent, (claim, lapsed), links, comments) = store.read(|store| {
+    let (view, project, parent, claim, links, comments) = store.read(|store| {
         let view = store.issue(id)?.ok_or_else(|| {
             CliError::new("not_found", format!("Issue {id} does not exist"))
                 .with("kind", "issue")
@@ -39,11 +39,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
             Some(parent) => Some(parent_ref(store, parent)?),
             None => None,
         };
-        let (claim, lapsed) = match store.claim_state(id)? {
-            Some(ClaimState::Held(claim)) => (Some(claim), None),
-            Some(ClaimState::Lapsed(claim)) => (None, Some(claim)),
-            None => (None, None),
-        };
+        let claim = store.claim_state(id)?;
         let links = store.links(id)?;
         let others: Vec<Uuid> = links.iter().map(|link| link.other).collect();
         let others: HashMap<Uuid, IssueView> = store
@@ -59,7 +55,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
             })
             .collect();
         let comments = store.comments(id)?;
-        Ok::<_, CliError>((view, project, parent, (claim, lapsed), links, comments))
+        Ok::<_, CliError>((view, project, parent, claim, links, comments))
     })?;
     let data = json!({
         "id": view.id,
@@ -69,8 +65,8 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         "fields": view.fields,
         "sets": view.sets,
         "parent": parent,
-        "claim": claim.as_ref().map(claim_json),
-        "lapsed_claim": lapsed.as_ref().map(claim_json),
+        "claim": claim.as_ref().and_then(ClaimState::held).map(claim_json),
+        "lapsed_claim": claim.as_ref().and_then(ClaimState::lapsed).map(claim_json),
         "links": links.iter().map(|(link, other)| json!({
             "type": link.link_type,
             "direction": link.direction,
@@ -102,7 +98,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         let shown: Vec<String> = members.values().map(|member| printable(member)).collect();
         let _ = writeln!(text, "{field}: {}", shown.join(", "));
     }
-    write_claim(&mut text, claim.as_ref(), lapsed.as_ref(), &view);
+    write_claim(&mut text, claim.as_ref(), &view);
     for (link, other) in &links {
         let _ = writeln!(text, "{}", link_line(link, other.as_ref()));
     }
@@ -112,27 +108,29 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
     Ok(Output::new(text, data))
 }
 
-fn write_claim(text: &mut String, held: Option<&Claim>, lapsed: Option<&Claim>, view: &IssueView) {
-    if let Some(claim) = held {
-        let _ = writeln!(
-            text,
-            "claimed by {} for {} (Claim {})",
-            claim.agent, claim.on_behalf_of, claim.id
-        );
-    }
-    if let Some(claim) = lapsed {
-        let at = claim.expires_ms.map_or_else(String::new, local_time);
-        // A take is refused on an archived Issue.
-        let takeable = if follow::archived(view) {
-            ""
-        } else {
-            "; any Agent may take it"
-        };
-        let _ = writeln!(
-            text,
-            "Claim by {} for {} lapsed {at} (Claim {}){takeable}",
-            claim.agent, claim.on_behalf_of, claim.id
-        );
+fn write_claim(text: &mut String, state: Option<&ClaimState>, view: &IssueView) {
+    match state {
+        None => {}
+        Some(ClaimState::Held(claim)) => {
+            let _ = writeln!(
+                text,
+                "claimed by {} for {} (Claim {})",
+                claim.agent, claim.on_behalf_of, claim.id
+            );
+        }
+        Some(ClaimState::Lapsed(claim)) => {
+            let at = claim.expires_ms.map_or_else(String::new, local_time);
+            let takeable = if claim::takeable(view) {
+                "; any Agent may take it"
+            } else {
+                ""
+            };
+            let _ = writeln!(
+                text,
+                "Claim by {} for {} lapsed {at} (Claim {}){takeable}",
+                claim.agent, claim.on_behalf_of, claim.id
+            );
+        }
     }
 }
 
