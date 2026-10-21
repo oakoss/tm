@@ -111,30 +111,33 @@ pub(crate) fn read_stdin(
 }
 
 fn stdin(field: &str, blank: &str) -> Result<String, CliError> {
-    let refused = |reason: &str| {
-        CliError::new("invalid_value", format!("{field} from stdin {reason}"))
-            .with("field", field)
-            .with("reason", reason)
-    };
+    let read = read_stdin_text(field)?;
+    let read = read.trim_end_matches(['\n', '\r']).to_owned();
+    if read.trim().is_empty() {
+        return Err(refused(field, &format!("is blank; {blank}")));
+    }
+    Ok(read)
+}
+
+/// All of stdin as `field`'s text, refused from a terminal, where reading
+/// would wait on a prompt nobody sees.
+pub(crate) fn read_stdin_text(field: &str) -> Result<String, CliError> {
     let mut stdin = io::stdin();
     if stdin.is_terminal() {
-        return Err(refused("is a terminal; pipe the value in"));
+        return Err(refused(field, "is a terminal; pipe the value in"));
     }
     let mut read = String::new();
     match stdin.read_to_string(&mut read) {
-        Ok(_) => {}
-        Err(err) if err.kind() == io::ErrorKind::InvalidData => {
-            return Err(refused("is not UTF-8"));
-        }
-        Err(err) => {
-            return Err(CliError::new("io", format!("stdin: {err}")).with("path", "-"));
-        }
+        Ok(_) => Ok(read),
+        Err(err) if err.kind() == io::ErrorKind::InvalidData => Err(refused(field, "is not UTF-8")),
+        Err(err) => Err(CliError::new("io", format!("stdin: {err}")).with("path", "-")),
     }
-    let read = read.trim_end_matches(['\n', '\r']).to_owned();
-    if read.trim().is_empty() {
-        return Err(refused(&format!("is blank; {blank}")));
-    }
-    Ok(read)
+}
+
+fn refused(field: &str, reason: &str) -> CliError {
+    CliError::new("invalid_value", format!("{field} from stdin {reason}"))
+        .with("field", field)
+        .with("reason", reason)
 }
 
 /// `value` as one POSIX shell word, for a fix to run as printed.

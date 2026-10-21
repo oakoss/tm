@@ -54,6 +54,19 @@ fn a_comment_is_given_or_read_from_stdin_and_shows_in_order() {
     let out = tm(&scratch, &repo, &["--json", "comment", "TM-1", "-"]);
     let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(doc["error"], "invalid_value", "empty stdin: {doc}");
+    let out = tm_piped(
+        &scratch,
+        &repo,
+        &["--json", "comment", "TM-1", "-"],
+        b"\xff",
+    );
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["error"], "invalid_value", "{doc}");
+    assert_eq!(doc["field"], "body");
+    assert_eq!(doc["reason"], "is not UTF-8");
+    let out = tm_piped(&scratch, &repo, &["--json", "comment", "TM-1", "-"], "  \n");
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["reason"], "is blank", "a blank piped body: {doc}");
     let out = tm(&scratch, &repo, &["--json", "show", "TM-1"]);
     let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(doc["data"]["comments"].as_array().unwrap().len(), 2);

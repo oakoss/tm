@@ -1,12 +1,11 @@
 //! `tm comment`: a comment on an Issue, its body given or read from stdin.
 
-use std::io::Read as _;
-
 use serde_json::json;
 use tm_core::Change;
 use tm_store::Draft;
 
 use crate::error::CliError;
+use crate::fields;
 use crate::here::{self, Here};
 use crate::identity;
 use crate::output::Output;
@@ -17,11 +16,7 @@ pub(crate) fn run(reference: &str, body: &str) -> Result<Output, CliError> {
 
 fn write(here: &mut Here, reference: &str, body: &str) -> Result<(Output, Vec<String>), CliError> {
     let body = if body == "-" {
-        let mut read = String::new();
-        std::io::stdin()
-            .read_to_string(&mut read)
-            .map_err(|err| CliError::new("io", format!("stdin: {err}")).with("path", "-"))?;
-        read
+        fields::read_stdin_text("body")?
     } else {
         body.to_owned()
     };

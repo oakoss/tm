@@ -198,6 +198,8 @@ fn a_field_reads_stdin_without_its_trailing_newline() {
     let doc = piped(&task, b"\xff\n");
     assert_eq!(doc["error"], "invalid_value", "{doc}");
     assert_eq!(doc["reason"], "is not UTF-8");
+    assert_eq!(doc["field"], "description");
+    assert_eq!(doc["message"], "description from stdin is not UTF-8");
 
     let doc = piped(&task, b" \n");
     assert_eq!(doc["error"], "invalid_value", "{doc}");
