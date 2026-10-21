@@ -181,6 +181,10 @@ enum Command {
         /// Show at most this many.
         #[arg(long)]
         limit: Option<usize>,
+        /// With no filter, every Status, done and cancelled included, rather
+        /// than only the open work.
+        #[arg(long)]
+        all: bool,
     },
     /// Move an Issue to a Status of its Workflow.
     ///
@@ -343,7 +347,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         ),
         Some(Command::Link { words }) => link::run(&words, true),
         Some(Command::Unlink { words }) => link::run(&words, false),
-        Some(Command::List { filter, limit }) => list::run(&filter, limit, json),
+        Some(Command::List { filter, limit, all }) => list::run(&filter, limit, all, json),
         Some(Command::Move { issue, status, set }) => moves::run(&issue, &status, &set),
         Some(Command::Prime) => prime::run(json),
         Some(Command::Guide) => Ok(guide::run()),

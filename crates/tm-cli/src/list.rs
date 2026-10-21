@@ -20,9 +20,14 @@ use crate::output::{Output, printable};
 /// With no filter, the open work: triage, todo and active.
 const OPEN: &str = "-category:done,cancelled";
 
-pub(crate) fn run(filter: &[String], limit: Option<usize>, json: bool) -> Result<Output, CliError> {
+pub(crate) fn run(
+    filter: &[String],
+    limit: Option<usize>,
+    all: bool,
+    json: bool,
+) -> Result<Output, CliError> {
     let here = here::read()?;
-    match list(&here, filter, limit, json) {
+    match list(&here, filter, limit, all, json) {
         Ok(mut output) => {
             output.warnings = here.warnings;
             Ok(output)
@@ -35,13 +40,14 @@ fn list(
     here: &Here,
     filter: &[String],
     limit: Option<usize>,
+    all: bool,
     json: bool,
 ) -> Result<Output, CliError> {
     let filter = filter.join(" ");
-    // A filter that only sorts still lists the open work. The default goes
-    // last so error spans still point into what was typed.
+    // A filter that only sorts still lists the open work, unless `--all`.
+    // The default goes last so error spans still point into what was typed.
     let filter = match parse(&filter) {
-        Ok(query) if query.terms.is_empty() => format!("{filter} {OPEN}"),
+        Ok(query) if query.terms.is_empty() && !all => format!("{filter} {OPEN}"),
         _ => filter,
     };
     let (total, views, projects) = here.store.read(|store| {
