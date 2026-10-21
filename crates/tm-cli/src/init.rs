@@ -1,17 +1,18 @@
 //! `tm init`: a Workspace dedicated to the repo, mapped by `.config/tm.toml`.
 
+use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::json;
-use tm_store::workspace::{self, RepoFile, Workspace};
+use tm_store::workspace::{self, RepoFile, Workspace, WorkspaceError};
 use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::output::Output;
-use crate::{here, identity, instructions};
+use crate::{fields, here, identity, instructions, recover};
 
 const REPO_FILE: &str = ".config/tm.toml";
 
@@ -22,7 +23,7 @@ pub(crate) struct Init {
 }
 
 /// An `init` refusal: a check failed, or the file was not confirmed.
-fn refused(message: String) -> CliError {
+pub(crate) fn refused(message: String) -> CliError {
     CliError::new("init_refused", message)
 }
 
@@ -62,6 +63,7 @@ pub(crate) fn run(init: &Init, json: bool) -> Result<Output, CliError> {
     check_config_dir(&root, &config_dir).map_err(refused)?;
     check_not_ignored(&root).map_err(refused)?;
     let (key, name) = project(&root, init, json).map_err(refused)?;
+    let beads = recover::beads(&root, &key, human(json, init.yes).then_some(prompt))?;
     let file = RepoFile {
         workspace: Uuid::now_v7(),
         project: key.clone(),
@@ -122,22 +124,29 @@ pub(crate) fn run(init: &Init, json: bool) -> Result<Output, CliError> {
                     ),
                 })
         });
-    let published = finished
-        .is_ok()
-        .then(|| here::publish(&store, &workspace))
-        .flatten();
-    drop(store);
     let batch = match finished {
         Ok(batch) => batch,
-        Err(err) => return Err(clean_up_after(err, &workspace, undo_config)),
+        Err(err) => {
+            drop(store);
+            return Err(clean_up_after(err, &workspace, undo_config));
+        }
     };
-    let created = Output {
-        text: format!(
+    let mut created = created(&workspace, &key, &target, batch);
+    created.warnings = identity.warnings;
+    recover::write_beads(&mut created, &mut store, beads, &identity.actor);
+    created.warnings.extend(here::publish(&store, &workspace));
+    drop(store);
+    Ok(with_lines(created, &root, init.yes, json, &[REPO_FILE]))
+}
+
+fn created(workspace: &Workspace, key: &str, target: &Path, batch: Uuid) -> Output {
+    Output::new(
+        format!(
             "Created Workspace {} at {} with Project {key}, and wrote {REPO_FILE}\n",
             workspace.id,
             workspace.dir.display()
         ),
-        data: json!({
+        json!({
             "created": true,
             "workspace": workspace.id,
             "dir": workspace.dir.display().to_string(),
@@ -145,10 +154,7 @@ pub(crate) fn run(init: &Init, json: bool) -> Result<Output, CliError> {
             "file": target.display().to_string(),
             "batch": batch,
         }),
-        serialized: None,
-        warnings: identity.warnings.into_iter().chain(published).collect(),
-    };
-    Ok(with_lines(created, &root, init.yes, json, &[REPO_FILE]))
+    )
 }
 
 /// `output` with tm's instruction lines offered for the repo at `root`.
@@ -233,16 +239,25 @@ fn already_mapped(
     if let Ok(relative) = found.path.strip_prefix(&root) {
         check_git_sees(&root, &relative.to_string_lossy()).map_err(refused)?;
     }
-    let (workspace, store) = workspace::workspace_for(home, found)?;
+    let ((workspace, store), restored) = opened(home, found, &root, human(json, init.yes))?;
     let keys = std::iter::once(&found.file.project)
         .chain(found.file.paths.iter().map(|mapping| &mapping.project));
     for key in keys {
-        if store.project_by_key(key)?.is_none() {
-            return Err(refused(format!(
-                "{} names Project {key}, which Workspace {} does not have",
-                found.path.display(),
-                workspace.id
-            )));
+        let missing = match store.project_by_key(key) {
+            Ok(held) => held.is_none().then(|| {
+                refused(format!(
+                    "{} names Project {key}, which Workspace {} does not have",
+                    found.path.display(),
+                    workspace.id
+                ))
+            }),
+            Err(err) => Some(err.into()),
+        };
+        if let Some(err) = missing {
+            return Err(match restored {
+                Some(restored) => with_restored(err, restored),
+                None => err,
+            });
         }
     }
     let mut text = format!(
@@ -255,7 +270,7 @@ fn already_mapped(
     if init.key.is_some() || init.name.is_some() {
         text.push_str("--key and --name apply only when a Workspace is created; nothing changed\n");
     }
-    let mapped = Output::new(
+    let mut mapped = Output::new(
         text,
         json!({
             "created": false,
@@ -265,7 +280,70 @@ fn already_mapped(
             "file": found.path.display().to_string(),
         }),
     );
+    if let Some(restored) = restored {
+        mapped.text.insert_str(0, &restored.text);
+        mapped.data["restored"] = restored.data;
+        mapped.warnings = restored.warnings;
+    }
     Ok(with_lines(mapped, &root, init.yes, json, &[]))
+}
+
+/// The Workspace `found` names. One this machine lacks is restored from an
+/// export a person gives, with what the import printed; otherwise its error
+/// also says how to start over.
+fn opened(
+    home: &Path,
+    found: &workspace::Found,
+    root: &Path,
+    asks: bool,
+) -> Result<((Workspace, tm_store::Store), Option<Output>), CliError> {
+    match workspace::workspace_for(home, found) {
+        Err(err @ WorkspaceError::UnknownWorkspace { .. }) => {
+            let restored = if asks {
+                recover::restore(&found.path, &found.file.workspace.to_string(), prompt)?
+            } else {
+                None
+            };
+            let Some(restored) = restored else {
+                return Err(start_over(CliError::from(err), &found.path, root));
+            };
+            match workspace::workspace_for(home, found) {
+                Ok(opened) => Ok((opened, Some(restored))),
+                Err(err) => Err(with_restored(err.into(), restored)),
+            }
+        }
+        opened => Ok((opened?, None)),
+    }
+}
+
+/// `err` saying how a person could start over without the Workspace. Only a
+/// person decides that, since the new Workspace would not be the one the
+/// repo shares.
+fn start_over(mut err: CliError, file: &Path, root: &Path) -> CliError {
+    // `:/` makes git read the path from the repo root, wherever init ran; the
+    // file init writes may not be the one removed, such as a `.tm.toml`.
+    let file = file.strip_prefix(root).unwrap_or(file);
+    let steps = [
+        format!(
+            "git rm -q {}",
+            fields::quoted(&format!(":/{}", file.to_string_lossy()))
+        ),
+        "tm init".to_owned(),
+        format!("git add :/{REPO_FILE}"),
+    ];
+    let _ = write!(
+        err.message,
+        "; if nobody has an export, a person may start a new Workspace instead: {}, then commit",
+        steps.join(", ")
+    );
+    err.with("start_over", steps.to_vec())
+}
+
+/// `err`, after a restore that worked, still reporting what it restored.
+fn with_restored(err: CliError, restored: Output) -> CliError {
+    let mut warnings = vec![restored.text.trim_end().to_owned()];
+    warnings.extend(restored.warnings);
+    err.warned(warnings).with("restored", restored.data)
 }
 
 /// The new Project's key and name, asked of a person at a terminal.
@@ -355,7 +433,7 @@ fn check_key(key: &str) -> Result<(), String> {
     }
 }
 
-fn stopped() -> String {
+pub(crate) fn stopped() -> String {
     "stopped at the prompt; nothing written".into()
 }
 
