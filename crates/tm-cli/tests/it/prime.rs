@@ -5,9 +5,11 @@ use std::path::Path;
 use std::process::Output;
 use std::time::Instant;
 
-use serde_json::Value;
-use tm_core::Actor;
+use serde_json::{Value, json};
+use tm_core::{Actor, Change, ProjectId};
 use tm_store::workspace::{PathProject, RepoFile};
+use tm_store::{Draft, Store};
+use uuid::Uuid;
 
 use crate::support::{Scratch, initialized, text, tm, tm_command};
 
@@ -28,6 +30,32 @@ fn as_claude(scratch: &Scratch, repo: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
+fn set(store: &mut Store, project: ProjectId, issue: Uuid, field: &str, value: Value) {
+    store
+        .append(Draft {
+            actor: Actor::human("jace"),
+            project,
+            subject: issue,
+            change: Change::SetField {
+                field: field.into(),
+                label: String::new(),
+                value,
+                value_label: None,
+            },
+        })
+        .unwrap();
+}
+
+/// The indented lines under `heading` in prime's text.
+fn under<'a>(shown: &'a str, heading: &str) -> Vec<&'a str> {
+    shown
+        .lines()
+        .skip_while(|line| *line != heading)
+        .skip(1)
+        .take_while(|line| line.starts_with("  "))
+        .collect()
+}
+
 #[test]
 fn prime_for_200_issues_fits_the_budget_and_keeps_readys_order() {
     let scratch = Scratch::new();
@@ -45,6 +73,9 @@ fn prime_for_200_issues_fits_the_budget_and_keeps_readys_order() {
         let (issue, _) = store.create_issue(&jace, project, "task", &title).unwrap();
         if n % 16 == 0 {
             store.take(&claude, issue, None).unwrap();
+        }
+        if n % 10 == 5 {
+            set(&mut store, project, issue, "status", json!("in_progress"));
         }
     }
     drop(store);
@@ -94,22 +125,79 @@ fn prime_for_200_issues_fits_the_budget_and_keeps_readys_order() {
             "{key}: {title}"
         );
     }
-    assert!(shown.contains("Ready (188):\n"), "{shown}");
-    assert!(shown.contains("  and 173 more: tm ready\n"), "{shown}");
-    let claims: Vec<&str> = shown
-        .lines()
-        .skip_while(|line| *line != "Your Claims:")
-        .skip(1)
-        .take_while(|line| line.starts_with("  "))
+    assert!(shown.contains("Ready (168):\n"), "{shown}");
+    assert!(shown.contains("  and 153 more: tm ready\n"), "{shown}");
+    let active: Vec<String> = under(&shown, "In progress (20):")
+        .into_iter()
+        .map(key)
         .collect();
+    assert_eq!(
+        active,
+        [
+            "TM-195", "TM-185", "TM-175", "TM-165", "TM-155", "TM-145", "TM-135", "TM-125",
+            "TM-115", "TM-105", "and"
+        ],
+        "most recently started first: {shown}"
+    );
+    assert!(
+        shown.contains("  and 10 more: tm list category:active\n"),
+        "{shown}"
+    );
+    let claims = under(&shown, "Your Claims:");
     assert_eq!(claims.len(), 11, "{shown}");
     assert_eq!(claims[10], "  and 2 more: tm --json prime lists them all");
-    let out = as_claude(&scratch, &repo, &["--json", "prime"]);
-    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(doc["data"]["claims"].as_array().map(Vec::len), Some(12));
     assert!(
         shown.starts_with("tm: Project TM, writing as claude for jace\n"),
         "{shown}"
+    );
+    json_lists_every_claim_and_the_first_active(&scratch, &repo);
+}
+
+/// `--json` prime over the 200-Issue Workspace: every Claim, and the first
+/// ten in-progress Issues with their total.
+fn json_lists_every_claim_and_the_first_active(scratch: &Scratch, repo: &Path) {
+    let out = as_claude(scratch, repo, &["--json", "prime"]);
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["data"]["claims"].as_array().map(Vec::len), Some(12));
+    let active = &doc["data"]["in_progress"];
+    let keys: Vec<&Value> = active["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|issue| &issue["key"])
+        .collect();
+    assert_eq!(
+        (&active["total"], keys.len(), keys[0]),
+        (&json!(20), 10, &json!("TM-195"))
+    );
+}
+
+#[test]
+fn in_progress_lists_every_active_status_by_last_update() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let jace = Actor::human("jace");
+    let [started, reviewed, shelved, finished] = ["started", "reviewed", "shelved", "finished"]
+        .map(|title| store.create_issue(&jace, project, "task", title).unwrap().0);
+    for (issue, field, value) in [
+        (started, "status", json!("in_progress")),
+        (reviewed, "status", json!("in_review")),
+        (shelved, "status", json!("in_progress")),
+        (shelved, "archived", json!(true)),
+        (finished, "status", json!("done")),
+        (started, "priority", json!("high")),
+    ] {
+        set(&mut store, project, issue, field, value);
+    }
+    drop(store);
+
+    let shown = text(&as_claude(&scratch, &repo, &["prime"]).stdout);
+    assert!(
+        shown.contains(
+            "In progress (2):\n  TM-1  in_progress  high  started\n  TM-2  in_review  none  reviewed\n\
+             Ready (0):\n  nothing is ready\n"
+        ),
+        "the last updated first, not the last created: {shown}"
     );
 }
 
@@ -155,7 +243,7 @@ fn prime_without_an_identity_still_gives_the_scheme_and_ready_queue() {
     assert!(shown.starts_with("warning: no identity: "), "{shown}");
     assert!(shown.contains("writing as nobody\n"), "{shown}");
     assert!(
-        shown.contains("Ready (1):\n  TM-1  todo  none  first\n"),
+        shown.contains("In progress (0):\n  none\nReady (1):\n  TM-1  todo  none  first\n"),
         "{shown}"
     );
 }

@@ -469,6 +469,10 @@ fn prime_answers_in_a_fixed_shape() {
           "on_behalf_of": null
         },
         "claims": [],
+        "in_progress": {
+          "issues": [],
+          "total": 0
+        },
         "project": "TM",
         "ready": {
           "issues": [
