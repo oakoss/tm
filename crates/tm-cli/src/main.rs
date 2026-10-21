@@ -287,7 +287,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             set,
             labels,
             parent,
-        }) => create::run(&create::Create {
+        }) => create::run(create::Create {
             issue_type,
             title,
             set,
