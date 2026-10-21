@@ -39,7 +39,7 @@ use uuid::Uuid;
 use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
 pub use beads::{BeadsExport, BeadsImported, read_beads};
-pub use claim::Claim;
+pub use claim::{AgentClaims, Claim, ClaimState, Holder};
 pub use export::{Exported, Restored, copy_store, read_export};
 pub use import::{Conflict, RecordOutcome, RecordsImported};
 pub use read::{CommentView, Direction, IssueView, LinkView};
@@ -152,12 +152,11 @@ pub enum StoreError {
         claim: Uuid,
         expires_ms: Option<i64>,
     },
-    #[error("Claim {claim} does not hold Issue {issue}{}", holder.as_ref().map_or_else(|| "; it is unclaimed".to_owned(), |held| format!("; {} holds it for {}", held.agent, held.on_behalf_of)))]
+    #[error("Claim {claim} does not hold Issue {issue}; {holder}")]
     NotClaimHolder {
         issue: Uuid,
         claim: Uuid,
-        /// The Claim holding the Issue, if any; its id is the holder's token.
-        holder: Option<Box<Claim>>,
+        holder: Holder,
     },
     #[error("Issue {issue} is missing required fields: {}", fields.join(", "))]
     MissingFields { issue: Uuid, fields: Vec<String> },
@@ -948,7 +947,15 @@ impl Store {
         drafts: Vec<(Draft, Provenance)>,
         guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
     ) -> Result<Vec<Op>, StoreError> {
-        for (_, provenance) in &drafts {
+        for (draft, provenance) in &drafts {
+            // A Claim is who works on an Issue now, not history to bring in.
+            if matches!(draft.change, Change::Claim { .. }) {
+                return Err(StoreError::Invalid {
+                    field: tm_core::op::CLAIM_FIELD.into(),
+                    reason: "cannot be imported".into(),
+                    valid: Vec::new(),
+                });
+            }
             check_wall(provenance.at).map_err(|reason| StoreError::Invalid {
                 field: "time".into(),
                 reason,
@@ -963,9 +970,9 @@ impl Store {
     }
 
     /// [`Store::append_all`], refused with [`StoreError::ClaimChanged`] and
-    /// nothing written unless `issue`'s Claim, as [`Store::claim`] reads it,
-    /// is still `held` when the write begins, so drafts built from it, such as
-    /// a move's release, hold true.
+    /// nothing written unless `issue`'s Claim, lapsed or not, is still `held`
+    /// when the write begins, so drafts built from it, such as a move's
+    /// release, hold true.
     ///
     /// # Errors
     ///
@@ -976,9 +983,8 @@ impl Store {
         issue: Uuid,
         held: Option<Uuid>,
     ) -> Result<Vec<Op>, StoreError> {
-        let (now, _) = self.now()?;
         self.append_guarded(drafts, |tx| {
-            if claim::holding(tx, issue, now.utc_ms)?.map(|claim| claim.id) == held {
+            if claim::current(tx, issue)?.map(|claim| claim.id) == held {
                 Ok(())
             } else {
                 Err(StoreError::ClaimChanged(issue))

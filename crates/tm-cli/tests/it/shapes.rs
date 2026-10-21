@@ -68,6 +68,7 @@ fn create_answers_in_a_fixed_shape() {
         },
         "id": "[id]",
         "key": "TM-3",
+        "lapsed_claim": null,
         "links": [],
         "next": [],
         "parent": {
@@ -122,6 +123,7 @@ fn move_answers_in_a_fixed_shape() {
         },
         "id": "[id]",
         "key": "TM-1",
+        "lapsed_claim": null,
         "links": [
           {
             "direction": "outward",
@@ -302,6 +304,7 @@ fn undo_answers_in_a_fixed_shape() {
             },
             "id": "[id]",
             "key": "TM-1",
+            "lapsed_claim": null,
             "links": [
               {
                 "direction": "outward",
@@ -475,6 +478,7 @@ fn prime_answers_in_a_fixed_shape() {
           "issues": [],
           "total": 0
         },
+        "lapsed_claims": [],
         "project": "TM",
         "ready": {
           "issues": [

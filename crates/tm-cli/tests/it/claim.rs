@@ -4,7 +4,8 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use tm_core::Actor;
+use tm_core::{Actor, Change, ProjectId};
+use tm_store::{Draft, Store};
 use uuid::Uuid;
 
 use crate::support::{Scratch, initialized, text, tm, tm_command};
@@ -173,6 +174,7 @@ fn an_agent_claims_with_a_token_and_releases_with_it() {
     );
     assert_eq!(doc(&out)["error"], "not_claim_holder", "{out:?}");
     assert_eq!(doc(&out)["holder"]["agent"], "claude", "{out:?}");
+    assert_eq!(doc(&out)["holder"]["state"], "holds", "{out:?}");
     assert!(
         !text(&out.stdout).contains(&token),
         "an error never hands out the holder's token: {out:?}"
@@ -200,24 +202,24 @@ fn an_agent_claims_with_a_token_and_releases_with_it() {
     assert!(data["claim"]["expires_ms"].as_i64().unwrap() > 0, "{data}");
 }
 
-#[test]
-fn a_lapsed_claim_leaves_prime_and_show_and_another_agent_takes_it() {
-    let scratch = Scratch::new();
-    let (repo, mut store, project) = initialized(&scratch);
+fn archive(store: &mut Store, project: ProjectId, issue: Uuid) {
     store
-        .create_issue(&Actor::human("jace"), project, "task", "t")
+        .append(Draft {
+            actor: Actor::human("jace"),
+            project,
+            subject: issue,
+            change: Change::SetField {
+                field: "archived".into(),
+                label: String::new(),
+                value: json!(true),
+                value_label: None,
+            },
+        })
         .unwrap();
-    drop(store);
-    let out = as_agent(&scratch, &repo, &["--json", "claim", "TM-1", "--for", "1s"]);
-    assert!(out.status.success(), "{out:?}");
-    let expires_ms = doc(&out)["data"]["claim"]["expires_ms"].as_i64().unwrap();
-    let claims = |agent| {
-        doc(&as_named(&scratch, &repo, agent, &["--json", "prime"]))["data"]["claims"].clone()
-    };
-    assert_eq!(claims("claude").as_array().unwrap().len(), 1);
-    let out = as_named(&scratch, &repo, "codex", &["claim", "TM-1"]);
-    assert!(!out.status.success(), "{out:?}");
+}
 
+/// Sleeps until the wall clock reaches `ms`, as a `tm` process reads it.
+fn wait_until(ms: i64) {
     let now_ms = || {
         i64::try_from(
             SystemTime::now()
@@ -227,14 +229,96 @@ fn a_lapsed_claim_leaves_prime_and_show_and_another_agent_takes_it() {
         )
         .unwrap()
     };
-    while now_ms() < expires_ms {
+    while now_ms() < ms {
         thread::sleep(Duration::from_millis(50));
     }
-    assert_eq!(claims("claude"), json!([]));
+}
+
+#[test]
+fn a_lapsed_claim_is_shown_as_lapsed_and_another_agent_takes_it() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let mut archived = None;
+    for title in ["taken over", "finished", "archived"] {
+        let (issue, _) = store
+            .create_issue(&Actor::human("jace"), project, "task", title)
+            .unwrap();
+        archived = Some(issue);
+    }
+    let mut tokens = Vec::new();
+    let mut expires_ms = 0;
+    for key in ["TM-1", "TM-2", "TM-3"] {
+        let out = as_agent(&scratch, &repo, &["--json", "claim", key, "--for", "1s"]);
+        assert!(out.status.success(), "{out:?}");
+        let data = &doc(&out)["data"]["claim"];
+        tokens.push(data["id"].as_str().unwrap().to_owned());
+        expires_ms = expires_ms.max(data["expires_ms"].as_i64().unwrap());
+    }
+    archive(&mut store, project, archived.unwrap());
+    drop(store);
+    let prime =
+        |agent| doc(&as_named(&scratch, &repo, agent, &["--json", "prime"]))["data"].clone();
+    let claims = |agent| prime(agent)["claims"].clone();
+    assert_eq!(claims("claude").as_array().unwrap().len(), 3);
+    assert_eq!(prime("claude")["lapsed_claims"], json!([]));
+    let out = as_agent(&scratch, &repo, &["prime"]);
+    assert!(!text(&out.stdout).contains("lapsed"), "{out:?}");
+    let out = as_named(&scratch, &repo, "codex", &["claim", "TM-1"]);
+    assert!(!out.status.success(), "{out:?}");
+
+    wait_until(expires_ms);
+    let lapsed = prime("claude");
+    assert_eq!(lapsed["claims"], json!([]));
+    assert_eq!(
+        lapsed["lapsed_claims"].as_array().unwrap().len(),
+        2,
+        "an archived Issue's lapsed Claim is not offered"
+    );
+    let out = tm(&scratch, &repo, &["show", "TM-3"]);
+    let shown = text(&out.stdout);
+    assert!(shown.contains("Claim by claude for jace lapsed"), "{out:?}");
+    assert!(!shown.contains("any Agent may take it"), "{out:?}");
+    let out = as_agent(&scratch, &repo, &["prime"]);
+    let shown = text(&out.stdout);
+    assert!(shown.contains("Your lapsed Claims"), "{out:?}");
+    assert!(
+        shown.contains(&format!("(Claim {}, lapsed ", tokens[0])),
+        "{out:?}"
+    );
     assert_eq!(claim_of(&scratch, &repo, "TM-1"), Value::Null);
+    let shown = doc(&tm(&scratch, &repo, &["--json", "show", "TM-1"]));
+    assert_eq!(shown["data"]["lapsed_claim"]["agent"], "claude");
+    let out = tm(&scratch, &repo, &["show", "TM-1"]);
+    let shown = text(&out.stdout);
+    assert!(
+        shown.contains("Claim by claude for jace lapsed 20"),
+        "{out:?}"
+    );
+    assert!(
+        shown.contains(&format!("(Claim {}); any Agent may take it", tokens[0])),
+        "{out:?}"
+    );
+
     let out = as_named(&scratch, &repo, "codex", &["--json", "claim", "TM-1"]);
     assert!(out.status.success(), "{out:?}");
     assert_eq!(claim_of(&scratch, &repo, "TM-1")["agent"], "codex");
+    let out = as_agent(&scratch, &repo, &["--json", "release", "TM-1", &tokens[0]]);
+    assert_eq!(doc(&out)["error"], "not_claim_holder", "{out:?}");
+    assert_eq!(doc(&out)["holder"]["state"], "took_over", "{out:?}");
+    assert_eq!(doc(&out)["holder"]["agent"], "codex", "{out:?}");
+
+    let out = as_agent(&scratch, &repo, &["move", "TM-2", "done"]);
+    assert!(out.status.success(), "{out:?}");
+    let shown = doc(&tm(&scratch, &repo, &["--json", "show", "TM-2"]));
+    assert_eq!(
+        shown["data"]["lapsed_claim"],
+        Value::Null,
+        "a finishing move releases it"
+    );
+    assert_eq!(prime("claude")["lapsed_claims"], json!([]));
+    let out = as_agent(&scratch, &repo, &["--json", "release", "TM-2", &tokens[1]]);
+    assert_eq!(doc(&out)["error"], "not_claim_holder", "{out:?}");
+    assert_eq!(doc(&out)["holder"], Value::Null, "{out:?}");
 }
 
 #[test]

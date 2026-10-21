@@ -34,6 +34,77 @@ impl Claim {
     }
 }
 
+/// An Issue's Claim: holding it, or lapsed and not yet replaced by a take or
+/// removed by a release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaimState {
+    Held(Claim),
+    Lapsed(Claim),
+}
+
+impl ClaimState {
+    fn at(claim: Claim, at_ms: i64) -> Self {
+        if claim.lapsed(at_ms) {
+            Self::Lapsed(claim)
+        } else {
+            Self::Held(claim)
+        }
+    }
+
+    #[must_use]
+    pub fn claim(&self) -> &Claim {
+        match self {
+            Self::Held(claim) | Self::Lapsed(claim) => claim,
+        }
+    }
+}
+
+/// An Agent's Claims for one human, split by whether each has lapsed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentClaims {
+    pub held: Vec<Claim>,
+    pub lapsed: Vec<Claim>,
+}
+
+/// What holds an Issue when a release names a Claim that does not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Holder {
+    Unclaimed,
+    Holds(Box<Claim>),
+    Lapsed(Box<Claim>),
+    /// Took the Issue over from the released Claim once that lapsed.
+    TookOver(Box<Claim>),
+}
+
+impl Holder {
+    #[must_use]
+    pub fn claim(&self) -> Option<&Claim> {
+        match self {
+            Self::Unclaimed => None,
+            Self::Holds(claim) | Self::Lapsed(claim) | Self::TookOver(claim) => Some(claim),
+        }
+    }
+}
+
+impl std::fmt::Display for Holder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unclaimed => write!(f, "it is unclaimed"),
+            Self::Holds(held) => write!(f, "{} holds it for {}", held.agent, held.on_behalf_of),
+            Self::Lapsed(held) => write!(
+                f,
+                "{}'s Claim for {} on it has lapsed",
+                held.agent, held.on_behalf_of
+            ),
+            Self::TookOver(held) => write!(
+                f,
+                "it lapsed and {} took the Issue over for {}",
+                held.agent, held.on_behalf_of
+            ),
+        }
+    }
+}
+
 impl Store {
     /// Claims `issue` for the Agent writing, taking over a lapsed Claim.
     /// Refused while any other Claim holds it, even one under the same Agent
@@ -93,26 +164,45 @@ impl Store {
     /// [`StoreError::UnknownIssue`], [`StoreError::Clock`], any SQLite
     /// failure, or [`StoreError::Corrupt`] for a malformed row.
     pub fn claim(&self, issue: Uuid) -> Result<Option<Claim>, StoreError> {
-        issue_project(&self.conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?;
-        holding(&self.conn, issue, self.utc_ms()?)
+        Ok(match self.claim_state(issue)? {
+            Some(ClaimState::Held(claim)) => Some(claim),
+            _ => None,
+        })
     }
 
-    /// The Claims `agent` holds for `on_behalf_of` and that have not lapsed,
-    /// by Issue id.
+    /// The Claim on `issue`, held or lapsed, read against one clock reading.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::claim`].
+    pub fn claim_state(&self, issue: Uuid) -> Result<Option<ClaimState>, StoreError> {
+        issue_project(&self.conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?;
+        let now_ms = self.utc_ms()?;
+        Ok(current(&self.conn, issue)?.map(|claim| ClaimState::at(claim, now_ms)))
+    }
+
+    /// The Claims `agent` took for `on_behalf_of`, held and lapsed, each by
+    /// Issue id.
     ///
     /// # Errors
     ///
     /// [`StoreError::Clock`], any SQLite failure, or [`StoreError::Corrupt`]
     /// for a malformed row.
-    pub fn claims_held(&self, agent: &str, on_behalf_of: &str) -> Result<Vec<Claim>, StoreError> {
+    pub fn claims_by(&self, agent: &str, on_behalf_of: &str) -> Result<AgentClaims, StoreError> {
         let now_ms = self.utc_ms()?;
+        let (lapsed, held) = self
+            .claims_of(agent, on_behalf_of)?
+            .into_iter()
+            .partition(|claim| claim.lapsed(now_ms));
+        Ok(AgentClaims { held, lapsed })
+    }
+
+    fn claims_of(&self, agent: &str, on_behalf_of: &str) -> Result<Vec<Claim>, StoreError> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT issue_id, op_id, expires_ms FROM claims
-             WHERE agent = ?1 AND on_behalf_of = ?2
-               AND (expires_ms IS NULL OR expires_ms > ?3)
-             ORDER BY issue_id",
+             WHERE agent = ?1 AND on_behalf_of = ?2 ORDER BY issue_id",
         )?;
-        let rows = stmt.query_map(params![agent, on_behalf_of, now_ms], |row| {
+        let rows = stmt.query_map(params![agent, on_behalf_of], |row| {
             Ok((
                 row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, Vec<u8>>(1)?,
@@ -173,16 +263,6 @@ pub(crate) fn current(conn: &Connection, issue: Uuid) -> Result<Option<Claim>, S
         })
     })
     .transpose()
-}
-
-/// [`current`], unless it has lapsed by `at_ms`. Its row stays until a take
-/// replaces it, since that take names it as `prev`.
-pub(crate) fn holding(
-    conn: &Connection,
-    issue: Uuid,
-    at_ms: i64,
-) -> Result<Option<Claim>, StoreError> {
-    Ok(current(conn, issue)?.filter(|held| !held.lapsed(at_ms)))
 }
 
 fn invalid(reason: &str) -> StoreError {
@@ -280,7 +360,12 @@ pub(crate) fn check(
             (ClaimAction::Release { claim }, held) => StoreError::NotClaimHolder {
                 issue,
                 claim: *claim,
-                holder: held.map(Box::new),
+                holder: match held {
+                    None => Holder::Unclaimed,
+                    Some(held) if took_over(tx, &held, *claim)? => Holder::TookOver(Box::new(held)),
+                    Some(held) if held.lapsed(at_ms) => Holder::Lapsed(Box::new(held)),
+                    Some(held) => Holder::Holds(Box::new(held)),
+                },
             },
         });
     }
@@ -295,6 +380,31 @@ pub(crate) fn check(
         }
     }
     Ok(())
+}
+
+/// Whether the take behind `held` named the lapsed `claim` as its `prev`.
+fn took_over(tx: &Transaction<'_>, held: &Claim, claim: Uuid) -> Result<bool, StoreError> {
+    let payload: String = tx
+        .query_row(
+            "SELECT payload FROM ops WHERE op_id = ?1",
+            [held.id.as_bytes()],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            StoreError::Corrupt(format!(
+                "the take {} holding Issue {} is not in the log",
+                held.id, held.issue
+            ))
+        })?;
+    let change: Change = serde_json::from_str(&payload)
+        .map_err(|err| StoreError::Corrupt(format!("the take {}'s payload: {err}", held.id)))?;
+    Ok(matches!(
+        change,
+        Change::Claim {
+            action: ClaimAction::Take { prev: Some(prev), .. },
+        } if prev == claim
+    ))
 }
 
 /// `Ok(Some(reason))` when the action lost: the Issue's Claim is not the one

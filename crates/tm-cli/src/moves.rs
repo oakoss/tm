@@ -116,7 +116,8 @@ fn write(
             let mut drafts = drafts();
             // The release names the Claim read here, so the write refuses one
             // that was claimed or released since and the move reads it again.
-            let held = here.store.claim(id)?.map(|claim| claim.id);
+            // A lapsed Claim is released too, so finished work holds none.
+            let held = here.store.claim_state(id)?.map(|state| state.claim().id);
             if let Some(claim) = held {
                 drafts.push(draft(Change::Claim {
                     action: ClaimAction::Release { claim },

@@ -180,6 +180,7 @@ fn show_gives_an_issues_fields_parent_labels_and_claim() {
         },
         "id": "[id]",
         "key": "TM-2",
+        "lapsed_claim": null,
         "links": [],
         "parent": {
           "id": "[id]",
