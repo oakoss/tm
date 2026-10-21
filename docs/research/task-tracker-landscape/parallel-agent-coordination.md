@@ -14,7 +14,7 @@ tm is designing Short-lists: named, ordered lists of Issues that humans and Agen
 - how sessions of one agent tool are told apart;
 - how file and merge conflicts are avoided.
 
-The companion note [agent-first-trackers.md](agent-first-trackers.md) covers single trackers; this one covers coordination.
+The companion note [agent-first-trackers.md](agent-first-trackers.md) covers single trackers; this one covers coordination. How tm's own Claims are taken and released is in [claims-and-links.md](../workspaces/claims-and-links.md).
 
 ## Sources
 
