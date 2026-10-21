@@ -6,6 +6,7 @@ mod create;
 mod edit;
 mod export;
 mod follow;
+mod guide;
 mod init;
 mod json;
 mod link;
