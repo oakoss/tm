@@ -194,6 +194,17 @@ pub(crate) fn offer(
         };
         match ask(&diff(file, create, &current, &after), &question) {
             Ok(false) => State::Declined,
+            // The file may have been edited while the prompt waited; writing
+            // the text computed before asking would lose that edit.
+            Ok(true)
+                if !create
+                    && fs::read_to_string(&path).ok().as_deref() != Some(current.as_str()) =>
+            {
+                warnings.push(format!(
+                    "{file} changed while tm asked, so tm left it alone"
+                ));
+                told
+            }
             Ok(true) => match write(&path, &after, create) {
                 Ok(()) => State::Added,
                 Err(err) => {
@@ -489,6 +500,22 @@ mod tests {
             json!([".config/tm.toml", "CLAUDE.md"])
         );
         assert_eq!(offer(&dir, true, never).state, State::Present);
+
+        fs::write(&path, "# Repo\n").unwrap();
+        let raced = offer(&dir, true, |_, _| {
+            fs::write(&path, "# Repo\nedited while asked\n").unwrap();
+            Ok(true)
+        });
+        assert_eq!(raced.state, State::ToAdd);
+        assert_eq!(
+            raced.warnings,
+            ["CLAUDE.md changed while tm asked, so tm left it alone"]
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# Repo\nedited while asked\n",
+            "an edit made while the prompt waited is kept"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
