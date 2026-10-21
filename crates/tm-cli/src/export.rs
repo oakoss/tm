@@ -385,12 +385,12 @@ fn io_error(path: &Path, err: &io::Error) -> CliError {
 }
 
 /// An owner-only directory, removed with whatever is left in it.
-struct Staged {
+pub(crate) struct Staged {
     dir: PathBuf,
 }
 
 impl Staged {
-    fn new(parent: &Path) -> Result<Self, CliError> {
+    pub(crate) fn new(parent: &Path) -> Result<Self, CliError> {
         use std::os::unix::fs::DirBuilderExt as _;
         let dir = parent.join(format!(".tm-import-{}", Uuid::now_v7()));
         fs::create_dir_all(parent).map_err(|err| io_error(parent, &err))?;
@@ -401,7 +401,7 @@ impl Staged {
         Ok(Self { dir })
     }
 
-    fn store(&self) -> PathBuf {
+    pub(crate) fn store(&self) -> PathBuf {
         self.dir.join("store.db")
     }
 }

@@ -39,11 +39,12 @@ enum Refused {
 }
 
 /// For a repo with `.beads/`, asks a person for a `bd export` to import into
-/// Project `key`, checking it before anything is written; anyone else is told
-/// the commands. End of input stops init.
+/// the new Project, checking it before anything is written; anyone else is
+/// told the commands. End of input stops init.
 pub(crate) fn beads(
     root: &Path,
-    key: &str,
+    (key, name): (&str, &str),
+    runner: &Actor,
     prompt: Option<impl Prompt>,
 ) -> Result<Beads, CliError> {
     if !root.join(".beads").is_dir() {
@@ -58,13 +59,42 @@ pub(crate) fn beads(
     let chosen = ask_path(&mut prompt, &question, |file| {
         let bytes =
             fs::read(file).map_err(|err| Refused::Again(format!("cannot read {file}: {err}")))?;
-        tm_store::read_beads(&mut bytes.as_slice(), key)
-            .map_err(|err| Refused::Again(format!("{file} is not a bd export: {err}")))
+        let read = || {
+            tm_store::read_beads(&mut bytes.as_slice(), key)
+                .map_err(|err| Refused::Again(format!("{file} is not a bd export: {err}")))
+        };
+        tried(&std::env::temp_dir(), file, read()?, (key, name), runner)?;
+        read()
     })?;
     Ok(match chosen {
         Some((file, export)) => Beads::Chosen { file, export },
         None => Beads::Told,
     })
+}
+
+/// Writes `export` into a throwaway store holding just the new Project, so
+/// whatever the store would refuse, such as a parent cycle, is refused before
+/// `tm init` makes anything. Only the write's refusal is the file's; a store
+/// that cannot be made stops init.
+fn tried(
+    scratch: &Path,
+    file: &str,
+    export: BeadsExport,
+    (key, name): (&str, &str),
+    runner: &Actor,
+) -> Result<(), Refused> {
+    let staged = export::Staged::new(scratch).map_err(Refused::Stop)?;
+    let mut store = Store::open(&staged.store()).map_err(|err| Refused::Stop(err.into()))?;
+    store
+        .create_project(runner, key, name)
+        .map_err(|err| Refused::Stop(err.into()))?;
+    store.write_beads(export, runner).map_err(|err| {
+        Refused::Again(format!(
+            "{file} cannot be imported: {}",
+            CliError::from(err).message
+        ))
+    })?;
+    Ok(())
 }
 
 /// Writes the chosen export into the new Workspace's store, as `tm import
@@ -215,6 +245,10 @@ mod tests {
         dir
     }
 
+    fn jace() -> Actor {
+        Actor::human("jace")
+    }
+
     fn fixture() -> String {
         format!(
             "{}/../tm-store/tests/fixtures/beads.jsonl",
@@ -236,12 +270,18 @@ mod tests {
     fn only_a_repo_with_a_beads_directory_is_offered_the_import() {
         let dir = scratch(false);
         let mut asked = Vec::new();
-        let absent = beads(&dir, "TM", Some(scripted(&[], &mut asked))).unwrap();
+        let absent = beads(
+            &dir,
+            ("TM", "Task"),
+            &jace(),
+            Some(scripted(&[], &mut asked)),
+        )
+        .unwrap();
         assert!(matches!(absent, Beads::Absent), "{absent:?}");
         fs::remove_dir_all(&dir).unwrap();
 
         let dir = scratch(true);
-        let told = beads(&dir, "TM", None::<fn(&str) -> _>).unwrap();
+        let told = beads(&dir, ("TM", "Task"), &jace(), None::<fn(&str) -> _>).unwrap();
         assert!(matches!(told, Beads::Told), "nobody is asked: {told:?}");
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -256,7 +296,8 @@ mod tests {
         let mut asked = Vec::new();
         let chosen = beads(
             &dir,
-            "TM",
+            ("TM", "Task"),
+            &jace(),
             Some(scripted(
                 &[Some("missing.jsonl"), Some(junk), Some(&file)],
                 &mut asked,
@@ -284,7 +325,8 @@ mod tests {
         let mut asked = Vec::new();
         let _ = beads(
             &dir,
-            "TM",
+            ("TM", "Task"),
+            &jace(),
             Some(scripted(&[Some("\u{1b}[2Jgone"), Some("")], &mut asked)),
         );
         assert!(
@@ -292,12 +334,61 @@ mod tests {
             "a reason quoting the input cannot drive the terminal: {asked:?}"
         );
 
+        // Each Issue the other's parent: only the store sees the cycle.
+        let cycle = dir.join("cycle.jsonl");
+        let bead = |id: &str, parent: &str| {
+            json!({"id": id, "title": id, "dependencies": [
+                {"issue_id": id, "depends_on_id": parent, "type": "parent-child"}]})
+            .to_string()
+        };
+        fs::write(
+            &cycle,
+            format!("{}\n{}\n", bead("x-a", "x-b"), bead("x-b", "x-a")),
+        )
+        .unwrap();
+        let cycle = cycle.to_str().unwrap();
         let mut asked = Vec::new();
-        let skipped = beads(&dir, "TM", Some(scripted(&[Some("")], &mut asked))).unwrap();
+        let told = beads(
+            &dir,
+            ("TM", "Task"),
+            &jace(),
+            Some(scripted(&[Some(cycle), Some("")], &mut asked)),
+        )
+        .unwrap();
+        assert!(matches!(told, Beads::Told), "{told:?}");
+        assert!(
+            asked[1].starts_with(&format!("{cycle} cannot be imported: ")),
+            "refused before init writes anything: {asked:?}"
+        );
+
+        // A trial store that cannot be made is not the file's fault.
+        let file = fixture();
+        let blocked = dir.join("not-a-dir");
+        fs::write(&blocked, "").unwrap();
+        let export = tm_store::read_beads(&mut fs::read(&file).unwrap().as_slice(), "TM").unwrap();
+        let tried = tried(&blocked, &file, export, ("TM", "Task"), &jace());
+        assert!(
+            matches!(&tried, Err(Refused::Stop(err)) if err.code == "io"),
+            "stops init rather than asking for another file"
+        );
+
+        let mut asked = Vec::new();
+        let skipped = beads(
+            &dir,
+            ("TM", "Task"),
+            &jace(),
+            Some(scripted(&[Some("")], &mut asked)),
+        )
+        .unwrap();
         assert!(matches!(skipped, Beads::Told), "{skipped:?}");
 
         let mut asked = Vec::new();
-        let stopped = beads(&dir, "TM", Some(scripted(&[None], &mut asked)));
+        let stopped = beads(
+            &dir,
+            ("TM", "Task"),
+            &jace(),
+            Some(scripted(&[None], &mut asked)),
+        );
         assert_eq!(
             stopped.unwrap_err().message,
             "stopped at the prompt; nothing written"

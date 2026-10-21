@@ -63,7 +63,8 @@ pub(crate) fn run(init: &Init, json: bool) -> Result<Output, CliError> {
     check_config_dir(&root, &config_dir).map_err(refused)?;
     check_not_ignored(&root).map_err(refused)?;
     let (key, name) = project(&root, init, json).map_err(refused)?;
-    let beads = recover::beads(&root, &key, human(json, init.yes).then_some(prompt))?;
+    let asks = human(json, init.yes).then_some(prompt);
+    let beads = recover::beads(&root, (&key, &name[..]), &identity.actor, asks)?;
     let file = RepoFile {
         workspace: Uuid::now_v7(),
         project: key.clone(),

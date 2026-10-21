@@ -69,8 +69,7 @@ pub struct BeadsExport {
 /// holds a time that is not RFC 3339.
 pub fn read_beads(input: &mut dyn BufRead, project: &str) -> Result<BeadsExport, StoreError> {
     let (issues, dropped) = records(input, project)?;
-    // The write would refuse these too, but only after `tm init` has made the
-    // Workspace the export was read for.
+    // The write would refuse these too; refusing them here needs no store.
     for (line, issue) in &issues {
         let times = [&issue.created, &issue.updated]
             .into_iter()
