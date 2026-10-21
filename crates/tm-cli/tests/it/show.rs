@@ -246,7 +246,13 @@ fn show_names_links_from_this_end_and_gives_comments_in_order() {
             "type": "blocks",
             "direction": "inward",
             "name": "is blocked by",
-            "other": { "id": blocker.to_string(), "key": "TM-1" },
+            "other": {
+                "id": blocker.to_string(),
+                "key": "TM-1",
+                "status": "todo",
+                "category": "todo",
+                "archived": false,
+            },
         }])
     );
     let comments = doc["data"]["comments"].as_array().unwrap();
@@ -307,6 +313,112 @@ fn show_names_links_from_this_end_and_gives_comments_in_order() {
         untimed(&text(&out.stdout)).contains("\nclaude for jace: (retracted)\n\njace:"),
         "{out:?}"
     );
+}
+
+#[test]
+fn a_finished_linked_issue_is_named_with_its_status() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let jace = Actor::human("jace");
+    let [done, dropped, open, held] = ["a", "b", "c", "d"]
+        .map(|title| store.create_issue(&jace, project, "task", title).unwrap().0);
+    for blocker in [done, dropped, open] {
+        store.link(&jace, "blocks", blocker, held).unwrap();
+    }
+    store.link(&jace, "relates_to", held, done).unwrap();
+    for (issue, status) in [(done, "done"), (dropped, "cancelled")] {
+        change(
+            &mut store,
+            project,
+            issue,
+            Change::SetField {
+                field: "status".into(),
+                label: String::new(),
+                value: json!(status),
+                value_label: None,
+            },
+        );
+    }
+
+    let out = tm(&scratch, &repo, &["show", "TM-4"]);
+    let shown = text(&out.stdout);
+    for line in [
+        "is blocked by TM-1 (done)\n",
+        "is blocked by TM-2 (cancelled)\n",
+        "is blocked by TM-3\n",
+        "relates to TM-1 (done)\n",
+    ] {
+        assert!(shown.contains(line), "{line:?} in {shown}");
+    }
+    let shown = text(&tm(&scratch, &repo, &["show", "TM-1"]).stdout);
+    assert!(
+        shown.contains("blocks TM-4\n"),
+        "an open Issue is unmarked: {shown}"
+    );
+
+    let (_, doc) = show(&scratch, &repo, "TM-4");
+    let mut others: Vec<(&Value, &Value)> = doc["data"]["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|link| (&link["other"]["status"], &link["other"]["category"]))
+        .collect();
+    others.sort_by_key(|(status, _)| status.to_string());
+    assert_eq!(
+        others,
+        [
+            (&json!("cancelled"), &json!("cancelled")),
+            (&json!("done"), &json!("done")),
+            (&json!("done"), &json!("done")),
+            (&json!("todo"), &json!("todo")),
+        ]
+    );
+}
+
+#[test]
+fn an_archived_linked_issue_is_marked_archived() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let jace = Actor::human("jace");
+    let [shelved, finished, held] =
+        ["a", "b", "c"].map(|title| store.create_issue(&jace, project, "task", title).unwrap().0);
+    for blocker in [shelved, finished] {
+        store.link(&jace, "blocks", blocker, held).unwrap();
+    }
+    for (issue, field, value) in [
+        (finished, "status", json!("done")),
+        (shelved, "archived", json!(true)),
+        (finished, "archived", json!(true)),
+    ] {
+        change(
+            &mut store,
+            project,
+            issue,
+            Change::SetField {
+                field: field.into(),
+                label: String::new(),
+                value,
+                value_label: None,
+            },
+        );
+    }
+
+    let shown = text(&tm(&scratch, &repo, &["show", "TM-3"]).stdout);
+    for line in [
+        "is blocked by TM-1 (archived)\n",
+        "is blocked by TM-2 (done, archived)\n",
+    ] {
+        assert!(shown.contains(line), "{line:?} in {shown}");
+    }
+
+    let (_, doc) = show(&scratch, &repo, "TM-3");
+    let archived: Vec<&Value> = doc["data"]["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|link| &link["other"]["archived"])
+        .collect();
+    assert_eq!(archived, [&json!(true), &json!(true)]);
 }
 
 #[test]
