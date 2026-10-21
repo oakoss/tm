@@ -1,14 +1,15 @@
 //! `tm prime`: the context an Agent session starts from (design.md
-//! "Interface"): who it writes as, the Scheme, its Claims and the ready
-//! queue, kept small enough for a `SessionStart` hook.
+//! "Interface"): who it writes as, the Scheme, its Claims, the work in
+//! progress and the ready queue, kept small enough for a `SessionStart` hook.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io::IsTerminal as _;
 
 use serde_json::{Value, json};
-use tm_core::{Actor, Scheme};
-use tm_store::Claim;
+use tm_core::filter::Context;
+use tm_core::{Actor, ProjectId, Scheme};
+use tm_store::{Claim, IssueView};
 use uuid::Uuid;
 
 use crate::error::CliError;
@@ -20,6 +21,10 @@ use crate::output::{Output, local_time, printable};
 /// Ready Issues shown; the rest are counted, so 200 Issues stay near 1k
 /// tokens.
 pub(crate) const READY_SHOWN: usize = 15;
+
+/// Issues in an active Status shown, most recently updated first, so a new
+/// session sees where the last one left off.
+pub(crate) const ACTIVE_SHOWN: usize = 10;
 
 /// Claims shown in text; `--json` lists every one.
 pub(crate) const CLAIMS_SHOWN: usize = 10;
@@ -38,17 +43,31 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
             Some(actor) => store.claims_held(actor.name(), holder(actor))?,
             None => Vec::new(),
         };
+        let mut active = store.find("category:active", Context { me: None })?;
+        let active_total = active.len();
+        active.truncate(ACTIVE_SHOWN);
         let mut ready = store.ready()?;
         let total = ready.len();
         ready.truncate(READY_SHOWN);
         let ids: Vec<Uuid> = claims.iter().map(|claim| claim.issue).collect();
         let claimed = store.issues(&ids)?;
+        let active = store.issues(&active)?;
         let ids: Vec<Uuid> = ready.iter().map(|ready| ready.issue).collect();
         let ready = store.issues(&ids)?;
-        let projects = project_keys(store, &[claimed.clone(), ready.clone()].concat())?;
-        Ok::<_, CliError>((claims, claimed, ready, total, projects))
+        let projects = project_keys(
+            store,
+            &[claimed.clone(), active.clone(), ready.clone()].concat(),
+        )?;
+        Ok::<_, CliError>((
+            claims,
+            claimed,
+            (active, active_total),
+            ready,
+            total,
+            projects,
+        ))
     });
-    let (claims, claimed, ready, total, projects) =
+    let (claims, claimed, (active, active_total), ready, total, projects) =
         read.map_err(|err| err.warned(warnings.clone()))?;
     let scheme = here.store.scheme();
 
@@ -67,48 +86,19 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
     );
     let scheme = scheme_brief(&mut text, scheme);
 
-    let by_id: HashMap<Uuid, _> = claimed.iter().map(|view| (view.id, view)).collect();
-    let _ = writeln!(text, "Your Claims:");
-    let mut claim_items = Vec::with_capacity(claims.len());
-    for claim in &claims {
-        let Some(view) = by_id.get(&claim.issue) else {
-            continue;
-        };
-        if claim_items.len() < CLAIMS_SHOWN {
-            let expiry = claim
-                .expires_ms
-                .map_or_else(String::new, |ms| format!(", expires {}", local_time(ms)));
-            let _ = writeln!(
-                text,
-                "  {}  (Claim {}{expiry})",
-                line_within(view, TITLE_BYTES),
-                claim.id
-            );
-        }
-        let mut entry = item(view, &projects);
-        entry["claim"] = claim_json(claim);
-        claim_items.push(entry);
-    }
-    if claim_items.is_empty() {
-        let _ = writeln!(text, "  none");
-    } else if claim_items.len() > CLAIMS_SHOWN {
-        let _ = writeln!(
-            text,
-            "  and {} more: tm --json prime lists them all",
-            claim_items.len() - CLAIMS_SHOWN
-        );
-    }
-
-    let _ = writeln!(text, "Ready ({total}):");
-    if total == 0 {
-        let _ = writeln!(text, "  nothing is ready");
-    }
-    for view in &ready {
-        let _ = writeln!(text, "  {}", line_within(view, TITLE_BYTES));
-    }
-    if ready.len() < total {
-        let _ = writeln!(text, "  and {} more: tm ready", total - ready.len());
-    }
+    let claim_items = claims_section(&mut text, &claims, &claimed, &projects);
+    section(
+        &mut text,
+        ("In progress", "none", "tm list category:active"),
+        &active,
+        active_total,
+    );
+    section(
+        &mut text,
+        ("Ready", "nothing is ready", "tm ready"),
+        &ready,
+        total,
+    );
 
     let data = json!({
         "project": project,
@@ -119,6 +109,10 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
             "on_behalf_of": actor.on_behalf_of(),
         })),
         "claims": claim_items,
+        "in_progress": {
+            "issues": active.iter().map(|view| item(view, &projects)).collect::<Vec<_>>(),
+            "total": active_total,
+        },
         "ready": {
             "issues": ready.iter().map(|view| item(view, &projects)).collect::<Vec<_>>(),
             "total": total,
@@ -163,6 +157,65 @@ fn context(here: &here::Here) -> (Option<Actor>, Option<String>, Vec<String>) {
         }
     };
     (actor, project, warnings)
+}
+
+/// The caller's Claims, the first [`CLAIMS_SHOWN`] in `text`, and each as
+/// `--json` gives it.
+fn claims_section(
+    text: &mut String,
+    claims: &[Claim],
+    claimed: &[IssueView],
+    projects: &HashMap<ProjectId, Option<String>>,
+) -> Vec<Value> {
+    let by_id: HashMap<Uuid, _> = claimed.iter().map(|view| (view.id, view)).collect();
+    let _ = writeln!(text, "Your Claims:");
+    let mut claim_items = Vec::with_capacity(claims.len());
+    for claim in claims {
+        let Some(view) = by_id.get(&claim.issue) else {
+            continue;
+        };
+        if claim_items.len() < CLAIMS_SHOWN {
+            let expiry = claim
+                .expires_ms
+                .map_or_else(String::new, |ms| format!(", expires {}", local_time(ms)));
+            let _ = writeln!(
+                text,
+                "  {}  (Claim {}{expiry})",
+                line_within(view, TITLE_BYTES),
+                claim.id
+            );
+        }
+        let mut entry = item(view, projects);
+        entry["claim"] = claim_json(claim);
+        claim_items.push(entry);
+    }
+    if claim_items.is_empty() {
+        let _ = writeln!(text, "  none");
+    } else if claim_items.len() > CLAIMS_SHOWN {
+        let _ = writeln!(
+            text,
+            "  and {} more: tm --json prime lists them all",
+            claim_items.len() - CLAIMS_SHOWN
+        );
+    }
+    claim_items
+}
+
+/// A heading with the count of `total`, the first of them, and the command
+/// that lists the rest: `words` is the heading, the line for none, and that
+/// command.
+fn section(text: &mut String, words: (&str, &str, &str), shown: &[IssueView], total: usize) {
+    let (heading, none, more) = words;
+    let _ = writeln!(text, "{heading} ({total}):");
+    if total == 0 {
+        let _ = writeln!(text, "  {none}");
+    }
+    for view in shown {
+        let _ = writeln!(text, "  {}", line_within(view, TITLE_BYTES));
+    }
+    if shown.len() < total {
+        let _ = writeln!(text, "  and {} more: {more}", total - shown.len());
+    }
 }
 
 /// The human a Claim taken by `actor` is held for.
