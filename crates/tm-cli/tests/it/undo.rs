@@ -88,9 +88,20 @@ fn undo_reverts_a_move_and_its_own_batch_redoes_it() {
 #[test]
 fn a_batch_is_named_by_its_end_and_never_guessed() {
     let scratch = Scratch::new();
-    let (repo, _store, batch) = moved(&scratch);
-    let (_, doc) = run(&scratch, &repo, &["move", "TM-1", "in_review"]);
-    let later = doc["data"]["batch"].as_str().unwrap().to_owned();
+    let (repo, _store, mut batch) = moved(&scratch);
+    let mut later = String::new();
+    // An id's first 8 digits change every 65 seconds, so of two writes in a
+    // row that straddle the change, the next pair cannot.
+    for status in ["in_review", "in_progress"] {
+        let (_, doc) = run(&scratch, &repo, &["move", "TM-1", status]);
+        if !later.is_empty() {
+            batch = later;
+        }
+        later = doc["data"]["batch"].as_str().unwrap().to_owned();
+        if batch[..8] == later[..8] {
+            break;
+        }
+    }
     assert_eq!(
         batch[..8],
         later[..8],
