@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
+use tm_core::Actor;
 use tm_store::workspace::{self, Workspace, WorkspaceError};
 use tm_store::{RecordOutcome, RecordsImported, Restored, Store, StoreError};
 use uuid::Uuid;
@@ -193,30 +194,43 @@ pub(crate) fn import_records(
         warnings.extend(here.publish());
         let (imported, dropped) =
             written.map_err(|err| CliError::from(err).warned(warnings.clone()))?;
-        // Tried as the runner, since an undo writes as whoever runs it and
-        // only a comment's author may retract it.
-        let mut undo = BTreeMap::new();
-        for batch in imported.records.iter().flat_map(|record| &record.batches) {
-            let state = match here.store.undo_plan(&identity.actor, *batch) {
-                Ok(_) => Undo::Can,
-                Err(
-                    err @ (StoreError::Busy(_)
-                    | StoreError::Sqlite(_)
-                    | StoreError::Clock(_)
-                    | StoreError::Corrupt(_)),
-                ) => Undo::Unknown(err.to_string()),
-                Err(_) => Undo::Cannot,
-            };
-            undo.insert(*batch, state);
-        }
+        let undo = undo_states(&mut here.store, &identity.actor, &imported);
         ((imported, dropped), undo)
     };
-    let mut output = records_output(&imported, dry_run, &undo, identity.actor.name());
-    if let Some(dropped) = dropped {
-        not_kept(&mut output, &dropped);
-    }
+    let mut output = records_output(
+        &imported,
+        dropped.as_ref(),
+        dry_run,
+        &undo,
+        identity.actor.name(),
+    );
     output.warnings.extend(warnings);
     Ok(output)
+}
+
+/// Whether `runner` can undo each batch an import wrote to `store`. Tried as
+/// the runner, since an undo writes as whoever runs it and only a comment's
+/// author may retract it.
+pub(crate) fn undo_states(
+    store: &mut Store,
+    runner: &Actor,
+    imported: &RecordsImported,
+) -> BTreeMap<Uuid, Undo> {
+    let mut undo = BTreeMap::new();
+    for batch in imported.records.iter().flat_map(|record| &record.batches) {
+        let state = match store.undo_plan(runner, *batch) {
+            Ok(_) => Undo::Can,
+            Err(
+                err @ (StoreError::Busy(_)
+                | StoreError::Sqlite(_)
+                | StoreError::Clock(_)
+                | StoreError::Corrupt(_)),
+            ) => Undo::Unknown(err.to_string()),
+            Err(_) => Undo::Cannot,
+        };
+        undo.insert(*batch, state);
+    }
+    undo
 }
 
 /// Names what an adapter read and tm has no place for, with how often.
@@ -232,15 +246,18 @@ fn not_kept(output: &mut Output, dropped: &BTreeMap<String, usize>) {
 }
 
 /// Whether the runner could undo a batch an import wrote.
-enum Undo {
+pub(crate) enum Undo {
     Can,
     Cannot,
     /// The check itself failed, saying nothing about the batch.
     Unknown(String),
 }
 
-fn records_output(
+/// A records import's report; `dropped` is what an adapter read and could
+/// not keep.
+pub(crate) fn records_output(
     imported: &RecordsImported,
+    dropped: Option<&BTreeMap<String, usize>>,
     dry_run: bool,
     undo: &BTreeMap<Uuid, Undo>,
     runner: &str,
@@ -311,6 +328,9 @@ fn records_output(
         "dry_run": dry_run,
     });
     let mut output = Output::new(text, data);
+    if let Some(dropped) = dropped {
+        not_kept(&mut output, dropped);
+    }
     output.warnings.push(
         "a record import keeps each Issue's current state and comments, not its history, operation ids or retracted comments".into(),
     );
@@ -486,7 +506,7 @@ mod tests {
             (second, Undo::Cannot),
             (third, Undo::Unknown("the store is busy".into())),
         ]);
-        let text = records_output(&imported, false, &undo, "jace").text;
+        let text = records_output(&imported, None, false, &undo, "jace").text;
         for line in [
             format!("beads:a: undo with tm undo {first}"),
             format!("beads:a: batch {second}, which jace cannot undo as things stand"),
