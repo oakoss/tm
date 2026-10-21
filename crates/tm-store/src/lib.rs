@@ -235,6 +235,15 @@ pub trait Clock {
     ///
     /// A description of why the time or the local offset cannot be read.
     fn now(&self) -> Result<WallTime, String>;
+
+    /// The UTC time alone, for reads, which need no local offset.
+    ///
+    /// # Errors
+    ///
+    /// A description of why the time cannot be read.
+    fn utc_ms(&self) -> Result<i64, String> {
+        self.now().map(|now| now.utc_ms)
+    }
 }
 
 pub struct SystemClock;
@@ -248,6 +257,11 @@ impl Clock for SystemClock {
             utc_ms: now.as_millisecond(),
             offset_min: i16::try_from(offset).expect("jiff offsets stay within ±25:59"),
         })
+    }
+
+    // Skips the system time zone, so a broken TZ fails writes but not reads.
+    fn utc_ms(&self) -> Result<i64, String> {
+        Ok(jiff::Timestamp::now().as_millisecond())
     }
 }
 
@@ -949,8 +963,9 @@ impl Store {
     }
 
     /// [`Store::append_all`], refused with [`StoreError::ClaimChanged`] and
-    /// nothing written unless `issue`'s Claim is still `held` when the write
-    /// begins, so drafts built from it, such as a move's release, hold true.
+    /// nothing written unless `issue`'s Claim, as [`Store::claim`] reads it,
+    /// is still `held` when the write begins, so drafts built from it, such as
+    /// a move's release, hold true.
     ///
     /// # Errors
     ///
@@ -961,8 +976,9 @@ impl Store {
         issue: Uuid,
         held: Option<Uuid>,
     ) -> Result<Vec<Op>, StoreError> {
+        let (now, _) = self.now()?;
         self.append_guarded(drafts, |tx| {
-            if claim::current(tx, issue)?.map(|claim| claim.id) == held {
+            if claim::holding(tx, issue, now.utc_ms)?.map(|claim| claim.id) == held {
                 Ok(())
             } else {
                 Err(StoreError::ClaimChanged(issue))
@@ -1114,6 +1130,10 @@ impl Store {
         let now = self.clock.now().map_err(StoreError::Clock)?;
         let now_ms = check_wall(now).map_err(StoreError::Clock)?;
         Ok((now, now_ms))
+    }
+
+    fn utc_ms(&self) -> Result<i64, StoreError> {
+        self.clock.utc_ms().map_err(StoreError::Clock)
     }
 
     /// The ids of Issues matching `filter`, in its `sort:` order, else most
@@ -1329,14 +1349,18 @@ fn write_drafts(
         if let Change::Retract { comment, .. } = &draft.change {
             validate::check_retracter(tx, draft.subject, &draft.actor, *comment)?;
         }
+        let (source, at) = provenance.map_or((None, now), |p| (Some(p.source), p.at));
         let change = validate::check(tx, scheme, draft.subject, draft.change)?;
+        // At the time the operation records, so replay reaches the same verdict.
+        if let Change::Claim { action } = &change {
+            claim::check(tx, draft.subject, action, at.utc_ms)?;
+        }
         hlc = hlc.tick(now_ms);
         let base_seq: i64 = tx.query_row(
             "SELECT coalesce(max(server_seq), 0) FROM ops WHERE project = ?1",
             [draft.project.to_string()],
             |row| row.get(0),
         )?;
-        let (source, at) = provenance.map_or((None, now), |p| (Some(p.source), p.at));
         let op = Op {
             v: CURRENT_VERSION,
             op_id: Uuid::now_v7(),

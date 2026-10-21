@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 use tm_core::op::ClaimAction;
 use tm_core::{Actor, Change, Hlc, OpError};
-use tm_store::{Draft, Store, StoreError, Unapplied};
+use tm_store::{Draft, Provenance, Store, StoreError, Unapplied, WallTime};
 use uuid::Uuid;
 
 use crate::support::{
@@ -87,7 +87,7 @@ fn an_agent_sees_only_the_claims_it_holds_for_its_human() {
         new_issue(&mut store),
     );
     let held = [
-        store.take(&claude(), second, Some(1)).unwrap(),
+        store.take(&claude(), second, Some(HOUR_MS)).unwrap(),
         store.take(&claude(), first, None).unwrap(),
     ];
     store
@@ -406,7 +406,7 @@ fn a_take_or_release_against_a_claim_no_longer_current_loses() {
 }
 
 #[test]
-fn a_pulled_take_over_a_held_claim_loses_until_expiry_or_force_exists() {
+fn a_pulled_take_over_a_claim_with_no_expiry_loses() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = Uuid::now_v7();
@@ -427,6 +427,150 @@ fn a_pulled_take_over_a_held_claim_loses_until_expiry_or_force_exists() {
     let lost = store.unapplied().unwrap();
     assert_eq!(lost[0].op_id, over.op_id);
     assert!(lost[0].is_lost_claim(), "{lost:?}");
+}
+
+#[test]
+fn a_pulled_take_over_a_claim_wins_only_once_its_time_is_past_the_expiry() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = Uuid::now_v7();
+    let held = Change::Claim {
+        action: ClaimAction::Take {
+            agent: "claude".into(),
+            ttl_ms: Some(8),
+            prev: None,
+        },
+    };
+    // claude's take is written at 1_002, so it lapses at 1_010.
+    let ids = insert_all(&store, &[(issue, Change::Create), (issue, held)]);
+    let early = remote_op(
+        8,
+        issue,
+        &take("codex", Some(ids[1])),
+        Hlc::new(1_009, 0),
+        2,
+    );
+    insert_acked(&store, &early, 3, 2_000);
+    let late = remote_op(
+        9,
+        issue,
+        &take("gemini", Some(ids[1])),
+        Hlc::new(1_010, 0),
+        2,
+    );
+    insert_acked(&store, &late, 4, 2_000);
+    assert_eq!(store.rebuild().unwrap(), 1);
+    let lost = store.unapplied().unwrap();
+    assert_eq!(lost[0].op_id, early.op_id);
+    assert!(lost[0].is_lost_claim(), "{lost:?}");
+    let claim = store.claim(issue).unwrap().unwrap();
+    assert_eq!((claim.id, claim.agent.as_str()), (late.op_id, "gemini"));
+}
+
+#[test]
+fn a_lapsed_claim_stops_holding_and_another_agent_takes_it_over() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let issue = new_issue(&mut store);
+    let lapsing = store.take(&claude(), issue, Some(HOUR_MS)).unwrap();
+    let codex = Actor::agent("codex", "jace");
+    clock.set(lapsing.expires_ms.unwrap() - 1);
+    assert_eq!(store.claim(issue).unwrap(), Some(lapsing.clone()));
+    assert_eq!(store.claims_held("claude", "jace").unwrap().len(), 1);
+    let err = store.take(&codex, issue, None).unwrap_err();
+    assert!(matches!(err, StoreError::AlreadyClaimed { .. }), "{err}");
+
+    clock.advance(1);
+    assert_eq!(store.claim(issue).unwrap(), None);
+    assert_eq!(store.claims_held("claude", "jace").unwrap(), []);
+    let over = store.take(&codex, issue, None).unwrap();
+    assert_eq!(store.claim(issue).unwrap(), Some(over.clone()));
+    let err = store.release(&claude(), issue, lapsing.id).unwrap_err();
+    assert!(matches!(err, StoreError::NotClaimHolder { .. }), "{err}");
+
+    assert_eq!(store.rebuild().unwrap(), 0);
+    assert_eq!(store.claim(issue).unwrap(), Some(over.clone()));
+    store.undo(&jace(), over.id).unwrap();
+    assert_eq!(
+        store.claim(issue).unwrap(),
+        None,
+        "undo restores no lapsed Claim"
+    );
+}
+
+#[test]
+fn a_take_naming_no_claim_or_the_wrong_one_is_refused_over_a_lapsed_claim() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let issue = new_issue(&mut store);
+    store.take(&claude(), issue, Some(HOUR_MS)).unwrap();
+    clock.advance(i64::try_from(HOUR_MS).unwrap());
+    for prev in [None, Some(Uuid::now_v7())] {
+        let err = store
+            .append(Draft {
+                actor: Actor::agent("codex", "jace"),
+                ..draft(issue, take("codex", prev))
+            })
+            .unwrap_err();
+        assert!(
+            matches!(&err, StoreError::Invalid { reason, .. } if reason.contains("lapsed")),
+            "{prev:?}: {err}"
+        );
+    }
+}
+
+#[test]
+fn an_imported_take_is_judged_at_its_recorded_time_not_the_clock() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let issue = new_issue(&mut store);
+    let lapsing = store.take(&claude(), issue, Some(HOUR_MS)).unwrap();
+    let expires_ms = lapsing.expires_ms.unwrap();
+    clock.set(expires_ms + 10);
+    let imported = |at_ms| {
+        let change = take("codex", Some(lapsing.id));
+        let provenance = Provenance {
+            source: "test".into(),
+            at: WallTime {
+                utc_ms: at_ms,
+                offset_min: 0,
+            },
+        };
+        let draft = Draft {
+            actor: Actor::agent("codex", "jace"),
+            ..draft(issue, change)
+        };
+        vec![(draft, provenance)]
+    };
+    let err = store.append_imported(imported(expires_ms - 1)).unwrap_err();
+    assert!(matches!(err, StoreError::AlreadyClaimed { .. }), "{err}");
+    store.append_imported(imported(expires_ms)).unwrap();
+    assert_eq!(store.claim(issue).unwrap().unwrap().agent, "codex");
+}
+
+#[test]
+fn its_holder_releases_a_lapsed_claim_and_a_guarded_write_reads_it_as_gone() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let issue = new_issue(&mut store);
+    let lapsing = store.take(&claude(), issue, Some(HOUR_MS)).unwrap();
+    clock.advance(i64::try_from(HOUR_MS).unwrap());
+    let edit = || vec![draft(issue, set_field("title", json!("u")))];
+    let err = store
+        .append_if_claim(edit(), issue, Some(lapsing.id))
+        .unwrap_err();
+    assert!(matches!(err, StoreError::ClaimChanged(_)), "{err}");
+    store.append_if_claim(edit(), issue, None).unwrap();
+    store.release(&claude(), issue, lapsing.id).unwrap();
+    assert_eq!(store.rebuild().unwrap(), 0);
+    let codex = store
+        .take(&Actor::agent("codex", "jace"), issue, None)
+        .unwrap();
+    assert_eq!(store.claim(issue).unwrap(), Some(codex));
 }
 
 #[test]

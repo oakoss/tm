@@ -66,10 +66,8 @@ pub(crate) fn check(
                 elem_label,
             })
         }
-        Change::Claim { action } => {
-            crate::claim::check(tx, issue_id, &action)?;
-            Ok(Change::Claim { action })
-        }
+        // Needs the operation's time, so claim::check runs where it is known.
+        Change::Claim { action } => Ok(Change::Claim { action }),
         Change::Retract { comment, retracted } => {
             comment_author(tx, issue_id, comment)?;
             Ok(Change::Retract { comment, retracted })

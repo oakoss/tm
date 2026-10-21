@@ -1,5 +1,7 @@
 use std::path::Path;
 use std::process::{Output, Stdio};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use tm_core::Actor;
@@ -9,12 +11,17 @@ use crate::support::{Scratch, initialized, text, tm, tm_command};
 
 /// `tm` writing as the Agent `claude` for `jace`.
 fn as_agent(scratch: &Scratch, repo: &Path, args: &[&str]) -> Output {
+    as_named(scratch, repo, "claude", args)
+}
+
+/// `tm` writing as the Agent `agent` for `jace`.
+fn as_named(scratch: &Scratch, repo: &Path, agent: &str, args: &[&str]) -> Output {
     tm_command()
         .args(args)
         .current_dir(repo)
         .env("TM_HOME", scratch.home())
         .env("TM_ACTOR", "jace")
-        .env("TM_AGENT", "claude")
+        .env("TM_AGENT", agent)
         .env("GIT_CONFIG_GLOBAL", scratch.git_config())
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .stdin(Stdio::null())
@@ -191,6 +198,73 @@ fn an_agent_claims_with_a_token_and_releases_with_it() {
     assert_eq!(data["batch"], data["claim"]["id"], "the take is the batch");
     assert_eq!(data["claim"]["on_behalf_of"], "jace");
     assert!(data["claim"]["expires_ms"].as_i64().unwrap() > 0, "{data}");
+}
+
+#[test]
+fn a_lapsed_claim_leaves_prime_and_show_and_another_agent_takes_it() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    store
+        .create_issue(&Actor::human("jace"), project, "task", "t")
+        .unwrap();
+    drop(store);
+    let out = as_agent(&scratch, &repo, &["--json", "claim", "TM-1", "--for", "1s"]);
+    assert!(out.status.success(), "{out:?}");
+    let expires_ms = doc(&out)["data"]["claim"]["expires_ms"].as_i64().unwrap();
+    let claims = |agent| {
+        doc(&as_named(&scratch, &repo, agent, &["--json", "prime"]))["data"]["claims"].clone()
+    };
+    assert_eq!(claims("claude").as_array().unwrap().len(), 1);
+    let out = as_named(&scratch, &repo, "codex", &["claim", "TM-1"]);
+    assert!(!out.status.success(), "{out:?}");
+
+    let now_ms = || {
+        i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap()
+    };
+    while now_ms() < expires_ms {
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(claims("claude"), json!([]));
+    assert_eq!(claim_of(&scratch, &repo, "TM-1"), Value::Null);
+    let out = as_named(&scratch, &repo, "codex", &["--json", "claim", "TM-1"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(claim_of(&scratch, &repo, "TM-1")["agent"], "codex");
+}
+
+#[test]
+fn reading_claims_needs_no_time_zone() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    store
+        .create_issue(&Actor::human("jace"), project, "task", "t")
+        .unwrap();
+    drop(store);
+    assert!(
+        as_agent(&scratch, &repo, &["claim", "TM-1"])
+            .status
+            .success()
+    );
+    for args in [&["prime"][..], &["show", "TM-1"], &["ready"]] {
+        let out = tm_command()
+            .args(args)
+            .current_dir(&repo)
+            .env("TM_HOME", scratch.home())
+            .env("TM_ACTOR", "jace")
+            .env("TM_AGENT", "claude")
+            .env("TZ", "Bogus/Nowhere")
+            .env("GIT_CONFIG_GLOBAL", scratch.git_config())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {out:?}");
+    }
 }
 
 #[test]

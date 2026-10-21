@@ -25,10 +25,19 @@ pub struct Claim {
     pub expires_ms: Option<i64>,
 }
 
+impl Claim {
+    /// Whether the Claim has lapsed by `at_ms`; one with no expiry never does.
+    #[must_use]
+    pub fn lapsed(&self, at_ms: i64) -> bool {
+        self.expires_ms
+            .is_some_and(|expires_ms| expires_ms <= at_ms)
+    }
+}
+
 impl Store {
-    /// Claims `issue` for the Agent writing. Refused while any Claim holds it,
-    /// even one under the same Agent name; [`Claim::id`] is the token to
-    /// release it.
+    /// Claims `issue` for the Agent writing, taking over a lapsed Claim.
+    /// Refused while any other Claim holds it, even one under the same Agent
+    /// name; [`Claim::id`] is the token to release it.
     ///
     /// # Errors
     ///
@@ -42,18 +51,28 @@ impl Store {
         issue: Uuid,
         ttl_ms: Option<u64>,
     ) -> Result<Claim, StoreError> {
-        let op = self.append(self.claim_draft(
-            actor.clone(),
-            issue,
-            ClaimAction::Take {
-                agent: actor.name().to_owned(),
-                ttl_ms,
-                prev: None,
+        let take = |prev| ClaimAction::Take {
+            agent: actor.name().to_owned(),
+            ttl_ms,
+            prev,
+        };
+        let draft = self.claim_draft(actor.clone(), issue, take(None))?;
+        // `prev` is read inside the write, so no other take slips in between.
+        let ops = self.append_with(
+            Vec::new(),
+            |tx| {
+                let prev = current(tx, issue)?.map(|held| held.id);
+                Ok(vec![Draft {
+                    change: Change::Claim { action: take(prev) },
+                    ..draft
+                }])
             },
-        )?)?;
+            true,
+            None,
+        )?;
         // From the operation, not the table: another writer may already have
         // released and retaken the Issue.
-        taken(&op, actor.name(), ttl_ms)
+        taken(&ops[0], actor.name(), ttl_ms)
     }
 
     /// Releases the Claim `claim` holds on `issue`.
@@ -67,30 +86,33 @@ impl Store {
         self.append(draft)
     }
 
-    /// The Claim holding `issue`; one past `expires_ms` still holds until
-    /// expiry is enforced.
+    /// The Claim holding `issue`, or none once it has lapsed.
     ///
     /// # Errors
     ///
-    /// [`StoreError::UnknownIssue`], any SQLite failure, or
-    /// [`StoreError::Corrupt`] for a malformed row.
+    /// [`StoreError::UnknownIssue`], [`StoreError::Clock`], any SQLite
+    /// failure, or [`StoreError::Corrupt`] for a malformed row.
     pub fn claim(&self, issue: Uuid) -> Result<Option<Claim>, StoreError> {
         issue_project(&self.conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?;
-        current(&self.conn, issue)
+        holding(&self.conn, issue, self.utc_ms()?)
     }
 
-    /// The Claims `agent` holds for `on_behalf_of`, by Issue id; as with
-    /// [`Store::claim`], one past `expires_ms` still holds.
+    /// The Claims `agent` holds for `on_behalf_of` and that have not lapsed,
+    /// by Issue id.
     ///
     /// # Errors
     ///
-    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
+    /// [`StoreError::Clock`], any SQLite failure, or [`StoreError::Corrupt`]
+    /// for a malformed row.
     pub fn claims_held(&self, agent: &str, on_behalf_of: &str) -> Result<Vec<Claim>, StoreError> {
+        let now_ms = self.utc_ms()?;
         let mut stmt = self.conn.prepare_cached(
             "SELECT issue_id, op_id, expires_ms FROM claims
-             WHERE agent = ?1 AND on_behalf_of = ?2 ORDER BY issue_id",
+             WHERE agent = ?1 AND on_behalf_of = ?2
+               AND (expires_ms IS NULL OR expires_ms > ?3)
+             ORDER BY issue_id",
         )?;
-        let rows = stmt.query_map(params![agent, on_behalf_of], |row| {
+        let rows = stmt.query_map(params![agent, on_behalf_of, now_ms], |row| {
             Ok((
                 row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, Vec<u8>>(1)?,
@@ -153,6 +175,16 @@ pub(crate) fn current(conn: &Connection, issue: Uuid) -> Result<Option<Claim>, S
     .transpose()
 }
 
+/// [`current`], unless it has lapsed by `at_ms`. Its row stays until a take
+/// replaces it, since that take names it as `prev`.
+pub(crate) fn holding(
+    conn: &Connection,
+    issue: Uuid,
+    at_ms: i64,
+) -> Result<Option<Claim>, StoreError> {
+    Ok(current(conn, issue)?.filter(|held| !held.lapsed(at_ms)))
+}
+
 fn invalid(reason: &str) -> StoreError {
     StoreError::Invalid {
         field: CLAIM_FIELD.into(),
@@ -161,13 +193,16 @@ fn invalid(reason: &str) -> StoreError {
     }
 }
 
-/// Whether `action` may apply while `held` holds the Issue: a take only to an
-/// Issue it saw unclaimed and that still is, a release only to the Claim it
-/// names. Taking over a held Claim needs expiry or force, neither of which tm
-/// applies.
-fn stands(held: Option<&Claim>, action: &ClaimAction) -> bool {
+/// Whether `action`, written at `at_ms`, may apply while `held` holds the
+/// Issue: a take only over the Claim it saw, unclaimed or lapsed by then, and
+/// a release only of the Claim it names, lapsed or not. Judged by the time the
+/// operation records, never the clock, so every Replica replays the same.
+fn stands(held: Option<&Claim>, action: &ClaimAction, at_ms: i64) -> bool {
     match action {
-        ClaimAction::Take { prev, .. } => held.is_none() && prev.is_none(),
+        ClaimAction::Take { prev, .. } => match held {
+            None => prev.is_none(),
+            Some(held) => *prev == Some(held.id) && held.lapsed(at_ms),
+        },
         ClaimAction::Release { claim } => held.is_some_and(|held| held.id == *claim),
     }
 }
@@ -224,10 +259,14 @@ pub(crate) fn check(
     tx: &Transaction<'_>,
     issue: Uuid,
     action: &ClaimAction,
+    at_ms: i64,
 ) -> Result<(), StoreError> {
     let held = current(tx, issue)?;
-    if !stands(held.as_ref(), action) {
+    if !stands(held.as_ref(), action, at_ms) {
         return Err(match (action, held) {
+            (ClaimAction::Take { .. }, Some(held)) if held.lapsed(at_ms) => {
+                invalid("must name the lapsed Claim it takes over")
+            }
             (ClaimAction::Take { .. }, Some(held)) => StoreError::AlreadyClaimed {
                 issue,
                 agent: held.agent,
@@ -271,7 +310,7 @@ pub(crate) fn apply(
         ClaimAction::Take { agent, ttl_ms, .. } => Some(taken(op, agent, *ttl_ms)?),
         ClaimAction::Release { .. } => None,
     };
-    if !stands(held.as_ref(), action) {
+    if !stands(held.as_ref(), action, op.utc_ms) {
         let holder = held.map_or_else(
             || "the Issue is unclaimed".to_owned(),
             |held| format!("{} holds it for {}", held.agent, held.on_behalf_of),
@@ -291,8 +330,9 @@ pub(crate) fn apply(
         }));
     }
     match claim {
+        // Replaces a lapsed Claim the take took over.
         Some(claim) => tx.execute(
-            "INSERT INTO claims (issue_id, agent, on_behalf_of, op_id, expires_ms)
+            "INSERT OR REPLACE INTO claims (issue_id, agent, on_behalf_of, op_id, expires_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 claim.issue.as_bytes(),

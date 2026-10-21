@@ -18,15 +18,17 @@ pub struct Ready {
 }
 
 impl Store {
-    /// Unarchived, unclaimed Issues in the todo category that no open Issue
-    /// blocks, most urgent first and then oldest. An Issue is open until it
-    /// is done, cancelled or archived. Parents and children do not affect
-    /// readiness.
+    /// Unarchived Issues in the todo category that no unlapsed Claim holds
+    /// and no open Issue blocks, most urgent first and then oldest. An Issue
+    /// is open until it is done, cancelled or archived. Parents and children
+    /// do not affect readiness.
     ///
     /// # Errors
     ///
-    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
+    /// [`StoreError::Clock`], any SQLite failure, or [`StoreError::Corrupt`]
+    /// for a malformed row.
     pub fn ready(&self) -> Result<Vec<Ready>, StoreError> {
+        let now_ms = self.utc_ms()?;
         self.read(|store| {
             let category = |filter: &str| {
                 resolve(&parse(filter)?, &store.scheme, Context { me: None })
@@ -35,7 +37,7 @@ impl Store {
             let todo = category("category:todo")?;
             let open = category("-category:done,cancelled")?;
 
-            let (sql, params) = query::ready(&todo, &open, BLOCKS);
+            let (sql, params) = query::ready(&todo, &open, BLOCKS, now_ms);
             let mut stmt = store.conn.prepare(&sql)?;
             let ready = stmt
                 .query_map(rusqlite::params_from_iter(params), |row| {
