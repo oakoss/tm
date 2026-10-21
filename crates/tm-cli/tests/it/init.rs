@@ -793,3 +793,168 @@ fn an_invalid_repo_file_stops_init_untouched() {
     );
     assert!(!repo.join(".config/tm.toml").exists());
 }
+
+const START: &str = "<!-- tm:start -->";
+const LINE: &str = "This repo tracks its work in tm. Run `tm guide` for how to work with it.";
+const END: &str = "<!-- tm:end -->";
+
+/// `tm init` as the Agent `claude` writing for `jace`.
+fn init_as_agent(scratch: &Scratch, repo: &Path, args: &[&str]) -> Output {
+    tm_command()
+        .args([&["init"], args].concat())
+        .current_dir(repo)
+        .env("TM_HOME", scratch.home())
+        .env("TM_ACTOR", "jace")
+        .env("TM_AGENT", "claude")
+        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn an_agent_is_given_the_lines_and_hook_and_writes_neither() {
+    let scratch = Scratch::new();
+    let repo = fixture(&scratch, "repo");
+    for file in ["AGENTS.md", "CLAUDE.md"] {
+        fs::remove_file(repo.join(file)).unwrap();
+    }
+    let made = init_as_agent(&scratch, &repo, &["--key", "TM", "--yes"]);
+    assert!(made.status.success(), "{made:?}");
+    let shown = text(&made.stdout);
+    assert!(
+        shown.contains(&format!(
+            "Create AGENTS.md with these lines:\n{START}\n{LINE}\n{END}\n"
+        )),
+        "{shown}"
+    );
+    assert!(shown.contains("add to .claude/settings.json:"), "{shown}");
+    assert!(shown.contains("\"command\": \"tm prime\""), "{shown}");
+    assert!(
+        shown.ends_with("Commit .config/tm.toml and AGENTS.md\n"),
+        "{shown}"
+    );
+    assert!(!repo.join("AGENTS.md").exists());
+    assert!(!repo.join(".claude").exists());
+}
+
+#[test]
+fn json_init_names_the_file_lines_hook_and_what_to_commit() {
+    let scratch = Scratch::new();
+    let repo = fixture(&scratch, "repo");
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+    fs::write(repo.join("CLAUDE.md"), "# Repo\n").unwrap();
+    let made = tm(&scratch, &repo, &["init", "--yes", "--json", "--key", "TM"]);
+    assert!(made.status.success(), "{made:?}");
+    let doc: serde_json::Value = serde_json::from_slice(&made.stdout).unwrap();
+    let data = &doc["data"];
+    assert_eq!(
+        data["instructions"],
+        serde_json::json!({
+            "file": "CLAUDE.md",
+            "create": false,
+            "replace": false,
+            "lines": format!("{START}\n{LINE}\n{END}\n"),
+            "state": "to_add",
+        })
+    );
+    assert_eq!(data["hook"]["file"], ".claude/settings.json");
+    assert_eq!(
+        data["hook"]["settings"]["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+        "tm prime"
+    );
+    assert_eq!(
+        data["commit"],
+        serde_json::json!([".config/tm.toml", "CLAUDE.md"])
+    );
+    assert_eq!(
+        fs::read_to_string(repo.join("CLAUDE.md")).unwrap(),
+        "# Repo\n"
+    );
+}
+
+#[test]
+fn a_rerun_with_the_lines_and_hook_in_place_has_nothing_to_offer() {
+    let scratch = Scratch::new();
+    let repo = fixture(&scratch, "repo");
+    assert!(
+        tm(&scratch, &repo, &["init", "--key", "TM", "--yes"])
+            .status
+            .success()
+    );
+    let lines = format!("# Repo\n\n{START}\n{LINE}\n{END}\n");
+    fs::write(repo.join("AGENTS.md"), &lines).unwrap();
+    fs::write(repo.join("CLAUDE.md"), "@AGENTS.md\n").unwrap();
+    fs::create_dir_all(repo.join(".claude")).unwrap();
+    fs::write(
+        repo.join(".claude/settings.json"),
+        r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"tm prime"}]}]}}"#,
+    )
+    .unwrap();
+
+    let again = init_as_agent(&scratch, &repo, &["--json"]);
+    let doc: serde_json::Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(doc["data"]["instructions"]["file"], "AGENTS.md");
+    assert_eq!(doc["data"]["instructions"]["state"], "present");
+    assert_eq!(doc["data"]["hook"], serde_json::Value::Null);
+    assert_eq!(doc["data"]["commit"], serde_json::json!([]));
+    let shown = text(&init_as_agent(&scratch, &repo, &[]).stdout);
+    assert!(
+        !shown.contains("these lines") && !shown.contains("Commit"),
+        "{shown}"
+    );
+    assert_eq!(fs::read_to_string(repo.join("AGENTS.md")).unwrap(), lines);
+}
+
+#[test]
+fn old_or_broken_lines_are_offered_again_and_never_written_for_an_agent() {
+    let scratch = Scratch::new();
+    let repo = fixture(&scratch, "repo");
+    assert!(
+        tm(&scratch, &repo, &["init", "--key", "TM", "--yes"])
+            .status
+            .success()
+    );
+    for (contents, state) in [
+        (
+            format!("# Repo\n{START}\nan old pointer\n{END}\n"),
+            "to_replace",
+        ),
+        (format!("# Repo\n{END}\n{START}\n"), "malformed"),
+    ] {
+        fs::write(repo.join("AGENTS.md"), &contents).unwrap();
+        let again = init_as_agent(&scratch, &repo, &["--json"]);
+        let doc: serde_json::Value = serde_json::from_slice(&again.stdout).unwrap();
+        assert_eq!(doc["data"]["instructions"]["state"], state, "{doc}");
+        assert_eq!(
+            fs::read_to_string(repo.join("AGENTS.md")).unwrap(),
+            contents
+        );
+    }
+    let shown = text(&init_as_agent(&scratch, &repo, &[]).stdout);
+    assert!(shown.contains("so it was left alone"), "{shown}");
+}
+
+#[test]
+fn an_agent_needs_yes_and_is_told_to_add_lines_to_an_existing_file() {
+    let scratch = Scratch::new();
+    let repo = fixture(&scratch, "repo");
+    let refused = init_as_agent(&scratch, &repo, &["--key", "TM"]);
+    assert!(!refused.status.success());
+    assert!(text(&refused.stderr).contains("--yes"), "{refused:?}");
+    assert!(!repo.join(".config/tm.toml").exists());
+
+    fs::remove_file(repo.join("AGENTS.md")).unwrap();
+    let made = init_as_agent(&scratch, &repo, &["--key", "TM", "--yes"]);
+    assert!(
+        text(&made.stdout).contains(&format!(
+            "Add these lines to CLAUDE.md:\n{START}\n{LINE}\n{END}\n"
+        )),
+        "{made:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.join("CLAUDE.md")).unwrap(),
+        "claude\n"
+    );
+}
