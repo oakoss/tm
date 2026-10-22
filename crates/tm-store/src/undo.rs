@@ -328,6 +328,11 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
             Change::Claim {
                 action: ClaimAction::Take { .. },
             } => release(conn, op, &mut plan, &mut conflicts)?,
+            // A renewal records that the session was active, which undoing
+            // the write beside it does not make untrue (ADR 0009).
+            Change::Claim {
+                action: ClaimAction::Renew { .. },
+            } => {}
             Change::Comment { .. } => {
                 targets.insert((op.issue, COMMENTS_FIELD.into(), op.op_id.to_string()));
             }

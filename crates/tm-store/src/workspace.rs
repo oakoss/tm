@@ -158,6 +158,55 @@ pub struct RepoFile {
     pub project: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<PathProject>,
+    /// [`DEFAULT_CLAIM_EXPIRY_MS`] when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_expiry: Option<ClaimExpiry>,
+}
+
+/// How long a Claim lasts when neither the take nor the repo file says: 2h.
+pub const DEFAULT_CLAIM_EXPIRY_MS: u64 = 7_200_000;
+
+/// How long a Claim taken without a duration lasts: a duration such as `2h`,
+/// or `off` for never. Only a valid one can be built, so serde reads it
+/// through [`ClaimExpiry::try_from`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct ClaimExpiry {
+    text: String,
+    ttl_ms: Option<u64>,
+}
+
+impl ClaimExpiry {
+    /// `None` for `off`.
+    #[must_use]
+    pub fn ttl_ms(&self) -> Option<u64> {
+        self.ttl_ms
+    }
+}
+
+impl TryFrom<String> for ClaimExpiry {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        let ttl_ms = match text.as_str() {
+            "off" => None,
+            _ => match tm_core::duration::parse_ms(&text) {
+                Some(0) | None => {
+                    return Err(format!(
+                        "claim_expiry {text:?} must be a duration such as 2h, up to 36500d, or off"
+                    ));
+                }
+                Some(ms) => Some(ms),
+            },
+        };
+        Ok(Self { text, ttl_ms })
+    }
+}
+
+impl From<ClaimExpiry> for String {
+    fn from(expiry: ClaimExpiry) -> Self {
+        expiry.text
+    }
 }
 
 /// A monorepo directory mapped to its own Project.
@@ -215,6 +264,15 @@ impl RepoFile {
             }
         }
         Ok(file)
+    }
+
+    /// How long a Claim taken without a duration lasts, in milliseconds;
+    /// `None` when Claims are set never to lapse.
+    #[must_use]
+    pub fn claim_ttl_ms(&self) -> Option<u64> {
+        self.claim_expiry
+            .as_ref()
+            .map_or(Some(DEFAULT_CLAIM_EXPIRY_MS), ClaimExpiry::ttl_ms)
     }
 
     /// The Project key for `relative`, a path inside the directory holding

@@ -102,7 +102,11 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
     for change in &report {
         let _ = writeln!(text, "{name}  {}", summary(change));
     }
-    let output = here.undoable(Output::new(text, data(&report)), ops[0].op_id)?;
+    let output = here.undoable(
+        Output::new(text, data(&report)),
+        ops[0].op_id,
+        &identity.actor,
+    )?;
     Ok((output, identity.warnings))
 }
 

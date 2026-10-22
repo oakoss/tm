@@ -54,5 +54,8 @@ fn write(here: &mut Here, reference: &str, body: &str) -> Result<(Output, Vec<St
         },
     });
     let output = Output::new(format!("commented on {shown}\n"), data);
-    Ok((here.undoable(output, op.op_id)?, identity.warnings))
+    Ok((
+        here.undoable(output, op.op_id, &identity.actor)?,
+        identity.warnings,
+    ))
 }

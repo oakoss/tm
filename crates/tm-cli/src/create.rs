@@ -84,7 +84,7 @@ fn write(here: &mut Here, mut create: Create) -> Result<(Output, Vec<String>), C
         Err(err) => return Err(err.into()),
     };
     let shown = follow::report(&here.store, show::render(here, issue)?, starts, issue)?;
-    let output = here.undoable(shown, ops[0].op_id)?;
+    let output = here.undoable(shown, ops[0].op_id, &identity.actor)?;
     Ok((output, identity.warnings))
 }
 
