@@ -7,7 +7,7 @@ use tm_store::{Draft, Provenance, Store, StoreError, WallTime};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, PROJECT, TempDir, claude, draft, field, insert_acked, jace, new_issue, open,
+    ManualClock, PROJECT, TempDir, claude, draft, field, held, insert_acked, jace, new_issue, open,
     remote_op, set_field,
 };
 
@@ -202,7 +202,7 @@ fn a_take_is_undone_by_release_and_a_release_is_refused() {
     let issue = new_issue(&mut store);
     let claim = store.take(&claude(), issue, None).unwrap();
     undo(&mut store, claim.id).unwrap();
-    assert_eq!(store.claim(issue).unwrap(), None);
+    assert_eq!(held(&store, issue), None);
 
     let again = store.take(&claude(), issue, None).unwrap();
     let release = store.release(&claude(), issue, again.id).unwrap().op_id;

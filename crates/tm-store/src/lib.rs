@@ -39,7 +39,7 @@ use uuid::Uuid;
 use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
 pub use beads::{BeadsExport, BeadsImported, read_beads};
-pub use claim::Claim;
+pub use claim::{AgentClaims, Claim, ClaimState, Holder};
 pub use export::{Exported, Restored, copy_store, read_export};
 pub use import::{Conflict, RecordOutcome, RecordsImported};
 pub use read::{CommentView, Direction, IssueView, LinkView};
@@ -152,12 +152,11 @@ pub enum StoreError {
         claim: Uuid,
         expires_ms: Option<i64>,
     },
-    #[error("Claim {claim} does not hold Issue {issue}{}", holder.as_ref().map_or_else(|| "; it is unclaimed".to_owned(), |held| format!("; {} holds it for {}", held.agent, held.on_behalf_of)))]
+    #[error("Claim {claim} does not hold Issue {issue}; {holder}")]
     NotClaimHolder {
         issue: Uuid,
         claim: Uuid,
-        /// The Claim holding the Issue, if any; its id is the holder's token.
-        holder: Option<Box<Claim>>,
+        holder: Holder,
     },
     #[error("Issue {issue} is missing required fields: {}", fields.join(", "))]
     MissingFields { issue: Uuid, fields: Vec<String> },
@@ -235,6 +234,15 @@ pub trait Clock {
     ///
     /// A description of why the time or the local offset cannot be read.
     fn now(&self) -> Result<WallTime, String>;
+
+    /// The UTC time alone, for reads, which need no local offset.
+    ///
+    /// # Errors
+    ///
+    /// A description of why the time cannot be read.
+    fn utc_ms(&self) -> Result<i64, String> {
+        self.now().map(|now| now.utc_ms)
+    }
 }
 
 pub struct SystemClock;
@@ -248,6 +256,11 @@ impl Clock for SystemClock {
             utc_ms: now.as_millisecond(),
             offset_min: i16::try_from(offset).expect("jiff offsets stay within ±25:59"),
         })
+    }
+
+    // Skips the system time zone, so a broken TZ fails writes but not reads.
+    fn utc_ms(&self) -> Result<i64, String> {
+        Ok(jiff::Timestamp::now().as_millisecond())
     }
 }
 
@@ -934,7 +947,8 @@ impl Store {
         drafts: Vec<(Draft, Provenance)>,
         guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
     ) -> Result<Vec<Op>, StoreError> {
-        for (_, provenance) in &drafts {
+        for (draft, provenance) in &drafts {
+            validate::check_importable(&draft.change)?;
             check_wall(provenance.at).map_err(|reason| StoreError::Invalid {
                 field: "time".into(),
                 reason,
@@ -949,8 +963,9 @@ impl Store {
     }
 
     /// [`Store::append_all`], refused with [`StoreError::ClaimChanged`] and
-    /// nothing written unless `issue`'s Claim is still `held` when the write
-    /// begins, so drafts built from it, such as a move's release, hold true.
+    /// nothing written unless `issue`'s Claim, lapsed or not, is still `held`
+    /// when the write begins, so drafts built from it, such as a move's
+    /// release, hold true.
     ///
     /// # Errors
     ///
@@ -1114,6 +1129,10 @@ impl Store {
         let now = self.clock.now().map_err(StoreError::Clock)?;
         let now_ms = check_wall(now).map_err(StoreError::Clock)?;
         Ok((now, now_ms))
+    }
+
+    fn utc_ms(&self) -> Result<i64, StoreError> {
+        self.clock.utc_ms().map_err(StoreError::Clock)
     }
 
     /// The ids of Issues matching `filter`, in its `sort:` order, else most
@@ -1323,20 +1342,18 @@ fn write_drafts(
                 validate::status_fits_type(tx, scheme, draft.subject)?,
             ));
         }
-        if let Change::Claim { action } = &draft.change {
-            claim::check_taker(&draft.actor, action)?;
-        }
-        if let Change::Retract { comment, .. } = &draft.change {
-            validate::check_retracter(tx, draft.subject, &draft.actor, *comment)?;
-        }
-        let change = validate::check(tx, scheme, draft.subject, draft.change)?;
+        let (source, at) = provenance.map_or((None, now), |p| (Some(p.source), p.at));
+        let writing = validate::Writing {
+            actor: &draft.actor,
+            at_ms: at.utc_ms,
+        };
+        let change = validate::check(tx, scheme, &writing, draft.subject, draft.change)?;
         hlc = hlc.tick(now_ms);
         let base_seq: i64 = tx.query_row(
             "SELECT coalesce(max(server_seq), 0) FROM ops WHERE project = ?1",
             [draft.project.to_string()],
             |row| row.get(0),
         )?;
-        let (source, at) = provenance.map_or((None, now), |p| (Some(p.source), p.at));
         let op = Op {
             v: CURRENT_VERSION,
             op_id: Uuid::now_v7(),

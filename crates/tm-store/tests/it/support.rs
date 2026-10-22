@@ -7,7 +7,7 @@ use tm_core::Change;
 use tm_core::op::CURRENT_VERSION;
 use tm_core::scheme::{Choice, Field, FieldType};
 use tm_core::{Actor, Hlc, Op, ProjectId, Scheme};
-use tm_store::{Clock, Draft, Store, WallTime};
+use tm_store::{Claim, Clock, Draft, Store, WallTime};
 use uuid::Uuid;
 
 /// The Project the tests write to, and a second one.
@@ -247,6 +247,14 @@ pub(crate) fn seed_projects(store: &mut Store) {
     if seeded {
         store.rebuild().unwrap();
     }
+}
+
+/// The Claim holding `issue`; a lapsed one does not.
+pub(crate) fn held(store: &Store, issue: Uuid) -> Option<Claim> {
+    store
+        .claim_state(issue)
+        .unwrap()
+        .and_then(|state| state.held().cloned())
 }
 
 /// A new Task titled "t" in PROJECT.

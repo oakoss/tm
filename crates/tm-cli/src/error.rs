@@ -7,7 +7,7 @@ use tm_core::OpError;
 use tm_core::filter::FilterError;
 use tm_core::op::{CURRENT_VERSION, MAX_PAYLOAD_BYTES};
 use tm_store::workspace::WorkspaceError;
-use tm_store::{Claim, StoreError};
+use tm_store::{ClaimState, Holder, StoreError};
 use uuid::Uuid;
 
 /// Keys the document itself uses, which details never take.
@@ -117,17 +117,26 @@ impl CliError {
             .with("expires_ms", expires_ms)
     }
 
-    fn not_claim_holder(message: String, issue: Uuid, claim: Uuid, holder: Option<&Claim>) -> Self {
+    fn not_claim_holder(message: String, issue: Uuid, claim: Uuid, holder: &Holder) -> Self {
+        let held = match holder {
+            Holder::Unclaimed => None,
+            Holder::Current(state) => Some(match &**state {
+                ClaimState::Held(held) => (held, "holds"),
+                ClaimState::Lapsed(held) => (held, "lapsed"),
+            }),
+            Holder::TookOver(held) => Some((&**held, "took_over")),
+        };
         Self::new("not_claim_holder", message)
             .with("issue", issue.to_string())
             .with("claim", claim.to_string())
             .with(
                 "holder",
-                holder.map(|held| {
+                held.map(|(held, state)| {
                     json!({
                         "agent": held.agent,
                         "on_behalf_of": held.on_behalf_of,
                         "expires_ms": held.expires_ms,
+                        "state": state,
                     })
                 }),
             )
@@ -302,7 +311,7 @@ impl From<StoreError> for CliError {
                 issue,
                 claim,
                 holder,
-            } => Self::not_claim_holder(message, issue, claim, holder.as_deref()),
+            } => Self::not_claim_holder(message, issue, claim, &holder),
             StoreError::ClaimChanged(issue) => Self::changed("claim_changed", message, issue),
             StoreError::MissingFields { issue, fields } => {
                 Self::missing_fields(message, issue, fields)

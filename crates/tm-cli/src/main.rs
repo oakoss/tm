@@ -83,8 +83,8 @@ enum Command {
     Claim {
         /// The Issue's Key or full id.
         issue: String,
-        /// When the Claim lapses, such as 30m or 2h; recorded now, enforced
-        /// once Claims expire.
+        /// When the Claim lapses, such as 30m or 2h; another Agent may then
+        /// take the Issue. Without it, the Claim holds until released.
         #[arg(long = "for", value_name = "DURATION", value_parser = claim::duration)]
         ttl_ms: Option<u64>,
     },

@@ -88,16 +88,24 @@ pub(crate) fn compile(resolved: &Resolved) -> (String, Vec<Sql>) {
     (b.sql, b.params)
 }
 
-/// The ready queue's ids: `todo`'s Issues, unarchived and unclaimed, that no
-/// Issue matching `open` blocks, most urgent first and then oldest.
-pub(crate) fn ready(todo: &Resolved, open: &Resolved, blocks: &str) -> (String, Vec<Sql>) {
+/// The ready queue's ids: `todo`'s Issues, unarchived and held by no Claim
+/// unlapsed at `now_ms`, that no Issue matching `open` blocks, most urgent
+/// first and then oldest.
+pub(crate) fn ready(
+    todo: &Resolved,
+    open: &Resolved,
+    blocks: &str,
+    now_ms: i64,
+) -> (String, Vec<Sql>) {
     let mut b = Builder::default();
     b.push("SELECT id FROM issues WHERE archived = 0");
     for condition in &todo.conditions {
         b.push(" AND ");
         condition_sql(&mut b, condition);
     }
-    b.push(" AND id NOT IN (SELECT issue_id FROM claims)");
+    b.push(" AND id NOT IN (SELECT issue_id FROM claims WHERE expires_ms IS NULL OR expires_ms > ");
+    b.param(Sql::Integer(now_ms));
+    b.push(")");
     b.push(" AND id NOT IN (SELECT dst FROM links WHERE type = ");
     b.param(Sql::Text(blocks.to_owned()));
     b.push(" AND src IN ");

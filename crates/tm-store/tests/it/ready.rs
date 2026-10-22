@@ -47,6 +47,19 @@ fn only_unclaimed_unarchived_todo_work_is_ready() {
 }
 
 #[test]
+fn an_issue_whose_claim_lapsed_is_ready_again() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let issue = new_issue(&mut store);
+    let claim = store.take(&claude(), issue, Some(60_000)).unwrap();
+    clock.set(claim.expires_ms.unwrap() - 1);
+    assert_eq!(queue(&store), Vec::<Uuid>::new());
+    clock.advance(1);
+    assert_eq!(queue(&store), [issue]);
+}
+
+#[test]
 fn an_open_blocker_holds_an_issue_back_and_a_closed_one_does_not() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));

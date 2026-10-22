@@ -9,9 +9,10 @@ use std::io::IsTerminal as _;
 use serde_json::{Value, json};
 use tm_core::filter::Context;
 use tm_core::{Actor, ProjectId, Scheme};
-use tm_store::{Claim, IssueView};
+use tm_store::{AgentClaims, Claim, IssueView};
 use uuid::Uuid;
 
+use crate::claim;
 use crate::error::CliError;
 use crate::guide::HABITS;
 use crate::here;
@@ -40,9 +41,12 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
     let here = here::read()?;
     let (actor, project, warnings) = context(&here);
     let read = here.store.read(|store| {
-        let claims = match actor.as_ref().filter(|actor| actor.is_agent()) {
-            Some(actor) => store.claims_held(actor.name(), holder(actor))?,
-            None => Vec::new(),
+        let (claims, lapsed) = match actor.as_ref().filter(|actor| actor.is_agent()) {
+            Some(actor) => {
+                let AgentClaims { held, lapsed } = store.claims_by(actor.name(), holder(actor))?;
+                (held, lapsed)
+            }
+            None => (Vec::new(), Vec::new()),
         };
         let mut active = store.find("category:active", Context { me: None })?;
         let active_total = active.len();
@@ -50,7 +54,11 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
         let mut ready = store.ready()?;
         let total = ready.len();
         ready.truncate(READY_SHOWN);
-        let ids: Vec<Uuid> = claims.iter().map(|claim| claim.issue).collect();
+        let ids: Vec<Uuid> = claims
+            .iter()
+            .chain(&lapsed)
+            .map(|claim| claim.issue)
+            .collect();
         let claimed = store.issues(&ids)?;
         let active = store.issues(&active)?;
         let ids: Vec<Uuid> = ready.iter().map(|ready| ready.issue).collect();
@@ -60,7 +68,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
             &[claimed.clone(), active.clone(), ready.clone()].concat(),
         )?;
         Ok::<_, CliError>((
-            claims,
+            (claims, lapsed),
             claimed,
             (active, active_total),
             ready,
@@ -68,7 +76,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
             projects,
         ))
     });
-    let (claims, claimed, (active, active_total), ready, total, projects) =
+    let ((claims, lapsed), claimed, (active, active_total), ready, total, projects) =
         read.map_err(|err| err.warned(warnings.clone()))?;
     let scheme = here.store.scheme();
 
@@ -87,7 +95,8 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
     );
     let scheme = scheme_brief(&mut text, scheme);
 
-    let claim_items = claims_section(&mut text, &claims, &claimed, &projects);
+    let (claim_items, lapsed_items) =
+        claims_sections(&mut text, (&claims, &lapsed), &claimed, &projects);
     section(
         &mut text,
         ("In progress", "none", "tm list category:active"),
@@ -114,6 +123,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
             "on_behalf_of": actor.on_behalf_of(),
         })),
         "claims": claim_items,
+        "lapsed_claims": lapsed_items,
         "in_progress": {
             "issues": active.iter().map(|view| item(view, &projects)).collect::<Vec<_>>(),
             "total": active_total,
@@ -165,25 +175,63 @@ fn context(here: &here::Here) -> (Option<Actor>, Option<String>, Vec<String>) {
     (actor, project, warnings)
 }
 
-/// The caller's Claims, the first [`CLAIMS_SHOWN`] in `text`, and each as
-/// `--json` gives it.
-fn claims_section(
+/// The caller's held Claims, and its lapsed ones that another Agent may take
+/// when there are any, each as `--json` gives it.
+fn claims_sections(
     text: &mut String,
-    claims: &[Claim],
+    (held, lapsed): (&[Claim], &[Claim]),
     claimed: &[IssueView],
     projects: &HashMap<ProjectId, Option<String>>,
-) -> Vec<Value> {
+) -> (Vec<Value>, Vec<Value>) {
+    let held = with_issues(held, claimed, |_| true);
+    let held_items = claims_section(text, ("Your Claims:", "expires"), &held, projects);
+    let lapsed = with_issues(lapsed, claimed, claim::takeable);
+    if lapsed.is_empty() {
+        return (held_items, Vec::new());
+    }
+    let lapsed_items = claims_section(
+        text,
+        (
+            "Your lapsed Claims (another Agent may take these; tm claim KEY takes one back):",
+            "lapsed",
+        ),
+        &lapsed,
+        projects,
+    );
+    (held_items, lapsed_items)
+}
+
+/// Each of `claims` with its Issue, for those whose Issue was read and that
+/// `keep` accepts.
+fn with_issues<'a>(
+    claims: &'a [Claim],
+    claimed: &'a [IssueView],
+    keep: fn(&IssueView) -> bool,
+) -> Vec<(&'a Claim, &'a IssueView)> {
     let by_id: HashMap<Uuid, _> = claimed.iter().map(|view| (view.id, view)).collect();
-    let _ = writeln!(text, "Your Claims:");
-    let mut claim_items = Vec::with_capacity(claims.len());
-    for claim in claims {
-        let Some(view) = by_id.get(&claim.issue) else {
-            continue;
-        };
+    claims
+        .iter()
+        .filter_map(|claim| Some((claim, *by_id.get(&claim.issue)?)))
+        .filter(|(_, view)| keep(view))
+        .collect()
+}
+
+/// A heading, the first [`CLAIMS_SHOWN`] of `shown` in `text`, and each as
+/// `--json` gives it: `words` is the heading and the verb before each expiry.
+fn claims_section(
+    text: &mut String,
+    words: (&str, &str),
+    shown: &[(&Claim, &IssueView)],
+    projects: &HashMap<ProjectId, Option<String>>,
+) -> Vec<Value> {
+    let (heading, verb) = words;
+    let _ = writeln!(text, "{heading}");
+    let mut claim_items = Vec::with_capacity(shown.len());
+    for &(claim, view) in shown {
         if claim_items.len() < CLAIMS_SHOWN {
             let expiry = claim
                 .expires_ms
-                .map_or_else(String::new, |ms| format!(", expires {}", local_time(ms)));
+                .map_or_else(String::new, |ms| format!(", {verb} {}", local_time(ms)));
             let _ = writeln!(
                 text,
                 "  {}  (Claim {}{expiry})",
@@ -192,7 +240,7 @@ fn claims_section(
             );
         }
         let mut entry = item(view, projects);
-        entry["claim"] = claim_json(claim);
+        entry["claim"] = claim::claim_json(claim);
         claim_items.push(entry);
     }
     if claim_items.is_empty() {
@@ -234,15 +282,6 @@ fn named(actor: &Actor) -> String {
         Some(human) => format!("{} for {human}", actor.name()),
         None => actor.name().to_owned(),
     }
-}
-
-fn claim_json(claim: &Claim) -> Value {
-    json!({
-        "id": claim.id,
-        "agent": claim.agent,
-        "on_behalf_of": claim.on_behalf_of,
-        "expires_ms": claim.expires_ms,
-    })
 }
 
 /// The Scheme in brief: types, each Workflow's Statuses with their

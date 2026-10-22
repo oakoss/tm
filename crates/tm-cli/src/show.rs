@@ -5,9 +5,10 @@ use std::fmt::Write as _;
 
 use serde_json::{Value, json};
 use tm_core::scheme::FieldType;
-use tm_store::{CommentView, IssueView, LinkView, Store};
+use tm_store::{ClaimState, CommentView, IssueView, LinkView, Store};
 use uuid::Uuid;
 
+use crate::claim::{self, claim_json};
 use crate::error::CliError;
 use crate::follow;
 use crate::here::{self, Here};
@@ -38,7 +39,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
             Some(parent) => Some(parent_ref(store, parent)?),
             None => None,
         };
-        let claim = store.claim(id)?;
+        let claim = store.claim_state(id)?;
         let links = store.links(id)?;
         let others: Vec<Uuid> = links.iter().map(|link| link.other).collect();
         let others: HashMap<Uuid, IssueView> = store
@@ -64,12 +65,8 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         "fields": view.fields,
         "sets": view.sets,
         "parent": parent,
-        "claim": claim.as_ref().map(|claim| json!({
-            "id": claim.id,
-            "agent": claim.agent,
-            "on_behalf_of": claim.on_behalf_of,
-            "expires_ms": claim.expires_ms,
-        })),
+        "claim": claim.as_ref().and_then(ClaimState::held).map(claim_json),
+        "lapsed_claim": claim.as_ref().and_then(ClaimState::lapsed).map(claim_json),
         "links": links.iter().map(|(link, other)| json!({
             "type": link.link_type,
             "direction": link.direction,
@@ -101,13 +98,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         let shown: Vec<String> = members.values().map(|member| printable(member)).collect();
         let _ = writeln!(text, "{field}: {}", shown.join(", "));
     }
-    if let Some(claim) = &claim {
-        let _ = writeln!(
-            text,
-            "claimed by {} for {} (Claim {})",
-            claim.agent, claim.on_behalf_of, claim.id
-        );
-    }
+    write_claim(&mut text, claim.as_ref(), &view);
     for (link, other) in &links {
         let _ = writeln!(text, "{}", link_line(link, other.as_ref()));
     }
@@ -115,6 +106,32 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         write_comment(&mut text, comment);
     }
     Ok(Output::new(text, data))
+}
+
+fn write_claim(text: &mut String, state: Option<&ClaimState>, view: &IssueView) {
+    match state {
+        None => {}
+        Some(ClaimState::Held(claim)) => {
+            let _ = writeln!(
+                text,
+                "claimed by {} for {} (Claim {})",
+                claim.agent, claim.on_behalf_of, claim.id
+            );
+        }
+        Some(ClaimState::Lapsed(claim)) => {
+            let at = claim.expires_ms.map_or_else(String::new, local_time);
+            let takeable = if claim::takeable(view) {
+                "; any Agent may take it"
+            } else {
+                ""
+            };
+            let _ = writeln!(
+                text,
+                "Claim by {} for {} lapsed {at} (Claim {}){takeable}",
+                claim.agent, claim.on_behalf_of, claim.id
+            );
+        }
+    }
 }
 
 /// A Link by the other Issue's Key, marked when the ready queue no longer

@@ -7,7 +7,7 @@ use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, TempDir, claude, draft, dump, jace, links, new_issue, open, set_field,
+    ManualClock, TempDir, claude, draft, dump, held, jace, links, new_issue, open, set_field,
 };
 
 pub(crate) const ISSUES: usize = 3;
@@ -227,7 +227,7 @@ impl Model {
             links: links(store).into_iter().collect(),
             claims: issues
                 .iter()
-                .map(|issue| store.claim(*issue).unwrap().map(|claim| claim.id))
+                .map(|issue| held(store, *issue).map(|claim| claim.id))
                 .collect(),
         };
         for issue in issues {
