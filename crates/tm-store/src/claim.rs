@@ -93,7 +93,8 @@ impl Claim {
 /// digits: a time-ordered id begins with its start time, which sessions begun
 /// the same minute share, and the `…` keeps it from reading as a name. Any
 /// other session shows whole.
-fn short_session(session: &str) -> Cow<'_, str> {
+#[must_use]
+pub fn short_session(session: &str) -> Cow<'_, str> {
     match Uuid::try_parse(session) {
         Ok(id) => {
             let hex = id.simple().to_string();

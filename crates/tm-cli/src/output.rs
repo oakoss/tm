@@ -129,6 +129,30 @@ pub(crate) fn local_time(utc_ms: i64) -> String {
     )
 }
 
+/// This machine's UTC offset at an instant, in minutes.
+pub(crate) fn local_offset_min(utc_ms: i64) -> Option<i64> {
+    let at = jiff::Timestamp::from_millisecond(utc_ms).ok()?;
+    let offset = jiff::tz::TimeZone::system().to_offset(at);
+    Some(i64::from(offset.seconds()) / 60)
+}
+
+/// An instant at a recorded UTC offset, to the minute, such as
+/// `2026-10-22 19:49 +05:30`; an offset that is not a real one prints UTC.
+pub(crate) fn time_at(utc_ms: i64, offset_min: i64) -> String {
+    let offset = i32::try_from(offset_min * 60)
+        .ok()
+        .and_then(|seconds| jiff::tz::Offset::from_seconds(seconds).ok())
+        .unwrap_or(jiff::tz::Offset::UTC);
+    jiff::Timestamp::from_millisecond(utc_ms).map_or_else(
+        |_| utc_ms.to_string(),
+        |at| {
+            at.to_zoned(jiff::tz::TimeZone::fixed(offset))
+                .strftime("%Y-%m-%d %H:%M %:z")
+                .to_string()
+        },
+    )
+}
+
 /// Whether to print JSON, decided before the arguments are parsed so a
 /// usage error is a document too. A `--json` after `--` is an argument, not
 /// the flag.

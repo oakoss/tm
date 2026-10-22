@@ -240,7 +240,11 @@ fn retract(
 /// Labels compare without case. Writes already store them lowercased; this
 /// applies the same rule to an operation logged before that rule, keeping the
 /// spelling it was written with as its display form.
-fn label_key(field: &str, elem: &str, display: Option<String>) -> (String, Option<String>) {
+pub(crate) fn label_key(
+    field: &str,
+    elem: &str,
+    display: Option<String>,
+) -> (String, Option<String>) {
     if field != "labels" {
         return (elem.to_owned(), display);
     }

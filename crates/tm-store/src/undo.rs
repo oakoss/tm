@@ -164,6 +164,12 @@ impl Store {
 /// first seq. An undo stands while it applied in full and no undo of it
 /// stands; it is newer than what it undid, so the newest is settled first.
 fn undone(conn: &Connection) -> Result<BTreeMap<Uuid, i64>, StoreError> {
+    let standing = standing_undos(conn)?.into_iter();
+    Ok(standing.map(|(undid, (_, seq))| (undid, seq)).collect())
+}
+
+/// [`undone`], with the undo that stands against each batch.
+pub(crate) fn standing_undos(conn: &Connection) -> Result<BTreeMap<Uuid, (Uuid, i64)>, StoreError> {
     let mut stmt = conn.prepare_cached(
         "SELECT u.batch, u.undid, d.seq FROM undo_batches u
          JOIN ops o ON o.op_id = u.batch
@@ -178,7 +184,7 @@ fn undone(conn: &Connection) -> Result<BTreeMap<Uuid, i64>, StoreError> {
     while let Some(row) = rows.next()? {
         let undo = uuid_from(&row.get::<_, Vec<u8>>(0)?)?;
         if !undone.contains_key(&undo) {
-            undone.insert(uuid_from(&row.get::<_, Vec<u8>>(1)?)?, row.get(2)?);
+            undone.insert(uuid_from(&row.get::<_, Vec<u8>>(1)?)?, (undo, row.get(2)?));
         }
     }
     Ok(undone)
