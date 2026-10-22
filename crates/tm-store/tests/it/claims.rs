@@ -246,10 +246,8 @@ fn an_agent_sees_only_the_claims_it_holds_for_its_human() {
     let mut expected = held.to_vec();
     expected.sort_by_key(|claim| claim.issue);
     assert_eq!(store.claims_by("claude", "jace").unwrap().held, expected);
-    assert_eq!(
-        store.claims_by("codex", "jace").unwrap(),
-        AgentClaims::default()
-    );
+    let none = store.claims_by("codex", "jace").unwrap();
+    assert_eq!((none.held, none.lapsed), (vec![], vec![]));
 }
 
 #[test]
@@ -757,6 +755,7 @@ fn a_lapsed_claim_reads_as_lapsed_until_its_holder_releases_it() {
         AgentClaims {
             held: Vec::new(),
             lapsed: vec![lapsing.clone()],
+            at_ms: store.utc_ms().unwrap(),
         }
     );
     let err = store.release(&claude(), issue, Uuid::now_v7()).unwrap_err();
@@ -781,10 +780,8 @@ fn a_lapsed_claim_reads_as_lapsed_until_its_holder_releases_it() {
         .unwrap();
     store.release(&claude(), issue, lapsing.id).unwrap();
     assert_eq!(store.claim_state(issue).unwrap(), None);
-    assert_eq!(
-        store.claims_by("claude", "jace").unwrap(),
-        AgentClaims::default()
-    );
+    let none = store.claims_by("claude", "jace").unwrap();
+    assert_eq!((none.held, none.lapsed), (vec![], vec![]));
     assert_eq!(store.rebuild().unwrap(), 0);
     let codex = store
         .take(&Actor::agent("codex", "jace"), issue, None)

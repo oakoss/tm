@@ -29,6 +29,15 @@ fn the_guide_prints_anywhere_in_text_and_json() {
     let scratch = Scratch::new();
     let guide = elsewhere(&scratch, &["guide"]);
     assert!(guide.starts_with("How to work with tm\n"), "{guide}");
+    for command in [
+        "\nClaims\n",
+        "  tm heartbeat ",
+        "  tm claims ",
+        "  tm release KEY ",
+        "  tm hook print claude ",
+    ] {
+        assert!(guide.contains(command), "{command:?} in {guide}");
+    }
     let doc: Value = serde_json::from_str(&elsewhere(&scratch, &["--json", "guide"])).unwrap();
     assert_eq!(doc["data"]["guide"].as_str(), Some(guide.as_str()));
     assert!(

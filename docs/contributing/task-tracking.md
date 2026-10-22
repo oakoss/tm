@@ -6,7 +6,7 @@ Work is tracked in `tm` itself, in Project `TM`, which `.config/tm.toml` maps th
 
 Install the `tm` you track work with from `main`, apart from the build you develop: `cargo install --locked --path crates/tm-cli`. A Workspace lives in tm's home on one machine; there is no sync yet, so this repo's Workspace is on the machine that created it.
 
-Agents start from `tm prime`, which the `SessionStart` hook in `.claude/settings.json` runs.
+Agents start from `tm prime`, which the `SessionStart` hook in `.claude/settings.json` runs. Its other hooks, from `tm hook print claude`, renew the session's Claims after each tool use and release them when the session ends.
 
 ## Shape
 

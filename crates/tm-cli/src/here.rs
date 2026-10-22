@@ -158,17 +158,26 @@ fn opened(found: Found, cwd: &Path, workspace: Workspace, store: Store) -> Resul
 pub(crate) fn write(
     write: impl FnOnce(&mut Here) -> Result<(Output, Vec<String>), CliError>,
 ) -> Result<Output, CliError> {
+    let (mut output, mut warnings, published) = write_with(write)?;
+    warnings.append(&mut output.warnings);
+    warnings.extend(published);
+    output.warnings = warnings;
+    Ok(output)
+}
+
+/// As [`write`], for a caller that places its own warnings: the store's and
+/// the identity's, then a failed publish's, apart.
+pub(crate) fn write_with<T>(
+    write: impl FnOnce(&mut Here) -> Result<(T, Vec<String>), CliError>,
+) -> Result<(T, Vec<String>, Option<String>), CliError> {
     let mut here = open()?;
     let mut warnings = std::mem::take(&mut here.warnings);
     let written = write(&mut here);
     let published = here.publish();
     match written {
-        Ok((mut output, identity_warnings)) => {
+        Ok((value, identity_warnings)) => {
             warnings.extend(identity_warnings);
-            warnings.append(&mut output.warnings);
-            warnings.extend(published);
-            output.warnings = warnings;
-            Ok(output)
+            Ok((value, warnings, published))
         }
         Err(err) => {
             warnings.extend(published);
@@ -243,7 +252,9 @@ impl Here {
     ) -> Result<Output, CliError> {
         // The write has landed, so a failed check only warns.
         match self.takeovers(writer, Some(batch)) {
-            Ok(warnings) => output.warnings.extend(warnings),
+            Ok(warnings) => output
+                .warnings
+                .extend(warnings.into_iter().map(|(_, warning)| warning)),
             Err(err) => output.warnings.push(format!(
                 "the write landed, but whether another Agent took over your Claims is unknown: {}",
                 err.message
@@ -253,21 +264,23 @@ impl Here {
     }
 
     /// A warning for each Claim another Agent took over from `writer`, among
-    /// the Issues `batch` wrote, or all of them.
+    /// the Issues `batch` wrote, or all of them, with the id of the Claim
+    /// that took it over.
     pub(crate) fn takeovers(
         &self,
         writer: &Actor,
         batch: Option<Uuid>,
-    ) -> Result<Vec<String>, CliError> {
+    ) -> Result<Vec<(Uuid, String)>, CliError> {
         let mut warnings = Vec::new();
         for held in self.store.taken_over_from(writer, batch)? {
             let key = self.store.issue(held.issue)?.and_then(|view| view.key);
-            warnings.push(format!(
+            let warning = format!(
                 "{} is now held by {} for {}; your Claim lapsed",
                 key.unwrap_or_else(|| held.issue.to_string()),
                 held.taker(),
                 held.on_behalf_of
-            ));
+            );
+            warnings.push((held.id, warning));
         }
         Ok(warnings)
     }

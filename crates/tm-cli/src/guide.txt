@@ -13,6 +13,20 @@ Start
   tm claim KEY               an Agent claims the Issue it takes on
   tm move KEY in_progress    move it when work starts, not when it ends
 
+Claims
+  A Claim tells other Agents an Issue is taken. It lasts 2 hours unless
+  .config/tm.toml sets claim_expiry, and every write from the session that
+  took it renews it. Once it lapses, any other Agent may take it over.
+  tm heartbeat               renews this session's Claims through quiet
+                             work, such as a long test run
+  tm claims                  who holds which Issue, and for how long
+  tm release KEY             gives a Claim up early
+  tm claim KEY --for 30m     a shorter Claim; --no-expiry for none
+  tm hook print claude       hooks that heartbeat after each tool use and
+                             release the session's Claims when it ends
+  Sessions of one Agent are told apart by the harness's session id, or
+  TM_SESSION when set.
+
 Keep it current
   The description holds the current plan. Change it with
     tm edit KEY --set description=-      (reads the text from stdin)

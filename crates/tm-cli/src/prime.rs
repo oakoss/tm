@@ -18,7 +18,7 @@ use crate::guide::HABITS;
 use crate::here;
 use crate::identity;
 use crate::list::{item, line_within, project_keys};
-use crate::output::{Output, local_time, printable};
+use crate::output::{Output, printable};
 
 /// Ready Issues shown; the rest are counted, so 200 Issues stay near 1k
 /// tokens.
@@ -94,7 +94,9 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
     let scheme = scheme_brief(&mut text, scheme);
 
     let session = actor.as_ref().and_then(Actor::session);
-    let claim_items = claims_sections(&mut text, &by_session(claims, session), &claimed, &projects);
+    let now_ms = claims.at_ms;
+    let sessions = by_session(claims, session);
+    let claim_items = claims_sections(&mut text, &sessions, &claimed, &projects, now_ms);
     section(
         &mut text,
         ("In progress", "none", "tm list category:active"),
@@ -207,12 +209,13 @@ fn claims_sections(
     claims: &SessionClaims,
     claimed: &[IssueView],
     projects: &HashMap<ProjectId, Option<String>>,
+    now_ms: i64,
 ) -> ClaimItems {
     let mine = with_issues(&claims.mine, claimed, |_| true);
     let others = with_issues(&claims.others, claimed, |_| true);
     let lapsed = with_issues(&claims.lapsed, claimed, claim::takeable);
     ClaimItems {
-        held: claims_section(text, "Your Claims:", token, "expires", &mine, projects),
+        held: claims_section(text, "Your Claims:", token, &mine, projects, now_ms),
         others: if others.is_empty() {
             Vec::new()
         } else {
@@ -220,9 +223,9 @@ fn claims_sections(
                 text,
                 "Held by your other sessions:",
                 session,
-                "expires",
                 &others,
                 projects,
+                now_ms,
             )
         },
         lapsed: if lapsed.is_empty() {
@@ -230,11 +233,11 @@ fn claims_sections(
         } else {
             claims_section(
                 text,
-                "Your lapsed Claims (another Agent may take these; tm claim KEY takes one back):",
+                "Your lapsed Claims (another Agent may take these; tm heartbeat KEY takes one back):",
                 token,
-                "lapsed",
                 &lapsed,
                 projects,
+                now_ms,
             )
         },
     }
@@ -276,31 +279,29 @@ fn with_issues<'a>(
 }
 
 /// `heading`, the first [`CLAIMS_SHOWN`] of `shown` in `text`, each named by
-/// `named` with `verb` before its expiry, and each as `--json` gives it.
+/// `named` with its expiry at `now_ms`, and each as `--json` gives it.
 fn claims_section(
     text: &mut String,
     heading: &str,
     named: fn(&Claim) -> String,
-    verb: &str,
     shown: &[(&Claim, &IssueView)],
     projects: &HashMap<ProjectId, Option<String>>,
+    now_ms: i64,
 ) -> Vec<Value> {
     let _ = writeln!(text, "{heading}");
     let mut claim_items = Vec::with_capacity(shown.len());
     for &(claim, view) in shown {
         if claim_items.len() < CLAIMS_SHOWN {
-            let expiry = claim
-                .expires_ms
-                .map_or_else(String::new, |ms| format!(", {verb} {}", local_time(ms)));
             let _ = writeln!(
                 text,
-                "  {}  ({}{expiry})",
+                "  {}  ({}, {})",
                 line_within(view, TITLE_BYTES),
-                named(claim)
+                named(claim),
+                claim::expiry(claim, now_ms)
             );
         }
         let mut entry = item(view, projects);
-        entry["claim"] = claim::claim_json(claim);
+        entry["claim"] = claim::claim_json(claim, now_ms);
         claim_items.push(entry);
     }
     if claim_items.is_empty() {
