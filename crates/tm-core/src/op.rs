@@ -139,6 +139,10 @@ pub enum ClaimAction {
         /// The Claim the taker saw as current; none when the Issue was unclaimed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prev: Option<Uuid>,
+        /// The harness session that took it, telling apart sessions that
+        /// share an Agent name; none when the harness names no session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
     },
     Release {
         claim: Uuid,
@@ -713,13 +717,21 @@ mod tests {
                 agent: "claude".into(),
                 ttl_ms: Some(7_200_000),
                 prev: None,
+                session: Some("s1".into()),
             },
         };
         let json = serde_json::to_string(&take).unwrap();
         assert_eq!(
             json,
-            r#"{"kind":"claim","action":{"action":"take","agent":"claude","ttl_ms":7200000}}"#
+            r#"{"kind":"claim","action":{"action":"take","agent":"claude","ttl_ms":7200000,"session":"s1"}}"#
         );
+        let earlier = r#"{"kind":"claim","action":{"action":"take","agent":"claude"}}"#;
+        assert!(matches!(
+            serde_json::from_str::<Change>(earlier).unwrap(),
+            Change::Claim {
+                action: ClaimAction::Take { session: None, .. }
+            }
+        ));
         assert_eq!(serde_json::from_str::<Change>(&json).unwrap(), take);
         assert_eq!(take.field(), Some("claim"));
         let forged = Change::SetField {

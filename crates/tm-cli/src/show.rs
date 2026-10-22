@@ -114,8 +114,9 @@ fn write_claim(text: &mut String, state: Option<&ClaimState>, view: &IssueView) 
         Some(ClaimState::Held(claim)) => {
             let _ = writeln!(
                 text,
-                "claimed by {} for {} (Claim {})",
-                claim.agent, claim.on_behalf_of, claim.id
+                "claimed by {} (Claim {})",
+                claim::holder(claim),
+                claim.id
             );
         }
         Some(ClaimState::Lapsed(claim)) => {
@@ -127,8 +128,9 @@ fn write_claim(text: &mut String, state: Option<&ClaimState>, view: &IssueView) 
             };
             let _ = writeln!(
                 text,
-                "Claim by {} for {} lapsed {at} (Claim {}){takeable}",
-                claim.agent, claim.on_behalf_of, claim.id
+                "Claim by {} lapsed {at} (Claim {}){takeable}",
+                claim::holder(claim),
+                claim.id
             );
         }
     }

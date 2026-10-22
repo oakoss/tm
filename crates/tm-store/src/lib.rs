@@ -144,14 +144,8 @@ pub enum StoreError {
     },
     #[error("only an Agent can take a Claim, and {actor} writes as a human")]
     NoAgent { actor: String },
-    #[error("Issue {issue} is held by {agent} for {on_behalf_of}{}", expires_ms.map_or_else(String::new, |ms| format!(", expiring at {ms} ms")))]
-    AlreadyClaimed {
-        issue: Uuid,
-        agent: String,
-        on_behalf_of: String,
-        claim: Uuid,
-        expires_ms: Option<i64>,
-    },
+    #[error("Issue {issue} is held by {} for {}{}", holder.taker(), holder.on_behalf_of, holder.expires_ms.map_or_else(String::new, |ms| format!(", expiring at {ms} ms")))]
+    AlreadyClaimed { issue: Uuid, holder: Box<Claim> },
     #[error("Claim {claim} does not hold Issue {issue}; {holder}")]
     NotClaimHolder {
         issue: Uuid,

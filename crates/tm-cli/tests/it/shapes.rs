@@ -456,6 +456,10 @@ fn import_from_beads_answers_in_a_fixed_shape() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the inline snapshot is the whole document"
+)]
 fn prime_answers_in_a_fixed_shape() {
     let (scratch, repo) = two_issues();
     let doc = run(&scratch, &repo, &["prime"]);
@@ -479,6 +483,7 @@ fn prime_answers_in_a_fixed_shape() {
           "total": 0
         },
         "lapsed_claims": [],
+        "other_session_claims": [],
         "project": "TM",
         "ready": {
           "issues": [
@@ -592,7 +597,8 @@ fn primes_claims_answer_in_a_fixed_shape() {
           "agent": "claude",
           "expires_ms": "[ms]",
           "id": "[id]",
-          "on_behalf_of": "jace"
+          "on_behalf_of": "jace",
+          "session": null
         },
         "fields": {
           "archived": false,

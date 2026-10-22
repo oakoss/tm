@@ -326,6 +326,110 @@ fn a_lapsed_claim_is_shown_as_lapsed_and_another_agent_takes_it() {
 }
 
 #[test]
+fn each_session_of_an_agent_sees_its_own_claims_and_the_others_apart() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    for title in ["one's", "two's", "no session's", "two's lapsing"] {
+        store
+            .create_issue(&Actor::human("jace"), project, "task", title)
+            .unwrap();
+    }
+    drop(store);
+    let out = as_agent(&scratch, &repo, &["claim", "TM-3"]);
+    assert!(out.status.success(), "{out:?}");
+    let in_session = |session: &str, args: &[&str]| {
+        tm_command()
+            .args(args)
+            .current_dir(&repo)
+            .env("TM_HOME", scratch.home())
+            .env("TM_ACTOR", "jace")
+            .env("TM_AGENT", "claude")
+            .env("TM_SESSION", session)
+            .env("GIT_CONFIG_GLOBAL", scratch.git_config())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let out = in_session("session-one-id", &["claim", "TM-1"]);
+    assert!(
+        text(&out.stdout).contains("claimed by claude (session session-one-id) for jace"),
+        "{out:?}"
+    );
+    let out = in_session("session-two-id", &["--json", "claim", "TM-2"]);
+    assert_eq!(doc(&out)["data"]["claim"]["session"], "session-two-id");
+
+    let out = in_session("session-two-id", &["--json", "claim", "TM-1"]);
+    assert_eq!(doc(&out)["error"], "already_claimed", "{out:?}");
+    assert_eq!(doc(&out)["session"], "session-one-id", "{out:?}");
+    assert!(
+        doc(&out)["message"]
+            .as_str()
+            .unwrap()
+            .contains("held by claude (session session-one-id) for jace"),
+        "{out:?}"
+    );
+    let out = in_session(
+        "session-two-id",
+        &["--json", "release", "TM-1", &Uuid::now_v7().to_string()],
+    );
+    assert_eq!(doc(&out)["holder"]["session"], "session-one-id", "{out:?}");
+    assert!(
+        doc(&out)["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("; claude (session session-one-id) holds it for jace"),
+        "{out:?}"
+    );
+
+    let prime = doc(&in_session("session-one-id", &["--json", "prime"]));
+    let keys = |items: &Value| -> Vec<String> {
+        items
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["key"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(
+        keys(&prime["data"]["claims"]),
+        ["TM-1", "TM-3"],
+        "a Claim with no session reads as every session's own"
+    );
+    assert_eq!(keys(&prime["data"]["other_session_claims"]), ["TM-2"]);
+    let out = in_session("session-one-id", &["prime"]);
+    let shown = text(&out.stdout);
+    assert!(shown.contains("Held by your other sessions:"), "{out:?}");
+    assert!(shown.contains("(session session-two-id"), "{out:?}");
+    let out = tm(&scratch, &repo, &["show", "TM-1"]);
+    assert!(
+        text(&out.stdout).contains("claimed by claude (session session-one-id) for jace (Claim "),
+        "{out:?}"
+    );
+
+    let out = in_session(
+        "session-two-id",
+        &["--json", "claim", "TM-4", "--for", "1s"],
+    );
+    wait_until(doc(&out)["data"]["claim"]["expires_ms"].as_i64().unwrap());
+    let lapsed = |session| {
+        let prime = doc(&in_session(session, &["--json", "prime"]));
+        keys(&prime["data"]["lapsed_claims"])
+    };
+    assert_eq!(
+        lapsed("session-one-id"),
+        Vec::<String>::new(),
+        "another session's"
+    );
+    assert_eq!(lapsed("session-two-id"), ["TM-4"]);
+    let out = tm(&scratch, &repo, &["show", "TM-4"]);
+    assert!(
+        text(&out.stdout).contains("Claim by claude (session session-two-id) for jace lapsed"),
+        "{out:?}"
+    );
+}
+
+#[test]
 fn reading_claims_needs_no_time_zone() {
     let scratch = Scratch::new();
     let (repo, mut store, project) = initialized(&scratch);
@@ -377,7 +481,8 @@ fn claim_release_and_doctor_answer_in_fixed_shapes() {
           "agent": "claude",
           "expires_ms": "[ms]",
           "id": "[id]",
-          "on_behalf_of": "jace"
+          "on_behalf_of": "jace",
+          "session": null
         },
         "issue": {
           "id": "[id]",

@@ -55,8 +55,9 @@ pub(crate) fn take(reference: &str, ttl_ms: Option<u64>) -> Result<Output, CliEr
         let key = key(here, issue)?;
         let shown = key.clone().unwrap_or_else(|| issue.to_string());
         let text = format!(
-            "{shown} claimed by {} for {}; release with: tm release {shown} {}\n",
-            claim.agent, claim.on_behalf_of, claim.id
+            "{shown} claimed by {}; release with: tm release {shown} {}\n",
+            holder(&claim),
+            claim.id
         );
         let data = json!({
             "issue": { "id": issue, "key": key },
@@ -98,7 +99,14 @@ pub(crate) fn claim_json(claim: &Claim) -> serde_json::Value {
         "agent": claim.agent,
         "on_behalf_of": claim.on_behalf_of,
         "expires_ms": claim.expires_ms,
+        "session": claim.session,
     })
+}
+
+/// Who holds `claim`, as text names it: the Agent, its session when the
+/// harness named one, and its human.
+pub(crate) fn holder(claim: &Claim) -> String {
+    format!("{} for {}", claim.taker(), claim.on_behalf_of)
 }
 
 /// Whether an Agent may take a lapsed Claim on `issue`: a take is refused on
