@@ -117,7 +117,7 @@ fn undo(
     });
     let output = Output::new(text, data);
     let output = match written {
-        Some(written) => here.undoable(output, written)?,
+        Some(written) => here.undoable(output, written, &identity.actor)?,
         None => output,
     };
     Ok((output, identity.warnings))

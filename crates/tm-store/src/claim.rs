@@ -2,6 +2,7 @@
 //! takes and releases by compare-and-set on the Claim they saw (ADR 0009).
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use tm_core::actor::{SessionId, is_session_id};
@@ -10,7 +11,7 @@ use tm_core::{Actor, Change, Op};
 use uuid::Uuid;
 
 use crate::apply::{issue_project, uuid_from};
-use crate::{Draft, Store, StoreError};
+use crate::{Draft, Provenance, Store, StoreError};
 
 /// Begins the `unapplied` reason of a take or release that lost to another,
 /// telling lost Claims apart from operations that do not fit.
@@ -26,6 +27,9 @@ pub struct Claim {
     /// writer.
     pub on_behalf_of: String,
     pub expires_ms: Option<i64>,
+    /// The duration a renewal extends it by; none for a Claim that never
+    /// lapses.
+    pub ttl_ms: Option<u64>,
     /// The harness session that took it; none when the harness named none.
     pub session: Option<String>,
 }
@@ -60,6 +64,28 @@ impl Claim {
     #[must_use]
     pub fn taken_in(&self, session: Option<&str>) -> bool {
         self.session.is_none() || self.session.as_deref() == session
+    }
+
+    /// Whether `actor` is the Agent, human and session that took it, exactly.
+    #[must_use]
+    pub fn taken_by(&self, actor: &Actor) -> bool {
+        actor.is_agent()
+            && self.agent == actor.name()
+            && self.on_behalf_of == actor.on_behalf_of().unwrap_or(actor.name())
+            && self.session.as_deref() == actor.session()
+    }
+
+    /// Whether a renewal at `at_ms` is due: a third of its duration has
+    /// passed since it was taken or last renewed, so renewals stay few.
+    #[must_use]
+    pub fn due(&self, at_ms: i64) -> bool {
+        match (
+            self.expires_ms,
+            self.ttl_ms.and_then(|ttl| i64::try_from(ttl).ok()),
+        ) {
+            (Some(expires_ms), Some(ttl)) => at_ms >= expires_ms.saturating_sub(ttl - ttl / 3),
+            _ => false,
+        }
     }
 }
 
@@ -233,38 +259,10 @@ impl Store {
     /// for a malformed row.
     pub fn claims_by(&self, agent: &str, on_behalf_of: &str) -> Result<AgentClaims, StoreError> {
         let now_ms = self.utc_ms()?;
-        let (lapsed, held) = self
-            .claims_of(agent, on_behalf_of)?
+        let (lapsed, held) = claims_of(&self.conn, agent, on_behalf_of)?
             .into_iter()
             .partition(|claim| claim.lapsed(now_ms));
         Ok(AgentClaims { held, lapsed })
-    }
-
-    fn claims_of(&self, agent: &str, on_behalf_of: &str) -> Result<Vec<Claim>, StoreError> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT issue_id, op_id, expires_ms, session FROM claims
-             WHERE agent = ?1 AND on_behalf_of = ?2 ORDER BY issue_id",
-        )?;
-        let rows = stmt.query_map(params![agent, on_behalf_of], |row| {
-            Ok((
-                row.get::<_, Vec<u8>>(0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                row.get::<_, Option<i64>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-            ))
-        })?;
-        rows.map(|row| {
-            let (issue, id, expires_ms, session) = row?;
-            Ok(Claim {
-                id: uuid_from(&id)?,
-                issue: uuid_from(&issue)?,
-                agent: agent.to_owned(),
-                on_behalf_of: on_behalf_of.to_owned(),
-                expires_ms,
-                session,
-            })
-        })
-        .collect()
     }
 
     fn claim_draft(
@@ -286,31 +284,234 @@ impl Store {
 pub(crate) fn current(conn: &Connection, issue: Uuid) -> Result<Option<Claim>, StoreError> {
     let row = conn
         .query_row(
-            "SELECT op_id, agent, on_behalf_of, expires_ms, session FROM claims
-             WHERE issue_id = ?1",
+            "SELECT issue_id, op_id, agent, on_behalf_of, expires_ms, ttl_ms, session
+             FROM claims WHERE issue_id = ?1",
             [issue.as_bytes()],
+            ClaimRow::read,
+        )
+        .optional()?;
+    row.map(ClaimRow::claim).transpose()
+}
+
+/// A `claims` row as selected in column order, before its ids are checked.
+struct ClaimRow {
+    issue: Vec<u8>,
+    id: Vec<u8>,
+    agent: String,
+    on_behalf_of: String,
+    expires_ms: Option<i64>,
+    ttl_ms: Option<i64>,
+    session: Option<String>,
+}
+
+impl ClaimRow {
+    fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            issue: row.get(0)?,
+            id: row.get(1)?,
+            agent: row.get(2)?,
+            on_behalf_of: row.get(3)?,
+            expires_ms: row.get(4)?,
+            ttl_ms: row.get(5)?,
+            session: row.get(6)?,
+        })
+    }
+
+    fn claim(self) -> Result<Claim, StoreError> {
+        Ok(Claim {
+            id: uuid_from(&self.id)?,
+            issue: uuid_from(&self.issue)?,
+            agent: self.agent,
+            on_behalf_of: self.on_behalf_of,
+            expires_ms: self.expires_ms,
+            ttl_ms: self
+                .ttl_ms
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| StoreError::Corrupt("a Claim's duration is negative".into()))?,
+            session: self.session,
+        })
+    }
+}
+
+impl Store {
+    /// Renews each Claim `writer`'s session took that is due, lapsed ones no
+    /// take has replaced among them; writes nothing when none is. `issue`'s
+    /// Claim is renewed even before it is due.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Clock`], or as [`Store::append_all`].
+    pub fn heartbeat(
+        &mut self,
+        writer: &Actor,
+        issue: Option<Uuid>,
+    ) -> Result<Vec<Op>, StoreError> {
+        let (now, _) = self.now()?;
+        let writer = writer.clone();
+        self.append_with(
+            Vec::new(),
+            |tx| {
+                renewals(tx, &writer, |claim| {
+                    Some(claim.issue) == issue || claim.due(now.utc_ms)
+                })
+            },
+            true,
+            None,
+        )
+    }
+
+    /// The Claims that now hold an Issue `batch` wrote, or any Issue when
+    /// `batch` is `None`, each taken over from a Claim `writer` had taken
+    /// there.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row or
+    /// payload.
+    pub fn taken_over_from(
+        &self,
+        writer: &Actor,
+        batch: Option<Uuid>,
+    ) -> Result<Vec<Claim>, StoreError> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT issue_id FROM claims WHERE ?1 IS NULL OR issue_id IN (
+               SELECT o.issue_id FROM ops o JOIN op_batches b ON b.op_id = o.op_id
+               WHERE b.batch = ?1)
+             ORDER BY issue_id",
+        )?;
+        let issues = stmt
+            .query_map([batch.map(|batch| batch.as_bytes().to_vec())], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })?
+            .map(|issue| uuid_from(&issue?))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut over = Vec::new();
+        for issue in issues {
+            if let Some(held) = current(&self.conn, issue)?
+                && !held.taken_by(writer)
+                && let Some(prev) = take_of(&self.conn, held.id)?.and_then(|take| take.prev)
+                && take_of(&self.conn, prev)?.is_some_and(|take| take.by(writer))
+            {
+                over.push(held);
+            }
+        }
+        Ok(over)
+    }
+}
+
+/// A take as the log records it.
+struct Take {
+    agent: String,
+    on_behalf_of: String,
+    session: Option<String>,
+    prev: Option<Uuid>,
+}
+
+impl Take {
+    fn by(&self, writer: &Actor) -> bool {
+        self.agent == writer.name()
+            && self.on_behalf_of == writer.on_behalf_of().unwrap_or(writer.name())
+            && self.session.as_deref() == writer.session()
+    }
+}
+
+/// The take that `claim` is the id of, if the log holds one.
+fn take_of(conn: &Connection, claim: Uuid) -> Result<Option<Take>, StoreError> {
+    let row = conn
+        .query_row(
+            "SELECT actor, on_behalf_of, payload FROM ops WHERE op_id = ?1",
+            [claim.as_bytes()],
             |row| {
                 Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, Option<i64>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
                 ))
             },
         )
         .optional()?;
-    row.map(|(id, agent, on_behalf_of, expires_ms, session)| {
-        Ok(Claim {
-            id: uuid_from(&id)?,
-            issue,
+    let Some((actor, on_behalf_of, payload)) = row else {
+        return Ok(None);
+    };
+    let change: Change = serde_json::from_str(&payload)
+        .map_err(|err| StoreError::Corrupt(format!("the take {claim}'s payload: {err}")))?;
+    Ok(match change {
+        Change::Claim {
+            action:
+                ClaimAction::Take {
+                    agent,
+                    session,
+                    prev,
+                    ..
+                },
+        } => Some(Take {
             agent,
-            on_behalf_of,
-            expires_ms,
+            on_behalf_of: on_behalf_of.unwrap_or(actor),
             session,
-        })
+            prev,
+        }),
+        _ => None,
     })
-    .transpose()
+}
+
+/// The Agent writing every draft of a local batch, whose session's Claims the
+/// batch renews; none for a batch that is empty, imported or mixed.
+pub(crate) fn renewing(drafts: &[(Draft, Option<Provenance>)]) -> Option<Actor> {
+    let (first, _) = drafts.first()?;
+    let alone = drafts
+        .iter()
+        .all(|(draft, provenance)| draft.actor == first.actor && provenance.is_none());
+    (alone && first.actor.is_agent()).then(|| first.actor.clone())
+}
+
+/// The Issues whose Claim `drafts` take, renew or release, which a renewal
+/// beside them must leave alone.
+pub(crate) fn claimed_in(drafts: &[(Draft, Option<Provenance>)]) -> HashSet<Uuid> {
+    drafts
+        .iter()
+        .filter(|(draft, _)| matches!(draft.change, Change::Claim { .. }))
+        .map(|(draft, _)| draft.subject)
+        .collect()
+}
+
+/// A renewal for each Claim `writer` took that expires and `renew` picks,
+/// lapsed ones no take has replaced among them.
+pub(crate) fn renewals(
+    conn: &Connection,
+    writer: &Actor,
+    renew: impl Fn(&Claim) -> bool,
+) -> Result<Vec<Draft>, StoreError> {
+    let held_for = writer.on_behalf_of().unwrap_or(writer.name());
+    let mut drafts = Vec::new();
+    for claim in claims_of(conn, writer.name(), held_for)? {
+        let (true, Some(ttl_ms)) = (claim.taken_by(writer) && renew(&claim), claim.ttl_ms) else {
+            continue;
+        };
+        let project =
+            issue_project(conn, claim.issue)?.ok_or(StoreError::UnknownIssue(claim.issue))?;
+        drafts.push(Draft {
+            actor: writer.clone(),
+            project,
+            subject: claim.issue,
+            change: Change::Claim {
+                action: ClaimAction::Renew {
+                    claim: claim.id,
+                    ttl_ms,
+                },
+            },
+        });
+    }
+    Ok(drafts)
+}
+
+fn claims_of(conn: &Connection, agent: &str, on_behalf_of: &str) -> Result<Vec<Claim>, StoreError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT issue_id, op_id, agent, on_behalf_of, expires_ms, ttl_ms, session
+         FROM claims WHERE agent = ?1 AND on_behalf_of = ?2 ORDER BY issue_id",
+    )?;
+    let rows = stmt.query_map(params![agent, on_behalf_of], ClaimRow::read)?;
+    rows.map(|row| row?.claim()).collect()
 }
 
 fn invalid(reason: &str) -> StoreError {
@@ -323,16 +524,43 @@ fn invalid(reason: &str) -> StoreError {
 
 /// Whether `action`, written at `at_ms`, may apply while `held` holds the
 /// Issue: a take only over the Claim it saw, unclaimed or lapsed by then, and
-/// a release only of the Claim it names, lapsed or not. Judged by the time the
-/// operation records, never the clock, so every Replica replays the same.
+/// a renewal or release only of the Claim it names, lapsed or not. Judged by
+/// the time the operation records, never the clock, so every Replica replays
+/// the same.
 fn stands(held: Option<&Claim>, action: &ClaimAction, at_ms: i64) -> bool {
     match action {
         ClaimAction::Take { prev, .. } => match held {
             None => prev.is_none(),
             Some(held) => *prev == Some(held.id) && held.lapsed(at_ms),
         },
-        ClaimAction::Release { claim } => held.is_some_and(|held| held.id == *claim),
+        ClaimAction::Renew { claim, .. } | ClaimAction::Release { claim } => {
+            held.is_some_and(|held| held.id == *claim)
+        }
     }
+}
+
+/// Refuses a renewal of a held Claim that never lapses, which would make it
+/// lapse; replay sets a pulled one aside as not fitting.
+fn renews_an_expiry(held: Option<&Claim>, action: &ClaimAction) -> Result<(), StoreError> {
+    match (action, held) {
+        (ClaimAction::Renew { claim, .. }, Some(held))
+            if held.id == *claim && held.expires_ms.is_none() =>
+        {
+            Err(invalid("cannot renew a Claim that does not expire"))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// When a Claim written at `op`'s time with `ttl_ms` lapses.
+fn expiry(op: &Op, ttl_ms: u64) -> Result<i64, StoreError> {
+    if ttl_ms == 0 {
+        return Err(invalid("cannot expire as it is taken"));
+    }
+    i64::try_from(ttl_ms)
+        .ok()
+        .and_then(|ttl| op.utc_ms.checked_add(ttl))
+        .ok_or_else(|| invalid(&format!("expiry {ttl_ms} ms is out of range")))
 }
 
 /// The Claim a take makes, held to the rules that need no state, so replay
@@ -355,22 +583,14 @@ fn taken(
             SessionId::RULE
         )));
     }
-    let expires_ms = match ttl_ms {
-        None => None,
-        Some(0) => return Err(invalid("cannot expire as it is taken")),
-        Some(ttl) => Some(
-            i64::try_from(ttl)
-                .ok()
-                .and_then(|ttl| op.utc_ms.checked_add(ttl))
-                .ok_or_else(|| invalid(&format!("expiry {ttl} ms is out of range")))?,
-        ),
-    };
+    let expires_ms = ttl_ms.map(|ttl| expiry(op, ttl)).transpose()?;
     Ok(Claim {
         id: op.op_id,
         issue: op.subject,
         agent: agent.to_owned(),
         on_behalf_of: op.on_behalf_of.clone().unwrap_or_else(|| op.actor.clone()),
         expires_ms,
+        ttl_ms,
         session: session.map(str::to_owned),
     })
 }
@@ -404,9 +624,15 @@ pub(crate) fn check(
     tx: &Transaction<'_>,
     issue: Uuid,
     action: &ClaimAction,
-    at_ms: i64,
+    (writer, at_ms): (&Actor, i64),
 ) -> Result<(), StoreError> {
     let held = current(tx, issue)?;
+    if let (ClaimAction::Renew { claim, .. }, Some(held)) = (action, &held)
+        && held.id == *claim
+        && !held.taken_by(writer)
+    {
+        return Err(invalid("can be renewed only by the session that took it"));
+    }
     if !stands(held.as_ref(), action, at_ms) {
         return Err(match (action, held) {
             (ClaimAction::Take { .. }, Some(held)) if held.lapsed(at_ms) => {
@@ -419,15 +645,19 @@ pub(crate) fn check(
             (ClaimAction::Take { .. }, None) => {
                 invalid("names a previous Claim, but the Issue is unclaimed")
             }
-            (ClaimAction::Release { claim }, held) => StoreError::NotClaimHolder {
-                issue,
-                claim: *claim,
-                holder: match held {
-                    None => Holder::Unclaimed,
-                    Some(held) if took_over(tx, &held, *claim)? => Holder::TookOver(Box::new(held)),
-                    Some(held) => Holder::Current(Box::new(ClaimState::at(held, at_ms))),
-                },
-            },
+            (ClaimAction::Release { claim } | ClaimAction::Renew { claim, .. }, held) => {
+                StoreError::NotClaimHolder {
+                    issue,
+                    claim: *claim,
+                    holder: match held {
+                        None => Holder::Unclaimed,
+                        Some(held) if took_over(tx, &held, *claim)? => {
+                            Holder::TookOver(Box::new(held))
+                        }
+                        Some(held) => Holder::Current(Box::new(ClaimState::at(held, at_ms))),
+                    },
+                }
+            }
         });
     }
     if matches!(action, ClaimAction::Take { .. }) {
@@ -484,8 +714,13 @@ pub(crate) fn apply(
             session,
             ..
         } => Some(taken(op, agent, *ttl_ms, session.as_deref())?),
-        ClaimAction::Release { .. } => None,
+        ClaimAction::Renew { .. } | ClaimAction::Release { .. } => None,
     };
+    let renewed = match action {
+        ClaimAction::Renew { ttl_ms, .. } => Some((expiry(op, *ttl_ms)?, *ttl_ms)),
+        _ => None,
+    };
+    renews_an_expiry(held.as_ref(), action)?;
     if !stands(held.as_ref(), action, op.utc_ms) {
         let holder = held.map_or_else(
             || "the Issue is unclaimed".to_owned(),
@@ -500,27 +735,39 @@ pub(crate) fn apply(
                     "it unclaimed"
                 }
             ),
+            ClaimAction::Renew { claim, .. } => {
+                format!("{LOST} a renewal of Claim {claim}, but {holder}")
+            }
             ClaimAction::Release { claim } => {
                 format!("{LOST} a release of Claim {claim}, but {holder}")
             }
         }));
     }
-    match claim {
+    match (claim, renewed) {
         // Replaces a lapsed Claim the take took over.
-        Some(claim) => tx.execute(
+        (Some(claim), _) => tx.execute(
             "INSERT OR REPLACE INTO claims
-               (issue_id, agent, on_behalf_of, op_id, expires_ms, session)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+               (issue_id, agent, on_behalf_of, op_id, expires_ms, ttl_ms, session)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 claim.issue.as_bytes(),
                 claim.agent,
                 claim.on_behalf_of,
                 claim.id.as_bytes(),
                 claim.expires_ms,
+                claim.ttl_ms.and_then(|ttl| i64::try_from(ttl).ok()),
                 claim.session
             ],
         )?,
-        None => tx.execute(
+        (None, Some((expires_ms, ttl_ms))) => tx.execute(
+            "UPDATE claims SET expires_ms = ?1, ttl_ms = ?2 WHERE issue_id = ?3",
+            params![
+                expires_ms,
+                i64::try_from(ttl_ms).ok(),
+                op.subject.as_bytes()
+            ],
+        )?,
+        (None, None) => tx.execute(
             "DELETE FROM claims WHERE issue_id = ?1",
             [op.subject.as_bytes()],
         )?,

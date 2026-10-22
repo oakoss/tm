@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use tm_core::ProjectId;
+use tm_core::{Actor, ProjectId};
 use tm_store::Store;
 use tm_store::workspace::{self, Found, Workspace, WorkspaceError};
 use uuid::Uuid;
@@ -232,9 +232,44 @@ pub(crate) fn canonical(cwd: &Path) -> Result<PathBuf, CliError> {
 }
 
 impl Here {
-    /// A write that changed nothing gets no undo hint, since following it fails.
-    pub(crate) fn undoable(&self, output: Output, batch: Uuid) -> Result<Output, CliError> {
+    /// A write that changed nothing gets no undo hint, since following it
+    /// fails. `writer` is warned of each Issue it wrote whose Claim another
+    /// Agent took over from it, as no write is protected yet (ADR 0009).
+    pub(crate) fn undoable(
+        &self,
+        mut output: Output,
+        batch: Uuid,
+        writer: &Actor,
+    ) -> Result<Output, CliError> {
+        // The write has landed, so a failed check only warns.
+        match self.takeovers(writer, Some(batch)) {
+            Ok(warnings) => output.warnings.extend(warnings),
+            Err(err) => output.warnings.push(format!(
+                "the write landed, but whether another Agent took over your Claims is unknown: {}",
+                err.message
+            )),
+        }
         Ok(output.batched(batch, self.store.can_undo(batch)?))
+    }
+
+    /// A warning for each Claim another Agent took over from `writer`, among
+    /// the Issues `batch` wrote, or all of them.
+    pub(crate) fn takeovers(
+        &self,
+        writer: &Actor,
+        batch: Option<Uuid>,
+    ) -> Result<Vec<String>, CliError> {
+        let mut warnings = Vec::new();
+        for held in self.store.taken_over_from(writer, batch)? {
+            let key = self.store.issue(held.issue)?.and_then(|view| view.key);
+            warnings.push(format!(
+                "{} is now held by {} for {}; your Claim lapsed",
+                key.unwrap_or_else(|| held.issue.to_string()),
+                held.taker(),
+                held.on_behalf_of
+            ));
+        }
+        Ok(warnings)
     }
 
     /// As [`mapped_project`], for the working directory.

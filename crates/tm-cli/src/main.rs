@@ -83,16 +83,28 @@ enum Command {
     Claim {
         /// The Issue's Key or full id.
         issue: String,
-        /// When the Claim lapses, such as 30m or 2h; another Agent may then
-        /// take the Issue. Without it, the Claim holds until released.
+        /// How long the Claim lasts without renewal, such as 30m or 2h;
+        /// another Agent may then take the Issue. Defaults to `claim_expiry`
+        /// in .config/tm.toml, else 2h.
         #[arg(long = "for", value_name = "DURATION", value_parser = claim::duration)]
         ttl_ms: Option<u64>,
+        /// Hold the Issue until released, for a job longer than any renewal
+        /// would keep up with.
+        #[arg(long, conflicts_with = "ttl_ms")]
+        no_expiry: bool,
     },
-    /// Release a Claim, named by the id `tm claim` printed.
+    /// Renew this session's Claims, as its writes do, through quiet work
+    /// such as a long read or test run; a hook may run it after each tool use.
+    Heartbeat {
+        /// Renew only this Issue's Claim, by Key or full id.
+        issue: Option<String>,
+    },
+    /// Release a Claim. The session holding it, and the human it is held
+    /// for, may leave out the id `tm claim` printed.
     Release {
         /// The Issue's Key or full id.
         issue: String,
-        claim: uuid::Uuid,
+        claim: Option<uuid::Uuid>,
     },
     /// List logged operations that did not apply, and Claims another take or
     /// release won.
@@ -314,7 +326,12 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             },
         }) => scheme_type(&Scheme::built_in(), &issue_type),
         Some(Command::Init { key, name, yes }) => init::run(&init::Init { key, name, yes }, json),
-        Some(Command::Claim { issue, ttl_ms }) => claim::take(&issue, ttl_ms),
+        Some(Command::Claim {
+            issue,
+            ttl_ms,
+            no_expiry,
+        }) => claim::take(&issue, ttl_ms, no_expiry),
+        Some(Command::Heartbeat { issue }) => claim::heartbeat(issue.as_deref()),
         Some(Command::Release { issue, claim }) => claim::release(&issue, claim),
         Some(Command::Comment { issue, body }) => comment::run(&issue, &body),
         Some(Command::Doctor) => doctor::run(),

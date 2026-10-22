@@ -599,7 +599,244 @@ fn doctor_lists_lost_claims_apart_from_operations_that_did_not_apply() {
         "{shown}"
     );
     assert!(
-        shown.contains("Claims another take or release won:\n"),
+        shown.contains("Claims another take, renewal or release won:\n"),
         "{shown}"
     );
+}
+
+fn wall_ms() -> i64 {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_claim_lasts_the_repo_files_expiry_unless_told_otherwise() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    for title in ["one", "two", "three"] {
+        store
+            .create_issue(&Actor::human("jace"), project, "task", title)
+            .unwrap();
+    }
+    drop(store);
+    let before = wall_ms();
+    let out = as_agent(&scratch, &repo, &["--json", "claim", "TM-1"]);
+    let expires = doc(&out)["data"]["claim"]["expires_ms"].as_i64().unwrap();
+    assert!(
+        (before + 7_200_000..=wall_ms() + 7_200_000).contains(&expires),
+        "2h by default: {out:?}"
+    );
+    let out = as_agent(&scratch, &repo, &["--json", "claim", "TM-2", "--no-expiry"]);
+    assert_eq!(
+        doc(&out)["data"]["claim"]["expires_ms"],
+        Value::Null,
+        "{out:?}"
+    );
+
+    let file = repo.join(".config/tm.toml");
+    let mut repo_file = std::fs::read_to_string(&file).unwrap();
+    repo_file.push_str("claim_expiry = \"off\"\n");
+    std::fs::write(&file, repo_file).unwrap();
+    let out = as_agent(&scratch, &repo, &["--json", "claim", "TM-3"]);
+    assert_eq!(
+        doc(&out)["data"]["claim"]["expires_ms"],
+        Value::Null,
+        "{out:?}"
+    );
+
+    let out = as_agent(
+        &scratch,
+        &repo,
+        &["claim", "TM-3", "--for", "1h", "--no-expiry"],
+    );
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+}
+
+#[test]
+fn a_heartbeat_renews_the_sessions_due_claims() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    store
+        .create_issue(&Actor::human("jace"), project, "task", "t")
+        .unwrap();
+    drop(store);
+    let out = tm(&scratch, &repo, &["--json", "heartbeat"]);
+    assert_eq!(doc(&out)["error"], "no_agent", "{out:?}");
+    let out = as_agent(&scratch, &repo, &["heartbeat"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(text(&out.stdout), "no Claim is due for renewal\n");
+
+    let out = as_agent(&scratch, &repo, &["--json", "claim", "TM-1", "--for", "3s"]);
+    let taken = doc(&out)["data"]["claim"]["expires_ms"].as_i64().unwrap();
+    wait_until(taken - 2_000 + 50);
+    let out = as_agent(&scratch, &repo, &["heartbeat"]);
+    assert_eq!(text(&out.stdout), "renewed TM-1\n", "{out:?}");
+    let renewed = claim_of(&scratch, &repo, "TM-1")["expires_ms"]
+        .as_i64()
+        .unwrap();
+    assert!(renewed > taken, "{renewed} > {taken}");
+
+    let out = as_agent(&scratch, &repo, &["--json", "heartbeat"]);
+    assert_eq!(doc(&out)["data"]["renewed"], json!([]), "{out:?}");
+    let out = as_agent(&scratch, &repo, &["--json", "heartbeat", "TM-1"]);
+    let id = doc(&tm(&scratch, &repo, &["--json", "show", "TM-1"]))["data"]["id"].clone();
+    assert_eq!(
+        doc(&out)["data"]["renewed"],
+        json!([{ "id": id, "key": "TM-1" }]),
+        "named, it is renewed before it is due: {out:?}"
+    );
+
+    wait_until(
+        claim_of(&scratch, &repo, "TM-1")["expires_ms"]
+            .as_i64()
+            .unwrap()
+            - 2_000
+            + 50,
+    );
+    let out = as_agent(&scratch, &repo, &["move", "TM-1", "in_progress"]);
+    assert!(
+        !text(&out.stdout).contains("Claim released"),
+        "a renewal riding on the move is not a release: {out:?}"
+    );
+}
+
+#[test]
+fn the_holder_or_the_human_it_is_held_for_releases_without_the_token() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    store
+        .create_issue(&Actor::human("jace"), project, "task", "t")
+        .unwrap();
+    drop(store);
+    let out = as_agent(&scratch, &repo, &["--json", "release", "TM-1"]);
+    let refused = doc(&out);
+    assert_eq!(refused["error"], "not_claim_holder", "{out:?}");
+    assert_eq!(refused["message"], "TM-1 is unclaimed");
+    assert!(refused["issue"].is_string(), "{out:?}");
+
+    assert!(
+        as_agent(&scratch, &repo, &["claim", "TM-1"])
+            .status
+            .success()
+    );
+    let out = as_named(&scratch, &repo, "codex", &["--json", "release", "TM-1"]);
+    let refused = doc(&out);
+    assert_eq!(refused["error"], "not_claim_holder", "{out:?}");
+    assert_eq!(
+        refused["message"],
+        "TM-1 is held by claude for jace, so name its Claim to release it"
+    );
+    assert_eq!(refused["fix"], "tm release TM-1 <claim>");
+    let out = as_agent(&scratch, &repo, &["release", "TM-1"]);
+    assert_eq!(text(&out.stdout), "released TM-1\n", "{out:?}");
+
+    assert!(
+        as_agent(&scratch, &repo, &["claim", "TM-1"])
+            .status
+            .success()
+    );
+    let out = tm(&scratch, &repo, &["release", "TM-1"]);
+    assert_eq!(text(&out.stdout), "released TM-1\n", "{out:?}");
+    assert_eq!(claim_of(&scratch, &repo, "TM-1"), Value::Null);
+}
+
+#[test]
+fn a_failed_takeover_check_after_a_write_is_only_a_warning() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    store
+        .create_issue(&Actor::human("jace"), project, "task", "t")
+        .unwrap();
+    let out = as_agent(&scratch, &repo, &["--json", "claim", "TM-1", "--for", "1s"]);
+    let taken = &doc(&out)["data"]["claim"];
+    wait_until(taken["expires_ms"].as_i64().unwrap());
+    assert!(
+        as_named(&scratch, &repo, "codex", &["claim", "TM-1"])
+            .status
+            .success()
+    );
+    // Unreadable, the old take fails the check that follows the write.
+    let mine = Uuid::parse_str(taken["id"].as_str().unwrap()).unwrap();
+    let conn = store.connection();
+    let trigger: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name = 'ops_immutable'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    conn.execute_batch("DROP TRIGGER ops_immutable").unwrap();
+    conn.execute(
+        "UPDATE ops SET payload = '{\"kind\":\"bogus\"}' WHERE op_id = ?1",
+        [mine.as_bytes()],
+    )
+    .unwrap();
+    conn.execute_batch(&trigger).unwrap();
+
+    let out = as_agent(&scratch, &repo, &["--json", "comment", "TM-1", "landed"]);
+    assert!(out.status.success(), "{out:?}");
+    let warnings = doc(&out)["warnings"].clone();
+    assert!(
+        warnings[0].as_str().unwrap().starts_with(
+            "the write landed, but whether another Agent took over your Claims is unknown: "
+        ),
+        "{warnings}"
+    );
+    let shown = doc(&tm(&scratch, &repo, &["--json", "show", "TM-1"]));
+    assert!(shown.to_string().contains("landed"), "{shown}");
+}
+
+#[test]
+fn writing_to_an_issue_taken_over_warns_its_old_holder() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    for title in ["taken over", "another"] {
+        store
+            .create_issue(&Actor::human("jace"), project, "task", title)
+            .unwrap();
+    }
+    drop(store);
+    let out = as_agent(&scratch, &repo, &["--json", "claim", "TM-1", "--for", "1s"]);
+    wait_until(doc(&out)["data"]["claim"]["expires_ms"].as_i64().unwrap());
+    assert!(
+        as_named(&scratch, &repo, "codex", &["claim", "TM-1"])
+            .status
+            .success()
+    );
+
+    let out = as_agent(
+        &scratch,
+        &repo,
+        &["--json", "comment", "TM-1", "still here"],
+    );
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        doc(&out)["warnings"],
+        json!(["TM-1 is now held by codex for jace; your Claim lapsed"])
+    );
+    for args in [
+        &["--json", "heartbeat"][..],
+        &["--json", "heartbeat", "TM-1"],
+        &["--json", "heartbeat", "TM-2"],
+    ] {
+        let out = as_agent(&scratch, &repo, args);
+        assert_eq!(doc(&out)["data"]["renewed"], json!([]), "{out:?}");
+        assert_eq!(
+            doc(&out)["warnings"],
+            json!(["TM-1 is now held by codex for jace; your Claim lapsed"]),
+            "{args:?}"
+        );
+    }
+    let out = as_named(
+        &scratch,
+        &repo,
+        "codex",
+        &["--json", "comment", "TM-1", "mine"],
+    );
+    assert_eq!(doc(&out)["warnings"], json!([]), "{out:?}");
 }

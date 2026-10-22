@@ -23,6 +23,7 @@ fn repo_file(workspace: Uuid, project: &str) -> String {
         workspace,
         project: project.into(),
         paths: Vec::new(),
+        claim_expiry: None,
     }
     .render()
 }
@@ -92,8 +93,10 @@ fn a_repo_file_reads_back_what_it_renders() {
             prefix: "crates/tm-tui".into(),
             project: "TUI".into(),
         }],
+        claim_expiry: Some(String::from("30m").try_into().unwrap()),
     };
     assert_eq!(RepoFile::parse(&file.render()).unwrap(), file);
+    assert_eq!(file.claim_ttl_ms(), Some(1_800_000));
     let plain = repo_file(file.workspace, "TM");
     assert_eq!(
         plain,
@@ -152,6 +155,7 @@ fn a_path_prefix_matches_whole_segments_and_the_longest_wins() {
                 project: "TUI".into(),
             },
         ],
+        claim_expiry: None,
     };
     assert_eq!(file.project_for(Path::new("")), "TM");
     assert_eq!(file.project_for(Path::new("docs")), "TM");
@@ -276,6 +280,29 @@ fn a_repo_file_that_cannot_be_checked_is_an_error_not_skipped() {
     fs::set_permissions(&config, fs::Permissions::from_mode(0o755)).unwrap();
     let err = result.unwrap_err();
     assert!(matches!(err, WorkspaceError::Io { .. }), "{err}");
+}
+
+#[test]
+fn a_repo_file_sets_how_long_a_claim_lasts() {
+    let id = Uuid::now_v7();
+    let with = |expiry: &str| {
+        RepoFile::parse(&format!(
+            "workspace = \"{id}\"\nproject = \"TM\"\nclaim_expiry = \"{expiry}\"\n"
+        ))
+    };
+    assert_eq!(
+        RepoFile::parse(&repo_file(id, "TM"))
+            .unwrap()
+            .claim_ttl_ms(),
+        Some(7_200_000),
+        "2h when unset"
+    );
+    assert_eq!(with("45m").unwrap().claim_ttl_ms(), Some(2_700_000));
+    assert_eq!(with("off").unwrap().claim_ttl_ms(), None);
+    for bad in ["0m", "2", "forever", "", "36501d"] {
+        let err = with(bad).unwrap_err();
+        assert!(err.contains("claim_expiry"), "{bad:?}: {err}");
+    }
 }
 
 #[test]

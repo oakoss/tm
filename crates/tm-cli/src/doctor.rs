@@ -30,7 +30,7 @@ pub(crate) fn run() -> Result<Output, CliError> {
     }
     for (title, rows) in [
         ("operations that did not apply", &problems),
-        ("Claims another take or release won", &lost),
+        ("Claims another take, renewal or release won", &lost),
     ] {
         if rows.is_empty() {
             continue;

@@ -132,7 +132,7 @@ fn write(
     let mut shown = show::render(here, id)?;
     shown.text = lines(&view, &changes, &ops);
     let shown = follow::report(&here.store, shown, starts, id)?;
-    let output = here.undoable(shown, ops[0].op_id)?;
+    let output = here.undoable(shown, ops[0].op_id, &identity.actor)?;
     Ok((output, identity.warnings))
 }
 
@@ -155,7 +155,16 @@ fn lines(view: &IssueView, changes: &[Change], ops: &[Op]) -> String {
             let _ = writeln!(text, "{name}  {line}");
         }
     }
-    if ops.iter().any(|op| op.kind == "claim") {
+    // A move to an active Status may also carry renewals of other Claims.
+    if ops.iter().any(|op| {
+        op.subject == view.id
+            && matches!(
+                op.change(),
+                Ok(Change::Claim {
+                    action: ClaimAction::Release { .. }
+                })
+            )
+    }) {
         let _ = writeln!(text, "{name}  Claim released");
     }
     if text.is_empty() {

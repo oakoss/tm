@@ -144,6 +144,12 @@ pub enum ClaimAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session: Option<String>,
     },
+    /// Extends the Claim `claim`, lapsed or not, to `ttl_ms` from when it is
+    /// written; it applies only while that Claim still holds the Issue's row.
+    Renew {
+        claim: Uuid,
+        ttl_ms: u64,
+    },
     Release {
         claim: Uuid,
     },
@@ -465,6 +471,12 @@ mod tests {
             Change::Claim {
                 action: ClaimAction::Release {
                     claim: Uuid::from_u128(6),
+                },
+            },
+            Change::Claim {
+                action: ClaimAction::Renew {
+                    claim: Uuid::from_u128(6),
+                    ttl_ms: 7_200_000,
                 },
             },
             Change::CreateProject {

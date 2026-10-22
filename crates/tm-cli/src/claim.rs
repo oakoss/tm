@@ -1,6 +1,8 @@
-//! `tm claim` and `tm release`: an Agent's hold on an Issue, and its token.
+//! `tm claim`, `tm heartbeat` and `tm release`: an Agent's hold on an Issue,
+//! and its token.
 
 use serde_json::json;
+use tm_core::Actor;
 use tm_store::{Claim, IssueView};
 use uuid::Uuid;
 
@@ -12,35 +14,29 @@ use crate::output::Output;
 
 /// A duration such as `90s`, `30m`, `2h` or `1d`, in milliseconds.
 pub(crate) fn duration(text: &str) -> Result<u64, String> {
-    let unit_ms = match text.bytes().last() {
-        Some(b's') => Some(1_000),
-        Some(b'm') => Some(60_000),
-        Some(b'h') => Some(3_600_000),
-        Some(b'd') => Some(86_400_000),
-        _ => None,
-    };
-    // The unit is one ASCII byte, so cutting it off stays on a char boundary.
-    let ms = unit_ms.and_then(|unit_ms| {
-        let count = &text[..text.len() - 1];
-        if count.is_empty() || !count.bytes().all(|b| b.is_ascii_digit()) {
-            return None;
-        }
-        count.parse::<u64>().ok()?.checked_mul(unit_ms)
-    });
-    match ms {
+    match tm_core::duration::parse_ms(text) {
         Some(0) => Err("a Claim cannot expire as it is taken".into()),
         Some(ms) => Ok(ms),
         None => Err(format!(
-            "expected a duration such as 30m or 2h, not {text:?}"
+            "expected a duration such as 30m or 2h, up to 36500d, not {text:?}"
         )),
     }
 }
 
-pub(crate) fn take(reference: &str, ttl_ms: Option<u64>) -> Result<Output, CliError> {
+pub(crate) fn take(
+    reference: &str,
+    ttl_ms: Option<u64>,
+    no_expiry: bool,
+) -> Result<Output, CliError> {
     here::write(|here| {
         let issue = here.issue(reference)?;
         let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
             .map_err(|message| CliError::new("no_identity", message))?;
+        let ttl_ms = if no_expiry {
+            None
+        } else {
+            ttl_ms.or_else(|| here.found.file.claim_ttl_ms())
+        };
         let claim = here
             .store
             .take(&identity.actor, issue, ttl_ms)
@@ -63,16 +59,57 @@ pub(crate) fn take(reference: &str, ttl_ms: Option<u64>) -> Result<Output, CliEr
             "issue": { "id": issue, "key": key },
             "claim": claim_json(&claim),
         });
-        let output = here.undoable(Output::new(text, data), claim.id)?;
+        let output = here.undoable(Output::new(text, data), claim.id, &identity.actor)?;
         Ok((output, identity.warnings))
     })
 }
 
-pub(crate) fn release(reference: &str, claim: Uuid) -> Result<Output, CliError> {
+/// Renews this session's due Claims, or one Issue's at once; `tm heartbeat`.
+pub(crate) fn heartbeat(reference: Option<&str>) -> Result<Output, CliError> {
+    here::write(|here| {
+        let issue = reference
+            .map(|reference| here.issue(reference))
+            .transpose()?;
+        let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
+            .map_err(|message| CliError::new("no_identity", message))?;
+        if !identity.actor.is_agent() {
+            return Err(CliError::new(
+                "no_agent",
+                format!(
+                    "only an Agent holds Claims, and {} writes as a human",
+                    identity.actor.name()
+                ),
+            )
+            .fix("TM_AGENT=<name> tm heartbeat"));
+        }
+        let ops = here.store.heartbeat(&identity.actor, issue)?;
+        let mut renewed = Vec::with_capacity(ops.len());
+        let mut shown = Vec::with_capacity(ops.len());
+        for op in &ops {
+            let key = key(here, op.subject)?;
+            shown.push(key.clone().unwrap_or_else(|| op.subject.to_string()));
+            renewed.push(json!({ "id": op.subject, "key": key }));
+        }
+        let text = if shown.is_empty() {
+            "no Claim is due for renewal\n".to_owned()
+        } else {
+            format!("renewed {}\n", shown.join(", "))
+        };
+        let mut output = Output::new(text, json!({ "renewed": renewed }));
+        output.warnings = here.takeovers(&identity.actor, None)?;
+        Ok((output, identity.warnings))
+    })
+}
+
+pub(crate) fn release(reference: &str, claim: Option<Uuid>) -> Result<Output, CliError> {
     here::write(|here| {
         let issue = here.issue(reference)?;
         let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
             .map_err(|message| CliError::new("no_identity", message))?;
+        let claim = match claim {
+            Some(claim) => claim,
+            None => own_claim(here, issue, &identity.actor, reference)?,
+        };
         let op = here.store.release(&identity.actor, issue, claim)?;
         let key = key(here, issue)?;
         let shown = key.clone().unwrap_or_else(|| issue.to_string());
@@ -86,6 +123,36 @@ pub(crate) fn release(reference: &str, claim: Uuid) -> Result<Output, CliError> 
             identity.warnings,
         ))
     })
+}
+
+/// The token of `issue`'s Claim, lapsed or not, when `writer` is the session
+/// holding it or the human it is held for (ADR 0009).
+fn own_claim(here: &Here, issue: Uuid, writer: &Actor, reference: &str) -> Result<Uuid, CliError> {
+    let held = here
+        .store
+        .claim_state(issue)?
+        .map(|state| state.claim().clone());
+    match held {
+        Some(held)
+            if held.taken_by(writer)
+                || (!writer.is_agent() && held.on_behalf_of == writer.name()) =>
+        {
+            Ok(held.id)
+        }
+        Some(held) => Err(CliError::new(
+            "not_claim_holder",
+            format!(
+                "{reference} is held by {}, so name its Claim to release it",
+                holder(&held)
+            ),
+        )
+        .with("issue", issue.to_string())
+        .fix(format!("tm release {reference} <claim>"))),
+        None => Err(
+            CliError::new("not_claim_holder", format!("{reference} is unclaimed"))
+                .with("issue", issue.to_string()),
+        ),
+    }
 }
 
 fn key(here: &Here, issue: Uuid) -> Result<Option<String>, CliError> {

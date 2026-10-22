@@ -130,7 +130,7 @@ Everything is soft-deleted: archived, hidden and restorable. `tm purge` is the o
 - `tm start CPL-42` claims the Issue for the Agent and keeps the human as Assignee. Its side effects (moving to the first active status, setting the Assignee, creating a branch named after the Key) are each configurable and opt-in.
 - A Claim protects the work: status, description, Checks and the Agent. Another Actor is refused with the claimant and expiry, unless it passes `--force`, which is recorded and notifies the claimant. Comments, links, Findings, attachments and fields such as priority stay open to anyone, and the claimant is notified of changes.
 - Within a Replica, every write carries the version it was based on; a conflicting change to the same field is refused with the current value. Changes that meet during sync merge by [ADR 0006](../decisions/0006-operation-merge-ordering-and-versioning.md) instead.
-- Claims expire after 2 hours by default (configurable, or disabled per Workspace). Any write renews them, as does `tm heartbeat` from a hook; `--for <duration>` and `--no-expiry` cover long jobs. Expiry clears the Agent, leaves the status alone and sends a Notification.
+- Claims expire after 2 hours by default (`claim_expiry` in `.config/tm.toml`, or `off`). Any write from the holding session renews its Claims, as does `tm heartbeat` from a hook, and `tm heartbeat TM-n` renews one at once; `--for <duration>` and `--no-expiry` cover long jobs. Expiry leaves the status alone and writes nothing: the Claim stops holding, a todo Issue returns to the ready queue, and the holder's next write or heartbeat resumes it unless another Agent took it over. Then that heartbeat, or a write to the Issue, warns the old holder ([ADR 0009](../decisions/0009-claims-apply-by-compare-and-set-and-links-are-keyed-canonically.md)).
 - `tm handoff CPL-42 --to <agent> "<note>"` transfers a Claim with context.
 - **Path Claims** (`--paths`, or the Issue's file-path field) warn, not block, when another agent is about to edit the same files.
 - `tm ready --claim` atomically takes the next ready Issue.
@@ -167,7 +167,6 @@ Off by default. An Issue can carry **Checks**: commands with an expected result.
   - a PR opening moves the Issue to review (with the GitHub provider)
   - all Sub-tasks done notifies the Assignee
   - a Finding going stale notifies the reviewed Issue's author
-  - Claim expiry releases the Claim and records a comment
   - all children done moves the parent to review (starting the parent is built in; see Links and gates)
   - blocker cleared notifies the Assignee
   - stale in progress flags active Issues with no activity for N days

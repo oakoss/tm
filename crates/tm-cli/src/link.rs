@@ -80,7 +80,7 @@ fn write(
             "present": present,
         },
     });
-    let output = here.undoable(Output::new(text, data), op.op_id)?;
+    let output = here.undoable(Output::new(text, data), op.op_id, &identity.actor)?;
     Ok((output, identity.warnings))
 }
 

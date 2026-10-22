@@ -3,7 +3,7 @@
 
 /// Stamped into `PRAGMA user_version`; a store with a different value is
 /// rebuilt on open.
-pub(crate) const PROJECTION_VERSION: i64 = 9;
+pub(crate) const PROJECTION_VERSION: i64 = 10;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
 /// Until tm v1 is released the log changes in place (ADR 0010).
@@ -297,6 +297,7 @@ CREATE TABLE claims (
   on_behalf_of TEXT NOT NULL,
   op_id BLOB NOT NULL,
   expires_ms INTEGER,
+  ttl_ms INTEGER,
   session TEXT
 ) STRICT;
 ";

@@ -9,7 +9,7 @@
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value as Json;
-use tm_core::op::COMMENTS_FIELD;
+use tm_core::op::{COMMENTS_FIELD, ClaimAction};
 use tm_core::scheme::priority_rank;
 use tm_core::{Change, Hlc, Op, ProjectId, link};
 use uuid::Uuid;
@@ -174,10 +174,14 @@ pub(crate) fn apply(
             target,
             present,
         } => link(tx, op.subject, &link_type, target, present, &version)?,
-        // A lost take or release changes nothing, so it is not activity either.
+        // A lost take or release changes nothing, so it is not activity
+        // either; nor is a renewal, which a write to another Issue carries.
         Change::Claim { action } => {
             if let Some(lost) = crate::claim::apply(tx, op, &action)? {
                 return Ok(Some(lost));
+            }
+            if matches!(action, ClaimAction::Renew { .. }) {
+                return Ok(None);
             }
         }
         Change::Retract { comment, retracted } => {

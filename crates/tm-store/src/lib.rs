@@ -1012,6 +1012,14 @@ impl Store {
             draft.change.validate()?;
             drafts.push((draft, None));
         }
+        if let Some(writer) = claim::renewing(&drafts) {
+            let claimed = claim::claimed_in(&drafts);
+            let due = |held: &Claim| held.due(now.0.utc_ms) && !claimed.contains(&held.issue);
+            for draft in claim::renewals(&tx, &writer, due)? {
+                draft.change.validate()?;
+                drafts.push((draft, None));
+            }
+        }
         // A batch of several writers has no one undoer to try it as. An import
         // writes a batch per record and names each, so none is probed.
         let writer = drafts

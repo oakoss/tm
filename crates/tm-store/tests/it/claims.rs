@@ -167,6 +167,7 @@ fn a_session_name_is_shown_whole_and_a_harness_id_by_its_last_eight_digits() {
             agent: "claude".into(),
             on_behalf_of: "jace".into(),
             expires_ms: None,
+            ttl_ms: None,
             session: Some(session.into()),
         }
         .taker()
@@ -193,6 +194,7 @@ fn a_claim_with_no_session_reads_as_taken_in_every_session() {
         agent: "claude".into(),
         on_behalf_of: "jace".into(),
         expires_ms: None,
+        ttl_ms: None,
         session: session.map(str::to_owned),
     };
     assert!(claim(None).taken_in(Some("s1")));

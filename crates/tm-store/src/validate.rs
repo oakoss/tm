@@ -90,7 +90,7 @@ pub(crate) fn check(
         }
         // At the time the operation records, so replay reaches the same verdict.
         Change::Claim { action } => {
-            crate::claim::check(tx, issue_id, &action, writing.at_ms)?;
+            crate::claim::check(tx, issue_id, &action, (writing.actor, writing.at_ms))?;
             Ok(Change::Claim { action })
         }
         Change::Retract { comment, retracted } => {
