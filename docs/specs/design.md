@@ -75,7 +75,7 @@ Key, type, title, description, status, Assignee, reporter, Agent and Claim, pare
 
 - **Default link types**: blocks, relates to, duplicates, derived from, causes, supersedes. Custom types have an outward name, an inward name and readiness behaviour (blocks, waits for all children, conditional on failure, or none).
 - **Gates** wait on outside events: a PR merging, CI passing, a timer, or a human resolving it.
-- Parent and child is separate from links and governed by the Scheme.
+- Parent and child is separate from links and governed by the Scheme. `tm list parent:KEY` lists an Issue's children, and `tm show` counts them by Status, finished work first, with archived children counted apart.
 - **Parents follow children.** When `tm move` or `tm create` puts a child in an active Status, each parent above it still in triage or todo moves to the first active Status of its own Workflow, in the same batch, so one undo reverts both; the output names each one. A parent never moves backwards and is never closed for its children, since it can carry work of its own: when a child finishes the last open one, tm prints the move that closes the parent, and when a child is open under a finished parent, the move that reopens it. Only these direct writes follow; an import or a merge records what happened elsewhere.
 - **Snooze**: `tm defer CPL-42 --until <date>` or `--until-activity` hides an Issue from the ready queue until the date or the next comment or change.
 - Links that would create a blocking cycle are refused, since a cycle silently empties the ready queue.

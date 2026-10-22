@@ -1,7 +1,7 @@
 //! Filters run end to end: text in, matching Issues out, in order.
 
 use serde_json::{Value, json};
-use tm_core::filter::{Context, FilterError};
+use tm_core::filter::{Context, FilterError, Span};
 use tm_core::{Change, Hlc};
 use tm_store::{Store, StoreError};
 use uuid::Uuid;
@@ -327,6 +327,106 @@ fn every_status_is_triage_when_the_scheme_defines_no_types() {
     empty.types.clear();
     let store = store.with_scheme(empty);
     assert_eq!(find(&store, "category:triage"), [typed]);
+}
+
+#[test]
+fn parent_names_an_issue_by_key_or_id() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let epic = issue(&mut store, &clock, &[], &[]);
+    let other = issue(&mut store, &clock, &[], &[]);
+    let under = |above: Uuid| [("parent", json!(above.to_string()))];
+    let child = issue(&mut store, &clock, &under(epic), &[]);
+    let archived = issue(
+        &mut store,
+        &clock,
+        &[under(epic)[0].clone(), ("archived", json!(true))],
+        &[],
+    );
+    let cousin = issue(&mut store, &clock, &under(other), &[]);
+    let key = store.issue(epic).unwrap().unwrap().key.unwrap();
+
+    assert_eq!(find(&store, &format!("parent:{key}")), [child]);
+    assert_eq!(
+        find(&store, &format!("Parent:{}", key.to_lowercase())),
+        [child]
+    );
+    assert_eq!(find(&store, &format!("parent:{epic}")), [child]);
+    assert_eq!(
+        sorted(find(&store, &format!("parent:{epic} archived:true,false"))),
+        sorted(vec![child, archived])
+    );
+    assert_eq!(
+        sorted(find(&store, &format!("-parent:{key}"))),
+        sorted(vec![epic, other, cousin])
+    );
+    assert_eq!(
+        sorted(find(&store, &format!("parent:{key},{other}"))),
+        sorted(vec![child, cousin])
+    );
+    assert_eq!(
+        sorted(find(&store, "has:parent")),
+        sorted(vec![child, cousin])
+    );
+    let childless = store.issue(child).unwrap().unwrap().key.unwrap();
+    for reference in [child.to_string(), childless] {
+        assert_eq!(
+            find(&store, &format!("parent:{reference}")),
+            Vec::<Uuid>::new()
+        );
+    }
+}
+
+#[test]
+fn parent_finds_the_children_of_a_parent_missing_from_the_log() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let orphan = issue(&mut store, &clock, &[], &[]);
+    let gone = Uuid::now_v7();
+    store
+        .connection()
+        .execute(
+            "UPDATE issues SET parent_id = ?1 WHERE id = ?2",
+            [gone.as_bytes(), orphan.as_bytes()],
+        )
+        .unwrap();
+    assert_eq!(find(&store, &format!("parent:{gone}")), [orphan]);
+}
+
+#[test]
+fn a_parent_that_does_not_exist_is_named() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let (first, _) = store.create_issue(&jace(), PROJECT, "task", "t").unwrap();
+    let key = store.issue(first).unwrap().unwrap().key.unwrap();
+    let missing = Uuid::now_v7().to_string();
+    let named = |filter: &str| match store.find(filter, ME).unwrap_err() {
+        StoreError::Filter(FilterError::NoIssue { value, span }) => (value, span),
+        err => panic!("{filter}: {err}"),
+    };
+    assert_eq!(named("parent:CPL-9"), ("CPL-9".into(), Span(7, 12)));
+    assert_eq!(named("parent:CPL-8,CPL-9"), ("CPL-8".into(), Span(7, 12)));
+    assert_eq!(
+        named(&format!("status:todo parent:{missing}")),
+        (missing, Span(19, 55))
+    );
+    let after = 7 + key.len() + 1;
+    assert_eq!(
+        named(&format!("parent:{key},CPL-99")),
+        ("CPL-99".into(), Span(after, after + 6))
+    );
+    let err = store.find("stauts:todo parent:CPL-9", ME).unwrap_err();
+    assert!(
+        matches!(err, StoreError::Filter(FilterError::UnknownField { .. })),
+        "a mistyped field is named before a missing parent: {err}"
+    );
+    let err = store.find("parent:nope", ME).unwrap_err();
+    assert!(
+        matches!(err, StoreError::Filter(FilterError::InvalidValue { .. })),
+        "{err}"
+    );
 }
 
 #[test]

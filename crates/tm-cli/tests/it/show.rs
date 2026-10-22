@@ -51,6 +51,81 @@ fn in_zone(utc_ms: i64, zone: &str) -> String {
         .to_string()
 }
 
+fn set(field: &str, value: Value) -> Change {
+    Change::SetField {
+        field: field.into(),
+        label: String::new(),
+        value,
+        value_label: None,
+    }
+}
+
+#[test]
+fn show_counts_children_by_status_finished_first_and_archived_apart() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let jace = Actor::human("jace");
+    let (epic, _) = store.create_issue(&jace, project, "epic", "E").unwrap();
+    let (_, shown) = show(&scratch, &repo, &epic.to_string());
+    assert_eq!(
+        shown["data"]["children"],
+        json!({ "by_status": [], "archived": 0 })
+    );
+    let shown = text(&tm(&scratch, &repo, &["show", &epic.to_string()]).stdout);
+    assert!(!shown.contains("Children"), "{shown}");
+
+    let statuses = [
+        "todo",
+        "cancelled",
+        "in_progress",
+        "done",
+        "todo",
+        "in_review",
+        "triage",
+        "done",
+    ];
+    let under = |parent: Uuid| set("parent", json!(parent.to_string()));
+    let mut last = epic;
+    for status in statuses {
+        let (child, _) = store.create_issue(&jace, project, "task", "c").unwrap();
+        change(&mut store, project, child, under(epic));
+        change(&mut store, project, child, set("status", json!(status)));
+        last = child;
+    }
+    let shown = text(&tm(&scratch, &repo, &["show", &epic.to_string()]).stdout);
+    let counts = "2 done, 1 in_review, 1 in_progress, 2 todo, 1 triage, 1 cancelled";
+    assert!(
+        shown.contains(&format!("\nChildren: {counts}\n")),
+        "{shown}"
+    );
+    change(&mut store, project, last, set("archived", json!(true)));
+    let shown = text(&tm(&scratch, &repo, &["show", &epic.to_string()]).stdout);
+    assert!(
+        shown.contains(
+            "\nChildren: 1 done, 1 in_review, 1 in_progress, 2 todo, 1 triage, 1 cancelled \
+             (1 archived)\n"
+        ),
+        "{shown}"
+    );
+    let (_, shown) = show(&scratch, &repo, &epic.to_string());
+    let counts: Vec<(String, u64)> = shown["data"]["children"]["by_status"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            let status = entry["status"].as_str().unwrap().to_owned();
+            (status, entry["count"].as_u64().unwrap())
+        })
+        .collect();
+    assert_eq!(counts[3], ("todo".to_owned(), 2));
+    assert_eq!(shown["data"]["children"]["archived"], 1);
+
+    let (lone, _) = store.create_issue(&jace, project, "epic", "L").unwrap();
+    change(&mut store, project, last, under(lone));
+    let shown = text(&tm(&scratch, &repo, &["show", &lone.to_string()]).stdout);
+    assert!(shown.contains("\nChildren: 1 archived\n"), "{shown}");
+}
+
 #[test]
 fn show_prints_times_in_local_time_and_text_across_lines() {
     let scratch = Scratch::new();
@@ -118,17 +193,7 @@ fn show_gives_an_issues_fields_parent_labels_and_claim() {
     let (child, _) = store
         .create_issue(&Actor::human("jace"), project, "task", "Write the docs")
         .unwrap();
-    change(
-        &mut store,
-        project,
-        child,
-        Change::SetField {
-            field: "parent".into(),
-            label: String::new(),
-            value: json!(parent.to_string()),
-            value_label: None,
-        },
-    );
+    change(&mut store, project, child, set("parent", json!(parent)));
     change(
         &mut store,
         project,
@@ -160,6 +225,10 @@ fn show_gives_an_issues_fields_parent_labels_and_claim() {
     {
       "data": {
         "category": "todo",
+        "children": {
+          "archived": 0,
+          "by_status": []
+        },
         "claim": {
           "agent": "claude",
           "expires_in_ms": null,

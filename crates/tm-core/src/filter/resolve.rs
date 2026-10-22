@@ -2,6 +2,8 @@
 //! Names and enumerated values match without case and come out in their
 //! canonical spelling, so a store compares them exactly.
 
+use uuid::Uuid;
+
 use super::suggest::did_you_mean;
 use super::{Direction, FilterError, Query, Span, Term, Value};
 use crate::scheme::{Category, Field, FieldType, PRIORITY_RANKS, Scheme};
@@ -15,7 +17,7 @@ pub struct Context<'a> {
 /// Where a condition reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
-    /// A text column on `issues`, NULL while unset.
+    /// A column on `issues`, NULL while unset.
     Column(&'static str),
     /// An integer column on `issues` that always holds a value.
     IntColumn(&'static str),
@@ -32,6 +34,8 @@ pub enum Literal {
     Name(String),
     Number(f64),
     Integer(i64),
+    /// An Issue, compared by id.
+    Issue(Uuid),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -106,6 +110,8 @@ enum Kind {
     MultiSelect(String, Vec<String>),
     Labels,
     Category,
+    /// An Issue, named by id; a store turns Keys into ids before resolving.
+    Issue(Target),
     /// Known, but filtering by value arrives later; `has:`/`no:` still work
     /// when there is a target.
     Later(&'static str, Option<Target>),
@@ -186,11 +192,7 @@ fn filterable(scheme: &Scheme) -> Vec<Filterable> {
             Kind::Person(Target::Column("reporter")),
             Some((SortTarget::Name("reporter"), false)),
         ),
-        field(
-            "parent",
-            Kind::Later("filtering by parent", Some(Target::Column("parent_id"))),
-            None,
-        ),
+        field("parent", Kind::Issue(Target::Column("parent_id")), None),
         field("key", Kind::Later("filtering by Key", None), None),
         field("agent", Kind::Later("filtering by Agent", None), None),
         field("claim", Kind::Later("filtering by Claim", None), None),
@@ -263,7 +265,8 @@ fn scheme_field(def: &Field) -> Filterable {
     Filterable { name, kind, sort }
 }
 
-/// Checks `query` against `scheme`.
+/// Checks `query` against `scheme`. A `parent:` value must already be an
+/// Issue's id: the caller looks Keys up, as `Store::find` does.
 ///
 /// # Errors
 ///
@@ -342,15 +345,16 @@ fn present_target(def: &Filterable, span: Span) -> Result<Target, FilterError> {
                 span,
             })
         }
-        Kind::Enumerated { target, .. } | Kind::Person(target) | Kind::Boolean(target) => {
-            Ok(target.clone())
-        }
+        Kind::Enumerated { target, .. }
+        | Kind::Person(target)
+        | Kind::Boolean(target)
+        | Kind::Issue(target)
+        | Kind::Later(_, Some(target)) => Ok(target.clone()),
         Kind::Number(field) | Kind::Date(field) | Kind::Select(field, _) => {
             Ok(Target::SchemeValue(field.clone()))
         }
         Kind::MultiSelect(field, _) => Ok(Target::Set(field.clone())),
         Kind::Labels => Ok(Target::Set("labels".into())),
-        Kind::Later(_, Some(target)) => Ok(target.clone()),
     }
 }
 
@@ -362,9 +366,10 @@ fn match_condition(
     context: Context<'_>,
 ) -> Result<Condition, FilterError> {
     let target = match &def.kind {
-        Kind::Enumerated { target, .. } | Kind::Person(target) | Kind::Boolean(target) => {
-            target.clone()
-        }
+        Kind::Enumerated { target, .. }
+        | Kind::Person(target)
+        | Kind::Boolean(target)
+        | Kind::Issue(target) => target.clone(),
         Kind::Number(field) | Kind::Date(field) | Kind::Select(field, _) => {
             Target::SchemeValue(field.clone())
         }
@@ -403,6 +408,9 @@ fn literal(
                 .map(|me| Literal::Name(me.to_owned()))
                 .ok_or(FilterError::NoIdentity { span });
         }
+        (Kind::Issue(_), Value::Me) => {
+            return Err(invalid(def, "@me", span, "an Issue's Key or id"));
+        }
         (_, Value::Me) => return Err(invalid(def, "@me", span, "a value, not a person")),
         (_, Value::Text(text)) if text.trim().is_empty() => {
             return Err(invalid(def, text, span, "a non-empty value"));
@@ -439,6 +447,9 @@ fn literal(
             Ok(Literal::Text(choose(def, text, span, ids)?))
         }
         Kind::Labels => Ok(Literal::Text(text.trim().to_lowercase())),
+        Kind::Issue(_) => Uuid::parse_str(text.trim())
+            .map(Literal::Issue)
+            .map_err(|_| invalid(def, text, span, "an Issue's Key or id")),
         Kind::Category | Kind::Later(..) => Err(invalid(def, text, span, "a supported field")),
     }
 }
@@ -610,7 +621,7 @@ mod tests {
 
     #[test]
     fn built_in_fields_without_a_filter_yet_say_so() {
-        for filter in ["key:CPL-1", "agent:codex", "claim:x", "parent:x"] {
+        for filter in ["key:CPL-1", "agent:codex", "claim:x"] {
             let err = run(filter).unwrap_err();
             assert!(
                 matches!(err, FilterError::Unsupported { .. }),
@@ -623,6 +634,26 @@ mod tests {
                 matches!(err, FilterError::Unsupported { .. }),
                 "{filter}: {err:?}"
             );
+        }
+    }
+
+    #[test]
+    fn parent_takes_an_issue_id_and_refuses_anything_else() {
+        let id = Uuid::from_u128(7);
+        assert_eq!(
+            run(&format!("-parent:{id}")).unwrap().conditions,
+            [Condition::Match {
+                target: Target::Column("parent_id"),
+                values: vec![Literal::Issue(id)],
+                negated: true,
+            }]
+        );
+        for filter in ["parent:x", "parent:@me"] {
+            let err = run(filter).unwrap_err();
+            let FilterError::InvalidValue { expected, .. } = &err else {
+                panic!("{filter}: {err:?}");
+            };
+            assert_eq!(expected, "an Issue's Key or id", "{filter}");
         }
     }
 
@@ -650,6 +681,7 @@ mod tests {
             ("has:labels", Target::Set("labels".into())),
             ("has:tags", Target::Set("tags".into())),
             ("has:title", Target::Column("title")),
+            ("has:parent", Target::Column("parent_id")),
         ];
         for (filter, target) in cases {
             assert_eq!(

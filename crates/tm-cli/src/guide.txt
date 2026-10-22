@@ -7,7 +7,9 @@ Find work
   tm prime                   who you write as, your Claims, the work in
                              progress and the ready queue
   tm ready                   the work that can start now, most urgent first
-  tm show KEY                one Issue: its fields, Links and comments
+  tm show KEY                one Issue: its fields, Links, children by
+                             Status and comments
+  tm list parent:KEY         an Issue's children
 
 Start
   tm start KEY               when work starts, not when it ends: an Agent

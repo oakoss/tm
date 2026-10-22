@@ -59,6 +59,7 @@ fn sql_value(value: &Literal) -> Sql {
         Literal::Text(text) | Literal::Name(text) => Sql::Text(text.clone()),
         Literal::Number(number) => Sql::Real(*number),
         Literal::Integer(integer) => Sql::Integer(*integer),
+        Literal::Issue(id) => Sql::Blob(id.as_bytes().to_vec()),
     }
 }
 
