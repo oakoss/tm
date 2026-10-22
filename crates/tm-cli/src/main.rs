@@ -457,7 +457,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Show { issue }) => show::run(&issue),
         Some(Command::History { issue, limit, all }) => history::run(&issue, limit, all),
         Some(Command::Undo { batch, dry_run }) => undo::run(batch.as_deref(), dry_run),
-        Some(Command::Export { dated: true }) => export::dated(),
+        Some(Command::Export { dated: true }) => backup::dated(),
         Some(Command::Export { dated: false }) => unreachable!("main writes the export itself"),
         Some(Command::Import {
             file,

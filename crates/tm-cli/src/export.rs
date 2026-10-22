@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::error::{CliError, RECORDS_FIX};
 use crate::output::{self, Output};
-use crate::{backup, here, identity};
+use crate::{here, identity};
 
 /// Writes the export to stdout. It is JSONL in either mode, so nothing else
 /// is printed; a failure before it is written is the usual error.
@@ -45,50 +45,6 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Writes the export to tm's home as `exports/<Workspace>/<local date>.jsonl`,
-/// replacing that day's, unless it matches the newest one there, then
-/// collects old ones (ADR 0015).
-pub(crate) fn dated() -> Result<Output, CliError> {
-    let here = here::open()?;
-    // Held from before the log is read until the rename, so an export that
-    // read an older log cannot land after a newer one.
-    let exports = backup::Exports::lock(&here.home, here.workspace.id)?;
-    let checked = stage(&here, exports.dir())?;
-    let today = jiff::Zoned::now().date();
-    let newest = newest_export(exports.dir(), today)?;
-    let ops = checked.ops;
-    // Kept only while it would still restore, header included.
-    let unchanged = newest
-        .as_ref()
-        .and_then(|newest| fs::read(newest).ok())
-        .is_some_and(|held| {
-            tm_store::read_export(&mut held.as_slice()).ok() == Some((here.workspace.id, ops))
-                && after_header(&held) == after_header(&checked.bytes)
-        });
-    let file = if let (true, Some(newest)) = (unchanged, newest) {
-        newest
-    } else {
-        let target = exports.file(today);
-        checked.persist(&target)?;
-        target
-    };
-    let text = if unchanged {
-        format!("Nothing changed since {}; wrote nothing\n", file.display())
-    } else {
-        format!("Wrote {} ({ops} operations)\n", file.display())
-    };
-    let mut output = Output::new(
-        text,
-        json!({ "file": file.display().to_string(), "ops": ops, "written": !unchanged }),
-    );
-    let policy = backup::policy(&here.home);
-    output.warnings = exports.collect(today, policy.as_ref().ok());
-    output
-        .warnings
-        .extend(policy.err().as_deref().map(backup::unread));
-    Ok(output)
-}
-
 /// An export staged beside the backups, and read back with `tm import`'s
 /// check, so a backup that could not be restored fails now rather than when
 /// it is needed.
@@ -100,9 +56,17 @@ pub(crate) struct Checked {
 }
 
 impl Checked {
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(crate) fn ops(&self) -> usize {
+        self.ops
+    }
+
     /// Moves the export to `target`, replacing any file there.
     pub(crate) fn persist(self, target: &Path) -> Result<(), CliError> {
-        fs::rename(&self.file, target).map_err(|err| io_error(target, &err))?;
+        fs::rename(&self.file, target).map_err(|err| CliError::io(target, &err))?;
         drop(self.staged);
         Ok(())
     }
@@ -112,17 +76,17 @@ pub(crate) fn stage(here: &here::Here, dir: &Path) -> Result<Checked, CliError> 
     let staged = Staged::new(dir)?;
     let copy = staged.path("export.jsonl");
     let exported = fs::File::create(&copy)
-        .map_err(|err| io_error(&copy, &err))
+        .map_err(|err| CliError::io(&copy, &err))
         .and_then(|file| {
             let mut out = io::BufWriter::new(file);
             let exported = here.store.export(&mut out, now_ms())?;
             out.into_inner()
                 .map_err(io::IntoInnerError::into_error)
                 .and_then(|file| file.sync_all())
-                .map_err(|err| io_error(&copy, &err))?;
+                .map_err(|err| CliError::io(&copy, &err))?;
             Ok(exported)
         })?;
-    let bytes = fs::read(&copy).map_err(|err| io_error(&copy, &err))?;
+    let bytes = fs::read(&copy).map_err(|err| CliError::io(&copy, &err))?;
     let (workspace, ops) = tm_store::read_export(&mut bytes.as_slice())?;
     if workspace != here.workspace.id || ops != exported.ops {
         return Err(CliError::internal(
@@ -141,33 +105,6 @@ pub(crate) fn stage(here: &here::Here, dir: &Path) -> Result<Checked, CliError> 
         bytes,
         ops,
     })
-}
-
-/// The newest dated export in `dir` up to `today`; one dated later, left by
-/// a clock that ran ahead, is passed over.
-fn newest_export(dir: &Path, today: jiff::civil::Date) -> Result<Option<PathBuf>, CliError> {
-    let entries = fs::read_dir(dir).map_err(|err| io_error(dir, &err))?;
-    Ok(entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter_map(|path| {
-            let date = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .and_then(|stem| jiff::civil::Date::strptime("%Y-%m-%d", stem).ok())?;
-            (path.extension().is_some_and(|ext| ext == "jsonl") && date <= today)
-                .then_some((date, path))
-        })
-        .max()
-        .map(|(_, path)| path))
-}
-
-/// An export without its header line, which carries the time it was made.
-fn after_header(export: &[u8]) -> &[u8] {
-    export
-        .iter()
-        .position(|&byte| byte == b'\n')
-        .map_or(&[][..], |end| &export[end + 1..])
 }
 
 /// Restores an export into its Workspace on this machine, creating it when
@@ -228,7 +165,7 @@ pub(crate) fn import(file: &str, dry_run: bool) -> Result<Output, CliError> {
         Ok(()) => {
             if let Err(err) = publish(&staged.store(), &target) {
                 let _ = fs::remove_dir(&target.dir);
-                return Err(io_error(&target.dir, &err));
+                return Err(CliError::io(&target.dir, &err));
             }
             let mut output = output(&restored, true, false);
             output.warnings.extend(match open_target(&target) {
@@ -238,7 +175,7 @@ pub(crate) fn import(file: &str, dry_run: bool) -> Result<Output, CliError> {
             Ok(output)
         }
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => restore_into(&target, &bytes),
-        Err(err) => Err(io_error(&target.dir, &err)),
+        Err(err) => Err(CliError::io(&target.dir, &err)),
     }
 }
 
@@ -508,11 +445,6 @@ fn publish(staged: &Path, target: &Workspace) -> io::Result<()> {
     })
 }
 
-pub(crate) fn io_error(path: &Path, err: &io::Error) -> CliError {
-    CliError::new("io", format!("{}: {err}", path.display()))
-        .with("path", path.display().to_string())
-}
-
 /// An owner-only directory, removed with whatever is left in it.
 pub(crate) struct Staged {
     dir: PathBuf,
@@ -522,11 +454,11 @@ impl Staged {
     pub(crate) fn new(parent: &Path) -> Result<Self, CliError> {
         use std::os::unix::fs::DirBuilderExt as _;
         let dir = parent.join(format!(".tm-import-{}", Uuid::now_v7()));
-        fs::create_dir_all(parent).map_err(|err| io_error(parent, &err))?;
+        fs::create_dir_all(parent).map_err(|err| CliError::io(parent, &err))?;
         fs::DirBuilder::new()
             .mode(0o700)
             .create(&dir)
-            .map_err(|err| io_error(&dir, &err))?;
+            .map_err(|err| CliError::io(&dir, &err))?;
         Ok(Self { dir })
     }
 

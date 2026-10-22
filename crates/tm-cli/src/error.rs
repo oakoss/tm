@@ -1,5 +1,7 @@
 //! Every failure as a coded document (ADR 0011).
 
+use std::io;
+use std::path::Path;
 use std::process::ExitCode;
 
 use serde_json::{Map, Value, json};
@@ -43,6 +45,12 @@ impl CliError {
             details: Map::new(),
             warnings: Vec::new(),
         }
+    }
+
+    /// A file operation on `path` that failed.
+    pub(crate) fn io(path: &Path, err: &io::Error) -> Self {
+        Self::new("io", format!("{}: {err}", path.display()))
+            .with("path", path.display().to_string())
     }
 
     /// 2 for a usage error, 1 for any other.

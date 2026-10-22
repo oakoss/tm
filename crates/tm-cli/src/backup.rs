@@ -8,21 +8,23 @@ use std::path::{Path, PathBuf};
 use jiff::ToSpan as _;
 use jiff::civil::Date;
 use serde::Deserialize;
+use serde_json::json;
 use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::export;
-use crate::here::Here;
+use crate::here::{self, Here};
+use crate::output::Output;
 
 /// `[backups]` in `config.toml` in tm's home.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub(crate) struct Policy {
+struct Policy {
     /// Whether a write takes the day's backup.
-    pub(crate) enabled: bool,
-    pub(crate) keep_days: u32,
-    pub(crate) keep_weeks: u32,
-    pub(crate) keep_months: u32,
+    enabled: bool,
+    keep_days: u32,
+    keep_weeks: u32,
+    keep_months: u32,
 }
 
 impl Default for Policy {
@@ -36,6 +38,18 @@ impl Default for Policy {
     }
 }
 
+impl Policy {
+    /// What applies when the config cannot be read: back up, remove nothing.
+    fn keep_all() -> Self {
+        Self {
+            enabled: true,
+            keep_days: u32::MAX,
+            keep_weeks: u32::MAX,
+            keep_months: u32::MAX,
+        }
+    }
+}
+
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
@@ -44,53 +58,63 @@ struct Config {
 }
 
 /// The policy `home`'s `config.toml` sets, with the defaults where it sets
-/// none; a warning when it cannot be read.
-pub(crate) fn policy(home: &Path) -> Result<Policy, String> {
+/// none; one that keeps every backup, with a warning, when it cannot be read.
+fn policy(home: &Path) -> (Policy, Option<String>) {
     let path = home.join("config.toml");
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Policy::default()),
-        Err(err) => return Err(format!("{}: {err}", path.display())),
+    let read = match fs::read_to_string(&path) {
+        Ok(text) => toml::from_str::<Config>(&text)
+            .map(|config| config.backups)
+            .map_err(|err| err.message().to_owned()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Policy::default()),
+        Err(err) => Err(err.to_string()),
     };
-    toml::from_str::<Config>(&text)
-        .map(|config| config.backups)
-        .map_err(|err| format!("{}: {}", path.display(), err.message()))
+    match read {
+        Ok(policy) => (policy, None),
+        Err(cause) => (
+            Policy::keep_all(),
+            Some(format!(
+                "{}: {cause}; no old backup was removed",
+                path.display()
+            )),
+        ),
+    }
 }
 
 fn dir(home: &Path, workspace: Uuid) -> PathBuf {
     home.join("exports").join(workspace.to_string())
 }
 
+/// The backup for `date` in an exports directory.
+fn file(dir: &Path, date: Date) -> PathBuf {
+    dir.join(format!("{date}.jsonl"))
+}
+
 /// A Workspace's exports directory, locked while this is held, so one export
 /// or collection runs in it at a time.
-pub(crate) struct Exports {
+struct Exports {
     dir: PathBuf,
     _lock: fs::File,
 }
 
 impl Exports {
-    pub(crate) fn lock(home: &Path, workspace: Uuid) -> Result<Self, CliError> {
+    fn lock(home: &Path, workspace: Uuid) -> Result<Self, CliError> {
         let dir = dir(home, workspace);
-        fs::create_dir_all(&dir).map_err(|err| export::io_error(&dir, &err))?;
+        fs::create_dir_all(&dir).map_err(|err| CliError::io(&dir, &err))?;
         let path = dir.join(".lock");
-        let lock = fs::File::create(&path).map_err(|err| export::io_error(&path, &err))?;
-        lock.lock().map_err(|err| export::io_error(&path, &err))?;
+        let lock = fs::File::create(&path).map_err(|err| CliError::io(&path, &err))?;
+        lock.lock().map_err(|err| CliError::io(&path, &err))?;
         Ok(Self { dir, _lock: lock })
     }
 
-    pub(crate) fn dir(&self) -> &Path {
-        &self.dir
-    }
-
-    pub(crate) fn file(&self, date: Date) -> PathBuf {
-        self.dir.join(format!("{date}.jsonl"))
+    fn file(&self, date: Date) -> PathBuf {
+        file(&self.dir, date)
     }
 
     /// Removes staging directories an export left when it was killed, since
-    /// any still writing holds the lock, and, with a `policy`, the backups it
-    /// does not keep; a warning for each that could not be removed. Nothing is
-    /// removed through a symbolic link, which may lead out of tm's home.
-    pub(crate) fn collect(&self, today: Date, policy: Option<&Policy>) -> Vec<String> {
+    /// any still writing holds the lock, and the backups `policy` does not
+    /// keep; a warning for each that could not be removed. Nothing is removed
+    /// through a symbolic link, which may lead out of tm's home.
+    fn collect(&self, today: Date, policy: &Policy) -> Vec<String> {
         let parent = self.dir.parent().unwrap_or(&self.dir);
         for dir in [parent, &self.dir] {
             if fs::symlink_metadata(dir).is_ok_and(|meta| meta.file_type().is_symlink()) {
@@ -130,9 +154,6 @@ impl Exports {
                 backups.push((date, entry.path()));
             }
         }
-        let Some(policy) = policy else {
-            return warnings;
-        };
         let dates: Vec<Date> = backups.iter().map(|(date, _)| *date).collect();
         let kept = keep(&dates, today, policy);
         for (date, path) in backups {
@@ -146,11 +167,6 @@ impl Exports {
     }
 }
 
-/// A policy that could not be read, which keeps every backup.
-pub(crate) fn unread(warning: &str) -> String {
-    format!("{warning}; no old backup was removed")
-}
-
 /// The date of a backup by its file name, for the names tm writes only.
 fn date_of(name: &str) -> Option<Date> {
     let stem = name.strip_suffix(".jsonl")?;
@@ -162,7 +178,13 @@ fn date_of(name: &str) -> Option<Date> {
 /// the newest of each of the last `keep_weeks` ISO weeks and of each of the
 /// last `keep_months` months, the newest up to `today`, and each after it,
 /// from a clock that ran ahead.
-pub(crate) fn keep(dates: &[Date], today: Date, policy: &Policy) -> BTreeSet<Date> {
+fn keep(dates: &[Date], today: Date, policy: &Policy) -> BTreeSet<Date> {
+    let limit = |count: u32| i32::try_from(count).unwrap_or(i32::MAX);
+    let (keep_days, keep_weeks, keep_months) = (
+        limit(policy.keep_days),
+        limit(policy.keep_weeks),
+        limit(policy.keep_months),
+    );
     let monday = |date: Date| date - i64::from(date.weekday().to_monday_zero_offset()).days();
     let month = |date: Date| i32::from(date.year()) * 12 + i32::from(date.month());
     let (past, future): (Vec<Date>, Vec<Date>) = dates.iter().partition(|&&date| date <= today);
@@ -170,19 +192,15 @@ pub(crate) fn keep(dates: &[Date], today: Date, policy: &Policy) -> BTreeSet<Dat
     let mut weeks = BTreeMap::new();
     let mut months = BTreeMap::new();
     for &date in &past {
-        let days = (today - date).get_days();
-        if days < i32::try_from(policy.keep_days).unwrap_or(i32::MAX) {
+        if (today - date).get_days() < keep_days {
             kept.insert(date);
         }
         let week = monday(date);
-        if (monday(today) - week).get_days() / 7
-            < i32::try_from(policy.keep_weeks).unwrap_or(i32::MAX)
-        {
+        if (monday(today) - week).get_days() / 7 < keep_weeks {
             let newest = weeks.entry(week).or_insert(date);
             *newest = (*newest).max(date);
         }
-        let months_ago = month(today) - month(date);
-        if months_ago < i32::try_from(policy.keep_months).unwrap_or(i32::MAX) {
+        if month(today) - month(date) < keep_months {
             let newest = months.entry(month(date)).or_insert(date);
             *newest = (*newest).max(date);
         }
@@ -193,26 +211,93 @@ pub(crate) fn keep(dates: &[Date], today: Date, policy: &Policy) -> BTreeSet<Dat
     kept
 }
 
-/// Takes the day's backup of `here`'s Workspace when it has none, then
+/// Takes `today`'s backup of `here`'s Workspace when it has none, then
 /// collects old ones; the warnings of what failed. Run after a write that
 /// added to the log, so the log always differs from the last backup's.
-pub(crate) fn daily(here: &Here) -> Vec<String> {
-    let today = jiff::Zoned::now().date();
-    let file = dir(&here.home, here.workspace.id).join(format!("{today}.jsonl"));
-    if held(&file) == Held::Backup {
+pub(crate) fn daily(here: &Here, today: Date) -> Vec<String> {
+    if held(&file(&dir(&here.home, here.workspace.id), today)) == Held::Backup {
         return Vec::new();
     }
-    let policy = policy(&here.home);
-    if policy.as_ref().is_ok_and(|policy| !policy.enabled) {
+    let (policy, unread) = policy(&here.home);
+    if !policy.enabled {
         return Vec::new();
     }
     let mut warnings = match back_up(here, today) {
-        Ok(Some(exports)) => exports.collect(today, policy.as_ref().ok()),
+        Ok(Some(exports)) => exports.collect(today, &policy),
         Ok(None) => Vec::new(),
         Err(err) => vec![format!("today's backup was not written: {}", err.message)],
     };
-    warnings.extend(policy.err().as_deref().map(unread));
+    warnings.extend(unread);
     warnings
+}
+
+/// Writes the export to tm's home as `exports/<Workspace>/<local date>.jsonl`,
+/// replacing that day's, unless it matches the newest one there, then
+/// collects old ones.
+pub(crate) fn dated() -> Result<Output, CliError> {
+    let here = here::open()?;
+    // Held from before the log is read until the rename, so an export that
+    // read an older log cannot land after a newer one.
+    let exports = Exports::lock(&here.home, here.workspace.id)?;
+    let checked = export::stage(&here, &exports.dir)?;
+    let today = jiff::Zoned::now().date();
+    let newest = newest_export(&exports.dir, today)?;
+    let ops = checked.ops();
+    // Kept only while it would still restore, header included.
+    let unchanged = newest
+        .as_ref()
+        .and_then(|newest| fs::read(newest).ok())
+        .is_some_and(|held| {
+            tm_store::read_export(&mut held.as_slice()).ok() == Some((here.workspace.id, ops))
+                && after_header(&held) == after_header(checked.bytes())
+        });
+    let file = if let (true, Some(newest)) = (unchanged, newest) {
+        newest
+    } else {
+        let target = exports.file(today);
+        checked.persist(&target)?;
+        target
+    };
+    let text = if unchanged {
+        format!("Nothing changed since {}; wrote nothing\n", file.display())
+    } else {
+        format!("Wrote {} ({ops} operations)\n", file.display())
+    };
+    let mut output = Output::new(
+        text,
+        json!({ "file": file.display().to_string(), "ops": ops, "written": !unchanged }),
+    );
+    let (policy, unread) = policy(&here.home);
+    output.warnings = exports.collect(today, &policy);
+    output.warnings.extend(unread);
+    Ok(output)
+}
+
+/// The newest dated export in `dir` up to `today`; one dated later, left by
+/// a clock that ran ahead, is passed over.
+fn newest_export(dir: &Path, today: Date) -> Result<Option<PathBuf>, CliError> {
+    let entries = fs::read_dir(dir).map_err(|err| CliError::io(dir, &err))?;
+    Ok(entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter_map(|path| {
+            let date = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .and_then(|stem| Date::strptime("%Y-%m-%d", stem).ok())?;
+            (path.extension().is_some_and(|ext| ext == "jsonl") && date <= today)
+                .then_some((date, path))
+        })
+        .max()
+        .map(|(_, path)| path))
+}
+
+/// An export without its header line, which carries the time it was made.
+fn after_header(export: &[u8]) -> &[u8] {
+    export
+        .iter()
+        .position(|&byte| byte == b'\n')
+        .map_or(&[][..], |end| &export[end + 1..])
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -251,7 +336,7 @@ fn back_up(here: &Here, today: Date) -> Result<Option<Exports>, CliError> {
             ));
         }
     }
-    export::stage(here, exports.dir())?.persist(&file)?;
+    export::stage(here, &exports.dir)?.persist(&file)?;
     Ok(Some(exports))
 }
 
@@ -330,6 +415,15 @@ mod tests {
     }
 
     #[test]
+    fn a_policy_that_could_not_be_read_keeps_every_backup() {
+        let today = date("2026-10-22");
+        // Old days in one week and one month, which a tier alone would thin.
+        let dates: Vec<Date> = (100..130).map(|days| today - days.days()).collect();
+        let kept = keep(&dates, today, &Policy::keep_all());
+        assert_eq!(kept, dates.into_iter().collect());
+    }
+
+    #[test]
     fn only_tm_backup_names_have_a_date() {
         assert_eq!(date_of("2026-10-22.jsonl"), Some(date("2026-10-22")));
         for name in [
@@ -355,16 +449,21 @@ mod tests {
         fs::write(root.join("config.toml"), "[backup]\nenabled = false\n").unwrap();
         let table = policy(&root);
         let _ = fs::remove_dir_all(&root);
-        assert_eq!(missing, Ok(Policy::default()));
+        assert_eq!(missing, (Policy::default(), None));
         assert_eq!(
             partial,
-            Ok(Policy {
-                keep_days: 3,
-                ..Policy::default()
-            })
+            (
+                Policy {
+                    keep_days: 3,
+                    ..Policy::default()
+                },
+                None
+            )
         );
-        assert!(key.is_err_and(|warning| warning.contains("keep_day")));
-        assert!(table.is_err_and(|warning| warning.contains("backup")));
+        for (refused, named) in [(key, "keep_day"), (table, "backup")] {
+            assert_eq!(refused.0, Policy::keep_all());
+            assert!(refused.1.is_some_and(|warning| warning.contains(named)));
+        }
     }
 
     #[test]

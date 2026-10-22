@@ -166,6 +166,31 @@ fn a_dated_export_collects_old_backups() {
     let out = tm(&scratch, &repo, &["--json", "export", "--dated"]);
     assert!(out.status.success(), "{out:?}");
     assert_eq!(exports(&scratch).1, [format!("{}.jsonl", today())]);
+
+    // A config it cannot read keeps every backup, and says so.
+    fs::write(dir.join("2001-01-01.jsonl"), &backup).unwrap();
+    fs::write(scratch.home().join("config.toml"), "[backups\n").unwrap();
+    let out = tm(&scratch, &repo, &["--json", "export", "--dated"]);
+    assert!(out.status.success(), "{out:?}");
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let warning = doc["warnings"][0].as_str().unwrap_or_default();
+    assert!(warning.ends_with("; no old backup was removed"), "{doc}");
+    assert!(dir.join("2001-01-01.jsonl").exists());
+
+    // A failure names the path it failed on.
+    let blocked = dir.parent().unwrap();
+    fs::remove_dir_all(blocked).unwrap();
+    fs::write(blocked, "in the way").unwrap();
+    let out = tm(&scratch, &repo, &["--json", "export", "--dated"]);
+    assert!(!out.status.success(), "{out:?}");
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["error"], "io", "{doc}");
+    assert!(
+        doc["path"]
+            .as_str()
+            .is_some_and(|path| Path::new(path).starts_with(blocked)),
+        "{doc}"
+    );
 }
 
 #[test]

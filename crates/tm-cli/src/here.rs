@@ -38,7 +38,7 @@ impl Here {
             Ok(end) if end == self.log_end => Vec::new(),
             _ => publish(&self.store, &self.workspace)
                 .into_iter()
-                .chain(backup::daily(self))
+                .chain(backup::daily(self, jiff::Zoned::now().date()))
                 .collect(),
         }
     }
