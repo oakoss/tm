@@ -14,6 +14,7 @@ mod list;
 mod moves;
 mod prime;
 mod ready;
+mod scan;
 mod scheme;
 mod shapes;
 mod show;
