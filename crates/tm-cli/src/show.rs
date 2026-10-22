@@ -1,10 +1,12 @@
 //! `tm show`: one Issue, its fields and its Claim.
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
-use tm_core::scheme::FieldType;
+use tm_core::Scheme;
+use tm_core::scheme::{Category, FieldType};
 use tm_store::{ClaimState, CommentView, IssueView, LinkView, Store};
 use uuid::Uuid;
 
@@ -28,7 +30,7 @@ pub(crate) fn run(reference: &str) -> Result<Output, CliError> {
 /// An Issue as `show` prints it; `create` prints the Issue it made the same way.
 pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
     let store = &here.store;
-    let (view, project, parent, (claim, now_ms), links, comments) = store.read(|store| {
+    let (view, project, parent, (claim, now_ms), links, below) = store.read(|store| {
         let view = store.issue(id)?.ok_or_else(|| {
             CliError::new("not_found", format!("Issue {id} does not exist"))
                 .with("kind", "issue")
@@ -56,8 +58,17 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
             })
             .collect();
         let comments = store.comments(id)?;
-        Ok::<_, CliError>((view, project, parent, (claim, now_ms), links, comments))
+        let children = count_children(store.scheme(), &store.children(id)?);
+        Ok::<_, CliError>((
+            view,
+            project,
+            parent,
+            (claim, now_ms),
+            links,
+            (comments, children),
+        ))
     })?;
+    let (comments, children) = below;
     let data = json!({
         "id": view.id,
         "key": view.key,
@@ -84,6 +95,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
             },
         })).collect::<Vec<_>>(),
         "comments": comments.iter().map(comment_json).collect::<Vec<_>>(),
+        "children": children.json(),
     });
 
     let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
@@ -105,6 +117,9 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
     write_claim(&mut text, claim.as_ref(), &view, now_ms);
     for (link, other) in &links {
         let _ = writeln!(text, "{}", link_line(link, other.as_ref()));
+    }
+    if let Some(line) = children.line() {
+        let _ = writeln!(text, "{line}");
     }
     for comment in &comments {
         write_comment(&mut text, comment);
@@ -223,6 +238,102 @@ fn write_comment(text: &mut String, comment: &CommentView) {
     }
 }
 
+/// An Issue's children by Status, and the archived ones counted apart, since
+/// a list leaves them out.
+struct Children {
+    /// Finished work first and cancelled last, so progress reads left to right.
+    by_status: Vec<(Option<String>, usize)>,
+    archived: usize,
+}
+
+impl Children {
+    fn json(&self) -> Value {
+        let by_status: Vec<Value> = self
+            .by_status
+            .iter()
+            .map(|(status, count)| json!({ "status": status, "count": count }))
+            .collect();
+        json!({ "by_status": by_status, "archived": self.archived })
+    }
+
+    /// Such as `Children: 12 done, 1 in_review, 5 todo (2 archived)`.
+    fn line(&self) -> Option<String> {
+        let counts: Vec<String> = self
+            .by_status
+            .iter()
+            .map(|(status, count)| match status {
+                Some(status) => format!("{count} {}", printable(status)),
+                None => format!("{count} with no status"),
+            })
+            .collect();
+        match (counts.is_empty(), self.archived) {
+            (true, 0) => None,
+            (true, archived) => Some(format!("Children: {archived} archived")),
+            (false, 0) => Some(format!("Children: {}", counts.join(", "))),
+            (false, archived) => Some(format!(
+                "Children: {} ({archived} archived)",
+                counts.join(", ")
+            )),
+        }
+    }
+}
+
+/// Where a Status sorts: by category, then later in its Workflow first.
+type Place = (u8, Reverse<usize>);
+
+fn count_children(scheme: &Scheme, children: &[IssueView]) -> Children {
+    let mut by_status: Vec<(Place, Option<String>, usize)> = Vec::new();
+    let mut archived = 0;
+    for child in children {
+        if follow::archived(child) {
+            archived += 1;
+            continue;
+        }
+        let status = child.fields.get("status").and_then(Value::as_str);
+        // A Status the Scheme does not define reads as Triage.
+        let rank = match child.category {
+            Some(Category::Done) => 0,
+            Some(Category::Active) => 1,
+            Some(Category::Todo) => 2,
+            Some(Category::Triage) | None => 3,
+            Some(Category::Cancelled) => 4,
+        };
+        let place = child
+            .fields
+            .get("type")
+            .and_then(Value::as_str)
+            .and_then(|issue_type| scheme.workflow(issue_type))
+            .and_then(|workflow| {
+                workflow
+                    .statuses
+                    .iter()
+                    .position(|s| Some(s.id.as_str()) == status)
+            })
+            .unwrap_or_default();
+        let at = (rank, Reverse(place));
+        // Children of other types can place one Status differently; the
+        // earliest place wins, so the order does not follow the read order.
+        let seen = by_status
+            .iter_mut()
+            .find(|(_, id, _)| id.as_deref() == status);
+        match seen {
+            Some((first, _, count)) => {
+                *first = (*first).min(at);
+                *count += 1;
+            }
+            None => by_status.push((at, status.map(str::to_owned), 1)),
+        }
+    }
+    by_status.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    Children {
+        by_status: by_status
+            .into_iter()
+            .map(|(_, status, count)| (status, count))
+            .collect(),
+        archived,
+    }
+}
+
 /// A parent by id and, where it has one, Key.
 fn parent_ref(store: &Store, parent: &str) -> Result<Value, CliError> {
     let key = match Uuid::parse_str(parent) {
@@ -237,5 +348,51 @@ fn plain(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use tm_core::ProjectId;
+
+    use super::*;
+
+    fn child(issue_type: &str, status: Option<&str>, category: Option<Category>) -> IssueView {
+        let mut fields = BTreeMap::from([("type".to_owned(), json!(issue_type))]);
+        if let Some(status) = status {
+            fields.insert("status".into(), json!(status));
+        }
+        IssueView {
+            id: Uuid::now_v7(),
+            key: None,
+            project: ProjectId::from_uuid(Uuid::nil()),
+            category,
+            fields,
+            sets: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn children_order_the_same_whatever_order_they_are_read_in() {
+        let scheme = Scheme::built_in();
+        let mut children = vec![
+            // An undefined type has no category.
+            child("gone", Some("done"), None),
+            child("task", Some("done"), Some(Category::Done)),
+            child("task", Some("in_progress"), Some(Category::Active)),
+            child("task", Some("blocked"), Some(Category::Triage)),
+            child("task", Some("cancelled"), Some(Category::Cancelled)),
+            child("task", None, None),
+        ];
+        let line = "Children: 2 done, 1 in_progress, 1 with no status, 1 blocked, 1 cancelled";
+        let counted = count_children(&scheme, &children);
+        assert_eq!(counted.line().as_deref(), Some(line));
+        let unset = json!({ "status": null, "count": 1 });
+        assert_eq!(counted.json()["by_status"][2], unset);
+        children.reverse();
+        let reversed = count_children(&scheme, &children);
+        assert_eq!(reversed.line().as_deref(), Some(line));
     }
 }

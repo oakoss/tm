@@ -156,6 +156,11 @@ fn filter_words_join_into_one_filter_and_limit_cuts_the_list() {
     let (_, doc) = list(&scratch, &repo, &["sort:bogus"]);
     assert_eq!(doc["error"], "unknown_field", "{doc}");
     assert_eq!(doc["span"], json!([5, 10]), "the span is in what was typed");
+    let (_, doc) = list(&scratch, &repo, &["parent:TM-9"]);
+    assert_eq!(doc["error"], "not_found", "{doc}");
+    assert_eq!(doc["message"], "no Issue is TM-9", "{doc}");
+    assert_eq!(doc["kind"], "issue", "{doc}");
+    assert_eq!(doc["span"], json!([7, 11]), "{doc}");
 }
 
 #[test]

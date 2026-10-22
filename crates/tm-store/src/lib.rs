@@ -30,7 +30,7 @@ use rusqlite::{
     Connection, ErrorCode, MAIN_DB, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
     params,
 };
-use tm_core::filter::{Context, FilterError, parse, resolve};
+use tm_core::filter::{Context, FilterError, Query, Term, Value as FilterValue, parse, resolve};
 use tm_core::hlc::MAX_MS;
 use tm_core::op::CURRENT_VERSION;
 use tm_core::{Actor, Change, Hlc, Op, OpError, ProjectId, Scheme};
@@ -1151,16 +1151,61 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// [`StoreError::Filter`] when the filter does not parse or does not fit
-    /// the Scheme, or any SQLite failure.
+    /// [`StoreError::Filter`] when the filter does not parse, does not fit
+    /// the Scheme or names a parent no Issue is, or any SQLite failure.
     pub fn find(&self, filter: &str, context: Context<'_>) -> Result<Vec<Uuid>, StoreError> {
-        let resolved = resolve(&parse(filter)?, &self.scheme, context)?;
+        let mut query = parse(filter)?;
+        let missing = self.issues_by_id(&mut query)?;
+        let resolved = resolve(&query, &self.scheme, context)?;
+        // After resolving, so a filter that does not fit the Scheme is named first.
+        if let Some(missing) = missing {
+            return Err(missing.into());
+        }
         let (sql, params) = query::compile(&resolved);
         let mut stmt = self.conn.prepare(&sql)?;
         let ids = stmt.query_map(rusqlite::params_from_iter(params), |row| {
             row.get::<_, Vec<u8>>(0)
         })?;
         ids.map(|id| uuid_from(&id?)).collect()
+    }
+
+    /// Rewrites each Issue a `parent:` term names as its id, returning the
+    /// first that names none. An id children point at counts, since `tm show`
+    /// prints it even when a merge left the parent out.
+    fn issues_by_id(&self, query: &mut Query) -> Result<Option<FilterError>, StoreError> {
+        let mut missing = None;
+        for term in &mut query.terms {
+            let Term::Match { field, values, .. } = term else {
+                continue;
+            };
+            if !field.0.eq_ignore_ascii_case("parent") {
+                continue;
+            }
+            for (value, span) in values {
+                let FilterValue::Text(text) = value else {
+                    continue;
+                };
+                let reference = text.trim();
+                let found = if let Ok(id) = Uuid::parse_str(reference) {
+                    let known = self.issue(id)?.is_some() || !self.children(id)?.is_empty();
+                    known.then_some(id)
+                } else if tm_core::project::parse_issue_key(&reference.to_ascii_uppercase())
+                    .is_some()
+                {
+                    self.issue_by_key(reference)?
+                } else {
+                    continue;
+                };
+                if found.is_none() {
+                    missing.get_or_insert(FilterError::NoIssue {
+                        value: reference.to_owned(),
+                        span: *span,
+                    });
+                }
+                *text = found.unwrap_or_else(Uuid::nil).to_string();
+            }
+        }
+        Ok(missing)
     }
 
     /// An Issue as it currently reads, labelled from the Scheme.

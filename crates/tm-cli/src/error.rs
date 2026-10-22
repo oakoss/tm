@@ -364,6 +364,9 @@ impl From<FilterError> for CliError {
             Ok(Value::Object(details)) => details,
             _ => Map::new(),
         };
+        if matches!(err, FilterError::NoIssue { .. }) {
+            details.insert("kind".into(), "issue".into());
+        }
         let code = match err {
             FilterError::Syntax { .. } => "syntax",
             FilterError::BareWord { .. } => "bare_word",
@@ -372,6 +375,7 @@ impl From<FilterError> for CliError {
             FilterError::UnknownValue { .. } => "unknown_value",
             FilterError::InvalidValue { .. } => "invalid_value",
             FilterError::NoIdentity { .. } => "no_identity",
+            FilterError::NoIssue { .. } => "not_found",
         };
         details.retain(|key, _| !RESERVED.contains(&key.as_str()));
         Self {

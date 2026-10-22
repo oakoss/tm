@@ -93,4 +93,6 @@ pub enum FilterError {
     },
     #[error("@me needs to know who is asking")]
     NoIdentity { span: Span },
+    #[error("no Issue is {value}")]
+    NoIssue { value: String, span: Span },
 }

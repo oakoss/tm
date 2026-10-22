@@ -119,7 +119,7 @@ fn every_command_in_the_guide_runs_as_printed() {
                 "OTHER" => "TM-2".to_owned(),
                 "TEXT" => "found".to_owned(),
                 "BATCH" => batch.clone(),
-                word => word.to_owned(),
+                word => word.replace("KEY", "TM-1"),
             })
             .collect();
         let words: Vec<&str> = words.iter().map(String::as_str).collect();

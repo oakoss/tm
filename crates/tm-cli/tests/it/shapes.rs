@@ -53,6 +53,10 @@ fn create_answers_in_a_fixed_shape() {
       "data": {
         "batch": "[id]",
         "category": "todo",
+        "children": {
+          "archived": 0,
+          "by_status": []
+        },
         "claim": null,
         "comments": [],
         "fields": {
@@ -108,6 +112,10 @@ fn move_answers_in_a_fixed_shape() {
       "data": {
         "batch": "[id]",
         "category": "active",
+        "children": {
+          "archived": 0,
+          "by_status": []
+        },
         "claim": null,
         "comments": [],
         "fields": {
@@ -290,6 +298,10 @@ fn undo_answers_in_a_fixed_shape() {
         "issues": [
           {
             "category": "todo",
+            "children": {
+              "archived": 0,
+              "by_status": []
+            },
             "claim": null,
             "comments": [],
             "fields": {
