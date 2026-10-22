@@ -138,25 +138,20 @@ fn an_agent_claims_with_a_token_and_releases_with_it() {
     let out = as_agent(&scratch, &repo, &["claim", "tm-1"]);
     assert!(out.status.success(), "{out:?}");
     let shown = text(&out.stdout);
-    let token = shown
-        .lines()
-        .next()
-        .and_then(|line| line.rsplit(' ').next())
-        .unwrap()
-        .to_owned();
+    let lines: Vec<&str> = shown.lines().collect();
     assert!(
-        shown
-            .lines()
-            .nth(1)
-            .unwrap()
-            .starts_with("undo this with: tm undo "),
+        lines[0].starts_with("TM-1 claimed by claude for jace until ")
+            && lines[0].ends_with(
+                " (2h); your writes renew it, and tm heartbeat keeps it through quiet work"
+            ),
         "{shown}"
     );
-    assert!(
-        text(&out.stdout)
-            .starts_with("TM-1 claimed by claude for jace; release with: tm release TM-1 "),
-        "{out:?}"
-    );
+    let token = lines[1]
+        .strip_prefix("Claim ")
+        .and_then(|rest| rest.strip_suffix("; release with: tm release TM-1"))
+        .unwrap_or_else(|| panic!("{shown}"))
+        .to_owned();
+    assert!(lines[2].starts_with("undo this with: tm undo "), "{shown}");
 
     let out = as_agent(&scratch, &repo, &["--json", "claim", "TM-1"]);
     assert_eq!(out.status.code(), Some(1));
@@ -403,7 +398,8 @@ fn each_session_of_an_agent_sees_its_own_claims_and_the_others_apart() {
     assert!(shown.contains("(session session-two-id"), "{out:?}");
     let out = tm(&scratch, &repo, &["show", "TM-1"]);
     assert!(
-        text(&out.stdout).contains("claimed by claude (session session-one-id) for jace (Claim "),
+        text(&out.stdout)
+            .contains("claimed by claude (session session-one-id) for jace, expires in 2h (Claim "),
         "{out:?}"
     );
 
@@ -472,6 +468,7 @@ fn claim_release_and_doctor_answer_in_fixed_shapes() {
         ".data.issue.id" => "[id]",
         ".data.claim.id" => "[id]",
         ".data.claim.expires_ms" => "[ms]",
+        ".data.claim.expires_in_ms" => "[ms]",
         ".data.batch" => "[id]",
     }, @r#"
     {
@@ -479,6 +476,7 @@ fn claim_release_and_doctor_answer_in_fixed_shapes() {
         "batch": "[id]",
         "claim": {
           "agent": "claude",
+          "expires_in_ms": "[ms]",
           "expires_ms": "[ms]",
           "id": "[id]",
           "on_behalf_of": "jace",
@@ -631,12 +629,12 @@ fn a_claim_lasts_the_repo_files_expiry_unless_told_otherwise() {
         (before + 7_200_000..=wall_ms() + 7_200_000).contains(&expires),
         "2h by default: {out:?}"
     );
-    let out = as_agent(&scratch, &repo, &["--json", "claim", "TM-2", "--no-expiry"]);
-    assert_eq!(
-        doc(&out)["data"]["claim"]["expires_ms"],
-        Value::Null,
+    let out = as_agent(&scratch, &repo, &["claim", "TM-2", "--no-expiry"]);
+    assert!(
+        text(&out.stdout).starts_with("TM-2 claimed by claude for jace with no expiry\nClaim "),
         "{out:?}"
     );
+    assert_eq!(claim_of(&scratch, &repo, "TM-2")["expires_ms"], Value::Null);
 
     let file = repo.join(".config/tm.toml");
     let mut repo_file = std::fs::read_to_string(&file).unwrap();
@@ -746,6 +744,278 @@ fn the_holder_or_the_human_it_is_held_for_releases_without_the_token() {
 }
 
 #[test]
+fn a_session_releases_all_it_holds_and_nothing_else() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    for title in ["one", "two", "other session's", "codex's", "lapsed"] {
+        store
+            .create_issue(&Actor::human("jace"), project, "task", title)
+            .unwrap();
+    }
+    let in_session = |session: &str, args: &[&str]| {
+        tm_command()
+            .args(args)
+            .current_dir(&repo)
+            .env("TM_HOME", scratch.home())
+            .env("TM_ACTOR", "jace")
+            .env("TM_AGENT", "claude")
+            .env("TM_SESSION", session)
+            .env("GIT_CONFIG_GLOBAL", scratch.git_config())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let out = in_session("s1", &["release", "--mine"]);
+    assert_eq!(
+        text(&out.stdout),
+        "this session holds no Claims\n",
+        "{out:?}"
+    );
+    for key in ["TM-1", "TM-2"] {
+        assert!(in_session("s1", &["claim", key]).status.success());
+    }
+    assert!(in_session("s2", &["claim", "TM-3"]).status.success());
+    assert!(
+        as_named(&scratch, &repo, "codex", &["claim", "TM-4"])
+            .status
+            .success()
+    );
+    let out = in_session("s1", &["--json", "claim", "TM-5", "--for", "1s"]);
+    wait_until(doc(&out)["data"]["claim"]["expires_ms"].as_i64().unwrap());
+
+    let out = in_session("s1", &["--json", "release", "--mine"]);
+    let released = doc(&out);
+    let released: Vec<&str> = released["data"]["released"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|issue| issue["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        released,
+        ["TM-1", "TM-2", "TM-5"],
+        "lapsed ones too: {out:?}"
+    );
+    for (key, held) in [
+        ("TM-1", false),
+        ("TM-2", false),
+        ("TM-3", true),
+        ("TM-4", true),
+    ] {
+        assert_eq!(claim_of(&scratch, &repo, key).is_object(), held, "{key}");
+    }
+    let shown = doc(&tm(&scratch, &repo, &["--json", "show", "TM-5"]));
+    assert_eq!(shown["data"]["lapsed_claim"], Value::Null);
+    let out = tm(&scratch, &repo, &["--json", "release", "--mine"]);
+    assert_eq!(doc(&out)["error"], "no_agent", "{out:?}");
+
+    for key in ["TM-1", "TM-2"] {
+        assert!(in_session("s1", &["claim", key]).status.success());
+    }
+    let refused = claim_of(&scratch, &repo, "TM-2")["id"].clone();
+    let refused = Uuid::parse_str(refused.as_str().unwrap()).unwrap();
+    store
+        .connection()
+        .execute(
+            &format!(
+                "CREATE TRIGGER refuse BEFORE INSERT ON ops WHEN NEW.payload LIKE '%{refused}%'
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END"
+            ),
+            [],
+        )
+        .unwrap();
+    let out = in_session("s1", &["--json", "release", "--mine"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let failed = doc(&out);
+    assert_eq!(failed["error"], "release_failed");
+    assert!(
+        failed["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("released TM-1; could not release TM-2: "),
+        "{failed}"
+    );
+    assert_eq!(failed["released"][0]["key"], "TM-1");
+    assert_eq!(claim_of(&scratch, &repo, "TM-1"), Value::Null);
+    assert!(claim_of(&scratch, &repo, "TM-2").is_object());
+
+    for args in [&["release", "TM-3", "--mine"][..], &["release"]] {
+        let out = tm(&scratch, &repo, args);
+        assert_eq!(out.status.code(), Some(2), "a usage error: {out:?}");
+    }
+}
+
+#[test]
+fn hook_print_gives_claude_codes_hooks_to_paste() {
+    let scratch = Scratch::new();
+    let (repo, _, _) = initialized(&scratch);
+    let out = tm(&scratch, &repo, &["--json", "hook", "print", "claude"]);
+    assert_eq!(
+        doc(&out)["data"]["settings"],
+        json!({
+            "hooks": {
+                "PostToolUse": [{
+                    "matcher": "*",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm hook heartbeat claude",
+                        "async": true,
+                    }],
+                }],
+                "SessionEnd": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm release --mine",
+                        "timeout": 10,
+                    }],
+                }],
+            },
+        })
+    );
+    let out = tm(&scratch, &repo, &["hook", "print", "claude"]);
+    assert!(
+        text(&out.stdout).starts_with("Merge this into .claude/settings.json"),
+        "{out:?}"
+    );
+    let out = tm(&scratch, &repo, &["hook", "print", "vim"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+}
+
+#[test]
+fn the_hook_heartbeat_tells_the_agent_each_warning_once() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    store
+        .create_issue(&Actor::human("jace"), project, "task", "t")
+        .unwrap();
+    drop(store);
+    let run = |dir: &Path, args: &[&str], env: &[(&str, &str)]| {
+        let mut command = tm_command();
+        command
+            .args(args)
+            .current_dir(dir)
+            .env("TM_HOME", scratch.home())
+            .env("TM_AGENT", "claude")
+            .env("GIT_CONFIG_GLOBAL", scratch.git_config())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("TM_ACTOR")
+            .envs(env.iter().copied());
+        command.output().unwrap()
+    };
+    let s1 = [("TM_ACTOR", "jace"), ("TM_SESSION", "s1")];
+    let hook = |dir: &Path, env: &[(&str, &str)]| {
+        let out = run(dir, &["hook", "heartbeat", "claude"], env);
+        assert!(out.status.success(), "{out:?}");
+        text(&out.stdout)
+    };
+    let told = |context: &str| {
+        format!(
+            "{}\n",
+            json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolUse",
+                    "additionalContext": context,
+                },
+            })
+        )
+    };
+    let take_over = || {
+        let out = run(&repo, &["--json", "claim", "TM-1", "--for", "1s"], &s1);
+        wait_until(doc(&out)["data"]["claim"]["expires_ms"].as_i64().unwrap());
+        let out = as_named(
+            &scratch,
+            &repo,
+            "codex",
+            &["--json", "claim", "TM-1", "--for", "1s"],
+        );
+        assert!(out.status.success(), "{out:?}");
+        wait_until(doc(&out)["data"]["claim"]["expires_ms"].as_i64().unwrap());
+    };
+    assert_eq!(hook(&repo, &s1), "", "nothing to say");
+
+    let lapsed = "tm: TM-1 is now held by codex for jace; your Claim lapsed";
+    take_over();
+    assert_eq!(hook(&repo, &s1), told(lapsed));
+    assert_eq!(hook(&repo, &s1), "", "told once");
+    assert!(scratch.home().join("hooks/s1.reported").is_file());
+    take_over();
+    assert_eq!(hook(&repo, &s1), told(lapsed), "a second takeover is news");
+
+    let elsewhere = scratch.home().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    assert_eq!(hook(&elsewhere, &s1), "", "tm tracks nothing there");
+    let broken = [("TM_SESSION", "s1"), ("TM_JSON", "1")];
+    let cannot = "tm: cannot tell who you are; set TM_ACTOR or git's user.email";
+    assert_eq!(
+        hook(&repo, &broken),
+        told(cannot),
+        "TM_JSON keeps the format"
+    );
+    assert_eq!(hook(&repo, &broken), "", "once");
+    assert_eq!(hook(&repo, &s1), "");
+    assert_eq!(hook(&repo, &broken), told(cannot), "again after it worked");
+
+    let harness = [("CLAUDE_CODE_SESSION_ID", "s3")];
+    assert_eq!(hook(&repo, &harness), told(cannot));
+    assert_eq!(hook(&repo, &harness), "", "the harness's session keys it");
+    assert!(scratch.home().join("hooks/s3.reported").is_file());
+}
+
+#[test]
+fn claims_lists_who_holds_what_and_what_has_lapsed() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    for title in ["held", "lapsed", "archived"] {
+        store
+            .create_issue(&Actor::human("jace"), project, "task", title)
+            .unwrap();
+    }
+    drop(store);
+    let out = tm(&scratch, &repo, &["claims"]);
+    assert_eq!(
+        text(&out.stdout),
+        "Held (0):\n  none\nLapsed, any Agent may take (0):\n  none\n"
+    );
+
+    assert!(
+        as_agent(&scratch, &repo, &["claim", "TM-1"])
+            .status
+            .success()
+    );
+    for key in ["TM-2", "TM-3"] {
+        let out = as_named(&scratch, &repo, "codex", &["claim", key, "--for", "1s"]);
+        assert!(out.status.success(), "{out:?}");
+    }
+    let out = tm(&scratch, &repo, &["edit", "TM-3", "--set", "archived=true"]);
+    assert!(out.status.success(), "{out:?}");
+    let last = claim_of(&scratch, &repo, "TM-3");
+    wait_until(last["expires_ms"].as_i64().unwrap());
+
+    let out = tm(&scratch, &repo, &["claims"]);
+    let shown = text(&out.stdout);
+    let lines: Vec<&str> = shown.lines().collect();
+    assert_eq!(lines[0], "Held (1):", "{shown}");
+    assert!(
+        lines[1].starts_with("  TM-1  todo  none  held  (claude for jace, expires in 2h)"),
+        "{shown}"
+    );
+    assert_eq!(lines[2], "Lapsed, any Agent may take (1):", "{shown}");
+    assert!(
+        lines[3].starts_with("  TM-2  todo  none  lapsed  (codex for jace, lapsed "),
+        "{shown}"
+    );
+    assert_eq!(lines.len(), 4, "the archived Issue is left out: {shown}");
+
+    let out = tm(&scratch, &repo, &["--json", "claims"]);
+    let data = &doc(&out)["data"];
+    assert_eq!(data["held"][0]["issue"]["key"], "TM-1");
+    assert!(data["held"][0]["claim"]["expires_in_ms"].as_i64().unwrap() > 7_000_000);
+    assert_eq!(data["lapsed"][0]["issue"]["key"], "TM-2");
+    assert_eq!(data["lapsed"][0]["claim"]["expires_in_ms"], 0);
+}
+
+#[test]
 fn a_failed_takeover_check_after_a_write_is_only_a_warning() {
     let scratch = Scratch::new();
     let (repo, mut store, project) = initialized(&scratch);
@@ -789,6 +1059,17 @@ fn a_failed_takeover_check_after_a_write_is_only_a_warning() {
     );
     let shown = doc(&tm(&scratch, &repo, &["--json", "show", "TM-1"]));
     assert!(shown.to_string().contains("landed"), "{shown}");
+
+    let out = as_agent(&scratch, &repo, &["--json", "heartbeat"]);
+    assert!(out.status.success(), "{out:?}");
+    let warnings = doc(&out)["warnings"].clone();
+    assert!(
+        warnings[0]
+            .as_str()
+            .unwrap()
+            .starts_with("renewed, but whether another Agent took over your Claims is unknown: "),
+        "{warnings}"
+    );
 }
 
 #[test]

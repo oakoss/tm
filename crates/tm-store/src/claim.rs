@@ -144,11 +144,13 @@ impl ClaimState {
     }
 }
 
-/// An Agent's Claims for one human, split by whether each has lapsed.
+/// Claims split by whether each had lapsed at `at_ms`, so time left is
+/// read against the same instant.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentClaims {
     pub held: Vec<Claim>,
     pub lapsed: Vec<Claim>,
+    pub at_ms: i64,
 }
 
 /// What holds an Issue when a release names a Claim that does not.
@@ -245,9 +247,21 @@ impl Store {
     /// [`StoreError::UnknownIssue`], [`StoreError::Clock`], any SQLite
     /// failure, or [`StoreError::Corrupt`] for a malformed row.
     pub fn claim_state(&self, issue: Uuid) -> Result<Option<ClaimState>, StoreError> {
+        self.claim_state_at(issue, self.utc_ms()?)
+    }
+
+    /// As [`Store::claim_state`], judged at `at_ms`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::claim_state`].
+    pub fn claim_state_at(
+        &self,
+        issue: Uuid,
+        at_ms: i64,
+    ) -> Result<Option<ClaimState>, StoreError> {
         issue_project(&self.conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?;
-        let now_ms = self.utc_ms()?;
-        Ok(current(&self.conn, issue)?.map(|claim| ClaimState::at(claim, now_ms)))
+        Ok(current(&self.conn, issue)?.map(|claim| ClaimState::at(claim, at_ms)))
     }
 
     /// The Claims `agent` took for `on_behalf_of`, held and lapsed, each by
@@ -262,7 +276,37 @@ impl Store {
         let (lapsed, held) = claims_of(&self.conn, agent, on_behalf_of)?
             .into_iter()
             .partition(|claim| claim.lapsed(now_ms));
-        Ok(AgentClaims { held, lapsed })
+        Ok(AgentClaims {
+            held,
+            lapsed,
+            at_ms: now_ms,
+        })
+    }
+
+    /// Every Claim in the Workspace, held and lapsed, by holder and then
+    /// Issue id.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Clock`], any SQLite failure, or [`StoreError::Corrupt`]
+    /// for a malformed row.
+    pub fn claims(&self) -> Result<AgentClaims, StoreError> {
+        let now_ms = self.utc_ms()?;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT issue_id, op_id, agent, on_behalf_of, expires_ms, ttl_ms, session
+             FROM claims ORDER BY agent, on_behalf_of, session, issue_id",
+        )?;
+        let (lapsed, held) = stmt
+            .query_map([], ClaimRow::read)?
+            .map(|row| row?.claim())
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .partition(|claim| claim.lapsed(now_ms));
+        Ok(AgentClaims {
+            held,
+            lapsed,
+            at_ms: now_ms,
+        })
     }
 
     fn claim_draft(

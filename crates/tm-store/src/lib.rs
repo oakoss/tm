@@ -1133,7 +1133,13 @@ impl Store {
         Ok((now, now_ms))
     }
 
-    fn utc_ms(&self) -> Result<i64, StoreError> {
+    /// The time in UTC milliseconds, as Claims are judged lapsed by; it reads
+    /// no time zone.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Clock`] when the clock cannot be read.
+    pub fn utc_ms(&self) -> Result<i64, StoreError> {
         self.clock.utc_ms().map_err(StoreError::Clock)
     }
 

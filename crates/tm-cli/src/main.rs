@@ -12,6 +12,7 @@ mod fields;
 mod follow;
 mod guide;
 mod here;
+mod hook;
 mod identity;
 mod init;
 mod instructions;
@@ -101,13 +102,18 @@ enum Command {
     },
     /// Release a Claim. The session holding it, and the human it is held
     /// for, may leave out the id `tm claim` printed.
+    #[command(group = ArgGroup::new("what").required(true).args(["issue", "mine"]))]
     Release {
         /// The Issue's Key or full id.
-        issue: String,
+        issue: Option<String>,
         claim: Option<uuid::Uuid>,
+        /// Release every Claim this session took, as a harness does when the
+        /// session ends.
+        #[arg(long, conflicts_with_all = ["issue", "claim"])]
+        mine: bool,
     },
-    /// List logged operations that did not apply, and Claims another take or
-    /// release won.
+    /// List logged operations that did not apply, and Claims another take,
+    /// renewal or release won.
     Doctor,
     /// Comment on an Issue.
     ///
@@ -226,6 +232,9 @@ enum Command {
         #[arg(long)]
         limit: Option<usize>,
     },
+    /// List who holds which Issue: every held Claim with its time left, and
+    /// the lapsed ones another Agent may take.
+    Claims,
     /// Show an Issue's fields and Claim.
     Show {
         /// The Issue's Key, such as CPL-42, or its full id.
@@ -274,6 +283,21 @@ enum Command {
         #[command(subcommand)]
         action: SchemeAction,
     },
+    /// Hooks an agent harness can run tm from; tm writes no hook config.
+    Hook {
+        #[command(subcommand)]
+        action: HookAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum HookAction {
+    /// Print the hook entries to paste into a harness's settings: a heartbeat
+    /// after each tool use, and releasing the session's Claims when it ends.
+    Print { harness: hook::Harness },
+    /// Renew this session's Claims as tm heartbeat does, printing the
+    /// harness's hook output only for a warning not yet given this session.
+    Heartbeat { harness: hook::Harness },
 }
 
 #[derive(Subcommand)]
@@ -305,6 +329,13 @@ fn main() -> ExitCode {
             Err(err) => output::finish(json, Err(err), &[]),
         };
     }
+    // The harness reads only its own hook format, which TM_JSON must not wrap.
+    if let Some(Command::Hook {
+        action: HookAction::Heartbeat { harness },
+    }) = cli.command
+    {
+        return output::finish(false, Ok(hook::heartbeat(harness)), &[]);
+    }
     output::finish(json, run(cli.command, json), &[])
 }
 
@@ -332,7 +363,18 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             no_expiry,
         }) => claim::take(&issue, ttl_ms, no_expiry),
         Some(Command::Heartbeat { issue }) => claim::heartbeat(issue.as_deref()),
-        Some(Command::Release { issue, claim }) => claim::release(&issue, claim),
+        Some(Command::Release {
+            issue: Some(issue),
+            claim,
+            ..
+        }) => claim::release(&issue, claim),
+        Some(Command::Release { issue: None, .. }) => claim::release_mine(),
+        Some(Command::Hook {
+            action: HookAction::Print { harness },
+        }) => Ok(hook::print(harness)),
+        Some(Command::Hook {
+            action: HookAction::Heartbeat { .. },
+        }) => unreachable!("main runs the hook heartbeat outside JSON mode"),
         Some(Command::Comment { issue, body }) => comment::run(&issue, &body),
         Some(Command::Doctor) => doctor::run(),
         Some(Command::Create {
@@ -374,6 +416,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Prime) => prime::run(json),
         Some(Command::Guide) => Ok(guide::run()),
         Some(Command::Ready { limit }) => ready::run(limit, json),
+        Some(Command::Claims) => claim::list(),
         Some(Command::Show { issue }) => show::run(&issue),
         Some(Command::Undo { batch, dry_run }) => undo::run(batch.as_deref(), dry_run),
         Some(Command::Export { dated: true }) => export::dated(),

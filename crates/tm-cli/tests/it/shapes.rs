@@ -587,6 +587,7 @@ fn primes_claims_answer_in_a_fixed_shape() {
         "[].id" => "[id]",
         "[].claim.id" => "[id]",
         "[].claim.expires_ms" => "[ms]",
+        "[].claim.expires_in_ms" => "[ms]",
         "[].fields.created" => "[ms]",
         "[].fields.updated" => "[ms]",
     }, @r#"
@@ -595,6 +596,7 @@ fn primes_claims_answer_in_a_fixed_shape() {
         "category": "todo",
         "claim": {
           "agent": "claude",
+          "expires_in_ms": "[ms]",
           "expires_ms": "[ms]",
           "id": "[id]",
           "on_behalf_of": "jace",

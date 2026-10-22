@@ -250,6 +250,7 @@ fn prime_without_an_identity_still_gives_the_scheme_and_ready_queue() {
     assert!(
         shown.ends_with(
             "Habits (tm guide has the rest):\n  tm move KEY in_progress when work starts\n  \
+             your writes renew your Claims; tm hook print claude prints hooks that heartbeat between them\n  \
              the description holds the current plan; tm edit changes it\n  \
              tm comment KEY for progress, what was learned and changes of plan\n"
         ),
@@ -258,15 +259,28 @@ fn prime_without_an_identity_still_gives_the_scheme_and_ready_queue() {
 }
 
 #[test]
-fn a_claims_expiry_prints_in_local_time() {
+fn a_claims_time_left_prints_and_a_lapsed_ones_time_is_local() {
     let scratch = Scratch::new();
     let (repo, mut store, project) = initialized(&scratch);
     let (issue, _) = store
         .create_issue(&Actor::human("jace"), project, "task", "held")
         .unwrap();
-    let claim = store
+    let (gone, _) = store
+        .create_issue(&Actor::human("jace"), project, "task", "lapsed")
+        .unwrap();
+    let held = store
         .take(&Actor::agent("claude", "jace"), issue, Some(3_600_000))
         .unwrap();
+    let claim = store
+        .take(&Actor::agent("claude", "jace"), gone, Some(1))
+        .unwrap();
+    let (forever, _) = store
+        .create_issue(&Actor::human("jace"), project, "task", "kept")
+        .unwrap();
+    let kept = store
+        .take(&Actor::agent("claude", "jace"), forever, None)
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
     drop(store);
     let out = tm_command()
         .args(["prime"])
@@ -284,13 +298,19 @@ fn a_claims_expiry_prints_in_local_time() {
         .strftime("%Y-%m-%d %H:%M %Z")
         .to_string();
     let shown = text(&out.stdout);
-    assert!(
-        shown.contains(&format!(
-            "  TM-1  todo  none  held  (Claim {}, expires {expires})\n",
+    for line in [
+        format!(
+            "  TM-1  todo  none  held  (Claim {}, expires in 1h)\n",
+            held.id
+        ),
+        format!(
+            "  TM-2  todo  none  lapsed  (Claim {}, lapsed {expires})\n",
             claim.id
-        )),
-        "{shown}"
-    );
+        ),
+        format!("  TM-3  todo  none  kept  (Claim {}, no expiry)\n", kept.id),
+    ] {
+        assert!(shown.contains(&line), "{line:?} in {shown}");
+    }
 }
 
 #[test]

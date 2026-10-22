@@ -326,6 +326,47 @@ fn the_longest_claim_does_not_overflow_the_renewal_check() {
 }
 
 #[test]
+fn every_claim_is_listed_by_holder_and_split_at_one_instant() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let issues: Vec<Uuid> = (0..4).map(|_| new_issue(&mut store)).collect();
+    let codex = Actor::agent("codex", "jace");
+    store.take(&codex, issues[0], Some(HOUR_MS)).unwrap();
+    store
+        .take(&in_session("s2"), issues[1], Some(HOUR_MS))
+        .unwrap();
+    store.take(&in_session("s1"), issues[2], Some(1)).unwrap();
+    store
+        .take(&in_session("s1"), issues[3], Some(HOUR_MS))
+        .unwrap();
+    clock.advance(5);
+    let claims = store.claims().unwrap();
+    assert_eq!(claims.at_ms, 1_005);
+    let held: Vec<(&str, Option<&str>, Uuid)> = claims
+        .held
+        .iter()
+        .map(|claim| (claim.agent.as_str(), claim.session.as_deref(), claim.issue))
+        .collect();
+    assert_eq!(
+        held,
+        [
+            ("claude", Some("s1"), issues[3]),
+            ("claude", Some("s2"), issues[1]),
+            ("codex", None, issues[0]),
+        ]
+    );
+    assert_eq!(
+        claims
+            .lapsed
+            .iter()
+            .map(|claim| claim.issue)
+            .collect::<Vec<_>>(),
+        [issues[2]]
+    );
+}
+
+#[test]
 fn undoing_a_write_leaves_its_renewal() {
     let dir = TempDir::new();
     let clock = ManualClock::at(1_000);

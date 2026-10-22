@@ -39,6 +39,7 @@ Read on 2026-10-21. Where a detail rests only on third-party sources, or on none
 17. Conductor workspaces: <https://www.conductor.build/docs/concepts/workspaces-and-branches>
 18. Claude Squad: <https://github.com/smtg-ai/claude-squad>
 19. Devin backlogs: <https://docs.devin.ai/use-cases/examples/clear-engineering-backlogs.md>
+20. beads leases, read 2026-10-21: <https://github.com/gastownhall/beads/blob/main/internal/storage/issueops/lease.go>
 
 ## Findings
 
@@ -61,7 +62,7 @@ Read on 2026-10-21. Where a detail rests only on third-party sources, or on none
 - Claude Code agent teams: claiming uses file locking [11].
 - Task Master, Backlog.md: nothing locks a task. Backlog.md agents set themselves as assignee by convention [7].
 - Linear: the human stays the assignee and the agent is tracked separately [10].
-- No surveyed tool lets a claim expire.
+- Only beads lets a claim expire: a claim lasts 5 minutes unless `bd heartbeat` extends it, and `bd reclaim` reverts stale ones [20].
 
 ### Isolating parallel agents
 
@@ -94,7 +95,7 @@ Read on 2026-10-21. Where a detail rests only on third-party sources, or on none
 ## Conclusions
 
 - **No tool binds an agent to a named, ordered list.** The closest are beads filtering `bd ready` by assignee and Linear's per-agent views. Short-lists can combine the two patterns: a list is an agent's queue, and taking from it pulls the first Issue on it neither blocked nor claimed.
-- **Claiming in one step is not universal.** beads and Claude Code agent teams claim atomically; Task Master and Backlog.md lock nothing. tm's Claims already work this way (ADR 0009). The gaps are telling sessions apart and expiry, which nobody solves well.
+- **Claiming in one step is not universal.** beads and Claude Code agent teams claim atomically; Task Master and Backlog.md lock nothing. tm's Claims already work this way (ADR 0009). The gaps are telling sessions apart, which nobody solves, and expiry, which only beads has.
 - **Worktrees belong to the runner.** tm should share one store across them through its repo mapping and create none, which fits "tm writes only what it owns".
 
 ## Implications / actions

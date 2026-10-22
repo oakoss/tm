@@ -162,6 +162,7 @@ fn show_gives_an_issues_fields_parent_labels_and_claim() {
         "category": "todo",
         "claim": {
           "agent": "claude",
+          "expires_in_ms": null,
           "expires_ms": null,
           "id": "[id]",
           "on_behalf_of": "jace",
@@ -207,7 +208,7 @@ fn show_gives_an_issues_fields_parent_labels_and_claim() {
         "parent: TM-1\n",
         "labels: docs\n",
         "status: todo\n",
-        &format!("claimed by claude for jace (Claim {})\n", claim.id),
+        &format!("no expiry (Claim {})\n", claim.id),
     ] {
         assert!(shown.contains(line), "{line:?} in {shown}");
     }

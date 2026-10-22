@@ -103,6 +103,20 @@ const fn disguises(c: char) -> bool {
     )
 }
 
+/// A span such as `2d 3h`, `1h 12m`, `2h` or `12m`, to the nearest minute.
+pub(crate) fn span(ms: i64) -> String {
+    let minutes = ms.clamp(0, i64::MAX - 30_000).saturating_add(30_000) / 60_000;
+    let (days, hours, minutes) = (minutes / 1_440, minutes / 60 % 24, minutes % 60);
+    match (days, hours, minutes) {
+        (0, 0, 0) => "under a minute".to_owned(),
+        (0, 0, _) => format!("{minutes}m"),
+        (0, _, 0) => format!("{hours}h"),
+        (0, _, _) => format!("{hours}h {minutes}m"),
+        (_, 0, _) => format!("{days}d"),
+        _ => format!("{days}d {hours}h"),
+    }
+}
+
 /// An instant in this machine's time zone, to the minute.
 pub(crate) fn local_time(utc_ms: i64) -> String {
     jiff::Timestamp::from_millisecond(utc_ms).map_or_else(
@@ -237,6 +251,24 @@ mod tests {
             .chain(list.iter().copied())
             .map(str::to_owned)
             .collect()
+    }
+
+    #[test]
+    fn a_span_reads_in_its_two_largest_units() {
+        for (ms, shown) in [
+            (-5, "under a minute"),
+            (29_999, "under a minute"),
+            (30_000, "1m"),
+            (3_569_999, "59m"),
+            (7_199_000, "2h"),
+            (4_320_000, "1h 12m"),
+            (86_369_999, "23h 59m"),
+            (86_399_999, "1d"),
+            (86_460_000, "1d"),
+            (183_600_000, "2d 3h"),
+        ] {
+            assert_eq!(span(ms), shown, "{ms}");
+        }
     }
 
     #[test]

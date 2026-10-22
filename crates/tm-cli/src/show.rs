@@ -28,7 +28,7 @@ pub(crate) fn run(reference: &str) -> Result<Output, CliError> {
 /// An Issue as `show` prints it; `create` prints the Issue it made the same way.
 pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
     let store = &here.store;
-    let (view, project, parent, claim, links, comments) = store.read(|store| {
+    let (view, project, parent, (claim, now_ms), links, comments) = store.read(|store| {
         let view = store.issue(id)?.ok_or_else(|| {
             CliError::new("not_found", format!("Issue {id} does not exist"))
                 .with("kind", "issue")
@@ -39,7 +39,8 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
             Some(parent) => Some(parent_ref(store, parent)?),
             None => None,
         };
-        let claim = store.claim_state(id)?;
+        let now_ms = store.utc_ms()?;
+        let claim = store.claim_state_at(id, now_ms)?;
         let links = store.links(id)?;
         let others: Vec<Uuid> = links.iter().map(|link| link.other).collect();
         let others: HashMap<Uuid, IssueView> = store
@@ -55,7 +56,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
             })
             .collect();
         let comments = store.comments(id)?;
-        Ok::<_, CliError>((view, project, parent, claim, links, comments))
+        Ok::<_, CliError>((view, project, parent, (claim, now_ms), links, comments))
     })?;
     let data = json!({
         "id": view.id,
@@ -65,8 +66,11 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         "fields": view.fields,
         "sets": view.sets,
         "parent": parent,
-        "claim": claim.as_ref().and_then(ClaimState::held).map(claim_json),
-        "lapsed_claim": claim.as_ref().and_then(ClaimState::lapsed).map(claim_json),
+        "claim": claim.as_ref().and_then(ClaimState::held).map(|held| claim_json(held, now_ms)),
+        "lapsed_claim": claim
+            .as_ref()
+            .and_then(ClaimState::lapsed)
+            .map(|lapsed| claim_json(lapsed, now_ms)),
         "links": links.iter().map(|(link, other)| json!({
             "type": link.link_type,
             "direction": link.direction,
@@ -98,7 +102,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         let shown: Vec<String> = members.values().map(|member| printable(member)).collect();
         let _ = writeln!(text, "{field}: {}", shown.join(", "));
     }
-    write_claim(&mut text, claim.as_ref(), &view);
+    write_claim(&mut text, claim.as_ref(), &view, now_ms);
     for (link, other) in &links {
         let _ = writeln!(text, "{}", link_line(link, other.as_ref()));
     }
@@ -108,14 +112,15 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
     Ok(Output::new(text, data))
 }
 
-fn write_claim(text: &mut String, state: Option<&ClaimState>, view: &IssueView) {
+fn write_claim(text: &mut String, state: Option<&ClaimState>, view: &IssueView, now_ms: i64) {
     match state {
         None => {}
         Some(ClaimState::Held(claim)) => {
             let _ = writeln!(
                 text,
-                "claimed by {} (Claim {})",
+                "claimed by {}, {} (Claim {})",
                 claim::holder(claim),
+                claim::expiry(claim, now_ms),
                 claim.id
             );
         }

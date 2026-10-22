@@ -243,7 +243,9 @@ impl Here {
     ) -> Result<Output, CliError> {
         // The write has landed, so a failed check only warns.
         match self.takeovers(writer, Some(batch)) {
-            Ok(warnings) => output.warnings.extend(warnings),
+            Ok(warnings) => output
+                .warnings
+                .extend(warnings.into_iter().map(|(_, warning)| warning)),
             Err(err) => output.warnings.push(format!(
                 "the write landed, but whether another Agent took over your Claims is unknown: {}",
                 err.message
@@ -253,21 +255,23 @@ impl Here {
     }
 
     /// A warning for each Claim another Agent took over from `writer`, among
-    /// the Issues `batch` wrote, or all of them.
+    /// the Issues `batch` wrote, or all of them, with the id of the Claim
+    /// that took it over.
     pub(crate) fn takeovers(
         &self,
         writer: &Actor,
         batch: Option<Uuid>,
-    ) -> Result<Vec<String>, CliError> {
+    ) -> Result<Vec<(Uuid, String)>, CliError> {
         let mut warnings = Vec::new();
         for held in self.store.taken_over_from(writer, batch)? {
             let key = self.store.issue(held.issue)?.and_then(|view| view.key);
-            warnings.push(format!(
+            let warning = format!(
                 "{} is now held by {} for {}; your Claim lapsed",
                 key.unwrap_or_else(|| held.issue.to_string()),
                 held.taker(),
                 held.on_behalf_of
-            ));
+            );
+            warnings.push((held.id, warning));
         }
         Ok(warnings)
     }
