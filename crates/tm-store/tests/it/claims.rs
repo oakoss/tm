@@ -8,6 +8,7 @@ use tm_core::op::ClaimAction;
 use tm_core::{Actor, Change, Hlc, OpError};
 use tm_store::{
     AgentClaims, ClaimState, Draft, Holder, Provenance, Store, StoreError, Unapplied, WallTime,
+    short_session,
 };
 use uuid::Uuid;
 
@@ -24,6 +25,7 @@ fn take(agent: &str, prev: Option<Uuid>) -> Change {
             agent: agent.into(),
             ttl_ms: None,
             prev,
+            session: None,
         },
     }
 }
@@ -48,6 +50,128 @@ fn a_take_holds_the_issue_until_its_token_releases_it() {
         .take(&Actor::agent("codex", "jace"), issue, None)
         .unwrap();
     assert_eq!(held(&store, issue), Some(again));
+}
+
+#[test]
+fn a_take_records_its_session_and_a_refusal_names_it() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = new_issue(&mut store);
+    let first = claude().in_session("eeeceb72-32ea-496f-ab1d-60fb6417eead");
+    let claim = store.take(&first, issue, None).unwrap();
+    assert_eq!(
+        claim.session.as_deref(),
+        Some("eeeceb72-32ea-496f-ab1d-60fb6417eead")
+    );
+    assert_eq!(held(&store, issue), Some(claim.clone()));
+    assert_eq!(store.rebuild().unwrap(), 0);
+    assert_eq!(held(&store, issue), Some(claim));
+
+    let err = store
+        .take(&claude().in_session("other"), issue, None)
+        .unwrap_err();
+    assert!(
+        matches!(&err, StoreError::AlreadyClaimed { session: Some(s), .. } if s.ends_with("eead")),
+        "{err}"
+    );
+    assert!(
+        err.to_string()
+            .contains("held by claude (session …6417eead) for jace"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_pulled_take_naming_a_blank_or_control_session_does_not_fit() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let in_session = |session: &str| Change::Claim {
+        action: ClaimAction::Take {
+            agent: "claude".into(),
+            ttl_ms: None,
+            prev: None,
+            session: Some(session.into()),
+        },
+    };
+    let (blank, control, spaced, fine) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    let ids = insert_all(
+        &store,
+        &[
+            (blank, Change::Create),
+            (control, Change::Create),
+            (spaced, Change::Create),
+            (fine, Change::Create),
+            (blank, in_session(" ")),
+            (control, in_session("s\u{7}1")),
+            (spaced, in_session(" s1 ")),
+            (fine, in_session("s1")),
+        ],
+    );
+    assert_eq!(store.rebuild().unwrap(), 3);
+    let set_aside = store.unapplied().unwrap();
+    assert_eq!(
+        set_aside.iter().map(|u| u.op_id).collect::<Vec<_>>(),
+        [ids[4], ids[5], ids[6]]
+    );
+    assert_eq!(held(&store, fine).unwrap().session.as_deref(), Some("s1"));
+}
+
+#[test]
+fn a_take_must_name_the_session_writing_it() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = new_issue(&mut store);
+    let naming = |session: Option<&str>| Change::Claim {
+        action: ClaimAction::Take {
+            agent: "claude".into(),
+            ttl_ms: None,
+            prev: None,
+            session: session.map(str::to_owned),
+        },
+    };
+    for (writer, session) in [
+        (claude().in_session("mine"), Some("theirs")),
+        (claude().in_session("mine"), None),
+        (claude(), Some("someone-else")),
+    ] {
+        let err = store
+            .append(Draft {
+                actor: writer.clone(),
+                ..draft(issue, naming(session))
+            })
+            .unwrap_err();
+        assert!(
+            matches!(&err, StoreError::Invalid { reason, .. } if reason.contains("session writing it")),
+            "{writer:?} {session:?}: {err}"
+        );
+    }
+    assert_eq!(held(&store, issue), None);
+}
+
+#[test]
+fn a_session_name_is_shown_whole_and_a_harness_id_by_its_last_eight_digits() {
+    // Two UUIDv7s begun the same minute share their first 8 characters.
+    assert_eq!(
+        short_session("01a16140-aeca-7572-acbf-99e715d94dfe"),
+        "…15d94dfe"
+    );
+    assert_eq!(
+        short_session("eeeceb72-32ea-496f-ab1d-60fb6417eead"),
+        "…6417eead"
+    );
+    for name in [
+        "6417eead",
+        "frontend-agent-review",
+        "backend-agent-review",
+        "é",
+    ] {
+        assert_eq!(short_session(name), name);
+    }
 }
 
 #[test]
@@ -308,6 +432,7 @@ fn a_pulled_take_is_held_to_the_rules_that_need_no_state_but_not_to_archiving() 
             agent: "claude".into(),
             ttl_ms: Some(0),
             prev: None,
+            session: None,
         },
     };
     let ids = insert_all(
@@ -450,6 +575,7 @@ fn a_pulled_take_over_a_claim_wins_only_once_its_time_is_past_the_expiry() {
             agent: "claude".into(),
             ttl_ms: Some(8),
             prev: None,
+            session: None,
         },
     };
     // claude's take is written at 1_002, so it lapses at 1_010.
@@ -620,7 +746,7 @@ fn a_lapsed_claim_reads_as_lapsed_until_its_holder_releases_it() {
     );
     assert!(
         err.to_string()
-            .ends_with("; claude's Claim for jace on it has lapsed"),
+            .ends_with("; the Claim by claude for jace on it has lapsed"),
         "{err}"
     );
     assert!(matches!(

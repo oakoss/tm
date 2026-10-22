@@ -20,6 +20,13 @@ const HARNESSES: [(&str, &[&str]); 5] = [
     ("cursor", &["CURSOR_AGENT"]),
 ];
 
+/// The variables holding each harness's session id, in the order they are
+/// read; the other harnesses set only flags, so name none.
+const SESSIONS: [(&str, &[&str]); 2] = [
+    ("codex", &["CODEX_SESSION_ID", "CODEX_THREAD_ID"]),
+    ("claude", &["CLAUDE_CODE_SESSION_ID"]),
+];
+
 /// The writer, and what a write should warn about.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Identity {
@@ -29,7 +36,8 @@ pub(crate) struct Identity {
 
 /// Resolves the writer from the environment `var` reads: the human is
 /// `TM_ACTOR`, else git's `user.email` from `email`; an Agent is `TM_AGENT`,
-/// else the first harness whose variables are set.
+/// else the first harness whose variables are set. An Agent's session is
+/// `TM_SESSION`, else the first detected harness's session id.
 ///
 /// # Errors
 ///
@@ -58,10 +66,66 @@ pub(crate) fn resolve(
         }
     };
     let actor = match agent {
-        Some(agent) => Actor::agent(&agent, &human),
+        Some(agent) => {
+            let session = match set(&var, "TM_SESSION")? {
+                Some(session) if session.chars().any(char::is_control) => {
+                    return Err(
+                        "TM_SESSION has a control character; set it to the session's id, or unset it"
+                            .into(),
+                    );
+                }
+                Some(session) => Some(session),
+                None => detected
+                    .first()
+                    .and_then(|harness| session_id(&var, harness, &mut warnings)),
+            };
+            let actor = Actor::agent(&agent, &human);
+            match session {
+                Some(session) => actor.in_session(&session),
+                None => actor,
+            }
+        }
         None => Actor::human(&human),
     };
     Ok(Identity { actor, warnings })
+}
+
+/// The first of `harness`'s session id variables that holds a usable value.
+/// When those set are all unusable, a warning names them, as this session's
+/// Claims would then read as every session's own.
+fn session_id(
+    var: &impl Fn(&str) -> Option<Var>,
+    harness: &str,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    let (_, names) = SESSIONS.iter().find(|(name, _)| *name == harness)?;
+    let mut unusable = Vec::new();
+    for name in *names {
+        let Some(value) = var(name) else {
+            continue;
+        };
+        match value
+            .as_ref()
+            .ok()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty() && !value.chars().any(char::is_control))
+        {
+            Some(value) => return Some(value.to_owned()),
+            None => unusable.push(*name),
+        }
+    }
+    if !unusable.is_empty() {
+        let (verb, ids) = if unusable.len() == 1 {
+            ("is", "a usable session id")
+        } else {
+            ("are", "usable session ids")
+        };
+        warnings.push(format!(
+            "{} {verb} not {ids}, so this session's Claims record none; set TM_SESSION to name it",
+            unusable.join(" and ")
+        ));
+    }
+    None
 }
 
 /// Whether an Agent is writing, by `TM_AGENT` or a harness's variables. A
@@ -93,10 +157,10 @@ fn set(var: &impl Fn(&str) -> Option<Var>, name: &str) -> Result<Option<String>,
         Some(Err(_)) => Err(format!("{name} is not valid UTF-8")),
         Some(Ok(value)) if value.trim().is_empty() => Err(format!(
             "{name} is set but blank; set it to {}, or unset it",
-            if name == "TM_AGENT" {
-                "the Agent's name"
-            } else {
-                "who you are"
+            match name {
+                "TM_AGENT" => "the Agent's name",
+                "TM_SESSION" => "the session's id",
+                _ => "who you are",
             }
         )),
         Some(Ok(value)) => Ok(Some(value.trim().to_owned())),
@@ -191,6 +255,77 @@ mod tests {
                 "{vars:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_agent_writes_in_its_harness_session_or_tm_session() {
+        let session =
+            |vars: &[(&str, &str)]| resolved(vars).unwrap().actor.session().map(str::to_owned);
+        assert_eq!(
+            session(&[("CLAUDE_CODE_SESSION_ID", " s1 ")]),
+            Some("s1".into())
+        );
+        assert_eq!(session(&[("CODEX_THREAD_ID", "t1")]), Some("t1".into()));
+        assert_eq!(
+            session(&[("CODEX_SESSION_ID", "s1"), ("CODEX_THREAD_ID", "t1")]),
+            Some("s1".into())
+        );
+        assert_eq!(session(&[("CLAUDE_CODE_CHILD_SESSION", "1")]), None);
+        assert_eq!(session(&[("GEMINI_CLI", "1")]), None);
+        assert_eq!(
+            session(&[("GEMINI_CLI", "1"), ("TM_SESSION", "g1")]),
+            Some("g1".into())
+        );
+        assert_eq!(
+            session(&[("TM_SESSION", "mine"), ("CLAUDE_CODE_SESSION_ID", "s1")]),
+            Some("mine".into())
+        );
+        assert_eq!(
+            session(&[("TM_AGENT", "reviewer"), ("CLAUDE_CODE_SESSION_ID", "s1")]),
+            Some("s1".into())
+        );
+        assert_eq!(session(&[("TM_SESSION", "mine")]), None, "a human has none");
+        for bad in [" ", "a\u{1}b"] {
+            let err = resolved(&[("TM_AGENT", "a"), ("TM_SESSION", bad)]).unwrap_err();
+            assert!(err.contains("the session's id"), "{bad:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn an_unusable_harness_session_is_skipped_with_a_warning() {
+        for bad in [" ", "a\u{1}b"] {
+            let identity = resolved(&[("TM_AGENT", "a"), ("CLAUDE_CODE_SESSION_ID", bad)]).unwrap();
+            assert_eq!(identity.actor.session(), None, "{bad:?}");
+            assert!(
+                identity.warnings.iter().any(|warning| {
+                    warning.starts_with("CLAUDE_CODE_SESSION_ID is not a usable session id")
+                }),
+                "{bad:?}: {:?}",
+                identity.warnings
+            );
+        }
+        let not_utf8 = resolve(
+            |name| (name == "CODEX_THREAD_ID").then(|| Err(OsString::from("x"))),
+            || Ok("jace@x.io".into()),
+        )
+        .unwrap();
+        assert_eq!(not_utf8.actor.session(), None);
+        assert_eq!(not_utf8.warnings.len(), 1, "{:?}", not_utf8.warnings);
+        assert_eq!(
+            resolved(&[("CODEX_THREAD_ID", "t1")]).unwrap().warnings,
+            Vec::<String>::new()
+        );
+        let fallback = resolved(&[("CODEX_SESSION_ID", " "), ("CODEX_THREAD_ID", "t1")]).unwrap();
+        assert_eq!(fallback.actor.session(), Some("t1"));
+        assert_eq!(fallback.warnings, Vec::<String>::new());
+        let neither = resolved(&[("CODEX_SESSION_ID", " "), ("CODEX_THREAD_ID", " ")]).unwrap();
+        assert_eq!(
+            neither.warnings,
+            [
+                "CODEX_SESSION_ID and CODEX_THREAD_ID are not usable session ids, so this session's \
+              Claims record none; set TM_SESSION to name it"
+            ]
+        );
     }
 
     #[test]

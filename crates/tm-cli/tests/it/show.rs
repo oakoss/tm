@@ -164,7 +164,8 @@ fn show_gives_an_issues_fields_parent_labels_and_claim() {
           "agent": "claude",
           "expires_ms": null,
           "id": "[id]",
-          "on_behalf_of": "jace"
+          "on_behalf_of": "jace",
+          "session": null
         },
         "comments": [],
         "fields": {

@@ -136,6 +136,7 @@ impl CliError {
                         "agent": held.agent,
                         "on_behalf_of": held.on_behalf_of,
                         "expires_ms": held.expires_ms,
+                        "session": held.session,
                         "state": state,
                     })
                 }),
@@ -305,8 +306,10 @@ impl From<StoreError> for CliError {
                 agent,
                 on_behalf_of,
                 expires_ms,
+                session,
                 ..
-            } => Self::already_claimed(message, issue, (agent, on_behalf_of), expires_ms),
+            } => Self::already_claimed(message, issue, (agent, on_behalf_of), expires_ms)
+                .with("session", session),
             StoreError::NotClaimHolder {
                 issue,
                 claim,

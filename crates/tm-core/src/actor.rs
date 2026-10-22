@@ -6,6 +6,7 @@ pub struct Actor {
     name: String,
     agent: bool,
     on_behalf_of: Option<String>,
+    session: Option<String>,
 }
 
 impl Actor {
@@ -16,6 +17,7 @@ impl Actor {
             name: name.trim().to_owned(),
             agent: false,
             on_behalf_of: None,
+            session: None,
         }
     }
 
@@ -30,7 +32,17 @@ impl Actor {
             name: if same { human } else { name }.to_owned(),
             agent: true,
             on_behalf_of: (!same).then(|| human.to_owned()),
+            session: None,
         }
+    }
+
+    /// This Agent in the harness session `session`, which tells apart
+    /// sessions sharing its name; a blank one names none.
+    #[must_use]
+    pub fn in_session(mut self, session: &str) -> Self {
+        let session = session.trim();
+        self.session = (self.agent && !session.is_empty()).then(|| session.to_owned());
+        self
     }
 
     #[must_use]
@@ -46,6 +58,11 @@ impl Actor {
     #[must_use]
     pub fn on_behalf_of(&self) -> Option<&str> {
         self.on_behalf_of.as_deref()
+    }
+
+    #[must_use]
+    pub fn session(&self) -> Option<&str> {
+        self.session.as_deref()
     }
 }
 
@@ -65,6 +82,19 @@ mod tests {
             (human.name(), human.is_agent(), human.on_behalf_of()),
             ("jace", false, None)
         );
+    }
+
+    #[test]
+    fn only_an_agent_writes_in_a_session_and_a_blank_one_is_none() {
+        assert_eq!(
+            Actor::agent("claude", "jace").in_session(" s1 ").session(),
+            Some("s1")
+        );
+        assert_eq!(
+            Actor::agent("claude", "jace").in_session(" ").session(),
+            None
+        );
+        assert_eq!(Actor::human("jace").in_session("s1").session(), None);
     }
 
     #[test]

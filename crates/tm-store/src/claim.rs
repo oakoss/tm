@@ -1,6 +1,8 @@
 //! Claims: a take succeeds only on an unclaimed Issue, and replay applies
 //! takes and releases by compare-and-set on the Claim they saw (ADR 0009).
 
+use std::borrow::Cow;
+
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use tm_core::op::{CLAIM_FIELD, ClaimAction};
 use tm_core::{Actor, Change, Op};
@@ -23,6 +25,8 @@ pub struct Claim {
     /// writer.
     pub on_behalf_of: String,
     pub expires_ms: Option<i64>,
+    /// The harness session that took it; none when the harness named none.
+    pub session: Option<String>,
 }
 
 impl Claim {
@@ -31,6 +35,31 @@ impl Claim {
     pub fn lapsed(&self, at_ms: i64) -> bool {
         self.expires_ms
             .is_some_and(|expires_ms| expires_ms <= at_ms)
+    }
+
+    /// The Agent that took it, with its session when it names one, as
+    /// messages show it.
+    #[must_use]
+    pub fn taker(&self) -> String {
+        match &self.session {
+            Some(session) => format!("{} (session {})", self.agent, short_session(session)),
+            None => self.agent.clone(),
+        }
+    }
+}
+
+/// `session` as text shows it. A harness's UUID becomes `…` and its last 8
+/// hex digits: the last, as a time-ordered id begins with its start time,
+/// which sessions begun the same minute share, and the `…` so it never reads
+/// as a name. Any other session is a name and shows whole.
+#[must_use]
+pub fn short_session(session: &str) -> Cow<'_, str> {
+    match Uuid::try_parse(session) {
+        Ok(id) => {
+            let hex = id.simple().to_string();
+            Cow::Owned(format!("…{}", &hex[hex.len() - 8..]))
+        }
+        Err(_) => Cow::Borrowed(session),
     }
 }
 
@@ -97,18 +126,20 @@ impl std::fmt::Display for Holder {
             Self::Unclaimed => write!(f, "it is unclaimed"),
             Self::Current(state) => match &**state {
                 ClaimState::Held(held) => {
-                    write!(f, "{} holds it for {}", held.agent, held.on_behalf_of)
+                    write!(f, "{} holds it for {}", held.taker(), held.on_behalf_of)
                 }
                 ClaimState::Lapsed(held) => write!(
                     f,
-                    "{}'s Claim for {} on it has lapsed",
-                    held.agent, held.on_behalf_of
+                    "the Claim by {} for {} on it has lapsed",
+                    held.taker(),
+                    held.on_behalf_of
                 ),
             },
             Self::TookOver(held) => write!(
                 f,
                 "it lapsed and {} took the Issue over for {}",
-                held.agent, held.on_behalf_of
+                held.taker(),
+                held.on_behalf_of
             ),
         }
     }
@@ -135,6 +166,7 @@ impl Store {
             agent: actor.name().to_owned(),
             ttl_ms,
             prev,
+            session: actor.session().map(str::to_owned),
         };
         let draft = self.claim_draft(actor.clone(), issue, take(None))?;
         // `prev` is read inside the write, so no other take slips in between.
@@ -152,7 +184,7 @@ impl Store {
         )?;
         // From the operation, not the table: another writer may already have
         // released and retaken the Issue.
-        taken(&ops[0], actor.name(), ttl_ms)
+        taken(&ops[0], actor.name(), ttl_ms, actor.session())
     }
 
     /// Releases the Claim `claim` holds on `issue`.
@@ -196,7 +228,7 @@ impl Store {
 
     fn claims_of(&self, agent: &str, on_behalf_of: &str) -> Result<Vec<Claim>, StoreError> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT issue_id, op_id, expires_ms FROM claims
+            "SELECT issue_id, op_id, expires_ms, session FROM claims
              WHERE agent = ?1 AND on_behalf_of = ?2 ORDER BY issue_id",
         )?;
         let rows = stmt.query_map(params![agent, on_behalf_of], |row| {
@@ -204,16 +236,18 @@ impl Store {
                 row.get::<_, Vec<u8>>(0)?,
                 row.get::<_, Vec<u8>>(1)?,
                 row.get::<_, Option<i64>>(2)?,
+                row.get::<_, Option<String>>(3)?,
             ))
         })?;
         rows.map(|row| {
-            let (issue, id, expires_ms) = row?;
+            let (issue, id, expires_ms, session) = row?;
             Ok(Claim {
                 id: uuid_from(&id)?,
                 issue: uuid_from(&issue)?,
                 agent: agent.to_owned(),
                 on_behalf_of: on_behalf_of.to_owned(),
                 expires_ms,
+                session,
             })
         })
         .collect()
@@ -238,7 +272,8 @@ impl Store {
 pub(crate) fn current(conn: &Connection, issue: Uuid) -> Result<Option<Claim>, StoreError> {
     let row = conn
         .query_row(
-            "SELECT op_id, agent, on_behalf_of, expires_ms FROM claims WHERE issue_id = ?1",
+            "SELECT op_id, agent, on_behalf_of, expires_ms, session FROM claims
+             WHERE issue_id = ?1",
             [issue.as_bytes()],
             |row| {
                 Ok((
@@ -246,17 +281,19 @@ pub(crate) fn current(conn: &Connection, issue: Uuid) -> Result<Option<Claim>, S
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                 ))
             },
         )
         .optional()?;
-    row.map(|(id, agent, on_behalf_of, expires_ms)| {
+    row.map(|(id, agent, on_behalf_of, expires_ms, session)| {
         Ok(Claim {
             id: uuid_from(&id)?,
             issue,
             agent,
             on_behalf_of,
             expires_ms,
+            session,
         })
     })
     .transpose()
@@ -286,12 +323,26 @@ fn stands(held: Option<&Claim>, action: &ClaimAction, at_ms: i64) -> bool {
 
 /// The Claim a take makes, held to the rules that need no state, so replay
 /// holds a pulled take to them too.
-fn taken(op: &Op, agent: &str, ttl_ms: Option<u64>) -> Result<Claim, StoreError> {
+fn taken(
+    op: &Op,
+    agent: &str,
+    ttl_ms: Option<u64>,
+    session: Option<&str>,
+) -> Result<Claim, StoreError> {
     if agent.trim().is_empty() {
         return Err(invalid("needs an Agent"));
     }
     if agent.chars().any(char::is_control) {
         return Err(invalid("cannot name an Agent with control characters"));
+    }
+    if session.is_some_and(|session| session.trim().is_empty()) {
+        return Err(invalid("cannot name a blank session"));
+    }
+    if session.is_some_and(|session| session.trim() != session) {
+        return Err(invalid("cannot name a session with surrounding spaces"));
+    }
+    if session.is_some_and(|session| session.chars().any(char::is_control)) {
+        return Err(invalid("cannot name a session with control characters"));
     }
     let expires_ms = match ttl_ms {
         None => None,
@@ -309,6 +360,7 @@ fn taken(op: &Op, agent: &str, ttl_ms: Option<u64>) -> Result<Claim, StoreError>
         agent: agent.to_owned(),
         on_behalf_of: op.on_behalf_of.clone().unwrap_or_else(|| op.actor.clone()),
         expires_ms,
+        session: session.map(str::to_owned),
     })
 }
 
@@ -324,6 +376,11 @@ pub(crate) fn check_taker(actor: &Actor, action: &ClaimAction) -> Result<(), Sto
     }
     if agent != actor.name() {
         return Err(invalid("must name the Agent writing it"));
+    }
+    if let ClaimAction::Take { session, .. } = action
+        && session.as_deref() != actor.session()
+    {
+        return Err(invalid("must name the session writing it"));
     }
     Ok(())
 }
@@ -350,6 +407,7 @@ pub(crate) fn check(
                 on_behalf_of: held.on_behalf_of,
                 claim: held.id,
                 expires_ms: held.expires_ms,
+                session: held.session,
             },
             (ClaimAction::Take { .. }, None) => {
                 invalid("names a previous Claim, but the Issue is unclaimed")
@@ -413,7 +471,12 @@ pub(crate) fn apply(
     let held = current(tx, op.subject)?;
     // First, so a take that does not fit is set aside as such, not as lost.
     let claim = match action {
-        ClaimAction::Take { agent, ttl_ms, .. } => Some(taken(op, agent, *ttl_ms)?),
+        ClaimAction::Take {
+            agent,
+            ttl_ms,
+            session,
+            ..
+        } => Some(taken(op, agent, *ttl_ms, session.as_deref())?),
         ClaimAction::Release { .. } => None,
     };
     if !stands(held.as_ref(), action, op.utc_ms) {
@@ -438,14 +501,16 @@ pub(crate) fn apply(
     match claim {
         // Replaces a lapsed Claim the take took over.
         Some(claim) => tx.execute(
-            "INSERT OR REPLACE INTO claims (issue_id, agent, on_behalf_of, op_id, expires_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT OR REPLACE INTO claims
+               (issue_id, agent, on_behalf_of, op_id, expires_ms, session)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 claim.issue.as_bytes(),
                 claim.agent,
                 claim.on_behalf_of,
                 claim.id.as_bytes(),
-                claim.expires_ms
+                claim.expires_ms,
+                claim.session
             ],
         )?,
         None => tx.execute(
