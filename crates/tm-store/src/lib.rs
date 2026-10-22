@@ -9,6 +9,7 @@ mod beads;
 mod claim;
 mod export;
 mod family;
+mod history;
 mod import;
 mod project;
 mod query;
@@ -39,8 +40,9 @@ use uuid::Uuid;
 use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
 pub use beads::{BeadsExport, BeadsImported, read_beads};
-pub use claim::{AgentClaims, Claim, ClaimState, Holder, TakenWith};
+pub use claim::{AgentClaims, Claim, ClaimState, Holder, TakenWith, short_session};
 pub use export::{Exported, Restored, copy_store, read_export};
+pub use history::HistoryEntry;
 pub use import::{Conflict, RecordOutcome, RecordsImported};
 pub use read::{CommentView, Direction, IssueView, LinkView};
 pub use ready::Ready;

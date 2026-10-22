@@ -10,6 +10,8 @@ Find work
   tm show KEY                one Issue: its fields, Links, children by
                              Status and comments
   tm list parent:KEY         an Issue's children
+  tm history KEY             what happened to an Issue, who did it, and
+                             each write's batch for tm undo
 
 Start
   tm start KEY               when work starts, not when it ends: an Agent

@@ -7,6 +7,7 @@ mod edit;
 mod export;
 mod follow;
 mod guide;
+mod history;
 mod init;
 mod json;
 mod link;

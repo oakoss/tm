@@ -197,6 +197,59 @@ fn git_scan_answers_in_a_fixed_shape() {
 }
 
 #[test]
+fn history_answers_in_a_fixed_shape() {
+    let (scratch, repo) = two_issues();
+    let doc = run(&scratch, &repo, &["history", "TM-2", "--limit", "1"]);
+    insta::assert_json_snapshot!(doc, {
+        ".data.id" => "[id]",
+        ".data.writes[].batch" => "[id]",
+        ".data.writes[].utc_ms" => "[ms]",
+        ".data.writes[].offset_min" => "[offset]",
+        ".data.writes[].changes[].op_id" => "[id]",
+        ".data.writes[].changes[].subject" => "[id]",
+        ".data.writes[].changes[].change.target" => "[id]",
+    }, @r#"
+    {
+      "data": {
+        "id": "[id]",
+        "key": "TM-2",
+        "total": 2,
+        "writes": [
+          {
+            "actor": "jace",
+            "batch": "[id]",
+            "changes": [
+              {
+                "before": null,
+                "change": {
+                  "kind": "link",
+                  "link_type": "blocks",
+                  "present": true,
+                  "target": "[id]"
+                },
+                "line": "linked: is blocked by TM-1",
+                "lost": false,
+                "op_id": "[id]",
+                "subject": "[id]",
+                "unapplied": null
+              }
+            ],
+            "offset_min": "[offset]",
+            "on_behalf_of": null,
+            "source": null,
+            "undid": null,
+            "undone_by": null,
+            "utc_ms": "[ms]"
+          }
+        ]
+      },
+      "schema_version": 1,
+      "warnings": []
+    }
+    "#);
+}
+
+#[test]
 fn comment_answers_in_a_fixed_shape() {
     let (scratch, repo) = two_issues();
     let doc = run(&scratch, &repo, &["comment", "TM-1", "on it"]);

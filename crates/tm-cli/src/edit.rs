@@ -269,10 +269,9 @@ fn unsettable(scheme: &Scheme, view: &IssueView, name: &str) -> Result<(), CliEr
     Ok(())
 }
 
-/// One line for a change: old to new, or for text of several lines or more
-/// than a line's length, how many lines it went from and to.
-pub(crate) fn summary(change: &Changed) -> String {
-    let shown = |value: &Value| match value {
+/// A value as a change line shows it; a parent by Key.
+pub(crate) fn shown(value: &Value) -> String {
+    match value {
         Value::Null => "(none)".to_owned(),
         Value::Array(items) if items.is_empty() => "(none)".to_owned(),
         Value::String(text) => text.clone(),
@@ -290,9 +289,18 @@ pub(crate) fn summary(change: &Changed) -> String {
             .unwrap_or_default()
             .to_owned(),
         other => other.to_string(),
-    };
+    }
+}
+
+/// Whether a shown value is too long for one change line.
+pub(crate) fn long(text: &str) -> bool {
+    text.contains('\n') || text.chars().count() > 60
+}
+
+/// One line for a change: old to new, or for text of several lines or more
+/// than a line's length, how many lines it went from and to.
+pub(crate) fn summary(change: &Changed) -> String {
     let (before, after) = (shown(&change.before), shown(&change.after));
-    let long = |text: &str| text.contains('\n') || text.chars().count() > 60;
     if long(&before) || long(&after) {
         let lines = |value: &Value, text: &str| {
             if value.is_null() {
@@ -301,12 +309,12 @@ pub(crate) fn summary(change: &Changed) -> String {
                 text.lines().count()
             }
         };
-        format!(
+        printable(&format!(
             "{}: changed ({} → {} lines)",
             change.field,
             lines(&change.before, &before),
             lines(&change.after, &after)
-        )
+        ))
     } else {
         printable(&format!("{}: {before} → {after}", change.field))
     }

@@ -12,6 +12,7 @@ mod fields;
 mod follow;
 mod guide;
 mod here;
+mod history;
 mod hook;
 mod identity;
 mod init;
@@ -244,6 +245,18 @@ enum Command {
         /// The Issue's Key, such as CPL-42, or its full id.
         issue: String,
     },
+    /// Show what happened to an Issue, oldest first: each write with when,
+    /// who, and the batch to give `tm undo`. Claim renewals are left out.
+    History {
+        /// The Issue's Key, such as CPL-42, or its full id.
+        issue: String,
+        /// Show only the latest N writes.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+        /// Include Claim renewals.
+        #[arg(long)]
+        all: bool,
+    },
     /// Write this Workspace's log to stdout as JSONL, for `tm import`; there
     /// `--json` changes only how an error prints.
     Export {
@@ -440,6 +453,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Ready { limit }) => ready::run(limit, json),
         Some(Command::Claims) => claim::list(),
         Some(Command::Show { issue }) => show::run(&issue),
+        Some(Command::History { issue, limit, all }) => history::run(&issue, limit, all),
         Some(Command::Undo { batch, dry_run }) => undo::run(batch.as_deref(), dry_run),
         Some(Command::Export { dated: true }) => export::dated(),
         Some(Command::Export { dated: false }) => unreachable!("main writes the export itself"),

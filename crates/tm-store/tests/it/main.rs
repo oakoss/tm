@@ -9,6 +9,7 @@ mod family;
 mod fields;
 mod find;
 mod guards;
+mod history;
 mod import;
 mod links;
 mod merge;
