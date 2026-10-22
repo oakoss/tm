@@ -746,6 +746,52 @@ fn the_holder_or_the_human_it_is_held_for_releases_without_the_token() {
 }
 
 #[test]
+fn a_failed_takeover_check_after_a_write_is_only_a_warning() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    store
+        .create_issue(&Actor::human("jace"), project, "task", "t")
+        .unwrap();
+    let out = as_agent(&scratch, &repo, &["--json", "claim", "TM-1", "--for", "1s"]);
+    let taken = &doc(&out)["data"]["claim"];
+    wait_until(taken["expires_ms"].as_i64().unwrap());
+    assert!(
+        as_named(&scratch, &repo, "codex", &["claim", "TM-1"])
+            .status
+            .success()
+    );
+    // Unreadable, the old take fails the check that follows the write.
+    let mine = Uuid::parse_str(taken["id"].as_str().unwrap()).unwrap();
+    let conn = store.connection();
+    let trigger: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name = 'ops_immutable'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    conn.execute_batch("DROP TRIGGER ops_immutable").unwrap();
+    conn.execute(
+        "UPDATE ops SET payload = '{\"kind\":\"bogus\"}' WHERE op_id = ?1",
+        [mine.as_bytes()],
+    )
+    .unwrap();
+    conn.execute_batch(&trigger).unwrap();
+
+    let out = as_agent(&scratch, &repo, &["--json", "comment", "TM-1", "landed"]);
+    assert!(out.status.success(), "{out:?}");
+    let warnings = doc(&out)["warnings"].clone();
+    assert!(
+        warnings[0].as_str().unwrap().starts_with(
+            "the write landed, but whether another Agent took over your Claims is unknown: "
+        ),
+        "{warnings}"
+    );
+    let shown = doc(&tm(&scratch, &repo, &["--json", "show", "TM-1"]));
+    assert!(shown.to_string().contains("landed"), "{shown}");
+}
+
+#[test]
 fn writing_to_an_issue_taken_over_warns_its_old_holder() {
     let scratch = Scratch::new();
     let (repo, mut store, project) = initialized(&scratch);
