@@ -125,7 +125,6 @@ fn write_claim(text: &mut String, state: Option<&ClaimState>, view: &IssueView, 
             );
         }
         Some(ClaimState::Lapsed(claim)) => {
-            let at = claim.expires_ms.map_or_else(String::new, local_time);
             let takeable = if claim::takeable(view) {
                 "; any Agent may take it"
             } else {
@@ -133,8 +132,9 @@ fn write_claim(text: &mut String, state: Option<&ClaimState>, view: &IssueView, 
             };
             let _ = writeln!(
                 text,
-                "Claim by {} lapsed {at} (Claim {}){takeable}",
+                "Claim by {} {} (Claim {}){takeable}",
                 claim::holder(claim),
+                claim::expiry(claim, now_ms),
                 claim.id
             );
         }

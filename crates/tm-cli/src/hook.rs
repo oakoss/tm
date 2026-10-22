@@ -64,37 +64,23 @@ fn claude() -> Value {
 /// told once per session, or it would repeat after every tool use: a takeover
 /// once per Claim that took over, an error once until a heartbeat succeeds.
 pub(crate) fn heartbeat(harness: Harness) -> Output {
-    let (notes, succeeded) = match claim::heartbeat(None) {
-        Ok(output) => {
-            let taken_over = output.data["taken_over"].as_array().cloned();
-            let claim_of = |warning: &str| {
-                taken_over
-                    .iter()
-                    .flatten()
-                    .find(|over| over["warning"] == warning)
-                    .and_then(|over| over["claim"].as_str().map(str::to_owned))
-            };
-            let notes = output
-                .warnings
-                .into_iter()
-                .map(|warning| {
-                    let key = claim_of(&warning).map_or_else(
-                        || format!("note:{warning}"),
-                        |claim| format!("takeover:{claim}"),
-                    );
-                    (key, warning)
-                })
-                .collect();
+    let note = |warning: String| (format!("note:{warning}"), warning);
+    let (notes, succeeded) = match claim::beat(None) {
+        Ok(beat) => {
+            let (before, published) = beat.warnings;
+            let mut notes: Vec<(String, String)> = before.into_iter().map(note).collect();
+            notes.extend(
+                beat.taken_over
+                    .into_iter()
+                    .map(|(claim, warning)| (format!("takeover:{claim}"), warning)),
+            );
+            notes.extend(beat.unchecked.into_iter().chain(published).map(note));
             (notes, true)
         }
         // A hook pasted for every repo also runs where tm tracks nothing.
         Err(err) if err.code == "no_workspace" => (Vec::new(), true),
         Err(err) => {
-            let mut notes: Vec<(String, String)> = err
-                .warnings
-                .into_iter()
-                .map(|warning| (format!("note:{warning}"), warning))
-                .collect();
+            let mut notes: Vec<(String, String)> = err.warnings.into_iter().map(note).collect();
             notes.push((format!("error:{}", err.message), err.message));
             (notes, false)
         }

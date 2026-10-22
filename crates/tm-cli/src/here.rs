@@ -158,17 +158,26 @@ fn opened(found: Found, cwd: &Path, workspace: Workspace, store: Store) -> Resul
 pub(crate) fn write(
     write: impl FnOnce(&mut Here) -> Result<(Output, Vec<String>), CliError>,
 ) -> Result<Output, CliError> {
+    let (mut output, mut warnings, published) = write_with(write)?;
+    warnings.append(&mut output.warnings);
+    warnings.extend(published);
+    output.warnings = warnings;
+    Ok(output)
+}
+
+/// As [`write`], for a caller that places its own warnings: the store's and
+/// the identity's, then a failed publish's, apart.
+pub(crate) fn write_with<T>(
+    write: impl FnOnce(&mut Here) -> Result<(T, Vec<String>), CliError>,
+) -> Result<(T, Vec<String>, Option<String>), CliError> {
     let mut here = open()?;
     let mut warnings = std::mem::take(&mut here.warnings);
     let written = write(&mut here);
     let published = here.publish();
     match written {
-        Ok((mut output, identity_warnings)) => {
+        Ok((value, identity_warnings)) => {
             warnings.extend(identity_warnings);
-            warnings.append(&mut output.warnings);
-            warnings.extend(published);
-            output.warnings = warnings;
-            Ok(output)
+            Ok((value, warnings, published))
         }
         Err(err) => {
             warnings.extend(published);

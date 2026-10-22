@@ -18,7 +18,7 @@ use crate::guide::HABITS;
 use crate::here;
 use crate::identity;
 use crate::list::{item, line_within, project_keys};
-use crate::output::{Output, local_time, printable, span};
+use crate::output::{Output, printable};
 
 /// Ready Issues shown; the rest are counted, so 200 Issues stay near 1k
 /// tokens.
@@ -215,21 +215,14 @@ fn claims_sections(
     let others = with_issues(&claims.others, claimed, |_| true);
     let lapsed = with_issues(&claims.lapsed, claimed, claim::takeable);
     ClaimItems {
-        held: claims_section(
-            text,
-            "Your Claims:",
-            (token, false),
-            &mine,
-            projects,
-            now_ms,
-        ),
+        held: claims_section(text, "Your Claims:", token, &mine, projects, now_ms),
         others: if others.is_empty() {
             Vec::new()
         } else {
             claims_section(
                 text,
                 "Held by your other sessions:",
-                (session, false),
+                session,
                 &others,
                 projects,
                 now_ms,
@@ -241,7 +234,7 @@ fn claims_sections(
             claims_section(
                 text,
                 "Your lapsed Claims (another Agent may take these; tm heartbeat KEY takes one back):",
-                (token, true),
+                token,
                 &lapsed,
                 projects,
                 now_ms,
@@ -286,12 +279,11 @@ fn with_issues<'a>(
 }
 
 /// `heading`, the first [`CLAIMS_SHOWN`] of `shown` in `text`, each named by
-/// `named` with its time left, or when it lapsed if `lapsed`, and each as
-/// `--json` gives it.
+/// `named` with its expiry at `now_ms`, and each as `--json` gives it.
 fn claims_section(
     text: &mut String,
     heading: &str,
-    (named, lapsed): (fn(&Claim) -> String, bool),
+    named: fn(&Claim) -> String,
     shown: &[(&Claim, &IssueView)],
     projects: &HashMap<ProjectId, Option<String>>,
     now_ms: i64,
@@ -300,16 +292,12 @@ fn claims_section(
     let mut claim_items = Vec::with_capacity(shown.len());
     for &(claim, view) in shown {
         if claim_items.len() < CLAIMS_SHOWN {
-            let expiry = match (claim.expires_ms, lapsed) {
-                (None, _) => ", no expiry".to_owned(),
-                (Some(at), true) => format!(", lapsed {}", local_time(at)),
-                (Some(at), false) => format!(", expires in {}", span(at - now_ms)),
-            };
             let _ = writeln!(
                 text,
-                "  {}  ({}{expiry})",
+                "  {}  ({}, {})",
                 line_within(view, TITLE_BYTES),
-                named(claim)
+                named(claim),
+                claim::expiry(claim, now_ms)
             );
         }
         let mut entry = item(view, projects);

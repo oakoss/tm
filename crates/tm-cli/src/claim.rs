@@ -77,9 +77,49 @@ pub(crate) fn take(
     })
 }
 
+/// What a heartbeat did.
+pub(crate) struct Beat {
+    /// Each Issue whose Claim it renewed, with its Key.
+    pub(crate) renewed: Vec<(Uuid, Option<String>)>,
+    /// Each Claim that took an Issue over from this session, by id, with the
+    /// warning that says so.
+    pub(crate) taken_over: Vec<(Uuid, String)>,
+    /// Why whether any was taken over is unknown, when it is.
+    pub(crate) unchecked: Option<String>,
+    /// The store's and the identity's warnings, then a failed publish's.
+    pub(crate) warnings: (Vec<String>, Option<String>),
+}
+
 /// Renews this session's due Claims, or one Issue's at once; `tm heartbeat`.
 pub(crate) fn heartbeat(reference: Option<&str>) -> Result<Output, CliError> {
-    here::write(|here| {
+    let beat = beat(reference)?;
+    let shown: Vec<String> = beat
+        .renewed
+        .iter()
+        .map(|(issue, key)| key.clone().unwrap_or_else(|| issue.to_string()))
+        .collect();
+    let text = if shown.is_empty() {
+        "no Claim is due for renewal\n".to_owned()
+    } else {
+        format!("renewed {}\n", shown.join(", "))
+    };
+    let renewed: Vec<_> = beat
+        .renewed
+        .iter()
+        .map(|(issue, key)| json!({ "id": issue, "key": key }))
+        .collect();
+    let mut output = Output::new(text, json!({ "renewed": renewed }));
+    let (mut warnings, published) = beat.warnings;
+    warnings.extend(beat.taken_over.into_iter().map(|(_, warning)| warning));
+    warnings.extend(beat.unchecked);
+    warnings.extend(published);
+    output.warnings = warnings;
+    Ok(output)
+}
+
+/// [`heartbeat`]'s work, for it and for a hook to report as each needs.
+pub(crate) fn beat(reference: Option<&str>) -> Result<Beat, CliError> {
+    let (beat, before, published) = here::write_with(|here| {
         let issue = reference
             .map(|reference| here.issue(reference))
             .transpose()?;
@@ -97,32 +137,30 @@ pub(crate) fn heartbeat(reference: Option<&str>) -> Result<Output, CliError> {
         }
         let ops = here.store.heartbeat(&identity.actor, issue)?;
         let mut renewed = Vec::with_capacity(ops.len());
-        let mut shown = Vec::with_capacity(ops.len());
         for op in &ops {
-            let key = key(here, op.subject)?;
-            shown.push(key.clone().unwrap_or_else(|| op.subject.to_string()));
-            renewed.push(json!({ "id": op.subject, "key": key }));
+            renewed.push((op.subject, key(here, op.subject)?));
         }
-        let text = if shown.is_empty() {
-            "no Claim is due for renewal\n".to_owned()
-        } else {
-            format!("renewed {}\n", shown.join(", "))
+        let (taken_over, unchecked) = match here.takeovers(&identity.actor, None) {
+            Ok(taken_over) => (taken_over, None),
+            Err(err) => (
+                Vec::new(),
+                Some(format!(
+                    "renewed, but whether another Agent took over your Claims is unknown: {}",
+                    err.message
+                )),
+            ),
         };
-        let mut output = Output::new(text, json!({ "renewed": renewed, "taken_over": [] }));
-        match here.takeovers(&identity.actor, None) {
-            Ok(taken_over) => {
-                output.data["taken_over"] = taken_over
-                    .iter()
-                    .map(|(claim, warning)| json!({ "claim": claim, "warning": warning }))
-                    .collect();
-                output.warnings = taken_over.into_iter().map(|(_, warning)| warning).collect();
-            }
-            Err(err) => output.warnings.push(format!(
-                "renewed, but whether another Agent took over your Claims is unknown: {}",
-                err.message
-            )),
-        }
-        Ok((output, identity.warnings))
+        let beat = Beat {
+            renewed,
+            taken_over,
+            unchecked,
+            warnings: (Vec::new(), None),
+        };
+        Ok((beat, identity.warnings))
+    })?;
+    Ok(Beat {
+        warnings: (before, published),
+        ..beat
     })
 }
 
@@ -148,7 +186,7 @@ pub(crate) fn list() -> Result<Output, CliError> {
     let (claims, views) = read.map_err(|err| err.warned(here.warnings.clone()))?;
     let now_ms = claims.at_ms;
     let mut text = String::new();
-    let mut section = |heading: &str, claims: &[Claim], when: &dyn Fn(&Claim) -> String| {
+    let mut section = |heading: &str, claims: &[Claim]| {
         let shown: Vec<(&Claim, &IssueView)> = claims
             .iter()
             .filter_map(|claim| Some((claim, views.get(&claim.issue)?)))
@@ -164,7 +202,7 @@ pub(crate) fn list() -> Result<Output, CliError> {
                 "  {}  ({}, {})",
                 line_within(view, TITLE_BYTES),
                 holder(claim),
-                when(claim)
+                expiry(claim, now_ms)
             );
             items.push(json!({
                 "issue": { "id": view.id, "key": view.key },
@@ -173,17 +211,13 @@ pub(crate) fn list() -> Result<Output, CliError> {
         }
         items
     };
-    let held = section("Held", &claims.held, &|claim| expiry(claim, now_ms));
+    let held = section("Held", &claims.held);
     let lapsed: Vec<Claim> = claims
         .lapsed
         .into_iter()
         .filter(|claim| views.get(&claim.issue).is_some_and(takeable))
         .collect();
-    let lapsed = section("Lapsed, any Agent may take", &lapsed, &|claim| {
-        claim
-            .expires_ms
-            .map_or_else(String::new, |at| format!("lapsed {}", local_time(at)))
-    });
+    let lapsed = section("Lapsed, any Agent may take", &lapsed);
     let mut output = Output::new(text, json!({ "held": held, "lapsed": lapsed }));
     output.warnings = here.warnings;
     Ok(output)
@@ -324,12 +358,14 @@ pub(crate) fn claim_json(claim: &Claim, now_ms: i64) -> serde_json::Value {
     })
 }
 
-/// When a held Claim lapses, as `expires in 1h 12m`, or that it never does.
+/// A Claim's expiry at `now_ms`: `expires in 1h 12m`, `lapsed` and when in
+/// local time, or `no expiry`.
 pub(crate) fn expiry(claim: &Claim, now_ms: i64) -> String {
-    claim.expires_ms.map_or_else(
-        || "no expiry".to_owned(),
-        |at| format!("expires in {}", span(at - now_ms)),
-    )
+    match claim.expires_ms {
+        None => "no expiry".to_owned(),
+        Some(at) if claim.lapsed(now_ms) => format!("lapsed {}", local_time(at)),
+        Some(at) => format!("expires in {}", span(at - now_ms)),
+    }
 }
 
 /// Who holds `claim`, as text names it: the Agent, its session when the
