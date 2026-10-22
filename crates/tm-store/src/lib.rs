@@ -39,7 +39,7 @@ use uuid::Uuid;
 use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
 pub use beads::{BeadsExport, BeadsImported, read_beads};
-pub use claim::{AgentClaims, Claim, ClaimState, Holder};
+pub use claim::{AgentClaims, Claim, ClaimState, Holder, TakenWith};
 pub use export::{Exported, Restored, copy_store, read_export};
 pub use import::{Conflict, RecordOutcome, RecordsImported};
 pub use read::{CommentView, Direction, IssueView, LinkView};
@@ -953,7 +953,7 @@ impl Store {
             .into_iter()
             .map(|(draft, provenance)| (draft, Some(provenance)))
             .collect();
-        self.append_with(drafts, |tx| guard(tx).map(|()| Vec::new()), true, None)
+        self.append_with(drafts, |tx, _| guard(tx).map(|()| Vec::new()), true, None)
     }
 
     /// [`Store::append_all`], refused with [`StoreError::ClaimChanged`] and
@@ -987,17 +987,19 @@ impl Store {
         guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
     ) -> Result<Vec<Op>, StoreError> {
         let drafts = drafts.into_iter().map(|draft| (draft, None)).collect();
-        self.append_with(drafts, |tx| guard(tx).map(|()| Vec::new()), true, None)
+        self.append_with(drafts, |tx, _| guard(tx).map(|()| Vec::new()), true, None)
     }
 
     /// [`Store::append_guarded`], rolled back instead of committed when
     /// `commit` is false: every check runs, and nothing is kept. With
     /// `undid`, the batch is recorded as that batch's undo.
-    /// `guard` may add drafts read from inside the write.
+    /// `guard` may add drafts read from inside the write, given the UTC
+    /// milliseconds the write is stamped with, so a Claim it judges lapsed or
+    /// held is judged as the write will be.
     fn append_with(
         &mut self,
         mut drafts: Vec<(Draft, Option<Provenance>)>,
-        guard: impl FnOnce(&Transaction<'_>) -> Result<Vec<Draft>, StoreError>,
+        guard: impl FnOnce(&Transaction<'_>, i64) -> Result<Vec<Draft>, StoreError>,
         commit: bool,
         undid: Option<Uuid>,
     ) -> Result<Vec<Op>, StoreError> {
@@ -1008,7 +1010,7 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        for draft in guard(&tx)? {
+        for draft in guard(&tx, now.0.utc_ms)? {
             draft.change.validate()?;
             drafts.push((draft, None));
         }

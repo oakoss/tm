@@ -367,6 +367,59 @@ fn every_claim_is_listed_by_holder_and_split_at_one_instant() {
 }
 
 #[test]
+fn a_take_with_keeps_the_sessions_held_claim_and_takes_a_lapsed_one_again() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let issue = new_issue(&mut store);
+    let s1 = in_session("s1");
+    let none = |_: &[tm_store::IssueView]| (Vec::new(), ());
+    let first = store.take_with(&s1, issue, Some(HOUR_MS), none).unwrap();
+    assert!(!first.kept);
+    let again = store.take_with(&s1, issue, Some(HOUR_MS), none).unwrap();
+    assert!(again.kept, "held by this session");
+    assert_eq!(again.claim.id, first.claim.id);
+    assert_eq!(again.ops, []);
+    assert!(matches!(
+        store.take_with(&in_session("s2"), issue, Some(HOUR_MS), none),
+        Err(StoreError::AlreadyClaimed { .. })
+    ));
+    clock.advance(HOUR);
+    let lapsed = store.take_with(&s1, issue, Some(HOUR_MS), none).unwrap();
+    assert!(!lapsed.kept, "a lapsed one is taken again");
+    assert_ne!(lapsed.claim.id, first.claim.id);
+}
+
+#[test]
+fn a_take_with_judges_the_held_claim_at_the_instant_it_writes() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let issue = new_issue(&mut store);
+    let s1 = in_session("s1");
+    let expires = store.take(&s1, issue, Some(HOUR_MS)).unwrap().expires_ms;
+    clock.set(expires.unwrap() - 1);
+    clock.step_each_read(1);
+    let retitle = |_: &[tm_store::IssueView]| {
+        let again = Draft {
+            actor: s1.clone(),
+            ..draft(issue, set_field("title", json!("again")))
+        };
+        (vec![again], ())
+    };
+    let started = store.take_with(&s1, issue, Some(HOUR_MS), retitle).unwrap();
+    assert!(started.kept);
+    let retitled = started.ops.iter().any(
+        |op| matches!(op.change().unwrap(), Change::SetField { field, .. } if field == "title"),
+    );
+    assert!(retitled, "a Claim kept still writes extend's drafts");
+    assert!(
+        started.ops.iter().all(|op| Some(op.utc_ms) < expires),
+        "a Claim kept is unlapsed when the batch is written"
+    );
+}
+
+#[test]
 fn undoing_a_write_leaves_its_renewal() {
     let dir = TempDir::new();
     let clock = ManualClock::at(1_000);

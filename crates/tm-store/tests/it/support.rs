@@ -44,26 +44,40 @@ impl Drop for TempDir {
 /// A clock the test advances by hand; shared so a test can move it after the
 /// store owns it.
 #[derive(Clone)]
-pub(crate) struct ManualClock(Arc<AtomicI64>);
+pub(crate) struct ManualClock {
+    ms: Arc<AtomicI64>,
+    step: Arc<AtomicI64>,
+}
 
 impl ManualClock {
     pub(crate) fn at(ms: i64) -> Self {
-        Self(Arc::new(AtomicI64::new(ms)))
+        Self {
+            ms: Arc::new(AtomicI64::new(ms)),
+            step: Arc::new(AtomicI64::new(0)),
+        }
     }
 
     pub(crate) fn advance(&self, ms: i64) {
-        self.0.fetch_add(ms, Ordering::SeqCst);
+        self.ms.fetch_add(ms, Ordering::SeqCst);
     }
 
     pub(crate) fn set(&self, ms: i64) {
-        self.0.store(ms, Ordering::SeqCst);
+        self.ms.store(ms, Ordering::SeqCst);
+    }
+
+    /// Moves the clock `ms` on after every read, so two reads of one write
+    /// see different times.
+    pub(crate) fn step_each_read(&self, ms: i64) {
+        self.step.store(ms, Ordering::SeqCst);
     }
 }
 
 impl Clock for ManualClock {
     fn now(&self) -> Result<WallTime, String> {
         Ok(WallTime {
-            utc_ms: self.0.load(Ordering::SeqCst),
+            utc_ms: self
+                .ms
+                .fetch_add(self.step.load(Ordering::SeqCst), Ordering::SeqCst),
             offset_min: -300,
         })
     }

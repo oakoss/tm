@@ -152,7 +152,7 @@ fn next(
 }
 
 /// The first Status of `category` in `issue_type`'s Workflow.
-fn first(scheme: &Scheme, issue_type: &str, category: Category) -> Option<String> {
+pub(crate) fn first(scheme: &Scheme, issue_type: &str, category: Category) -> Option<String> {
     scheme
         .workflow(issue_type)?
         .statuses

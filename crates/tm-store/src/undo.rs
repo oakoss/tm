@@ -123,7 +123,7 @@ impl Store {
                 conflicts: again.restores,
             }),
         };
-        let ops = self.append_with(drafts, guard, commit, Some(batch))?;
+        let ops = self.append_with(drafts, |tx, _| guard(tx), commit, Some(batch))?;
         Ok((planned, ops))
     }
 
