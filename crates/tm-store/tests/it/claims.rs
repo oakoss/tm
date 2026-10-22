@@ -107,7 +107,7 @@ fn a_pulled_take_naming_a_blank_or_control_session_does_not_fit() {
             (spaced, Change::Create),
             (fine, Change::Create),
             (blank, in_session(" ")),
-            (control, in_session("s\u{7}1")),
+            (control, in_session("s\u{202e}1")),
             (spaced, in_session(" s1 ")),
             (fine, in_session("s1")),
         ],

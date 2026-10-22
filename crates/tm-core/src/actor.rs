@@ -66,6 +66,17 @@ impl Actor {
     }
 }
 
+/// Whether `session` can name a session: ASCII letters, digits, `-`, `_` and
+/// `.` only, so no two sessions can look alike in text, as invisible or
+/// look-alike characters would let them.
+#[must_use]
+pub fn is_session_id(session: &str) -> bool {
+    !session.is_empty()
+        && session
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,6 +93,28 @@ mod tests {
             (human.name(), human.is_agent(), human.on_behalf_of()),
             ("jace", false, None)
         );
+    }
+
+    #[test]
+    fn a_session_id_is_ascii_letters_digits_and_dashes() {
+        for good in [
+            "eeeceb72-32ea-496f-ab1d-60fb6417eead",
+            "frontend-review",
+            "codex.2_b",
+        ] {
+            assert!(is_session_id(good), "{good:?}");
+        }
+        for bad in [
+            "",
+            "a b",
+            "s\u{200b}1",
+            "x\u{202e}y",
+            "…6417eead",
+            "é",
+            "s\u{7}1",
+        ] {
+            assert!(!is_session_id(bad), "{bad:?}");
+        }
     }
 
     #[test]

@@ -123,7 +123,7 @@ Everything is soft-deleted: archived, hidden and restorable. `tm purge` is the o
 - The human is set once (`tm whoami`), defaulting to git `user.email`.
 - Agents are detected from the variables their harness sets (Claude Code, Codex, Gemini CLI, OpenCode, Cursor), or named with `TM_AGENT`; otherwise the writer is the human. `TM_ACTOR` overrides the human's name and never names an Agent ([ADR 0010](../decisions/0010-operations-record-who-an-agent-acts-for-and-undo-names-a-batch.md)).
 - Agent writes are recorded as "agent, on behalf of human". Sub-agents get distinct names, from `tm setup claude`'s hook or from `TM_AGENT`, so history shows which agent did what.
-- An Agent's session is its harness's session id (Claude Code's `CLAUDE_CODE_SESSION_ID`, Codex's `CODEX_SESSION_ID` or `CODEX_THREAD_ID`), or `TM_SESSION`; harnesses that set only a flag name none. A Claim records the session that took it, so several sessions of one Agent tell their Claims apart ([ADR 0009](../decisions/0009-claims-apply-by-compare-and-set-and-links-are-keyed-canonically.md)).
+- An Agent's session is its harness's session id (Claude Code's `CLAUDE_CODE_SESSION_ID`, Codex's `CODEX_SESSION_ID` or `CODEX_THREAD_ID`), or `TM_SESSION`; harnesses that set only a flag name none. A session id holds only ASCII letters, digits, `-`, `_` and `.`, so no two can look alike. A Claim records the session that took it, so several sessions of one Agent tell their Claims apart ([ADR 0009](../decisions/0009-claims-apply-by-compare-and-set-and-links-are-keyed-canonically.md)).
 
 ### Claims
 

@@ -5,6 +5,7 @@ use std::path::Path;
 use std::process::Command;
 
 use tm_core::Actor;
+use tm_core::actor::is_session_id;
 
 /// Each harness's variables, in the order they are checked, and the name its
 /// Agent writes under. Codex comes first: it is the one launched from Claude
@@ -68,9 +69,10 @@ pub(crate) fn resolve(
     let actor = match agent {
         Some(agent) => {
             let session = match set(&var, "TM_SESSION")? {
-                Some(session) if session.chars().any(char::is_control) => {
+                Some(session) if !is_session_id(&session) => {
                     return Err(
-                        "TM_SESSION has a control character; set it to the session's id, or unset it"
+                        "TM_SESSION may hold only ASCII letters, digits, -, _ and .; \
+                         set it to the session's id, or unset it"
                             .into(),
                     );
                 }
@@ -108,7 +110,7 @@ fn session_id(
             .as_ref()
             .ok()
             .map(|value| value.trim())
-            .filter(|value| !value.is_empty() && !value.chars().any(char::is_control))
+            .filter(|value| is_session_id(value))
         {
             Some(value) => return Some(value.to_owned()),
             None => unusable.push(*name),
@@ -285,7 +287,7 @@ mod tests {
             Some("s1".into())
         );
         assert_eq!(session(&[("TM_SESSION", "mine")]), None, "a human has none");
-        for bad in [" ", "a\u{1}b"] {
+        for bad in [" ", "a\u{1}b", "s\u{200b}1", "…6417eead"] {
             let err = resolved(&[("TM_AGENT", "a"), ("TM_SESSION", bad)]).unwrap_err();
             assert!(err.contains("the session's id"), "{bad:?}: {err}");
         }
@@ -293,7 +295,7 @@ mod tests {
 
     #[test]
     fn an_unusable_harness_session_is_skipped_with_a_warning() {
-        for bad in [" ", "a\u{1}b"] {
+        for bad in [" ", "a\u{1}b", "s\u{202e}1"] {
             let identity = resolved(&[("TM_AGENT", "a"), ("CLAUDE_CODE_SESSION_ID", bad)]).unwrap();
             assert_eq!(identity.actor.session(), None, "{bad:?}");
             assert!(

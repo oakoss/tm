@@ -4,6 +4,7 @@
 use std::borrow::Cow;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use tm_core::actor::is_session_id;
 use tm_core::op::{CLAIM_FIELD, ClaimAction};
 use tm_core::{Actor, Change, Op};
 use uuid::Uuid;
@@ -335,14 +336,10 @@ fn taken(
     if agent.chars().any(char::is_control) {
         return Err(invalid("cannot name an Agent with control characters"));
     }
-    if session.is_some_and(|session| session.trim().is_empty()) {
-        return Err(invalid("cannot name a blank session"));
-    }
-    if session.is_some_and(|session| session.trim() != session) {
-        return Err(invalid("cannot name a session with surrounding spaces"));
-    }
-    if session.is_some_and(|session| session.chars().any(char::is_control)) {
-        return Err(invalid("cannot name a session with control characters"));
+    if session.is_some_and(|session| !is_session_id(session)) {
+        return Err(invalid(
+            "cannot name a session other than by ASCII letters, digits, -, _ and .",
+        ));
     }
     let expires_ms = match ttl_ms {
         None => None,
