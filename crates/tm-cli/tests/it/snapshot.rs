@@ -226,6 +226,7 @@ fn a_failed_publish_is_a_warning_after_the_stores_own() {
         .unwrap();
     fs::remove_file(&path).unwrap();
     fs::create_dir_all(path.join("in-the-way")).unwrap();
+    fs::write(scratch.home().join("exports"), "in the way").unwrap();
     let unapplied = "1 logged operation did not apply in full; tm doctor will list it";
 
     let out = tm(
@@ -236,7 +237,7 @@ fn a_failed_publish_is_a_warning_after_the_stores_own() {
     assert!(out.status.success(), "the write stands: {out:?}");
     let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
     let warnings = doc["warnings"].as_array().unwrap();
-    assert_eq!(warnings.len(), 2, "{doc}");
+    assert_eq!(warnings.len(), 3, "{doc}");
     assert_eq!(warnings[0], unapplied);
     assert!(
         warnings[1].as_str().unwrap().starts_with(&format!(
@@ -244,6 +245,13 @@ fn a_failed_publish_is_a_warning_after_the_stores_own() {
             path.display()
         )),
         "{doc}"
+    );
+    assert!(
+        warnings[2]
+            .as_str()
+            .unwrap()
+            .starts_with("today's backup was not written: "),
+        "the backup's last: {doc}"
     );
 
     let out = tm(&scratch, &repo, &["--json", "comment", "TM-404", "x"]);

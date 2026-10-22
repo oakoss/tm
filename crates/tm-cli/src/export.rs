@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::error::{CliError, RECORDS_FIX};
 use crate::output::{self, Output};
-use crate::{here, identity};
+use crate::{backup, here, identity};
 
 /// Writes the export to stdout. It is JSONL in either mode, so nothing else
 /// is printed; a failure before it is written is the usual error.
@@ -46,20 +46,70 @@ fn now_ms() -> i64 {
 }
 
 /// Writes the export to tm's home as `exports/<Workspace>/<local date>.jsonl`,
-/// replacing that day's, unless it matches the newest one there. It is read
-/// back with `tm import`'s check before it takes the dated name, so a backup
-/// that could not be restored fails now rather than when it is needed.
+/// replacing that day's, unless it matches the newest one there, then
+/// collects old ones (ADR 0015).
 pub(crate) fn dated() -> Result<Output, CliError> {
     let here = here::open()?;
-    let home = workspace::home(std::env::var_os("TM_HOME"), std::env::home_dir())?;
-    let dir = home.join("exports").join(here.workspace.id.to_string());
-    fs::create_dir_all(&dir).map_err(|err| io_error(&dir, &err))?;
     // Held from before the log is read until the rename, so an export that
     // read an older log cannot land after a newer one.
-    let lock_path = dir.join(".lock");
-    let lock = fs::File::create(&lock_path).map_err(|err| io_error(&lock_path, &err))?;
-    lock.lock().map_err(|err| io_error(&lock_path, &err))?;
-    let staged = Staged::new(&dir)?;
+    let exports = backup::Exports::lock(&here.home, here.workspace.id)?;
+    let checked = stage(&here, exports.dir())?;
+    let today = jiff::Zoned::now().date();
+    let newest = newest_export(exports.dir(), today)?;
+    let ops = checked.ops;
+    // Kept only while it would still restore, header included.
+    let unchanged = newest
+        .as_ref()
+        .and_then(|newest| fs::read(newest).ok())
+        .is_some_and(|held| {
+            tm_store::read_export(&mut held.as_slice()).ok() == Some((here.workspace.id, ops))
+                && after_header(&held) == after_header(&checked.bytes)
+        });
+    let file = if let (true, Some(newest)) = (unchanged, newest) {
+        newest
+    } else {
+        let target = exports.file(today);
+        checked.persist(&target)?;
+        target
+    };
+    let text = if unchanged {
+        format!("Nothing changed since {}; wrote nothing\n", file.display())
+    } else {
+        format!("Wrote {} ({ops} operations)\n", file.display())
+    };
+    let mut output = Output::new(
+        text,
+        json!({ "file": file.display().to_string(), "ops": ops, "written": !unchanged }),
+    );
+    let policy = backup::policy(&here.home);
+    output.warnings = exports.collect(today, policy.as_ref().ok());
+    output
+        .warnings
+        .extend(policy.err().as_deref().map(backup::unread));
+    Ok(output)
+}
+
+/// An export staged beside the backups, and read back with `tm import`'s
+/// check, so a backup that could not be restored fails now rather than when
+/// it is needed.
+pub(crate) struct Checked {
+    staged: Staged,
+    file: PathBuf,
+    bytes: Vec<u8>,
+    ops: usize,
+}
+
+impl Checked {
+    /// Moves the export to `target`, replacing any file there.
+    pub(crate) fn persist(self, target: &Path) -> Result<(), CliError> {
+        fs::rename(&self.file, target).map_err(|err| io_error(target, &err))?;
+        drop(self.staged);
+        Ok(())
+    }
+}
+
+pub(crate) fn stage(here: &here::Here, dir: &Path) -> Result<Checked, CliError> {
+    let staged = Staged::new(dir)?;
     let copy = staged.path("export.jsonl");
     let exported = fs::File::create(&copy)
         .map_err(|err| io_error(&copy, &err))
@@ -85,32 +135,12 @@ pub(crate) fn dated() -> Result<Output, CliError> {
             ),
         ));
     }
-    let today = jiff::Zoned::now().date();
-    let newest = newest_export(&dir, today)?;
-    // Kept only while it would still restore, header included.
-    let unchanged = newest
-        .as_ref()
-        .and_then(|newest| fs::read(newest).ok())
-        .is_some_and(|held| {
-            tm_store::read_export(&mut held.as_slice()).ok() == Some((workspace, ops))
-                && after_header(&held) == after_header(&bytes)
-        });
-    let file = if let (true, Some(newest)) = (unchanged, newest) {
-        newest
-    } else {
-        let target = dir.join(format!("{today}.jsonl"));
-        fs::rename(&copy, &target).map_err(|err| io_error(&target, &err))?;
-        target
-    };
-    let text = if unchanged {
-        format!("Nothing changed since {}; wrote nothing\n", file.display())
-    } else {
-        format!("Wrote {} ({ops} operations)\n", file.display())
-    };
-    Ok(Output::new(
-        text,
-        json!({ "file": file.display().to_string(), "ops": ops, "written": !unchanged }),
-    ))
+    Ok(Checked {
+        staged,
+        file: copy,
+        bytes,
+        ops,
+    })
 }
 
 /// The newest dated export in `dir` up to `today`; one dated later, left by
@@ -290,7 +320,7 @@ pub(crate) fn import_records(
         warnings.append(&mut here.warnings);
         let key = project(&here.store).map_err(|err| err.warned(warnings.clone()))?;
         let written = write(&mut here.store, &key);
-        warnings.extend(here.publish());
+        warnings.extend(here.after_write());
         let (imported, dropped) =
             written.map_err(|err| CliError::from(err).warned(warnings.clone()))?;
         let undo = undo_states(&mut here.store, &identity.actor, &imported);
@@ -478,7 +508,7 @@ fn publish(staged: &Path, target: &Workspace) -> io::Result<()> {
     })
 }
 
-fn io_error(path: &Path, err: &io::Error) -> CliError {
+pub(crate) fn io_error(path: &Path, err: &io::Error) -> CliError {
     CliError::new("io", format!("{}: {err}", path.display()))
         .with("path", path.display().to_string())
 }

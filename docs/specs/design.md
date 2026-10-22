@@ -199,6 +199,7 @@ Off by default. An Issue can carry **Checks**: commands with an expected result.
 - `--dry-run` previews how source fields map to the Scheme; the TUI edits and saves the mapping.
 - Re-runs are idempotent through stored `source:id` metadata.
 - `tm export` writes everything that can be exported (Issues, history, comments, attachments, config) in the format `tm import` reads; a round-trip test runs in CI.
+- The first write of each day backs its Workspace up as a dated export in tm's home, and old backups are removed by a policy of days, weeks and months set in tm's `config.toml`; a failed backup warns and the write stands ([ADR 0015](../decisions/0015-the-first-write-of-each-day-backs-up-its-workspace.md)).
 
 ## Health
 

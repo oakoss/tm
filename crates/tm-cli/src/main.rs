@@ -1,5 +1,6 @@
 //! The `tm` command.
 
+mod backup;
 mod claim;
 mod comment;
 mod create;
@@ -261,7 +262,8 @@ enum Command {
     /// `--json` changes only how an error prints.
     Export {
         /// Write it to tm's home as exports/<Workspace>/<date>.jsonl instead,
-        /// unless nothing changed since the newest one there.
+        /// unless nothing changed since the newest one there, and remove old
+        /// ones by the [backups] policy in tm's config.toml.
         #[arg(long)]
         dated: bool,
     },
