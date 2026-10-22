@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::{Duration, Instant};
 
 use jiff::ToSpan as _;
 use serde_json::Value;
@@ -214,7 +215,7 @@ fn collection_reports_what_it_could_not_remove_and_removes_the_rest() {
     assert_eq!(warnings.len(), 1, "{done}");
     let warning = warnings[0].as_str().unwrap();
     assert!(
-        warning.starts_with("old backups were not removed: ")
+        warning.starts_with("old staging was not removed: ")
             && warning.contains(".tm-import-stuck"),
         "{warning}"
     );
@@ -277,10 +278,9 @@ fn something_else_at_todays_name_warns_and_an_empty_file_is_replaced() {
     let warnings = done["warnings"].as_array().unwrap();
     assert_eq!(warnings.len(), 1, "{done}");
     assert!(
-        warnings[0]
-            .as_str()
-            .unwrap()
-            .ends_with("is not a file tm wrote, so it was left alone"),
+        warnings[0].as_str().unwrap().ends_with(
+            "is not a file tm wrote, so it was left alone and old backups were not removed"
+        ),
         "{done}"
     );
     assert!(file.is_dir());
@@ -297,7 +297,137 @@ fn a_config_can_turn_backups_off() {
     .unwrap();
     let done = create(&scratch, &repo, "first");
     assert_eq!(done["warnings"], serde_json::json!([]), "{done}");
-    assert_eq!(exports(&scratch).1, Vec::<String>::new());
+    let (dir, _) = exports(&scratch);
+    assert!(!dir.exists(), "nothing staged, so nothing written");
+
+    // Backups, and a file named like staging, are not staging to clear.
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("2000-01-01.jsonl"), "kept").unwrap();
+    fs::write(dir.join("2001-01-01.jsonl"), "kept").unwrap();
+    fs::write(dir.join(".tm-import-file"), "not staging").unwrap();
+    create(&scratch, &repo, "unlocked");
+    assert!(!dir.join(".lock").exists(), "no lock taken");
+    fs::remove_file(dir.join(".tm-import-file")).unwrap();
+
+    // A killed export's staging still goes; backups stay, the oldest too.
+    fs::create_dir_all(dir.join(".tm-import-killed")).unwrap();
+    let done = create(&scratch, &repo, "second");
+    assert_eq!(done["warnings"], serde_json::json!([]), "{done}");
+    let kept = ["2000-01-01.jsonl", "2001-01-01.jsonl"];
+    assert_eq!(exports(&scratch).1, kept);
+
+    // Staging it cannot clear is a warning.
+    fs::create_dir_all(dir.join(".tm-import-killed")).unwrap();
+    fs::remove_file(dir.join(".lock")).unwrap();
+    fs::create_dir(dir.join(".lock")).unwrap();
+    let done = create(&scratch, &repo, "third");
+    let warning = done["warnings"][0].as_str().unwrap_or_default();
+    assert!(
+        warning.starts_with("old staging was not removed: "),
+        "{done}"
+    );
+}
+
+#[test]
+fn a_write_with_backups_off_does_not_wait_for_a_running_export() {
+    let scratch = Scratch::new();
+    let (repo, _store, _) = initialized(&scratch);
+    fs::write(
+        scratch.home().join("config.toml"),
+        "[backups]\nenabled = false\n",
+    )
+    .unwrap();
+    let (dir, _) = exports(&scratch);
+    fs::create_dir_all(dir.join(".tm-import-running")).unwrap();
+    // As a running export holds it.
+    let lock = fs::File::create(dir.join(".lock")).unwrap();
+    lock.lock().unwrap();
+
+    let mut child = tm_command()
+        .args(["--json", "create", "--type", "task", "--title", "held"])
+        .current_dir(&repo)
+        .env("TM_HOME", scratch.home())
+        .env("TM_ACTOR", "jace")
+        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    let finished = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if started.elapsed() > Duration::from_secs(20) {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    drop(lock);
+    assert!(
+        finished.is_some_and(|status| status.success()),
+        "the write waited on the lock"
+    );
+    assert!(dir.join(".tm-import-running").exists(), "the export's own");
+}
+
+#[test]
+fn a_first_dated_export_has_nothing_to_compare_and_no_warning() {
+    let scratch = Scratch::new();
+    let (repo, _store, _) = initialized(&scratch);
+    let out = tm(&scratch, &repo, &["--json", "export", "--dated"]);
+    assert!(out.status.success(), "{out:?}");
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["data"]["written"], true, "{doc}");
+    assert_eq!(doc["warnings"], serde_json::json!([]), "{doc}");
+}
+
+#[test]
+fn a_dated_export_says_when_it_cannot_read_the_newest() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let scratch = Scratch::new();
+    let (repo, _store, _) = initialized(&scratch);
+    create(&scratch, &repo, "first");
+    let (dir, names) = exports(&scratch);
+    let file = dir.join(&names[0]);
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let out = tm(&scratch, &repo, &["--json", "export", "--dated"]);
+    let _ = fs::set_permissions(&file, fs::Permissions::from_mode(0o600));
+    assert!(out.status.success(), "{out:?}");
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["data"]["written"], true, "{doc}");
+    let warning = doc["warnings"][0].as_str().unwrap_or_default();
+    assert!(
+        warning.starts_with(&file.display().to_string())
+            && warning.ends_with("; wrote a new export rather than compare with it"),
+        "{doc}"
+    );
+}
+
+#[test]
+fn a_backup_that_cannot_be_staged_names_the_exports_directory() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let scratch = Scratch::new();
+    let (repo, _store, _) = initialized(&scratch);
+    let (dir, _) = exports(&scratch);
+    fs::create_dir_all(&dir).unwrap();
+    fs::File::create(dir.join(".lock")).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+
+    let done = create(&scratch, &repo, "first");
+    let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+    let warning = done["warnings"][0].as_str().unwrap_or_default();
+    assert!(
+        warning.starts_with(&format!(
+            "today's backup was not written: {}: ",
+            dir.display()
+        )),
+        "{done}"
+    );
 }
 
 #[test]

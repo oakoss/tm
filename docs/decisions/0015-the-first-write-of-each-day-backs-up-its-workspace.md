@@ -27,10 +27,10 @@
 **The first write of each local day backs up its Workspace**, after the write commits and the Snapshot is published, as `exports/<Workspace id>/<local date>.jsonl` in tm's home: the file `tm export --dated` writes, read back with `tm import`'s check before it takes its name.
 
 - A write whose command added to the log checks for today's file, one `stat`, and returns when it is there. Otherwise it takes the exports directory's lock, checks again, and writes the backup only if still missing, so two first writes of a day write one backup. A day with no writes takes none, and the writes after the first are in the next day's.
-- Only a non-empty regular file counts as today's backup. An empty one is replaced; anything else at that name, such as a directory or a link, is left alone with a warning on every write until it is moved.
+- Only a non-empty regular file counts as today's backup. An empty one is replaced; anything else at that name, such as a directory or a link, is left alone with a warning on every write until it is moved, and no old backup is removed meanwhile.
 - `tm init` and `tm import`'s restore take none: a new Workspace has nothing to lose, and a restore's source is itself a backup.
 - A failed backup or collection is a warning on the write, in its JSON envelope too ([ADR 0011](0011-the-cli-speaks-one-json-envelope-and-flat-coded-errors.md)); the write stands.
-- `tm export --dated` still replaces the day's file when the log changed since.
+- `tm export --dated` still replaces the day's file when the log changed since. A newest backup it cannot read is a warning, and the export is written rather than compared with it.
 
 **Old backups are collected by tiers**, after each backup, automatic or `tm export --dated`, under the same lock. Kept: every backup from the last `keep_days` days, the newest of each of the last `keep_weeks` ISO weeks, the newest of each of the last `keep_months` months, and the newest backup of all. Defaults: 14 days, 8 weeks, 12 months, so at most about 34 files.
 
@@ -48,7 +48,7 @@ keep_weeks = 8
 keep_months = 12
 ```
 
-- `enabled = false` stops writes taking backups; `tm export --dated` still writes one and collects.
+- `enabled = false` stops writes taking backups, though a write on a day with no backup still removes a killed export's staging directories, without waiting on an export that is running; `tm export --dated` still writes one and collects.
 - A missing file or key takes the default. The file is read only when a backup is due.
 - A file tm cannot read, or a table or key it does not know, such as `[backup]`, is a warning: the backup is still written, and no backup is removed, since a policy misread could remove what was meant to be kept.
 

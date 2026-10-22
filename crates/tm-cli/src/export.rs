@@ -455,10 +455,12 @@ impl Staged {
         use std::os::unix::fs::DirBuilderExt as _;
         let dir = parent.join(format!(".tm-import-{}", Uuid::now_v7()));
         fs::create_dir_all(parent).map_err(|err| CliError::io(parent, &err))?;
+        // Named by its parent: the staging name is new each run, so it would
+        // point at nothing and differ every time.
         fs::DirBuilder::new()
             .mode(0o700)
             .create(&dir)
-            .map_err(|err| CliError::io(&dir, &err))?;
+            .map_err(|err| CliError::io(parent, &err))?;
         Ok(Self { dir })
     }
 

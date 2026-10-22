@@ -89,6 +89,9 @@ fn file(dir: &Path, date: Date) -> PathBuf {
     dir.join(format!("{date}.jsonl"))
 }
 
+/// The name every staging directory starts with.
+const PREFIX: &str = ".tm-import-";
+
 /// A Workspace's exports directory, locked while this is held, so one export
 /// or collection runs in it at a time.
 struct Exports {
@@ -98,12 +101,27 @@ struct Exports {
 
 impl Exports {
     fn lock(home: &Path, workspace: Uuid) -> Result<Self, CliError> {
+        let (dir, path, lock) = Self::open(home, workspace)?;
+        lock.lock().map_err(|err| CliError::io(&path, &err))?;
+        Ok(Self { dir, _lock: lock })
+    }
+
+    /// The lock without waiting; none while another process holds it.
+    fn try_lock(home: &Path, workspace: Uuid) -> Result<Option<Self>, CliError> {
+        let (dir, path, lock) = Self::open(home, workspace)?;
+        match lock.try_lock() {
+            Ok(()) => Ok(Some(Self { dir, _lock: lock })),
+            Err(fs::TryLockError::WouldBlock) => Ok(None),
+            Err(fs::TryLockError::Error(err)) => Err(CliError::io(&path, &err)),
+        }
+    }
+
+    fn open(home: &Path, workspace: Uuid) -> Result<(PathBuf, PathBuf, fs::File), CliError> {
         let dir = dir(home, workspace);
         fs::create_dir_all(&dir).map_err(|err| CliError::io(&dir, &err))?;
         let path = dir.join(".lock");
         let lock = fs::File::create(&path).map_err(|err| CliError::io(&path, &err))?;
-        lock.lock().map_err(|err| CliError::io(&path, &err))?;
-        Ok(Self { dir, _lock: lock })
+        Ok((dir, path, lock))
     }
 
     fn file(&self, date: Date) -> PathBuf {
@@ -115,14 +133,11 @@ impl Exports {
     /// keep; a warning for each that could not be removed. Nothing is removed
     /// through a symbolic link, which may lead out of tm's home.
     fn collect(&self, today: Date, policy: &Policy) -> Vec<String> {
-        let parent = self.dir.parent().unwrap_or(&self.dir);
-        for dir in [parent, &self.dir] {
-            if fs::symlink_metadata(dir).is_ok_and(|meta| meta.file_type().is_symlink()) {
-                return vec![format!(
-                    "old backups were not removed: {} is a symbolic link, and tm removes nothing through one",
-                    dir.display()
-                )];
-            }
+        if let Some(dir) = linked(&self.dir) {
+            return vec![format!(
+                "old backups were not removed: {} is a symbolic link, and tm removes nothing through one",
+                dir.display()
+            )];
         }
         let failed = |path: &Path, err: &io::Error| {
             format!("old backups were not removed: {}: {err}", path.display())
@@ -146,9 +161,12 @@ impl Exports {
             let Some(name) = name.to_str() else {
                 continue;
             };
-            if kind.is_dir() && name.starts_with(".tm-import-") {
+            if kind.is_dir() && name.starts_with(PREFIX) {
                 if let Err(err) = fs::remove_dir_all(entry.path()) {
-                    warnings.push(failed(&entry.path(), &err));
+                    warnings.push(format!(
+                        "old staging was not removed: {}: {err}",
+                        entry.path().display()
+                    ));
                 }
             } else if let Some(date) = kind.is_file().then(|| date_of(name)).flatten() {
                 backups.push((date, entry.path()));
@@ -165,6 +183,14 @@ impl Exports {
         }
         warnings
     }
+}
+
+/// The exports directory, or `dir` in it, when either is a symbolic link.
+fn linked(dir: &Path) -> Option<&Path> {
+    let parent = dir.parent().unwrap_or(dir);
+    [parent, dir]
+        .into_iter()
+        .find(|dir| fs::symlink_metadata(dir).is_ok_and(|meta| meta.file_type().is_symlink()))
 }
 
 /// The date of a backup by its file name, for the names tm writes only.
@@ -220,7 +246,7 @@ pub(crate) fn daily(here: &Here, today: Date) -> Vec<String> {
     }
     let (policy, unread) = policy(&here.home);
     if !policy.enabled {
-        return Vec::new();
+        return clear_staging(here, today);
     }
     let mut warnings = match back_up(here, today) {
         Ok(Some(exports)) => exports.collect(today, &policy),
@@ -229,6 +255,35 @@ pub(crate) fn daily(here: &Here, today: Date) -> Vec<String> {
     };
     warnings.extend(unread);
     warnings
+}
+
+/// With backups off and no backup today, removes the staging directories a
+/// killed export left, taking the lock only when there are some and no
+/// export holds it, since one that does collects them itself.
+fn clear_staging(here: &Here, today: Date) -> Vec<String> {
+    let dir = dir(&here.home, here.workspace.id);
+    let not_removed = |cause: &str| vec![format!("old staging was not removed: {cause}")];
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Vec::new(),
+        Err(err) => return not_removed(&format!("{}: {err}", dir.display())),
+    };
+    // An entry that cannot be read may be one; collect reports it.
+    let staging = |entry: io::Result<fs::DirEntry>| match entry {
+        Ok(entry) => {
+            entry.file_type().is_ok_and(|kind| kind.is_dir())
+                && entry.file_name().to_string_lossy().starts_with(PREFIX)
+        }
+        Err(_) => true,
+    };
+    if linked(&dir).is_some() || !entries.into_iter().any(staging) {
+        return Vec::new();
+    }
+    match Exports::try_lock(&here.home, here.workspace.id) {
+        Ok(Some(exports)) => exports.collect(today, &Policy::keep_all()),
+        Ok(None) => Vec::new(),
+        Err(err) => not_removed(&err.message),
+    }
 }
 
 /// Writes the export to tm's home as `exports/<Workspace>/<local date>.jsonl`,
@@ -243,14 +298,24 @@ pub(crate) fn dated() -> Result<Output, CliError> {
     let today = jiff::Zoned::now().date();
     let newest = newest_export(&exports.dir, today)?;
     let ops = checked.ops();
+    let mut warnings = Vec::new();
+    let held = match newest.as_ref().map(|newest| (newest, fs::read(newest))) {
+        Some((_, Ok(held))) => Some(held),
+        Some((_, Err(err))) if err.kind() == io::ErrorKind::NotFound => None,
+        Some((newest, Err(err))) => {
+            warnings.push(format!(
+                "{}: {err}; wrote a new export rather than compare with it",
+                newest.display()
+            ));
+            None
+        }
+        None => None,
+    };
     // Kept only while it would still restore, header included.
-    let unchanged = newest
-        .as_ref()
-        .and_then(|newest| fs::read(newest).ok())
-        .is_some_and(|held| {
-            tm_store::read_export(&mut held.as_slice()).ok() == Some((here.workspace.id, ops))
-                && after_header(&held) == after_header(checked.bytes())
-        });
+    let unchanged = held.is_some_and(|held| {
+        tm_store::read_export(&mut held.as_slice()).ok() == Some((here.workspace.id, ops))
+            && after_header(&held) == after_header(checked.bytes())
+    });
     let file = if let (true, Some(newest)) = (unchanged, newest) {
         newest
     } else {
@@ -268,25 +333,22 @@ pub(crate) fn dated() -> Result<Output, CliError> {
         json!({ "file": file.display().to_string(), "ops": ops, "written": !unchanged }),
     );
     let (policy, unread) = policy(&here.home);
-    output.warnings = exports.collect(today, &policy);
-    output.warnings.extend(unread);
+    warnings.extend(exports.collect(today, &policy));
+    warnings.extend(unread);
+    output.warnings = warnings;
     Ok(output)
 }
 
-/// The newest dated export in `dir` up to `today`; one dated later, left by
-/// a clock that ran ahead, is passed over.
+/// The newest dated export in `dir` up to `today`, among the regular files
+/// tm names; one dated later, left by a clock that ran ahead, is passed over.
 fn newest_export(dir: &Path, today: Date) -> Result<Option<PathBuf>, CliError> {
     let entries = fs::read_dir(dir).map_err(|err| CliError::io(dir, &err))?;
     Ok(entries
         .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter_map(|path| {
-            let date = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .and_then(|stem| Date::strptime("%Y-%m-%d", stem).ok())?;
-            (path.extension().is_some_and(|ext| ext == "jsonl") && date <= today)
-                .then_some((date, path))
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .filter_map(|entry| {
+            let date = date_of(entry.file_name().to_str()?)?;
+            (date <= today).then(|| (date, entry.path()))
         })
         .max()
         .map(|(_, path)| path))
@@ -330,7 +392,7 @@ fn back_up(here: &Here, today: Date) -> Result<Option<Exports>, CliError> {
             return Err(CliError::new(
                 "io",
                 format!(
-                    "{} is not a file tm wrote, so it was left alone",
+                    "{} is not a file tm wrote, so it was left alone and old backups were not removed",
                     file.display()
                 ),
             ));
