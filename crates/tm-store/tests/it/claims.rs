@@ -4,13 +4,18 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
+use tm_core::actor::SessionId;
 use tm_core::op::ClaimAction;
 use tm_core::{Actor, Change, Hlc, OpError};
 use tm_store::{
-    AgentClaims, ClaimState, Draft, Holder, Provenance, Store, StoreError, Unapplied, WallTime,
-    short_session,
+    AgentClaims, Claim, ClaimState, Draft, Holder, Provenance, Store, StoreError, Unapplied,
+    WallTime,
 };
 use uuid::Uuid;
+
+fn session(id: &str) -> SessionId {
+    SessionId::parse(id).unwrap()
+}
 
 use crate::support::{
     ManualClock, TempDir, claude, draft, held, insert_acked, jace, new_issue, open, remote_op,
@@ -57,7 +62,7 @@ fn a_take_records_its_session_and_a_refusal_names_it() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    let first = claude().in_session("eeeceb72-32ea-496f-ab1d-60fb6417eead");
+    let first = claude().in_session(session("eeeceb72-32ea-496f-ab1d-60fb6417eead"));
     let claim = store.take(&first, issue, None).unwrap();
     assert_eq!(
         claim.session.as_deref(),
@@ -68,10 +73,10 @@ fn a_take_records_its_session_and_a_refusal_names_it() {
     assert_eq!(held(&store, issue), Some(claim));
 
     let err = store
-        .take(&claude().in_session("other"), issue, None)
+        .take(&claude().in_session(session("other")), issue, None)
         .unwrap_err();
     assert!(
-        matches!(&err, StoreError::AlreadyClaimed { session: Some(s), .. } if s.ends_with("eead")),
+        matches!(&err, StoreError::AlreadyClaimed { holder, .. } if holder.session.as_deref().is_some_and(|s| s.ends_with("eead"))),
         "{err}"
     );
     assert!(
@@ -82,7 +87,7 @@ fn a_take_records_its_session_and_a_refusal_names_it() {
 }
 
 #[test]
-fn a_pulled_take_naming_a_blank_or_control_session_does_not_fit() {
+fn a_pulled_take_naming_a_session_outside_the_session_alphabet_does_not_fit() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let in_session = |session: &str| Change::Claim {
@@ -135,8 +140,8 @@ fn a_take_must_name_the_session_writing_it() {
         },
     };
     for (writer, session) in [
-        (claude().in_session("mine"), Some("theirs")),
-        (claude().in_session("mine"), None),
+        (claude().in_session(session("mine")), Some("theirs")),
+        (claude().in_session(session("mine")), None),
         (claude(), Some("someone-else")),
     ] {
         let err = store
@@ -155,23 +160,46 @@ fn a_take_must_name_the_session_writing_it() {
 
 #[test]
 fn a_session_name_is_shown_whole_and_a_harness_id_by_its_last_eight_digits() {
+    let label = |session: &str| {
+        Claim {
+            id: Uuid::now_v7(),
+            issue: Uuid::now_v7(),
+            agent: "claude".into(),
+            on_behalf_of: "jace".into(),
+            expires_ms: None,
+            session: Some(session.into()),
+        }
+        .taker()
+    };
     // Two UUIDv7s begun the same minute share their first 8 characters.
     assert_eq!(
-        short_session("01a16140-aeca-7572-acbf-99e715d94dfe"),
-        "…15d94dfe"
+        label("01a16140-aeca-7572-acbf-99e715d94dfe"),
+        "claude (session …15d94dfe)"
     );
     assert_eq!(
-        short_session("eeeceb72-32ea-496f-ab1d-60fb6417eead"),
-        "…6417eead"
+        label("eeeceb72-32ea-496f-ab1d-60fb6417eead"),
+        "claude (session …6417eead)"
     );
-    for name in [
-        "6417eead",
-        "frontend-agent-review",
-        "backend-agent-review",
-        "é",
-    ] {
-        assert_eq!(short_session(name), name);
+    for name in ["6417eead", "frontend-agent-review", "backend-agent-review"] {
+        assert_eq!(label(name), format!("claude (session {name})"));
     }
+}
+
+#[test]
+fn a_claim_with_no_session_reads_as_taken_in_every_session() {
+    let claim = |session: Option<&str>| Claim {
+        id: Uuid::now_v7(),
+        issue: Uuid::now_v7(),
+        agent: "claude".into(),
+        on_behalf_of: "jace".into(),
+        expires_ms: None,
+        session: session.map(str::to_owned),
+    };
+    assert!(claim(None).taken_in(Some("s1")));
+    assert!(claim(None).taken_in(None));
+    assert!(claim(Some("s1")).taken_in(Some("s1")));
+    assert!(!claim(Some("s1")).taken_in(Some("s2")));
+    assert!(!claim(Some("s1")).taken_in(None));
 }
 
 #[test]
@@ -184,20 +212,10 @@ fn a_held_issue_is_refused_even_under_the_holders_own_agent_name() {
         let err = store
             .take(&Actor::agent(agent, "kim"), issue, None)
             .unwrap_err();
-        let StoreError::AlreadyClaimed {
-            agent,
-            on_behalf_of,
-            claim: id,
-            expires_ms,
-            ..
-        } = err
-        else {
+        let StoreError::AlreadyClaimed { holder, .. } = err else {
             panic!("{err}");
         };
-        assert_eq!(
-            (agent.as_str(), on_behalf_of.as_str(), id, expires_ms),
-            ("claude", "jace", claim.id, claim.expires_ms)
-        );
+        assert_eq!(*holder, claim);
     }
 }
 
@@ -886,7 +904,7 @@ fn take_as_child(db: &Path, issue: Uuid, agent: &str, report: &Path) {
             assert_eq!(claim.agent, agent, "a take returns its own Claim");
             format!("won {}", claim.id)
         }
-        Err(StoreError::AlreadyClaimed { claim, .. }) => format!("held {claim}"),
+        Err(StoreError::AlreadyClaimed { holder, .. }) => format!("held {}", holder.id),
         Err(err) => panic!("{err}"),
     };
     std::fs::write(report, outcome).unwrap();

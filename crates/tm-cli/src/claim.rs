@@ -1,7 +1,6 @@
 //! `tm claim` and `tm release`: an Agent's hold on an Issue, and its token.
 
 use serde_json::json;
-use tm_core::Actor;
 use tm_store::{Claim, IssueView};
 use uuid::Uuid;
 
@@ -108,12 +107,6 @@ pub(crate) fn claim_json(claim: &Claim) -> serde_json::Value {
 /// harness named one, and its human.
 pub(crate) fn holder(claim: &Claim) -> String {
     format!("{} for {}", claim.taker(), claim.on_behalf_of)
-}
-
-/// Whether `claim` was taken in `actor`'s session, or names no session to
-/// tell it from one.
-pub(crate) fn in_session(claim: &Claim, actor: &Actor) -> bool {
-    claim.session.is_none() || claim.session.as_deref() == actor.session()
 }
 
 /// Whether an Agent may take a lapsed Claim on `issue`: a take is refused on

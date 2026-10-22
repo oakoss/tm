@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::Command;
 
 use tm_core::Actor;
-use tm_core::actor::is_session_id;
+use tm_core::actor::SessionId;
 
 /// Each harness's variables, in the order they are checked, and the name its
 /// Agent writes under. Codex comes first: it is the one launched from Claude
@@ -69,21 +69,19 @@ pub(crate) fn resolve(
     let actor = match agent {
         Some(agent) => {
             let session = match set(&var, "TM_SESSION")? {
-                Some(session) if !is_session_id(&session) => {
-                    return Err(
-                        "TM_SESSION may hold only ASCII letters, digits, -, _ and .; \
-                         set it to the session's id, or unset it"
-                            .into(),
-                    );
-                }
-                Some(session) => Some(session),
+                Some(session) => Some(SessionId::parse(&session).ok_or_else(|| {
+                    format!(
+                        "TM_SESSION may hold only {}; set it to the session's id, or unset it",
+                        SessionId::RULE
+                    )
+                })?),
                 None => detected
                     .first()
                     .and_then(|harness| session_id(&var, harness, &mut warnings)),
             };
             let actor = Actor::agent(&agent, &human);
             match session {
-                Some(session) => actor.in_session(&session),
+                Some(session) => actor.in_session(session),
                 None => actor,
             }
         }
@@ -99,20 +97,15 @@ fn session_id(
     var: &impl Fn(&str) -> Option<Var>,
     harness: &str,
     warnings: &mut Vec<String>,
-) -> Option<String> {
+) -> Option<SessionId> {
     let (_, names) = SESSIONS.iter().find(|(name, _)| *name == harness)?;
     let mut unusable = Vec::new();
     for name in *names {
         let Some(value) = var(name) else {
             continue;
         };
-        match value
-            .as_ref()
-            .ok()
-            .map(|value| value.trim())
-            .filter(|value| is_session_id(value))
-        {
-            Some(value) => return Some(value.to_owned()),
+        match value.ok().as_deref().and_then(SessionId::parse) {
+            Some(session) => return Some(session),
             None => unusable.push(*name),
         }
     }

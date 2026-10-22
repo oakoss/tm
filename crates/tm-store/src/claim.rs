@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
-use tm_core::actor::is_session_id;
+use tm_core::actor::{SessionId, is_session_id};
 use tm_core::op::{CLAIM_FIELD, ClaimAction};
 use tm_core::{Actor, Change, Op};
 use uuid::Uuid;
@@ -42,19 +42,32 @@ impl Claim {
     /// messages show it.
     #[must_use]
     pub fn taker(&self) -> String {
-        match &self.session {
-            Some(session) => format!("{} (session {})", self.agent, short_session(session)),
+        match self.session_label() {
+            Some(label) => format!("{} ({label})", self.agent),
             None => self.agent.clone(),
         }
     }
+
+    /// Its session as text shows it, such as `session …6417eead`.
+    #[must_use]
+    pub fn session_label(&self) -> Option<String> {
+        let session = self.session.as_deref()?;
+        Some(format!("session {}", short_session(session)))
+    }
+
+    /// Whether it was taken in `session`; one that names no session reads as
+    /// every session's own.
+    #[must_use]
+    pub fn taken_in(&self, session: Option<&str>) -> bool {
+        self.session.is_none() || self.session.as_deref() == session
+    }
 }
 
-/// `session` as text shows it. A harness's UUID becomes `…` and its last 8
-/// hex digits: the last, as a time-ordered id begins with its start time,
-/// which sessions begun the same minute share, and the `…` so it never reads
-/// as a name. Any other session is a name and shows whole.
-#[must_use]
-pub fn short_session(session: &str) -> Cow<'_, str> {
+/// `session` as text shows it. Any UUID becomes `…` and its last 8 hex
+/// digits: a time-ordered id begins with its start time, which sessions begun
+/// the same minute share, and the `…` keeps it from reading as a name. Any
+/// other session shows whole.
+fn short_session(session: &str) -> Cow<'_, str> {
     match Uuid::try_parse(session) {
         Ok(id) => {
             let hex = id.simple().to_string();
@@ -337,9 +350,10 @@ fn taken(
         return Err(invalid("cannot name an Agent with control characters"));
     }
     if session.is_some_and(|session| !is_session_id(session)) {
-        return Err(invalid(
-            "cannot name a session other than by ASCII letters, digits, -, _ and .",
-        ));
+        return Err(invalid(&format!(
+            "cannot name a session other than by {}",
+            SessionId::RULE
+        )));
     }
     let expires_ms = match ttl_ms {
         None => None,
@@ -400,11 +414,7 @@ pub(crate) fn check(
             }
             (ClaimAction::Take { .. }, Some(held)) => StoreError::AlreadyClaimed {
                 issue,
-                agent: held.agent,
-                on_behalf_of: held.on_behalf_of,
-                claim: held.id,
-                expires_ms: held.expires_ms,
-                session: held.session,
+                holder: Box::new(held),
             },
             (ClaimAction::Take { .. }, None) => {
                 invalid("names a previous Claim, but the Issue is unclaimed")

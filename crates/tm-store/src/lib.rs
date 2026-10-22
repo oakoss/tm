@@ -39,7 +39,7 @@ use uuid::Uuid;
 use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
 pub use beads::{BeadsExport, BeadsImported, read_beads};
-pub use claim::{AgentClaims, Claim, ClaimState, Holder, short_session};
+pub use claim::{AgentClaims, Claim, ClaimState, Holder};
 pub use export::{Exported, Restored, copy_store, read_export};
 pub use import::{Conflict, RecordOutcome, RecordsImported};
 pub use read::{CommentView, Direction, IssueView, LinkView};
@@ -144,15 +144,8 @@ pub enum StoreError {
     },
     #[error("only an Agent can take a Claim, and {actor} writes as a human")]
     NoAgent { actor: String },
-    #[error("Issue {issue} is held by {agent}{} for {on_behalf_of}{}", session.as_deref().map_or_else(String::new, |session| format!(" (session {})", claim::short_session(session))), expires_ms.map_or_else(String::new, |ms| format!(", expiring at {ms} ms")))]
-    AlreadyClaimed {
-        issue: Uuid,
-        agent: String,
-        on_behalf_of: String,
-        claim: Uuid,
-        expires_ms: Option<i64>,
-        session: Option<String>,
-    },
+    #[error("Issue {issue} is held by {} for {}{}", holder.taker(), holder.on_behalf_of, holder.expires_ms.map_or_else(String::new, |ms| format!(", expiring at {ms} ms")))]
+    AlreadyClaimed { issue: Uuid, holder: Box<Claim> },
     #[error("Claim {claim} does not hold Issue {issue}; {holder}")]
     NotClaimHolder {
         issue: Uuid,

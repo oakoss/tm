@@ -9,7 +9,7 @@ use std::io::IsTerminal as _;
 use serde_json::{Value, json};
 use tm_core::filter::Context;
 use tm_core::{Actor, ProjectId, Scheme};
-use tm_store::{AgentClaims, Claim, IssueView, short_session};
+use tm_store::{AgentClaims, Claim, IssueView};
 use uuid::Uuid;
 
 use crate::claim;
@@ -93,7 +93,8 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
     );
     let scheme = scheme_brief(&mut text, scheme);
 
-    let claim_items = claims_sections(&mut text, actor.as_ref(), &claims, &claimed, &projects);
+    let session = actor.as_ref().and_then(Actor::session);
+    let claim_items = claims_sections(&mut text, &by_session(claims, session), &claimed, &projects);
     section(
         &mut text,
         ("In progress", "none", "tm list category:active"),
@@ -173,55 +174,69 @@ fn context(here: &here::Here) -> (Option<Actor>, Option<String>, Vec<String>) {
     (actor, project, warnings)
 }
 
-/// The caller's held Claims, and its lapsed ones that another Agent may take
-/// when there are any, each as `--json` gives it.
+/// An Agent's Claims as one session sees them.
+struct SessionClaims {
+    mine: Vec<Claim>,
+    others: Vec<Claim>,
+    lapsed: Vec<Claim>,
+}
+
+/// `claims` sorted by whether `session` took them. Another session's lapsed
+/// Claim is left out: it reaches this session through tm ready.
+fn by_session(claims: AgentClaims, session: Option<&str>) -> SessionClaims {
+    let (mine, others) = claims
+        .held
+        .into_iter()
+        .partition(|held| held.taken_in(session));
+    let lapsed = claims
+        .lapsed
+        .into_iter()
+        .filter(|lapsed| lapsed.taken_in(session))
+        .collect();
+    SessionClaims {
+        mine,
+        others,
+        lapsed,
+    }
+}
+
+/// This session's held and takeable lapsed Claims, and those its other
+/// sessions hold, each as `--json` gives it.
 fn claims_sections(
     text: &mut String,
-    actor: Option<&Actor>,
-    claims: &AgentClaims,
+    claims: &SessionClaims,
     claimed: &[IssueView],
     projects: &HashMap<ProjectId, Option<String>>,
 ) -> ClaimItems {
-    let mine_only = |claim: &&Claim| actor.is_some_and(|actor| claim::in_session(claim, actor));
-    let (mine, others): (Vec<Claim>, Vec<Claim>) = claims
-        .held
-        .iter()
-        .cloned()
-        .partition(|held| mine_only(&held));
-    let mine = with_issues(&mine, claimed, |_| true);
-    let held = claims_section(text, ("Your Claims:", token, "expires"), &mine, projects);
-    let others = with_issues(&others, claimed, |_| true);
-    let others = if others.is_empty() {
-        Vec::new()
-    } else {
-        claims_section(
-            text,
-            ("Held by your other sessions:", session, "expires"),
-            &others,
-            projects,
-        )
-    };
-    // Another session's lapsed Claim reaches this one through tm ready.
-    let lapsed: Vec<Claim> = claims.lapsed.iter().filter(mine_only).cloned().collect();
-    let lapsed = with_issues(&lapsed, claimed, claim::takeable);
-    let lapsed = if lapsed.is_empty() {
-        Vec::new()
-    } else {
-        claims_section(
-            text,
-            (
+    let mine = with_issues(&claims.mine, claimed, |_| true);
+    let others = with_issues(&claims.others, claimed, |_| true);
+    let lapsed = with_issues(&claims.lapsed, claimed, claim::takeable);
+    ClaimItems {
+        held: claims_section(text, "Your Claims:", token, "expires", &mine, projects),
+        others: if others.is_empty() {
+            Vec::new()
+        } else {
+            claims_section(
+                text,
+                "Held by your other sessions:",
+                session,
+                "expires",
+                &others,
+                projects,
+            )
+        },
+        lapsed: if lapsed.is_empty() {
+            Vec::new()
+        } else {
+            claims_section(
+                text,
                 "Your lapsed Claims (another Agent may take these; tm claim KEY takes one back):",
                 token,
                 "lapsed",
-            ),
-            &lapsed,
-            projects,
-        )
-    };
-    ClaimItems {
-        held,
-        others,
-        lapsed,
+                &lapsed,
+                projects,
+            )
+        },
     }
 }
 
@@ -240,10 +255,9 @@ fn token(claim: &Claim) -> String {
 /// A Claim by the session holding it, so this session does not read it as
 /// its own.
 fn session(claim: &Claim) -> String {
-    claim.session.as_deref().map_or_else(
-        || "no session".to_owned(),
-        |session| format!("session {}", short_session(session)),
-    )
+    claim
+        .session_label()
+        .unwrap_or_else(|| "no session".to_owned())
 }
 
 /// Each of `claims` with its Issue, for those whose Issue was read and that
@@ -261,16 +275,16 @@ fn with_issues<'a>(
         .collect()
 }
 
-/// A heading, the first [`CLAIMS_SHOWN`] of `shown` in `text`, and each as
-/// `--json` gives it: `words` is the heading, how each Claim is named, and
-/// the verb before each expiry.
+/// `heading`, the first [`CLAIMS_SHOWN`] of `shown` in `text`, each named by
+/// `named` with `verb` before its expiry, and each as `--json` gives it.
 fn claims_section(
     text: &mut String,
-    words: (&str, fn(&Claim) -> String, &str),
+    heading: &str,
+    named: fn(&Claim) -> String,
+    verb: &str,
     shown: &[(&Claim, &IssueView)],
     projects: &HashMap<ProjectId, Option<String>>,
 ) -> Vec<Value> {
-    let (heading, named, verb) = words;
     let _ = writeln!(text, "{heading}");
     let mut claim_items = Vec::with_capacity(shown.len());
     for &(claim, view) in shown {
