@@ -47,9 +47,11 @@ Finish
   tm move KEY in_review                  when it is ready for review
   tm move KEY done                       when it has landed; this
                                          releases its Claim
-  tm git scan                            after a merge: moves each Issue
-                                         a "Closes KEY" line names on the
-                                         default branch to done
+  tm git scan                            after a merge and git fetch:
+                                         moves each Issue a "Closes KEY"
+                                         line names on the default branch
+                                         to done; --dry-run shows what
+                                         would move
 
 Mistakes
   tm undo BATCH              undoes a command that printed

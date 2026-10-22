@@ -61,6 +61,7 @@ struct Report {
     moved: Vec<Value>,
     failed: Vec<Value>,
     next: Vec<String>,
+    dry_run: bool,
 }
 
 impl Report {
@@ -73,11 +74,11 @@ impl Report {
     }
 }
 
-pub(crate) fn run() -> Result<Output, CliError> {
-    here::write(write)
+pub(crate) fn run(dry_run: bool) -> Result<Output, CliError> {
+    here::write(|here| write(here, dry_run))
 }
 
-fn write(here: &mut Here) -> Result<(Output, Vec<String>), CliError> {
+fn write(here: &mut Here, dry_run: bool) -> Result<(Output, Vec<String>), CliError> {
     let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
         .map_err(|message| CliError::new("no_identity", message))?;
     let dir = here.found.dir.clone();
@@ -98,7 +99,10 @@ fn write(here: &mut Here) -> Result<(Output, Vec<String>), CliError> {
             "--",
         ],
     )?;
-    let mut report = Report::default();
+    let mut report = Report {
+        dry_run,
+        ..Report::default()
+    };
     report.warnings.extend(branch.caveat.clone());
     if git(&dir, &["rev-parse", "--is-shallow-repository"])?.trim() == "true" {
         let warning = "this clone is shallow, so Closes lines in commits it lacks are not seen";
@@ -131,7 +135,11 @@ fn write(here: &mut Here) -> Result<(Output, Vec<String>), CliError> {
         let nothing = "nothing to move: no new Closes line on";
         let _ = writeln!(report.text, "{nothing} {shown} names an open Issue");
     }
+    if dry_run {
+        let _ = writeln!(report.text, "dry run: nothing was written");
+    }
     let data = json!({
+        "dry_run": dry_run,
         "branch": branch.shown,
         "moved": report.moved,
         "failed": report.failed,
@@ -244,8 +252,12 @@ fn close(
             })
             .collect()
     };
-    let ops = moves::finish(here, actor, (view.project, id), drafts)?;
-    let batch = ops[0].op_id;
+    let batch = if report.dry_run {
+        None
+    } else {
+        let ops = moves::finish(here, actor, (view.project, id), drafts)?;
+        Some(ops[0].op_id)
+    };
     let before = view.fields.get("status").and_then(Value::as_str);
     let from = printable(before.unwrap_or("(none)"));
     let _ = writeln!(report.text, "{name}  status: {from} → {done}  ({shipped})");
@@ -258,7 +270,9 @@ fn close(
         "pr": first.pr,
         "batch": batch,
     }));
-    landed(here, actor, (id, &name), batch, report);
+    if let Some(batch) = batch {
+        landed(here, actor, (id, &name), batch, report);
+    }
     Ok(())
 }
 

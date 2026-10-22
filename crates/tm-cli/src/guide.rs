@@ -8,8 +8,9 @@ use crate::output::Output;
 const GUIDE: &str = include_str!("guide.txt");
 
 /// The habits `tm prime` ends with, short forms of the guide's.
-pub(crate) const HABITS: [&str; 4] = [
+pub(crate) const HABITS: [&str; 5] = [
     "tm start KEY when work starts",
+    "after a merge: git fetch, then tm git scan moves what it closed to done",
     "your writes renew your Claims; tm hook print claude prints hooks that heartbeat between them",
     "the description holds the current plan; tm edit changes it",
     "tm comment KEY for progress, what was learned and changes of plan",

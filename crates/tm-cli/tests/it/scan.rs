@@ -77,6 +77,14 @@ fn closes_lines_on_the_default_branch_move_their_issues_to_done() {
     commit(&scratch, &repo, "feat: unmerged", "Closes TM-4");
     git(&scratch, &repo, &["switch", "--quiet", "main"]);
 
+    let dry = tm(&scratch, &repo, &["--json", "git", "scan", "--dry-run"]);
+    let dry: Value = serde_json::from_slice(&dry.stdout).unwrap();
+    assert_eq!(dry["data"]["dry_run"], true);
+    assert_eq!(dry["data"]["moved"][0]["batch"], Value::Null);
+    assert_eq!(status(&scratch, &repo, "TM-1"), "todo", "nothing written");
+    let dry = text(&tm(&scratch, &repo, &["git", "scan", "--dry-run"]).stdout);
+    assert!(dry.ends_with("dry run: nothing was written\n"), "{dry}");
+
     let out = tm(&scratch, &repo, &["git", "scan"]);
     assert!(out.status.success(), "{out:?}");
     let shown = text(&out.stdout);
@@ -115,6 +123,9 @@ fn closes_lines_on_the_default_branch_move_their_issues_to_done() {
     let nothing = "nothing to move: no new Closes line on main names an open Issue\n";
     assert_eq!(text(&out.stdout), nothing);
     assert_eq!(status(&scratch, &repo, "TM-1"), "todo", "a reopen stays");
+    let dry = tm(&scratch, &repo, &["git", "scan", "--dry-run"]);
+    let marked = format!("{nothing}dry run: nothing was written\n");
+    assert_eq!(text(&dry.stdout), marked, "a dry run always says so");
 
     commit(&scratch, &repo, "fix: really (#11)", "Closes TM-1");
     let doc = scan(&scratch, &repo);

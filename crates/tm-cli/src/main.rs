@@ -305,7 +305,11 @@ enum GitAction {
     /// on the default branch, as this clone last fetched it, commenting the
     /// commit and pull request it shipped in. Done Issues are skipped, so it
     /// is safe to run after every merge.
-    Scan,
+    Scan {
+        /// Show what would move, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -391,8 +395,8 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             action: HookAction::Heartbeat { .. },
         }) => unreachable!("main runs the hook heartbeat outside JSON mode"),
         Some(Command::Git {
-            action: GitAction::Scan,
-        }) => scan::run(),
+            action: GitAction::Scan { dry_run },
+        }) => scan::run(dry_run),
         Some(Command::Comment { issue, body }) => comment::run(&issue, &body),
         Some(Command::Doctor) => doctor::run(),
         Some(Command::Create {
