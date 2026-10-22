@@ -24,6 +24,7 @@ mod prime;
 mod prompt;
 mod ready;
 mod recover;
+mod scan;
 mod show;
 mod start;
 mod undo;
@@ -291,6 +292,24 @@ enum Command {
         #[command(subcommand)]
         action: HookAction,
     },
+    /// Read this repo's git history; tm never writes to git.
+    Git {
+        #[command(subcommand)]
+        action: GitAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum GitAction {
+    /// Move each Issue a `Closes TM-n` line names to done once its commit is
+    /// on the default branch, as this clone last fetched it, commenting the
+    /// commit and pull request it shipped in. Done Issues are skipped, so it
+    /// is safe to run after every merge.
+    Scan {
+        /// Show what would move, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -375,6 +394,9 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Hook {
             action: HookAction::Heartbeat { .. },
         }) => unreachable!("main runs the hook heartbeat outside JSON mode"),
+        Some(Command::Git {
+            action: GitAction::Scan { dry_run },
+        }) => scan::run(dry_run),
         Some(Command::Comment { issue, body }) => comment::run(&issue, &body),
         Some(Command::Doctor) => doctor::run(),
         Some(Command::Create {

@@ -6,7 +6,7 @@ use std::path::Path;
 use serde_json::Value;
 use tm_core::Actor;
 
-use crate::support::{Scratch, initialized, tm, tm_command};
+use crate::support::{Scratch, git, initialized, tm, tm_command};
 
 fn run(scratch: &Scratch, repo: &Path, args: &[&str]) -> Value {
     let out = tm(scratch, repo, &[&["--json"], args].concat());
@@ -154,6 +154,44 @@ fn move_answers_in_a_fixed_shape() {
       },
       "schema_version": 1,
       "warnings": []
+    }
+    "#);
+}
+
+#[test]
+fn git_scan_answers_in_a_fixed_shape() {
+    let (scratch, repo) = two_issues();
+    let message = "fix: first (#3)\n\nCloses TM-1";
+    let args = ["commit", "-q", "--allow-empty", "-m", message];
+    git(&scratch, &repo, &args);
+    let doc = run(&scratch, &repo, &["git", "scan"]);
+    insta::assert_json_snapshot!(doc, {
+        ".data.moved[].id" => "[id]",
+        ".data.moved[].commit" => "[commit]",
+        ".data.moved[].batch" => "[id]",
+    }, @r#"
+    {
+      "data": {
+        "branch": "main",
+        "dry_run": false,
+        "failed": [],
+        "moved": [
+          {
+            "batch": "[id]",
+            "commit": "[commit]",
+            "from": "todo",
+            "id": "[id]",
+            "key": "TM-1",
+            "pr": 3,
+            "to": "done"
+          }
+        ],
+        "next": []
+      },
+      "schema_version": 1,
+      "warnings": [
+        "scanned local main, since it tracks no remote branch, so commits not yet pushed count as merged"
+      ]
     }
     "#);
 }

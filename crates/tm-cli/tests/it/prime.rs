@@ -250,6 +250,7 @@ fn prime_without_an_identity_still_gives_the_scheme_and_ready_queue() {
     assert!(
         shown.ends_with(
             "Habits (tm guide has the rest):\n  tm start KEY when work starts\n  \
+             after a merge: git fetch, then tm git scan moves what it closed to done\n  \
              your writes renew your Claims; tm hook print claude prints hooks that heartbeat between them\n  \
              the description holds the current plan; tm edit changes it\n  \
              tm comment KEY for progress, what was learned and changes of plan\n"

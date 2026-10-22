@@ -98,7 +98,7 @@ pub(crate) fn report(
 
 /// The suggested move and its command, or a warning in `warnings` when the
 /// parent's Workflow has no Status to suggest.
-fn next(
+pub(crate) fn next(
     store: &Store,
     child: Uuid,
     warnings: &mut Vec<String>,

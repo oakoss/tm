@@ -19,7 +19,7 @@ Agents start from `tm prime`, which the `SessionStart` hook in `.claude/settings
 `tm guide` prints the general habits; this repo's own steps are:
 
 - Starting work: `tm start TM-n`, which claims the Issue, moves it to in_progress and, if it has no Assignee, makes the human the work is for its Assignee, as one undo. The Claim lasts 2 hours and the session's writes renew it; `tm release TM-n` gives it up, and moving the Issue to done releases it.
-- At ship: `tm move TM-n in_review`; at merge: `tm move TM-n done`. The commit link is a `Closes TM-n` trailer, or `Refs TM-n` for part of the work.
+- At ship: `tm move TM-n in_review`. The commit link is a `Closes TM-n` trailer, or `Refs TM-n` for part of the work. At merge, after fetching: `tm git scan`, which moves each Issue a `Closes` line on `origin/main` names to done and comments the commit and pull request it shipped in.
 - Changing fields, labels or the parent: `tm edit TM-n --set field=value`, with `--set field=-` to read long text from stdin, `--unset`, `--label`, `--remove-label`, `--parent` and `--no-parent`.
 - The description holds the current plan; progress, what was learned and changes of plan go in `tm comment TM-n`, which keeps a dated trail an edit would overwrite.
 

@@ -7,8 +7,9 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 use tm_core::op::ClaimAction;
 use tm_core::scheme::{Category, Workflow};
-use tm_core::{Change, Op};
+use tm_core::{Actor, Change, Op, ProjectId};
 use tm_store::{Draft, IssueView, StoreError};
+use uuid::Uuid;
 
 use crate::edit::{self, Changed};
 use crate::error::CliError;
@@ -111,29 +112,46 @@ fn write(
     } else if !finished {
         (here.store.append_all(drafts())?, Starts::default())
     } else {
-        let mut tries = 0;
-        loop {
-            let mut drafts = drafts();
-            // The release names the Claim read here, so the write refuses one
-            // that was claimed or released since and the move reads it again.
-            // A lapsed Claim is released too, so finished work holds none.
-            let held = here.store.claim_state(id)?.map(|state| state.claim().id);
-            if let Some(claim) = held {
-                drafts.push(draft(Change::Claim {
-                    action: ClaimAction::Release { claim },
-                }));
-            }
-            match here.store.append_if_claim(drafts, id, held) {
-                Err(StoreError::ClaimChanged(_)) if tries < MOVE_TRIES => tries += 1,
-                written => break (written?, Starts::default()),
-            }
-        }
+        let ops = finish(here, &identity.actor, (view.project, id), drafts)?;
+        (ops, Starts::default())
     };
     let mut shown = show::render(here, id)?;
     shown.text = lines(&view, &changes, &ops);
     let shown = follow::report(&here.store, shown, starts, id)?;
     let output = here.undoable(shown, ops[0].op_id, &identity.actor)?;
     Ok((output, identity.warnings))
+}
+
+/// Writes `drafts` for a move of `issue` into done or cancelled, releasing
+/// its Claim in the same batch.
+pub(crate) fn finish(
+    here: &mut Here,
+    actor: &Actor,
+    (project, issue): (ProjectId, Uuid),
+    drafts: impl Fn() -> Vec<Draft>,
+) -> Result<Vec<Op>, StoreError> {
+    let mut tries = 0;
+    loop {
+        let mut drafts = drafts();
+        // The release names the Claim read here, so the write refuses one
+        // that was claimed or released since and the move reads it again.
+        // A lapsed Claim is released too, so finished work holds none.
+        let held = here.store.claim_state(issue)?.map(|state| state.claim().id);
+        if let Some(claim) = held {
+            drafts.push(Draft {
+                actor: actor.clone(),
+                project,
+                subject: issue,
+                change: Change::Claim {
+                    action: ClaimAction::Release { claim },
+                },
+            });
+        }
+        match here.store.append_if_claim(drafts, issue, held) {
+            Err(StoreError::ClaimChanged(_)) if tries < MOVE_TRIES => tries += 1,
+            written => break written,
+        }
+    }
 }
 
 /// A line for each field the move set, as `tm edit` prints them, and one for
