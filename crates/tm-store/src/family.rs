@@ -47,10 +47,8 @@ impl Store {
         let drafts = drafts.into_iter().map(|draft| (draft, None)).collect();
         let ops = self.append_with(
             drafts,
-            |tx| {
-                let mut ids = vec![issue];
-                ids.extend(chain(tx, issue)?);
-                let (more, out) = extend(&read::issues(tx, &scheme, &ids)?);
+            |tx, _| {
+                let (more, out) = extend(&lineage(tx, &scheme, issue)?);
                 made = out;
                 Ok(more)
             },
@@ -59,6 +57,18 @@ impl Store {
         )?;
         Ok((ops, made))
     }
+}
+
+/// `issue` and its ancestors, nearest first, as [`Store::append_with_lineage`]
+/// reads them.
+pub(crate) fn lineage(
+    conn: &Connection,
+    scheme: &tm_core::Scheme,
+    issue: Uuid,
+) -> Result<Vec<IssueView>, StoreError> {
+    let mut ids = vec![issue];
+    ids.extend(chain(conn, issue)?);
+    read::issues(conn, scheme, &ids)
 }
 
 /// The ids above `issue`, nearest first.

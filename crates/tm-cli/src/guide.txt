@@ -10,8 +10,9 @@ Find work
   tm show KEY                one Issue: its fields, Links and comments
 
 Start
-  tm claim KEY               an Agent claims the Issue it takes on
-  tm move KEY in_progress    move it when work starts, not when it ends
+  tm start KEY               when work starts, not when it ends: an Agent
+                             claims the Issue, it moves to in_progress, and
+                             it gains an Assignee if it has none
 
 Claims
   A Claim tells other Agents an Issue is taken. It lasts 2 hours unless

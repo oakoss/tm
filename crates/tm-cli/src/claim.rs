@@ -28,20 +28,12 @@ pub(crate) fn duration(text: &str) -> Result<u64, String> {
     }
 }
 
-pub(crate) fn take(
-    reference: &str,
-    ttl_ms: Option<u64>,
-    no_expiry: bool,
-) -> Result<Output, CliError> {
+pub(crate) fn take(reference: &str, lasts: &Lasts) -> Result<Output, CliError> {
     here::write(|here| {
         let issue = here.issue(reference)?;
         let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
             .map_err(|message| CliError::new("no_identity", message))?;
-        let ttl_ms = if no_expiry {
-            None
-        } else {
-            ttl_ms.or_else(|| here.found.file.claim_ttl_ms())
-        };
+        let ttl_ms = lasts.ttl_ms(here);
         let claim = here
             .store
             .take(&identity.actor, issue, ttl_ms)
@@ -55,19 +47,8 @@ pub(crate) fn take(
             })?;
         let key = key(here, issue)?;
         let shown = key.clone().unwrap_or_else(|| issue.to_string());
-        let lasts = match (claim.expires_ms, claim.ttl_ms) {
-            (Some(at), Some(ttl)) => format!(
-                " until {} ({}); your writes renew it, and tm heartbeat keeps it through quiet work",
-                local_time(at),
-                span(i64::try_from(ttl).unwrap_or(i64::MAX))
-            ),
-            _ => " with no expiry".to_owned(),
-        };
-        let text = format!(
-            "{shown} claimed by {}{lasts}\nClaim {}; release with: tm release {shown}\n",
-            holder(&claim),
-            claim.id
-        );
+        let (claimed, release) = taken_lines(&shown, &claim);
+        let text = format!("{claimed}{release}");
         let data = json!({
             "issue": { "id": issue, "key": key },
             "claim": claim_json(&claim, here.store.utc_ms()?),
@@ -75,6 +56,48 @@ pub(crate) fn take(
         let output = here.undoable(Output::new(text, data), claim.id, &identity.actor)?;
         Ok((output, identity.warnings))
     })
+}
+
+/// The lines a take prints for `shown`: who holds it and how it stays held,
+/// then its token and how to release it.
+pub(crate) fn taken_lines(shown: &str, claim: &Claim) -> (String, String) {
+    let lasts = match (claim.expires_ms, claim.ttl_ms) {
+        (Some(at), Some(ttl)) => format!(
+            " until {} ({}); your writes renew it, and tm heartbeat keeps it through quiet work",
+            local_time(at),
+            span(i64::try_from(ttl).unwrap_or(i64::MAX))
+        ),
+        _ => " with no expiry".to_owned(),
+    };
+    (
+        format!("{shown} claimed by {}{lasts}\n", holder(claim)),
+        format!("Claim {}; release with: tm release {shown}\n", claim.id),
+    )
+}
+
+/// How long a Claim a command takes lasts, for `tm claim` and `tm start`.
+#[derive(clap::Args)]
+pub(crate) struct Lasts {
+    /// How long the Claim lasts without renewal, such as 30m or 2h; another
+    /// Agent may then take the Issue. Defaults to `claim_expiry` in
+    /// .config/tm.toml, else 2h.
+    #[arg(long = "for", value_name = "DURATION", value_parser = duration)]
+    ttl_ms: Option<u64>,
+    /// Hold the Issue until released, for a job longer than any renewal
+    /// would keep up with.
+    #[arg(long, conflicts_with = "ttl_ms")]
+    no_expiry: bool,
+}
+
+impl Lasts {
+    /// The duration a take records, falling back to the repo file's.
+    pub(crate) fn ttl_ms(&self, here: &Here) -> Option<u64> {
+        if self.no_expiry {
+            None
+        } else {
+            self.ttl_ms.or_else(|| here.found.file.claim_ttl_ms())
+        }
+    }
 }
 
 /// What a heartbeat did.

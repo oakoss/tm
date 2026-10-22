@@ -25,6 +25,7 @@ mod prompt;
 mod ready;
 mod recover;
 mod show;
+mod start;
 mod undo;
 
 use std::fmt::Write as _;
@@ -84,15 +85,17 @@ enum Command {
     Claim {
         /// The Issue's Key or full id.
         issue: String,
-        /// How long the Claim lasts without renewal, such as 30m or 2h;
-        /// another Agent may then take the Issue. Defaults to `claim_expiry`
-        /// in .config/tm.toml, else 2h.
-        #[arg(long = "for", value_name = "DURATION", value_parser = claim::duration)]
-        ttl_ms: Option<u64>,
-        /// Hold the Issue until released, for a job longer than any renewal
-        /// would keep up with.
-        #[arg(long, conflicts_with = "ttl_ms")]
-        no_expiry: bool,
+        #[command(flatten)]
+        lasts: claim::Lasts,
+    },
+    /// Start work on an Issue: an Agent claims it, it moves from triage or
+    /// todo to its first active Status with its parents, and it gains its
+    /// Assignee if it has none, all as one undo; prints a branch name for it.
+    Start {
+        /// The Issue's Key or full id.
+        issue: String,
+        #[command(flatten)]
+        lasts: claim::Lasts,
     },
     /// Renew this session's Claims, as its writes do, through quiet work
     /// such as a long read or test run; a hook may run it after each tool use.
@@ -357,11 +360,8 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             },
         }) => scheme_type(&Scheme::built_in(), &issue_type),
         Some(Command::Init { key, name, yes }) => init::run(&init::Init { key, name, yes }, json),
-        Some(Command::Claim {
-            issue,
-            ttl_ms,
-            no_expiry,
-        }) => claim::take(&issue, ttl_ms, no_expiry),
+        Some(Command::Start { issue, lasts }) => start::run(&issue, &lasts),
+        Some(Command::Claim { issue, lasts }) => claim::take(&issue, &lasts),
         Some(Command::Heartbeat { issue }) => claim::heartbeat(issue.as_deref()),
         Some(Command::Release {
             issue: Some(issue),

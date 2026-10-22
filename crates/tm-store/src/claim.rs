@@ -11,7 +11,7 @@ use tm_core::{Actor, Change, Op};
 use uuid::Uuid;
 
 use crate::apply::{issue_project, uuid_from};
-use crate::{Draft, Provenance, Store, StoreError};
+use crate::{Draft, IssueView, Provenance, Store, StoreError};
 
 /// Begins the `unapplied` reason of a take or release that lost to another,
 /// telling lost Claims apart from operations that do not fit.
@@ -144,6 +144,16 @@ impl ClaimState {
     }
 }
 
+/// What [`Store::take_with`] wrote: the Claim, whether it was already the
+/// session's and so kept, the batch, and what `extend` made.
+#[derive(Debug)]
+pub struct TakenWith<T> {
+    pub claim: Claim,
+    pub kept: bool,
+    pub ops: Vec<Op>,
+    pub made: T,
+}
+
 /// Claims split by whether each had lapsed at `at_ms`, so time left is
 /// read against the same instant.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -214,7 +224,7 @@ impl Store {
         // `prev` is read inside the write, so no other take slips in between.
         let ops = self.append_with(
             Vec::new(),
-            |tx| {
+            |tx, _| {
                 let prev = current(tx, issue)?.map(|held| held.id);
                 Ok(vec![Draft {
                     change: Change::Claim { action: take(prev) },
@@ -227,6 +237,84 @@ impl Store {
         // From the operation, not the table: another writer may already have
         // released and retaken the Issue.
         taken(&ops[0], actor.name(), ttl_ms, actor.session())
+    }
+
+    /// [`Store::take`], with the drafts `extend` makes from `issue` and its
+    /// ancestors, read inside the same write, in the take's batch after it;
+    /// if the take is refused, none is written. A Claim `actor`'s session
+    /// holds on `issue` at the write is kept, not taken again.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Clock`], or as [`Store::take`].
+    pub fn take_with<T: Default>(
+        &mut self,
+        actor: &Actor,
+        issue: Uuid,
+        ttl_ms: Option<u64>,
+        extend: impl FnOnce(&[IssueView]) -> (Vec<Draft>, T),
+    ) -> Result<TakenWith<T>, StoreError> {
+        let take = |prev| ClaimAction::Take {
+            agent: actor.name().to_owned(),
+            ttl_ms,
+            prev,
+            session: actor.session().map(str::to_owned),
+        };
+        let draft = self.claim_draft(actor.clone(), issue, take(None))?;
+        let scheme = self.scheme.clone();
+        let mut made = T::default();
+        let mut kept = None;
+        let ops = self.append_with(
+            Vec::new(),
+            |tx, at_ms| {
+                let held = current(tx, issue)?;
+                let (more, out) = extend(&crate::family::lineage(tx, &scheme, issue)?);
+                made = out;
+                if let Some(own) = held
+                    .as_ref()
+                    .filter(|held| held.taken_by(actor) && !held.lapsed(at_ms))
+                {
+                    kept = Some(own.clone());
+                    return Ok(more);
+                }
+                let prev = held.map(|held| held.id);
+                let mut drafts = vec![Draft {
+                    change: Change::Claim { action: take(prev) },
+                    ..draft
+                }];
+                drafts.extend(more);
+                Ok(drafts)
+            },
+            true,
+            None,
+        )?;
+        if let Some(claim) = kept {
+            return Ok(TakenWith {
+                claim,
+                kept: true,
+                ops,
+                made,
+            });
+        }
+        let take = ops
+            .iter()
+            .find(|op| {
+                op.subject == issue
+                    && matches!(
+                        op.change(),
+                        Ok(Change::Claim {
+                            action: ClaimAction::Take { .. }
+                        })
+                    )
+            })
+            .ok_or_else(|| StoreError::Corrupt("a take's batch holds no take".into()))?;
+        let claim = taken(take, actor.name(), ttl_ms, actor.session())?;
+        Ok(TakenWith {
+            claim,
+            kept: false,
+            ops,
+            made,
+        })
     }
 
     /// Releases the Claim `claim` holds on `issue`.
@@ -391,13 +479,12 @@ impl Store {
         writer: &Actor,
         issue: Option<Uuid>,
     ) -> Result<Vec<Op>, StoreError> {
-        let (now, _) = self.now()?;
         let writer = writer.clone();
         self.append_with(
             Vec::new(),
-            |tx| {
+            |tx, at_ms| {
                 renewals(tx, &writer, |claim| {
-                    Some(claim.issue) == issue || claim.due(now.utc_ms)
+                    Some(claim.issue) == issue || claim.due(at_ms)
                 })
             },
             true,
