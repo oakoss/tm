@@ -353,7 +353,7 @@ impl Store {
             if again(tx)?.as_ref() == Some(planned) {
                 Ok(())
             } else {
-                Err(StoreError::ImportChanged(issue))
+                Err(StoreError::ImportChanged(issue.into()))
             }
         })?;
         Ok(ops.first().map(|op| op.op_id))

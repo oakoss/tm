@@ -18,7 +18,7 @@ fn session(id: &str) -> SessionId {
 }
 
 use crate::support::{
-    ManualClock, TempDir, claude, draft, held, insert_acked, jace, new_issue, open, remote_op,
+    ManualClock, TempDir, claude, draft, held, insert_acked, jace, key, new_issue, open, remote_op,
     run_children, set_field,
 };
 
@@ -214,10 +214,20 @@ fn a_held_issue_is_refused_even_under_the_holders_own_agent_name() {
         let err = store
             .take(&Actor::agent(agent, "kim"), issue, None)
             .unwrap_err();
-        let StoreError::AlreadyClaimed { holder, .. } = err else {
+        let message = err.to_string();
+        let StoreError::AlreadyClaimed {
+            issue: named,
+            holder,
+        } = err
+        else {
             panic!("{err}");
         };
         assert_eq!(*holder, claim);
+        assert_eq!(named.id, issue);
+        assert!(
+            message.starts_with(&format!("Issue {} is held by ", key(&store, issue))),
+            "{message}"
+        );
     }
 }
 
@@ -264,8 +274,15 @@ fn a_write_guarded_on_a_claim_is_refused_once_the_claim_changes() {
         .append_if_claim(done(), issue, before.map(|claim| claim.id))
         .unwrap_err();
     assert!(
-        matches!(err, StoreError::ClaimChanged(id) if id == issue),
+        matches!(&err, StoreError::ClaimChanged(named) if named.id == issue),
         "{err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Issue {} was claimed or released while it was being written",
+            key(&store, issue)
+        )
     );
 
     // Read claimed, then released before the write.
@@ -274,7 +291,7 @@ fn a_write_guarded_on_a_claim_is_refused_once_the_claim_changes() {
         .append_if_claim(done(), issue, Some(claim.id))
         .unwrap_err();
     assert!(
-        matches!(err, StoreError::ClaimChanged(id) if id == issue),
+        matches!(&err, StoreError::ClaimChanged(named) if named.id == issue),
         "{err:?}"
     );
     assert_eq!(

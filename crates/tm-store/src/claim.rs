@@ -771,7 +771,7 @@ pub(crate) fn check(
                 invalid("must name the lapsed Claim it takes over")
             }
             (ClaimAction::Take { .. }, Some(held)) => StoreError::AlreadyClaimed {
-                issue,
+                issue: issue.into(),
                 holder: Box::new(held),
             },
             (ClaimAction::Take { .. }, None) => {
@@ -779,7 +779,7 @@ pub(crate) fn check(
             }
             (ClaimAction::Release { claim } | ClaimAction::Renew { claim, .. }, held) => {
                 StoreError::NotClaimHolder {
-                    issue,
+                    issue: issue.into(),
                     claim: *claim,
                     holder: match held {
                         None => Holder::Unclaimed,

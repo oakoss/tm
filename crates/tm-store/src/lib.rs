@@ -111,9 +111,9 @@ pub enum StoreError {
         written: Vec<Uuid>,
     },
     #[error("Issue {0} changed while it was being imported")]
-    ImportChanged(Uuid),
+    ImportChanged(Named),
     #[error("Issue {0} was claimed or released while it was being written")]
-    ClaimChanged(Uuid),
+    ClaimChanged(Named),
     #[error("unknown field {field:?}; valid fields: {}", valid.join(", "))]
     UnknownField { field: String, valid: Vec<String> },
     #[error("{field} {reason}{}", if valid.is_empty() { String::new() } else { format!("; valid: {}", valid.join(", ")) })]
@@ -141,16 +141,16 @@ pub enum StoreError {
     #[error("Issue {from} holds no {link_type} Link to {to}")]
     NotLinked {
         link_type: String,
-        from: Uuid,
-        to: Uuid,
+        from: Box<Named>,
+        to: Box<Named>,
     },
     #[error("only an Agent can take a Claim, and {actor} writes as a human")]
     NoAgent { actor: String },
     #[error("Issue {issue} is held by {} for {}{}", holder.taker(), holder.on_behalf_of, holder.expires_ms.map_or_else(String::new, |ms| format!(", expiring at {ms} ms")))]
-    AlreadyClaimed { issue: Uuid, holder: Box<Claim> },
+    AlreadyClaimed { issue: Named, holder: Box<Claim> },
     #[error("Claim {claim} does not hold Issue {issue}; {holder}")]
     NotClaimHolder {
-        issue: Uuid,
+        issue: Named,
         claim: Uuid,
         holder: Holder,
     },
@@ -158,7 +158,7 @@ pub enum StoreError {
     MissingFields { issue: Named, fields: Vec<String> },
     #[error("Issue {issue} belongs to Project {expected}, not {found}")]
     ProjectMismatch {
-        issue: Uuid,
+        issue: Named,
         expected: ProjectId,
         found: ProjectId,
     },
@@ -236,6 +236,39 @@ impl StoreError {
             Self::MissingFields { issue, fields } => Self::MissingFields {
                 issue: name(issue),
                 fields,
+            },
+            Self::ImportChanged(issue) => Self::ImportChanged(name(issue)),
+            Self::ClaimChanged(issue) => Self::ClaimChanged(name(issue)),
+            Self::NotLinked {
+                link_type,
+                from,
+                to,
+            } => Self::NotLinked {
+                link_type,
+                from: Box::new(name(*from)),
+                to: Box::new(name(*to)),
+            },
+            Self::AlreadyClaimed { issue, holder } => Self::AlreadyClaimed {
+                issue: name(issue),
+                holder,
+            },
+            Self::NotClaimHolder {
+                issue,
+                claim,
+                holder,
+            } => Self::NotClaimHolder {
+                issue: name(issue),
+                claim,
+                holder,
+            },
+            Self::ProjectMismatch {
+                issue,
+                expected,
+                found,
+            } => Self::ProjectMismatch {
+                issue: name(issue),
+                expected,
+                found,
             },
             other => other,
         }
@@ -952,8 +985,8 @@ impl Store {
             } else {
                 Err(StoreError::NotLinked {
                     link_type: link_type.to_owned(),
-                    from: source,
-                    to: target,
+                    from: Box::new(source.into()),
+                    to: Box::new(target.into()),
                 })
             }
         })?;
@@ -1058,7 +1091,7 @@ impl Store {
             if claim::current(tx, issue)?.map(|claim| claim.id) == held {
                 Ok(())
             } else {
-                Err(StoreError::ClaimChanged(issue))
+                Err(StoreError::ClaimChanged(issue.into()))
             }
         })
     }

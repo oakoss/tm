@@ -223,6 +223,23 @@ fn a_blocking_link_that_closes_a_cycle_is_refused_with_its_path() {
 }
 
 #[test]
+fn removing_a_link_the_pair_does_not_hold_names_both_by_key() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let [a, b] = [(); 2].map(|()| new_issue(&mut store));
+    let err = store.unlink_held(&jace(), "blocks", a, b).unwrap_err();
+    assert!(matches!(err, StoreError::NotLinked { .. }), "{err}");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Issue {} holds no blocks Link to {}",
+            key(&store, a),
+            key(&store, b)
+        )
+    );
+}
+
+#[test]
 fn a_cycle_names_by_id_an_issue_without_a_confirmed_key_or_when_keys_cannot_be_read() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));

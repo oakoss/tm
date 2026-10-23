@@ -7,7 +7,8 @@ use tm_store::{Clock, Store, StoreError, WallTime};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, TempDir, draft, field, insert_acked, jace, new_issue, open, remote_op, set_field,
+    ManualClock, TempDir, draft, field, insert_acked, jace, key, new_issue, open, remote_op,
+    set_field,
 };
 use crate::support::{OTHER, PROJECT};
 
@@ -405,6 +406,11 @@ fn an_operation_filed_under_another_project_is_refused() {
     let err = store.append(wrong).unwrap_err();
     assert!(
         matches!(err, StoreError::ProjectMismatch { ref expected, .. } if *expected == PROJECT),
+        "{err}"
+    );
+    assert!(
+        err.to_string()
+            .starts_with(&format!("Issue {} belongs to Project ", key(&store, issue))),
         "{err}"
     );
 }
