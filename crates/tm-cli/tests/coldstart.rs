@@ -22,7 +22,7 @@ use uuid::Uuid;
 const RUNS: usize = 15;
 
 /// A read command and its budget, in milliseconds, at 200 and 10,000 Issues.
-/// `prime` reads the whole ready queue until tm-u8g.24, so it grows with the
+/// `prime` reads the whole ready queue until TM-25, so it grows with the
 /// Workspace, as `list` and `ready` do by printing every row.
 const READS: [(&[&str], u64, u64); 14] = [
     (&["--version"], 40, 60),

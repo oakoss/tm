@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::support::{Scratch, initialized, text, tm, tm_command};
 
 /// Prime for a 200-Issue Workspace, every title at its cut, fits in 4.5 KB,
-/// about 1.1k tokens: tm-u8g.9's 4 KB, plus room for the habit lines.
+/// about 1.1k tokens: TM-10's 4 KB, plus room for the habit lines.
 const BUDGET_BYTES: usize = 4608;
 
 /// `tm` as the Agent `claude` writing for `jace`.
