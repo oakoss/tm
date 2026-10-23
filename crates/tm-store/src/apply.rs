@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value as Json;
 use tm_core::op::{COMMENTS_FIELD, ClaimAction};
 use tm_core::scheme::priority_rank;
-use tm_core::{Change, Hlc, Op, ProjectId, link};
+use tm_core::{Change, Hlc, Op, ProjectId, Subject, link};
 use uuid::Uuid;
 
 use crate::{StoreError, project};
@@ -113,7 +113,7 @@ pub(crate) fn apply(
         assigned_key,
     } = effects;
     let change = op.change()?;
-    if change.is_project() {
+    if change.subject() == Subject::Project {
         return project::apply(tx, op, change).map(|()| None);
     }
     // `base_seq` and `server_seq` are per Project, so an operation filed under

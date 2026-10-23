@@ -11,6 +11,6 @@ pub mod scheme;
 
 pub use actor::Actor;
 pub use hlc::Hlc;
-pub use op::{Change, Op, OpError};
+pub use op::{Change, Op, OpError, Subject};
 pub use project::ProjectId;
 pub use scheme::Scheme;

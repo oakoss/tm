@@ -9,7 +9,7 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::Value;
 use tm_core::op::{CLAIM_FIELD, COMMENTS_FIELD};
 use tm_core::scheme::{Field, FieldType, Scheme, is_date, priority_rank};
-use tm_core::{Actor, Change, link};
+use tm_core::{Actor, Change, Subject, link};
 use uuid::Uuid;
 
 use crate::StoreError;
@@ -45,7 +45,7 @@ pub(crate) fn check(
     change: Change,
 ) -> Result<Change, StoreError> {
     check_writer(tx, writing, issue_id, &change)?;
-    if change.is_project() {
+    if change.subject() == Subject::Project {
         return check_project(change);
     }
     if !matches!(change, Change::Create) && !exists(tx, issue_id)? {

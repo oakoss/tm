@@ -119,6 +119,13 @@ pub enum Change {
     },
 }
 
+/// The kind of record an operation's subject id names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Subject {
+    Issue,
+    Project,
+}
+
 /// The field a Claim is filed under; no other kind may write it.
 pub const CLAIM_FIELD: &str = "claim";
 
@@ -172,13 +179,20 @@ impl Change {
         }
     }
 
-    /// Whether the subject is a Project rather than an Issue.
+    /// What kind of record the operation's subject is.
     #[must_use]
-    pub const fn is_project(&self) -> bool {
-        matches!(
-            self,
-            Self::CreateProject { .. } | Self::RenameProject { .. }
-        )
+    pub const fn subject(&self) -> Subject {
+        match self {
+            Self::CreateProject { .. } | Self::RenameProject { .. } => Subject::Project,
+            Self::Create
+            | Self::SetField { .. }
+            | Self::Add { .. }
+            | Self::Remove { .. }
+            | Self::Comment { .. }
+            | Self::Retract { .. }
+            | Self::Link { .. }
+            | Self::Claim { .. } => Subject::Issue,
+        }
     }
 
     /// The field this change targets, if any.
