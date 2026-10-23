@@ -80,12 +80,11 @@ fn as_claude(scratch: &Scratch, repo: &Path, args: &[&str], input: &str) -> Outp
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
+    // A command that never reads stdin may exit before the write.
+    let written = child.stdin.take().unwrap().write_all(input.as_bytes());
+    if let Err(err) = written {
+        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe, "{err}");
+    }
     child.wait_with_output().unwrap()
 }
 
