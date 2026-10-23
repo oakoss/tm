@@ -109,8 +109,9 @@ pub(crate) struct Beat {
     pub(crate) taken_over: Vec<(Uuid, String)>,
     /// Why whether any was taken over is unknown, when it is.
     pub(crate) unchecked: Option<String>,
-    /// The store's and the identity's warnings, then a failed publish's.
-    pub(crate) warnings: (Vec<String>, Option<String>),
+    /// The store's and the identity's warnings, then those of a failed
+    /// publish or backup.
+    pub(crate) warnings: (Vec<String>, Vec<String>),
 }
 
 /// Renews this session's due Claims, or one Issue's at once; `tm heartbeat`.
@@ -177,7 +178,7 @@ pub(crate) fn beat(reference: Option<&str>) -> Result<Beat, CliError> {
             renewed,
             taken_over,
             unchecked,
-            warnings: (Vec::new(), None),
+            warnings: (Vec::new(), Vec::new()),
         };
         Ok((beat, identity.warnings))
     })?;

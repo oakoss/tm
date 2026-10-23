@@ -9,10 +9,13 @@ use tm_store::Store;
 use tm_store::workspace::{self, Found, Workspace, WorkspaceError};
 use uuid::Uuid;
 
+use crate::backup;
 use crate::error::CliError;
 use crate::output::{Output, local_time};
 
 pub(crate) struct Here {
+    /// tm's home on this machine.
+    pub(crate) home: PathBuf,
     /// The repo file that applies, and the directory holding it.
     pub(crate) found: Found,
     /// The working directory, resolved, for the path-to-Project mapping.
@@ -28,11 +31,15 @@ pub(crate) struct Here {
 }
 
 impl Here {
-    /// Publishes the Snapshot when this command committed a write.
-    pub(crate) fn publish(&self) -> Option<String> {
+    /// When this command committed a write, publishes the Snapshot and takes
+    /// the day's backup; the warnings of what failed.
+    pub(crate) fn after_write(&self) -> Vec<String> {
         match self.store.log_end() {
-            Ok(end) if end == self.log_end => None,
-            _ => publish(&self.store, &self.workspace),
+            Ok(end) if end == self.log_end => Vec::new(),
+            _ => publish(&self.store, &self.workspace)
+                .into_iter()
+                .chain(backup::daily(self, jiff::Zoned::now().date()))
+                .collect(),
         }
     }
 }
@@ -59,7 +66,7 @@ pub(crate) fn not_published(cause: &dyn std::fmt::Display) -> String {
 pub(crate) fn open() -> Result<Here, CliError> {
     let (home, cwd, found) = find()?;
     match workspace::workspace_for(&home, &found) {
-        Ok((workspace, store)) => opened(found, &cwd, workspace, store),
+        Ok((workspace, store)) => opened(home, found, &cwd, workspace, store),
         Err(err) => Err(match refused(&err) {
             Some(path) => CliError::new(
                 "read_only",
@@ -84,7 +91,7 @@ pub(crate) fn open() -> Result<Here, CliError> {
 pub(crate) fn read() -> Result<Here, CliError> {
     let (home, cwd, found) = find()?;
     let store_path = match workspace::workspace_for(&home, &found) {
-        Ok((workspace, store)) => return opened(found, &cwd, workspace, store),
+        Ok((workspace, store)) => return opened(home, found, &cwd, workspace, store),
         Err(err) => match refused(&err) {
             Some(path) => path.to_path_buf(),
             None => return Err(err.into()),
@@ -103,7 +110,7 @@ pub(crate) fn read() -> Result<Here, CliError> {
         .fix("run any write where tm may write the store, which publishes one"));
     };
     let store = Store::open_snapshot(&path, workspace.id)?;
-    let mut here = opened(found, &cwd, workspace, store)?;
+    let mut here = opened(home, found, &cwd, workspace, store)?;
     let published_ms = published
         .duration_since(UNIX_EPOCH)
         .map_or(0, |age| i64::try_from(age.as_millis()).unwrap_or(i64::MAX));
@@ -124,7 +131,13 @@ fn refused(err: &WorkspaceError) -> Option<&Path> {
     }
 }
 
-fn opened(found: Found, cwd: &Path, workspace: Workspace, store: Store) -> Result<Here, CliError> {
+fn opened(
+    home: PathBuf,
+    found: Found,
+    cwd: &Path,
+    workspace: Workspace,
+    store: Store,
+) -> Result<Here, CliError> {
     let unapplied = store
         .unapplied()?
         .iter()
@@ -142,6 +155,7 @@ fn opened(found: Found, cwd: &Path, workspace: Workspace, store: Store) -> Resul
     let cwd = canonical(cwd)?;
     let log_end = store.log_end()?;
     Ok(Here {
+        home,
         found,
         cwd,
         store,
@@ -154,7 +168,8 @@ fn opened(found: Found, cwd: &Path, workspace: Workspace, store: Store) -> Resul
 
 /// The path writes to Issues and Claims take: the store's warnings come
 /// before the identity warnings `write` returns, on success and failure; on
-/// success the output's own follow, and a failed publish's last.
+/// success the output's own follow, and those of a failed publish or backup
+/// last.
 pub(crate) fn write(
     write: impl FnOnce(&mut Here) -> Result<(Output, Vec<String>), CliError>,
 ) -> Result<Output, CliError> {
@@ -166,14 +181,14 @@ pub(crate) fn write(
 }
 
 /// As [`write`], for a caller that places its own warnings: the store's and
-/// the identity's, then a failed publish's, apart.
+/// the identity's, then those of a failed publish or backup, apart.
 pub(crate) fn write_with<T>(
     write: impl FnOnce(&mut Here) -> Result<(T, Vec<String>), CliError>,
-) -> Result<(T, Vec<String>, Option<String>), CliError> {
+) -> Result<(T, Vec<String>, Vec<String>), CliError> {
     let mut here = open()?;
     let mut warnings = std::mem::take(&mut here.warnings);
     let written = write(&mut here);
-    let published = here.publish();
+    let published = here.after_write();
     match written {
         Ok((value, identity_warnings)) => {
             warnings.extend(identity_warnings);

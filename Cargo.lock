@@ -1001,6 +1001,7 @@ dependencies = [
  "serde_json",
  "tm-core",
  "tm-store",
+ "toml",
  "uuid",
 ]
 

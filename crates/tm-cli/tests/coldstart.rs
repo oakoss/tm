@@ -303,6 +303,12 @@ fn run(size: usize, budget: impl Fn(u64, u64) -> u64) -> Vec<String> {
             ms(times[RUNS / 2])
         );
     }
+    let exported = bench.median(false, &["export", "--dated"]);
+    eprintln!(
+        "{size:>6}  write    tm {:<24} {:>7.1} ms  (not budgeted)",
+        "export --dated",
+        ms(exported)
+    );
     over
 }
 
