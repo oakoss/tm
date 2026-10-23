@@ -14,6 +14,7 @@ mod import;
 mod links;
 mod members;
 mod merge;
+mod placing;
 mod projects;
 mod ready;
 mod rebuild;

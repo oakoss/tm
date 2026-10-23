@@ -22,7 +22,34 @@ struct Write<'a> {
     first: &'a HistoryEntry,
     lines: Vec<String>,
     changes: Vec<Value>,
+    /// Each change's Issue, and which Short-list field it sets, if either.
+    membership: Vec<(Uuid, Option<&'a str>)>,
 }
+
+impl Write<'_> {
+    /// Drops a rank change written with its Issue's list change: the list
+    /// line says it joined or left, and the rank is never shown (ADR 0016).
+    fn without_joining_ranks(&mut self) {
+        let listed: Vec<Uuid> = self
+            .membership
+            .iter()
+            .filter(|(_, field)| *field == Some(SHORTLIST))
+            .map(|(issue, _)| *issue)
+            .collect();
+        let keep: Vec<bool> = self
+            .membership
+            .iter()
+            .map(|(issue, field)| *field != Some(RANK) || !listed.contains(issue))
+            .collect();
+        let mut kept = keep.iter();
+        self.lines.retain(|_| *kept.next().unwrap_or(&true));
+        let mut kept = keep.iter();
+        self.changes.retain(|_| *kept.next().unwrap_or(&true));
+    }
+}
+
+const SHORTLIST: &str = "shortlist";
+const RANK: &str = "shortlist_rank";
 
 pub(crate) fn run(reference: &str, limit: Option<usize>, all: bool) -> Result<Output, CliError> {
     let here = here::read()?;
@@ -81,26 +108,41 @@ fn render(here: &Here, id: Uuid, limit: Option<usize>, all: bool) -> Result<Outp
         if renewal && !all {
             continue;
         }
-        let change = json!({
-            "op_id": entry.op_id,
-            "subject": entry.subject,
-            "change": entry.change,
-            "before": stored,
-            "line": line,
-            "unapplied": entry.unapplied,
-            "lost": entry.lost,
-        });
+        let field = match &entry.change {
+            Change::SetField { field, .. } if field == SHORTLIST || field == RANK => {
+                Some(field.as_str())
+            }
+            _ => None,
+        };
+        let change = if field == Some(RANK) {
+            json!({ "op_id": entry.op_id, "subject": entry.subject, "line": line })
+        } else {
+            json!({
+                "op_id": entry.op_id,
+                "subject": entry.subject,
+                "change": entry.change,
+                "before": stored,
+                "line": line,
+                "unapplied": entry.unapplied,
+                "lost": entry.lost,
+            })
+        };
         match writes.last_mut() {
             Some(write) if same_write(write.first, entry) => {
                 write.lines.push(line);
                 write.changes.push(change);
+                write.membership.push((entry.subject, field));
             }
             _ => writes.push(Write {
                 first: entry,
                 lines: vec![line],
                 changes: vec![change],
+                membership: vec![(entry.subject, field)],
             }),
         }
+    }
+    for write in &mut writes {
+        write.without_joining_ranks();
     }
     let total = writes.len();
     let shown = &writes[total - limit.unwrap_or(total).min(total)..];
@@ -191,6 +233,7 @@ fn describe(
     let mut stored = None;
     let line = match &entry.change {
         Change::Create => "created".to_owned(),
+        Change::SetField { field, .. } if field == RANK => "Short-list: reordered".to_owned(),
         Change::SetField {
             field,
             label,

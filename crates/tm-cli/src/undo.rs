@@ -72,17 +72,13 @@ fn undo(
             .and_then(Value::as_str)
             .map_or_else(|| issue.to_string(), str::to_owned)
     };
-    let restored: Vec<Value> = plan
+    let lists = list_names(here, &plan.restores)?;
+    let visible: Vec<&Restore> = plan
         .restores
         .iter()
-        .map(|restore| {
-            let mut entry = json!(restore);
-            if let Some(issue) = issue_of(restore) {
-                entry["key"] = keys.get(&issue).cloned().unwrap_or(Value::Null);
-            }
-            entry
-        })
+        .filter(|restore| shown(restore, &plan.restores))
         .collect();
+    let restored: Vec<Value> = visible.iter().map(|r| restore_json(r, &keys)).collect();
 
     let mut text = String::new();
     let _ = writeln!(
@@ -94,8 +90,8 @@ fn undo(
             "undid"
         }
     );
-    for restore in &plan.restores {
-        let _ = writeln!(text, "  {}", describe(restore, &name));
+    for restore in &visible {
+        let _ = writeln!(text, "  {}", describe(restore, &name, &lists));
     }
     for issue in &plan.released {
         let _ = writeln!(
@@ -165,9 +161,55 @@ fn link_target(restore: &Restore) -> Option<Uuid> {
     Uuid::parse_str(target).ok()
 }
 
-/// One restore as a person reads it: Keys for Issues, and a set element
-/// added or removed rather than true or false.
-fn describe(restore: &Restore, name: &impl Fn(Uuid) -> String) -> String {
+const SHORTLIST: &str = "shortlist";
+const RANK: &str = "shortlist_rank";
+
+/// The name of each Short-list a restore puts an Issue on or takes it off.
+fn list_names(here: &Here, restores: &[Restore]) -> Result<HashMap<Uuid, String>, CliError> {
+    let mut lists = HashMap::new();
+    for restore in restores.iter().filter(|r| r.field == SHORTLIST) {
+        for id in [&restore.from, &restore.to].into_iter().filter_map(list_id) {
+            let name = here.store.shortlist(id)?.and_then(|list| list.name);
+            let name = name.map_or_else(|| id.to_string(), |name| printable(&name));
+            lists.insert(id, name);
+        }
+    }
+    Ok(lists)
+}
+
+/// A restore with its Issue's Key; a rank's values are left out.
+fn restore_json(restore: &Restore, keys: &HashMap<Uuid, Value>) -> Value {
+    let mut entry = json!(restore);
+    if restore.field == RANK {
+        entry["from"] = Value::Null;
+        entry["to"] = Value::Null;
+    }
+    if let Some(issue) = issue_of(restore) {
+        entry["key"] = keys.get(&issue).cloned().unwrap_or(Value::Null);
+    }
+    entry
+}
+
+fn list_id(value: &Value) -> Option<Uuid> {
+    value.as_str().and_then(|id| Uuid::parse_str(id).ok())
+}
+
+/// Whether a restore is shown: a rank restored with its Issue's list is
+/// the list line's to tell, and a rank is never shown (ADR 0016).
+fn shown(restore: &Restore, all: &[Restore]) -> bool {
+    restore.field != RANK
+        || !all
+            .iter()
+            .any(|other| other.field == SHORTLIST && other.target == restore.target)
+}
+
+/// One restore as a person reads it: Keys for Issues, lists by name, and a
+/// set element added or removed rather than true or false.
+fn describe(
+    restore: &Restore,
+    name: &impl Fn(Uuid) -> String,
+    lists: &HashMap<Uuid, String>,
+) -> String {
     let issue = match &restore.target {
         Target::Issue { issue } => name(*issue),
         Target::Shortlist {
@@ -194,6 +236,17 @@ fn describe(restore: &Restore, name: &impl Fn(Uuid) -> String) -> String {
             let change = if present { "added" } else { "removed" };
             format!("{issue} {field} {}: {change}", printable(elem))
         }
+        (SHORTLIST, None) => {
+            let list = |value: &Value| {
+                list_id(value).map_or_else(
+                    || "(none)".to_owned(),
+                    |id| lists.get(&id).cloned().unwrap_or_else(|| id.to_string()),
+                )
+            };
+            let (from, to) = (list(&restore.from), list(&restore.to));
+            format!("{issue} Short-list: {from} -> {to}")
+        }
+        (RANK, None) => format!("{issue} Short-list order: restored"),
         (field, None) => format!(
             "{issue} {field}: {} -> {}",
             printable(&restore.from.to_string()),

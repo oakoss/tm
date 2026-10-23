@@ -13,6 +13,11 @@ Find work
   tm history KEY             what happened to an Issue, who did it, and
                              each write's batch for tm undo
 
+Short-lists
+  tm shortlist               the ordered lists of what to do next that you
+                             work through, each member marked when it waits
+  Change a list only when your human asks.
+
 Start
   tm start KEY               when work starts, not when it ends: an Agent
                              claims the Issue, it moves to in_progress, and

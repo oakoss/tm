@@ -19,6 +19,7 @@ mod ready;
 mod scan;
 mod scheme;
 mod shapes;
+mod shortlist;
 mod show;
 mod smoke;
 mod snapshot;

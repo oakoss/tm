@@ -30,7 +30,7 @@ pub(crate) fn field_value(pair: &str) -> Result<(String, String), String> {
         "status" => Err("give the Status as the move's target, not --set".into()),
         "labels" => Err("labels holds several values; tm move cannot set it".into()),
         "parent" => Err("tm move cannot set parent".into()),
-        _ => Ok((field, value)),
+        _ => crate::fields::not_membership(&field).map(|()| (field, value)),
     }
 }
 

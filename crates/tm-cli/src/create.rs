@@ -31,7 +31,7 @@ pub(crate) fn field_value(pair: &str) -> Result<(String, String), String> {
             let flag = if field == "labels" { "label" } else { &field };
             Err(format!("give {field} with --{flag}, not --set"))
         }
-        _ => Ok((field, value)),
+        _ => crate::fields::not_membership(&field).map(|()| (field, value)),
     }
 }
 

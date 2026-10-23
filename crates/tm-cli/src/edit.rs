@@ -40,7 +40,7 @@ fn own_flag(field: &str) -> Result<(), String> {
     match field {
         "labels" => Err("change labels with --label and --remove-label".into()),
         "parent" => Err("change the parent with --parent or --no-parent".into()),
-        _ => Ok(()),
+        _ => fields::not_membership(field),
     }
 }
 

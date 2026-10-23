@@ -188,6 +188,37 @@ impl CliError {
         Self::new(code, message).issue(issue).fix("retry")
     }
 
+    /// A Short-list refusal, with the fix where one command gives it.
+    fn membership(err: StoreError, message: String) -> Self {
+        match err {
+            StoreError::ShortlistNotFound(name) => Self::new("not_found", message)
+                .with("kind", "shortlist")
+                .with("name", name)
+                .fix("tm shortlist --all"),
+            StoreError::UnknownShortlist(id) => {
+                Self::not_found("shortlist", &id, message).fix("tm shortlist --all")
+            }
+            StoreError::ShortlistNameShared { name, count } => {
+                Self::new("shortlist_name_shared", message)
+                    .with("name", name)
+                    .with("count", count)
+            }
+            StoreError::ShortlistFull { name, size } => Self::new("shortlist_full", message)
+                .with("name", name.clone())
+                .with("size", size)
+                .fix(format!(
+                    "raise its size with tm shortlist edit {name} --size N, or remove an Issue with tm shortlist remove KEY"
+                )),
+            StoreError::CannotJoin { issue, reason } => Self::new("cannot_join", message)
+                .with("reason", reason)
+                .issue(issue),
+            StoreError::NotOnShortlist(issue) => Self::new("not_on_shortlist", message)
+                .issue(issue)
+                .fix("tm shortlist add LIST KEY"),
+            other => Self::internal("store", other.to_string()),
+        }
+    }
+
     fn not_found(kind: &str, id: &impl ToString, message: String) -> Self {
         Self::new("not_found", message)
             .with("kind", kind)
@@ -269,7 +300,12 @@ impl From<StoreError> for CliError {
             StoreError::Busy(_) => Self::new("busy", message).fix("retry"),
             StoreError::UnknownIssue(id) => Self::not_found("issue", &id, message),
             StoreError::UnknownProject(id) => Self::not_found("project", &id, message),
-            StoreError::UnknownShortlist(id) => Self::not_found("shortlist", &id, message),
+            err @ (StoreError::UnknownShortlist(_)
+            | StoreError::ShortlistNotFound(_)
+            | StoreError::ShortlistNameShared { .. }
+            | StoreError::ShortlistFull { .. }
+            | StoreError::CannotJoin { .. }
+            | StoreError::NotOnShortlist(_)) => Self::membership(err, message),
             StoreError::DuplicateProject(id) => {
                 Self::new("duplicate_project", message).with("id", id.to_string())
             }
