@@ -11,10 +11,10 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value as Json;
 use tm_core::op::{COMMENTS_FIELD, ClaimAction};
 use tm_core::scheme::priority_rank;
-use tm_core::{Change, Hlc, Op, ProjectId, link};
+use tm_core::{Change, Hlc, Op, ProjectId, Subject, link};
 use uuid::Uuid;
 
-use crate::{StoreError, project};
+use crate::{StoreError, project, shortlist};
 
 /// What decides a field: the winning operation's position and clock.
 pub(crate) struct Version {
@@ -113,31 +113,23 @@ pub(crate) fn apply(
         assigned_key,
     } = effects;
     let change = op.change()?;
-    if change.is_project() {
-        return project::apply(tx, op, change).map(|()| None);
-    }
-    // `base_seq` and `server_seq` are per Project, so an operation filed under
-    // another Project would compare positions from different chains.
-    if matches!(change, Change::Create) {
-        if !project::exists(tx, op.project)? {
-            return Err(StoreError::UnknownProject(op.project));
+    match change.subject() {
+        Subject::Project => return project::apply(tx, op, change).map(|()| None),
+        Subject::Shortlist => {
+            let version = Version::of(op, server_seq, server_received_ms);
+            return shortlist::apply(tx, op, &change, &version).map(|()| None);
         }
-    } else {
-        let expected =
-            issue_project(tx, op.subject)?.ok_or(StoreError::UnknownIssue(op.subject))?;
-        if expected != op.project {
-            return Err(StoreError::ProjectMismatch {
-                issue: op.subject.into(),
-                expected,
-                found: op.project,
-            });
-        }
+        Subject::Issue => check_filed(tx, op, &change)?,
     }
     let version = Version::of(op, server_seq, server_received_ms);
     match change {
         Change::Create => return create(tx, op, assigned_key),
-        Change::CreateProject { .. } | Change::RenameProject { .. } => {
-            unreachable!("Project operations return above")
+        Change::CreateProject { .. }
+        | Change::RenameProject { .. }
+        | Change::CreateShortlist
+        | Change::SetShortlist { .. }
+        | Change::ShortlistActor { .. } => {
+            unreachable!("Project and Short-list operations return above")
         }
         Change::SetField { field, value, .. } => {
             // Checked before anything is written, so a value that does not fit
@@ -214,6 +206,26 @@ pub(crate) fn apply(
         params![op.utc_ms, op.subject.as_bytes()],
     )?;
     Ok(None)
+}
+
+/// `base_seq` and `server_seq` are per Project, so an Issue operation filed
+/// under another Project would compare positions from different chains.
+fn check_filed(tx: &Transaction<'_>, op: &Op, change: &Change) -> Result<(), StoreError> {
+    if matches!(change, Change::Create) {
+        if !project::exists(tx, op.project)? {
+            return Err(StoreError::UnknownProject(op.project));
+        }
+        return Ok(());
+    }
+    let expected = issue_project(tx, op.subject)?.ok_or(StoreError::UnknownIssue(op.subject))?;
+    if expected != op.project {
+        return Err(StoreError::ProjectMismatch {
+            issue: op.subject.into(),
+            expected,
+            found: op.project,
+        });
+    }
+    Ok(())
 }
 
 /// Hides or shows comment `comment` if this retraction wins. The state is
@@ -399,9 +411,20 @@ fn target(field: &str, value: &Json) -> Result<Target, StoreError> {
             Target::Column("archived", SqlValue::Integer(i64::from(*archived)))
         }
         ("archived", Json::Null) => Target::Column("archived", SqlValue::Integer(0)),
+        ("shortlist", Json::String(id)) => {
+            let list = Uuid::parse_str(id).map_err(|_| invalid("is not a Short-list id"))?;
+            Target::Column("shortlist", SqlValue::Blob(list.as_bytes().to_vec()))
+        }
+        // Held on replay too, so a rank another Replica wrote sorts as ranks do.
+        ("shortlist_rank", Json::String(rank)) if tm_core::rank::is_rank(rank) => {
+            Target::Column("shortlist_rank", SqlValue::Text(rank.clone()))
+        }
+        ("shortlist_rank", Json::String(_)) => return Err(invalid("is not a rank")),
+        ("shortlist", Json::Null) => Target::Column("shortlist", SqlValue::Null),
+        ("shortlist_rank", Json::Null) => Target::Column("shortlist_rank", SqlValue::Null),
         (
             "type" | "title" | "description" | "status" | "assignee" | "priority" | "parent"
-            | "archived",
+            | "archived" | "shortlist" | "shortlist_rank",
             _,
         ) => return Err(invalid("has the wrong value type")),
         ("key" | "reporter" | "agent" | "claim" | "labels" | "created" | "updated", _) => {
@@ -463,6 +486,24 @@ fn write_target(
     Ok(())
 }
 
+/// Where each field's winning operation is recorded, by the kind of record:
+/// one merge rule, kept per table so Issue rows keep their foreign keys.
+#[derive(Clone, Copy)]
+pub(crate) enum Versions {
+    Issue,
+    Shortlist,
+}
+
+impl Versions {
+    /// The table and its subject column.
+    const fn table(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Issue => ("field_versions", "issue_id"),
+            Self::Shortlist => ("shortlist_versions", "shortlist_id"),
+        }
+    }
+}
+
 fn wins(
     tx: &Transaction<'_>,
     issue_id: Uuid,
@@ -470,11 +511,37 @@ fn wins(
     elem: &str,
     version: &Version,
 ) -> Result<bool, StoreError> {
+    wins_in(tx, Versions::Issue, issue_id, field, elem, version)
+}
+
+fn record(
+    tx: &Transaction<'_>,
+    issue_id: Uuid,
+    field: &str,
+    elem: &str,
+    present: bool,
+    version: &Version,
+) -> Result<(), StoreError> {
+    let subject = (Versions::Issue, issue_id);
+    record_in(tx, subject.0, subject.1, (field, elem), present, version)
+}
+
+pub(crate) fn wins_in(
+    tx: &Transaction<'_>,
+    versions: Versions,
+    subject: Uuid,
+    field: &str,
+    elem: &str,
+    version: &Version,
+) -> Result<bool, StoreError> {
+    let (table, column) = versions.table();
     let current = tx
         .query_row(
-            "SELECT hlc, replica_id, op_id, base_seq, server_seq, server_received_ms
-             FROM field_versions WHERE issue_id = ?1 AND field = ?2 AND elem = ?3",
-            params![issue_id.as_bytes(), field, elem],
+            &format!(
+                "SELECT hlc, replica_id, op_id, base_seq, server_seq, server_received_ms
+                 FROM {table} WHERE {column} = ?1 AND field = ?2 AND elem = ?3"
+            ),
+            params![subject.as_bytes(), field, elem],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
@@ -501,20 +568,23 @@ fn wins(
     Ok(version.beats(&current))
 }
 
-fn record(
+pub(crate) fn record_in(
     tx: &Transaction<'_>,
-    issue_id: Uuid,
-    field: &str,
-    elem: &str,
+    versions: Versions,
+    subject: Uuid,
+    (field, elem): (&str, &str),
     present: bool,
     version: &Version,
 ) -> Result<(), StoreError> {
+    let (table, column) = versions.table();
     tx.execute(
-        "INSERT OR REPLACE INTO field_versions
-         (issue_id, field, elem, present, op_id, hlc, replica_id, base_seq, server_seq, server_received_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        &format!(
+            "INSERT OR REPLACE INTO {table}
+             ({column}, field, elem, present, op_id, hlc, replica_id, base_seq, server_seq, server_received_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
+        ),
         params![
-            issue_id.as_bytes(),
+            subject.as_bytes(),
             field,
             elem,
             present,

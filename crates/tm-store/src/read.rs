@@ -47,9 +47,17 @@ pub(crate) fn issues(
     .to_string();
     let mut views: HashMap<Uuid, IssueView> = HashMap::with_capacity(ids.len());
     let mut stmt = conn.prepare_cached(&format!(
-        "SELECT id, project, type, title, description, status, priority, assignee, reporter,
-                parent_id, archived, created_ms, updated_ms
-         FROM issues WHERE id IN {IDS}"
+        // A membership reads as none unless it names a live list in the
+        // Issue's Project and has a rank, which a delete or a merge can leave
+        // it without (ADR 0016).
+        "SELECT i.id, i.project, i.type, i.title, i.description, i.status, i.priority,
+                i.assignee, i.reporter, i.parent_id, i.archived, i.created_ms, i.updated_ms,
+                l.id, iif(l.id IS NULL, NULL, i.shortlist_rank)
+         FROM issues i
+         LEFT JOIN shortlists l
+           ON l.id = i.shortlist AND l.deleted = 0 AND l.project = i.project
+              AND i.shortlist_rank IS NOT NULL
+         WHERE i.id IN {IDS}"
     ))?;
     let mut rows = stmt.query([&param])?;
     while let Some(row) = rows.next()? {
@@ -149,6 +157,10 @@ fn built_in(scheme: &Scheme, row: &Row<'_>) -> Result<IssueView, StoreError> {
     fields.insert("archived".into(), json!(row.get::<_, bool>(10)?));
     fields.insert("created".into(), json!(row.get::<_, i64>(11)?));
     fields.insert("updated".into(), json!(row.get::<_, i64>(12)?));
+    if let Some(list) = row.get::<_, Option<Vec<u8>>>(13)? {
+        fields.insert("shortlist".into(), json!(uuid_from(&list)?.to_string()));
+        fields.insert("shortlist_rank".into(), json!(row.get::<_, String>(14)?));
+    }
     Ok(IssueView {
         id,
         key: None,

@@ -3,11 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 use tm_core::Change;
-use tm_store::{Store, StoreError};
+use tm_store::{ShortlistEdit, Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, TempDir, claude, draft, dump, held, jace, links, new_issue, open, set_field,
+    ManualClock, PROJECT, TempDir, claude, draft, dump, held, jace, links, new_issue, open,
+    set_field,
 };
 
 pub(crate) const ISSUES: usize = 3;
@@ -60,6 +61,74 @@ pub(crate) enum Action {
     /// Zero leaves the clock in place, so writes share a millisecond and
     /// exercise the counter.
     Tick(u8),
+    List(ListAction),
+    /// Puts the Issue on the list at one of [`RANKS`], or with none takes it off.
+    Member {
+        issue: usize,
+        rank: Option<usize>,
+    },
+}
+
+const RANKS: [&str; 3] = ["F", "V", "k"];
+
+/// The writes a `Member` action makes on `list`.
+pub(crate) fn member(list: Uuid, rank: Option<usize>) -> Vec<Change> {
+    let value = |text: String| rank.map_or(Value::Null, |_| json!(text));
+    vec![
+        set_field("shortlist", value(list.to_string())),
+        set_field("shortlist_rank", value(RANKS[rank.unwrap_or(0)].to_owned())),
+    ]
+}
+
+/// A write to the one Short-list [`new_list`] creates, with Actor `a`.
+#[derive(Debug, Clone)]
+pub(crate) enum ListAction {
+    Name(u8),
+    Size(u8),
+    Actor { elem: usize, present: bool },
+}
+
+pub(crate) fn new_list(store: &mut Store) -> Uuid {
+    store
+        .create_shortlist(&jace(), PROJECT, "l", &[ELEMS[0].to_owned()], None)
+        .unwrap()
+        .0
+}
+
+pub(crate) fn play_list(
+    store: &mut Store,
+    list: Uuid,
+    action: &ListAction,
+) -> Result<(), StoreError> {
+    let names: Vec<String>;
+    let edit = match action {
+        ListAction::Name(n) => {
+            names = vec![format!("n{n}")];
+            ShortlistEdit {
+                name: Some(&names[0]),
+                ..ShortlistEdit::default()
+            }
+        }
+        ListAction::Size(n) => ShortlistEdit {
+            size: Some(u64::from(*n) + 1),
+            ..ShortlistEdit::default()
+        },
+        ListAction::Actor { elem, present } => {
+            names = vec![ELEMS[*elem].to_owned()];
+            if *present {
+                ShortlistEdit {
+                    add: &names,
+                    ..ShortlistEdit::default()
+                }
+            } else {
+                ShortlistEdit {
+                    remove: &names,
+                    ..ShortlistEdit::default()
+                }
+            }
+        }
+    };
+    store.edit_shortlist(&jace(), list, &edit).map(|_| ())
 }
 
 pub(crate) fn action() -> impl Strategy<Value = Action> {
@@ -81,7 +150,20 @@ pub(crate) fn action() -> impl Strategy<Value = Action> {
             }
         ),
         (0u8..3).prop_map(Action::Tick),
+        prop_oneof![
+            (0u8..3).prop_map(ListAction::Name),
+            (0u8..3).prop_map(ListAction::Size),
+            (0..ELEMS.len(), any::<bool>())
+                .prop_map(|(elem, present)| ListAction::Actor { elem, present }),
+        ]
+        .prop_map(Action::List),
+        (issue_index(), proptest::option::of(0..RANKS.len()))
+            .prop_map(|(issue, rank)| Action::Member { issue, rank }),
     ]
+}
+
+fn issue_index() -> std::ops::Range<usize> {
+    0..ISSUES
 }
 
 /// The value a `Set` writes and how the Issue reads it back. Title and Status
@@ -136,7 +218,13 @@ pub(crate) fn change(action: &Action) -> Option<(usize, Change)> {
             )
         }
         Action::Comment { issue, body } => (*issue, Change::Comment { body: body.clone() }),
-        Action::Link { .. } | Action::Claim { .. } | Action::Tick(_) => return None,
+        Action::Link { .. }
+        | Action::Claim { .. }
+        | Action::Tick(_)
+        | Action::List(_)
+        | Action::Member { .. } => {
+            return None;
+        }
     })
 }
 
@@ -151,6 +239,10 @@ struct Model {
     links: BTreeSet<(String, Uuid, Uuid)>,
     /// Each Issue's Claim token, if held.
     claims: Vec<Option<Uuid>>,
+    /// The Short-list's name, size and Actors.
+    list: (String, u64, BTreeSet<String>),
+    /// Each Issue's rank on the list, if it is on it.
+    members: Vec<Option<String>>,
 }
 
 impl Model {
@@ -194,7 +286,46 @@ impl Model {
             comments: vec![0; ISSUES],
             links: BTreeSet::new(),
             claims: vec![None; ISSUES],
+            list: (
+                "l".into(),
+                tm_core::shortlist::DEFAULT_SIZE,
+                BTreeSet::from([ELEMS[0].to_owned()]),
+            ),
+            members: vec![None; ISSUES],
         }
+    }
+
+    /// An Issue in a done or cancelled Status leaves the list in the same batch.
+    fn finished(&self, issue: usize) -> bool {
+        matches!(
+            self.fields[issue].get("status").and_then(Value::as_str),
+            Some("done" | "cancelled")
+        )
+    }
+
+    /// Records a list write, or says it must be refused: removing the last Actor.
+    fn record_list(&mut self, action: &ListAction) -> bool {
+        let (name, size, actors) = &mut self.list;
+        match action {
+            ListAction::Name(n) => *name = format!("n{n}"),
+            ListAction::Size(n) => *size = u64::from(*n) + 1,
+            ListAction::Actor {
+                elem,
+                present: true,
+            } => {
+                actors.insert(ELEMS[*elem].to_owned());
+            }
+            ListAction::Actor {
+                elem,
+                present: false,
+            } => {
+                if actors.len() == 1 && actors.contains(ELEMS[*elem]) {
+                    return false;
+                }
+                actors.remove(ELEMS[*elem]);
+            }
+        }
+        true
     }
 
     fn record(&mut self, action: &Action) {
@@ -215,12 +346,36 @@ impl Model {
                 self.labels[*issue].remove(ELEMS[*elem]);
             }
             Action::Comment { issue, .. } => self.comments[*issue] += 1,
-            Action::Link { .. } | Action::Claim { .. } | Action::Tick(_) => {}
+            Action::Member { issue, rank } => {
+                self.members[*issue] = rank.map(|rank| RANKS[rank].to_owned());
+            }
+            Action::Link { .. } | Action::Claim { .. } | Action::Tick(_) | Action::List(_) => {}
+        }
+        for issue in 0..ISSUES {
+            if self.finished(issue) {
+                self.members[issue] = None;
+            }
         }
     }
 
-    fn observed(store: &Store, issues: &[Uuid]) -> Self {
+    fn observed(store: &Store, issues: &[Uuid], list: Uuid) -> Self {
+        let members = issues
+            .iter()
+            .map(|issue| {
+                let view = store.issue(*issue).unwrap().unwrap();
+                let on = view.fields.get("shortlist") == Some(&json!(list.to_string()));
+                let rank = view.fields.get("shortlist_rank").and_then(Value::as_str);
+                rank.filter(|_| on).map(str::to_owned)
+            })
+            .collect();
+        let list = store.shortlist(list).unwrap().unwrap();
         let mut model = Self {
+            members,
+            list: (
+                list.name.unwrap_or_default(),
+                list.size,
+                list.actors.into_iter().collect(),
+            ),
             fields: Vec::new(),
             labels: Vec::new(),
             comments: Vec::new(),
@@ -269,10 +424,29 @@ proptest! {
         let clock = ManualClock::at(1_000);
         let mut store = open(&dir.db(), &clock);
         let issues: Vec<Uuid> = (0..ISSUES).map(|_| new_issue(&mut store)).collect();
+        let list = new_list(&mut store);
         let mut expected = Model::new();
         for action in &actions {
             if let Action::Tick(ms) = action {
                 clock.advance(i64::from(*ms));
+            } else if let Action::List(edit) = action {
+                let result = play_list(&mut store, list, edit);
+                if expected.record_list(edit) {
+                    result.unwrap();
+                } else {
+                    let err = result.unwrap_err();
+                    prop_assert!(matches!(&err, StoreError::Invalid { field, .. } if field == "actors"), "{}", err);
+                }
+            } else if let Action::Member { issue, rank } = action {
+                let drafts = member(list, *rank).into_iter().map(|change| draft(issues[*issue], change));
+                let result = store.append_all(drafts.collect());
+                if rank.is_some() && expected.finished(*issue) {
+                    let err = result.unwrap_err();
+                    prop_assert!(matches!(&err, StoreError::Invalid { field, .. } if field == "shortlist"), "{}", err);
+                } else {
+                    result.unwrap();
+                    expected.record(action);
+                }
             } else if let Action::Link { from, to, link_type, present } = action {
                 let (from, to, link_type) = (issues[*from], issues[*to], LINK_TYPES[*link_type]);
                 let result = if *present {
@@ -319,7 +493,7 @@ proptest! {
                 expected.record(action);
             }
         }
-        prop_assert_eq!(Model::observed(&store, &issues), expected);
+        prop_assert_eq!(Model::observed(&store, &issues, list), expected);
         let incremental = dump(&store);
         prop_assert_eq!(store.rebuild().unwrap(), 0, "the store's own writes must all replay");
         prop_assert_eq!(dump(&store), incremental);

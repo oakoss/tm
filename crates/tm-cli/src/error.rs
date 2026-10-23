@@ -188,6 +188,12 @@ impl CliError {
         Self::new(code, message).issue(issue).fix("retry")
     }
 
+    fn not_found(kind: &str, id: &impl ToString, message: String) -> Self {
+        Self::new("not_found", message)
+            .with("kind", kind)
+            .with("id", id.to_string())
+    }
+
     fn not_linked(message: String, link_type: String, from: Named, to: Named) -> Self {
         Self::new("not_linked", message)
             .with("type", link_type)
@@ -261,12 +267,9 @@ impl From<StoreError> for CliError {
         let message = err.to_string();
         match err {
             StoreError::Busy(_) => Self::new("busy", message).fix("retry"),
-            StoreError::UnknownIssue(id) => Self::new("not_found", message)
-                .with("kind", "issue")
-                .with("id", id.to_string()),
-            StoreError::UnknownProject(id) => Self::new("not_found", message)
-                .with("kind", "project")
-                .with("id", id.to_string()),
+            StoreError::UnknownIssue(id) => Self::not_found("issue", &id, message),
+            StoreError::UnknownProject(id) => Self::not_found("project", &id, message),
+            StoreError::UnknownShortlist(id) => Self::not_found("shortlist", &id, message),
             StoreError::DuplicateProject(id) => {
                 Self::new("duplicate_project", message).with("id", id.to_string())
             }
@@ -348,6 +351,8 @@ impl From<StoreError> for CliError {
             },
             StoreError::Filter(err) => Self::from(err),
             StoreError::DuplicateIssue(_)
+            | StoreError::DuplicateShortlist(_)
+            | StoreError::ShortlistMismatch { .. }
             | StoreError::SubjectNotProject { .. }
             | StoreError::ProjectMismatch { .. }
             | StoreError::Clock(_)
@@ -368,7 +373,9 @@ impl From<OpError> for CliError {
             OpError::TooLarge(bytes) => Self::new("too_large", message)
                 .with("bytes", bytes)
                 .with("limit", MAX_PAYLOAD_BYTES),
-            OpError::InvalidName { field, .. } | OpError::ReservedField(field) => {
+            OpError::InvalidName { field, .. }
+            | OpError::ReservedField(field)
+            | OpError::InvalidShortlist { field, .. } => {
                 Self::new("invalid_value", message).with("field", field)
             }
             OpError::InvalidField(field) => {
@@ -456,6 +463,8 @@ fn variant(err: &StoreError) -> &'static str {
         StoreError::DuplicateIssue(_) => "duplicate_issue",
         StoreError::SubjectNotProject { .. } => "subject_not_project",
         StoreError::ProjectMismatch { .. } => "project_mismatch",
+        StoreError::DuplicateShortlist(_) => "duplicate_shortlist",
+        StoreError::ShortlistMismatch { .. } => "shortlist_mismatch",
         StoreError::Clock(_) => "clock",
         StoreError::Corrupt(_) => "corrupt",
         StoreError::Sqlite(_) => "sqlite",

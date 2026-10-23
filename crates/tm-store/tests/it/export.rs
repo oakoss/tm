@@ -8,7 +8,7 @@ use tm_core::Hlc;
 use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
-use crate::rebuild::{Action, ISSUES, action, change};
+use crate::rebuild::{Action, ISSUES, action, change, member, new_list, play_list};
 use crate::support::{
     ManualClock, TempDir, claude, draft, dump, field, held, jace, new_issue, open, remote_op,
     set_field,
@@ -58,9 +58,18 @@ fn to_bytes(records: &[Value]) -> Vec<u8> {
 
 /// Applies `action` as the rebuild test does, but any refusal is fine: what
 /// matters is the log it leaves.
-fn play(store: &mut Store, issues: &[Uuid], action: &Action, clock: &ManualClock) {
+fn play(store: &mut Store, (issues, list): (&[Uuid], Uuid), action: &Action, clock: &ManualClock) {
     match action {
         Action::Tick(ms) => clock.advance(i64::from(*ms)),
+        Action::List(edit) => {
+            let _ = play_list(store, list, edit);
+        }
+        Action::Member { issue, rank } => {
+            let drafts = member(list, *rank)
+                .into_iter()
+                .map(|change| draft(issues[*issue], change));
+            let _ = store.append_all(drafts.collect());
+        }
         Action::Link {
             from,
             to,
@@ -101,8 +110,9 @@ proptest! {
         let clock = ManualClock::at(1_000);
         let mut store = source(&dir, &clock);
         let issues: Vec<Uuid> = (0..ISSUES).map(|_| new_issue(&mut store)).collect();
+        let list = new_list(&mut store);
         for action in &actions {
-            play(&mut store, &issues, action, &clock);
+            play(&mut store, (&issues, list), action, &clock);
         }
         let first = export(&store);
 

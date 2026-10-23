@@ -17,13 +17,14 @@ mod read;
 mod ready;
 mod record;
 mod schema;
+mod shortlist;
 mod snapshot;
 mod undo;
 mod validate;
 pub mod workspace;
 
-use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 use std::time::Duration;
 
@@ -47,7 +48,8 @@ pub use import::{Conflict, RecordOutcome, RecordsImported};
 pub use read::{CommentView, Direction, IssueView, LinkView};
 pub use ready::Ready;
 pub use record::{CommentRecord, IssueRecord, LinkRecord, tm_source};
-pub use undo::{Restore, UndoPlan};
+pub use shortlist::{Shortlist, ShortlistEdit};
+pub use undo::{Restore, Target, UndoPlan};
 
 /// How long a writer waits for another writer before giving up.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -69,6 +71,16 @@ pub enum StoreError {
     UnknownProject(ProjectId),
     #[error("Project {0} already exists")]
     DuplicateProject(ProjectId),
+    #[error("Short-list {0} does not exist")]
+    UnknownShortlist(Uuid),
+    #[error("Short-list {0} already exists")]
+    DuplicateShortlist(Uuid),
+    #[error("Short-list {list} belongs to Project {expected}, not {found}")]
+    ShortlistMismatch {
+        list: Uuid,
+        expected: ProjectId,
+        found: ProjectId,
+    },
     #[error("Project key {key} belongs to Project {project}")]
     KeyTaken { key: String, project: ProjectId },
     #[error("a Project operation's subject {subject} must be its own Project {project}")]
@@ -1159,7 +1171,8 @@ impl Store {
                     .iter()
                     .all(|(draft, provenance)| draft.actor == *writer && provenance.is_none())
             });
-        let (ops, hlc) = write_drafts(&tx, &self.scheme, drafts, now, last_hlc(&tx)?)?;
+        let undoing = undid.is_some();
+        let (ops, hlc) = write_drafts(&tx, &self.scheme, drafts, (now, undoing), last_hlc(&tx)?)?;
         if let (Some(undid), Some(first)) = (undid, ops.first()) {
             tx.execute(
                 "INSERT INTO undo_batches (batch, undid) VALUES (?1, ?2)",
@@ -1504,7 +1517,7 @@ fn write_drafts(
     tx: &Transaction<'_>,
     scheme: &Scheme,
     drafts: Vec<(Draft, Option<Provenance>)>,
-    (now, now_ms): (WallTime, u64),
+    ((now, now_ms), undoing): ((WallTime, u64), bool),
     mut hlc: Hlc,
 ) -> Result<(Vec<Op>, Hlc), StoreError> {
     let replica: Vec<u8> =
@@ -1517,17 +1530,39 @@ fn write_drafts(
     // a batch may not make it worse, but an Issue that arrived incomplete
     // or inconsistent stays editable.
     let mut before = BTreeMap::new();
-    for (draft, provenance) in drafts {
+    let mut half_held = BTreeSet::new();
+    let mut was_finished = BTreeSet::new();
+    let mut pending: VecDeque<_> = drafts.into();
+    let mut cleared = false;
+    loop {
+        let Some((draft, provenance)) = pending.pop_front() else {
+            // Whatever finished an Issue or deleted its list, membership
+            // clears in the same batch (ADR 0016), once.
+            if cleared {
+                break;
+            }
+            cleared = true;
+            let clearing = shortlist::clearing(tx, scheme, &ops, &was_finished)?;
+            pending.extend(clearing.into_iter().map(|draft| (draft, None)));
+            continue;
+        };
         if let Entry::Vacant(entry) = before.entry(draft.subject) {
             entry.insert((
                 validate::missing_fields(tx, scheme, draft.subject)?,
                 validate::status_fits_type(tx, scheme, draft.subject)?,
             ));
+            if shortlist::half_held(tx, draft.subject)? {
+                half_held.insert(draft.subject);
+            }
+            if shortlist::finished(tx, scheme, draft.subject)? {
+                was_finished.insert(draft.subject);
+            }
         }
         let (source, at) = provenance.map_or((None, now), |p| (Some(p.source), p.at));
         let writing = validate::Writing {
             actor: &draft.actor,
             at_ms: at.utc_ms,
+            undoing,
         };
         let change = validate::check(tx, scheme, &writing, draft.subject, draft.change)?;
         hlc = hlc.tick(now_ms);
@@ -1579,6 +1614,7 @@ fn write_drafts(
         ops.push(op);
     }
     no_worse(tx, scheme, before)?;
+    shortlist::check_batch(tx, &ops, &half_held)?;
     Ok((ops, hlc))
 }
 
@@ -1718,6 +1754,9 @@ fn replay(tx: &Transaction<'_>, row: &StoredOp) -> Result<bool, StoreError> {
             | StoreError::KeyTaken { .. }
             | StoreError::ProjectMismatch { .. }
             | StoreError::SubjectNotProject { .. }
+            | StoreError::UnknownShortlist(_)
+            | StoreError::DuplicateShortlist(_)
+            | StoreError::ShortlistMismatch { .. }
             | StoreError::Invalid { .. }),
         ) => {
             sql(tx.execute("ROLLBACK TO replay_op", []))?;
