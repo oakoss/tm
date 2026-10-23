@@ -11,6 +11,7 @@ mod export;
 mod family;
 mod history;
 mod import;
+mod membership;
 mod project;
 mod query;
 mod read;
@@ -45,6 +46,7 @@ pub use claim::{AgentClaims, Claim, ClaimState, Holder, TakenWith, short_session
 pub use export::{Exported, Restored, copy_store, read_export};
 pub use history::HistoryEntry;
 pub use import::{Conflict, RecordOutcome, RecordsImported};
+pub use membership::Place;
 pub use read::{CommentView, Direction, IssueView, LinkView};
 pub use ready::Ready;
 pub use record::{CommentRecord, IssueRecord, LinkRecord, tm_source};
@@ -81,6 +83,16 @@ pub enum StoreError {
         expected: ProjectId,
         found: ProjectId,
     },
+    #[error("no Short-list in this Project is named {0}")]
+    ShortlistNotFound(String),
+    #[error("{count} Short-lists in this Project are named {name}; rename one first")]
+    ShortlistNameShared { name: String, count: usize },
+    #[error("Short-list {name} already holds its size of {size}")]
+    ShortlistFull { name: String, size: u64 },
+    #[error("Issue {issue} cannot go on a Short-list there: {reason}")]
+    CannotJoin { issue: Named, reason: String },
+    #[error("Issue {0} is on no Short-list")]
+    NotOnShortlist(Named),
     #[error("Project key {key} belongs to Project {project}")]
     KeyTaken { key: String, project: ProjectId },
     #[error("a Project operation's subject {subject} must be its own Project {project}")]
@@ -250,6 +262,11 @@ impl StoreError {
                 fields,
             },
             Self::ImportChanged(issue) => Self::ImportChanged(name(issue)),
+            Self::NotOnShortlist(issue) => Self::NotOnShortlist(name(issue)),
+            Self::CannotJoin { issue, reason } => Self::CannotJoin {
+                issue: name(issue),
+                reason,
+            },
             Self::ClaimChanged(issue) => Self::ClaimChanged(name(issue)),
             Self::NotLinked {
                 link_type,

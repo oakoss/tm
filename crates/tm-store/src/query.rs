@@ -129,6 +129,16 @@ pub(crate) fn open_blocks(open: &Resolved, blocks: &str) -> (String, Vec<Sql>) {
     (b.sql, b.params)
 }
 
+/// `blocks` Links whose blocker is open, whatever the Issue it blocks.
+pub(crate) fn blocks_from_open(open: &Resolved, blocks: &str) -> (String, Vec<Sql>) {
+    let mut b = Builder::default();
+    b.push("SELECT src, dst FROM links WHERE type = ");
+    b.param(Sql::Text(blocks.to_owned()));
+    b.push(" AND +src IN ");
+    open_ids(&mut b, open);
+    (b.sql, b.params)
+}
+
 /// `(SELECT id FROM issues WHERE …)`: unarchived Issues matching `open`. Its
 /// own scope, so the conditions' bare column names read this `issues`.
 fn open_ids(b: &mut Builder, open: &Resolved) {
