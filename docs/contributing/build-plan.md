@@ -44,6 +44,7 @@ Done when daily triage and planning for this project happen in the TUI.
 
 - "On behalf of" in history; Actor detection and recording it are Phase 1 ([ADR 0010](../decisions/0010-operations-record-who-an-agent-acts-for-and-undo-names-a-batch.md)).
 - Full Claims: protected fields, `--force` beyond the finishing move it already guards ([ADR 0009](../decisions/0009-claims-apply-by-compare-and-set-and-links-are-keyed-canonically.md)), version-checked writes, expiry and heartbeat, `tm start`, `tm handoff`, `ready --claim`, Path Claims.
+- Short-lists and `tm next`, which takes the next Issue on the session's lists ([ADR 0016](../decisions/0016-short-lists-order-what-to-do-next.md)).
 - Notifications and `@mentions`, `tm remember`, `tm human`, `--watch`.
 - `tm setup claude` and `tm setup codex`, showing a diff before writing.
 
