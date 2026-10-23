@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use jiff::ToSpan as _;
 use jiff::civil::Date;
@@ -92,6 +93,10 @@ fn file(dir: &Path, date: Date) -> PathBuf {
 /// The name every staging directory starts with.
 const PREFIX: &str = ".tm-import-";
 
+/// How long a write waits for another process's export: past the 0.7 s an
+/// export takes at 10,000 Issues, short of a hang.
+const WAIT: Duration = Duration::from_secs(5);
+
 /// A Workspace's exports directory, locked while this is held, so one export
 /// or collection runs in it at a time.
 struct Exports {
@@ -106,13 +111,20 @@ impl Exports {
         Ok(Self { dir, _lock: lock })
     }
 
-    /// The lock without waiting; none while another process holds it.
-    fn try_lock(home: &Path, workspace: Uuid) -> Result<Option<Self>, CliError> {
+    /// The lock, waiting at most `wait`; none if another process still holds
+    /// it then.
+    fn try_lock(home: &Path, workspace: Uuid, wait: Duration) -> Result<Option<Self>, CliError> {
         let (dir, path, lock) = Self::open(home, workspace)?;
-        match lock.try_lock() {
-            Ok(()) => Ok(Some(Self { dir, _lock: lock })),
-            Err(fs::TryLockError::WouldBlock) => Ok(None),
-            Err(fs::TryLockError::Error(err)) => Err(CliError::io(&path, &err)),
+        let started = Instant::now();
+        loop {
+            match lock.try_lock() {
+                Ok(()) => return Ok(Some(Self { dir, _lock: lock })),
+                Err(fs::TryLockError::WouldBlock) if started.elapsed() < wait => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(fs::TryLockError::WouldBlock) => return Ok(None),
+                Err(fs::TryLockError::Error(err)) => return Err(CliError::io(&path, &err)),
+            }
         }
     }
 
@@ -279,7 +291,7 @@ fn clear_staging(here: &Here, today: Date) -> Vec<String> {
     if linked(&dir).is_some() || !entries.into_iter().any(staging) {
         return Vec::new();
     }
-    match Exports::try_lock(&here.home, here.workspace.id) {
+    match Exports::try_lock(&here.home, here.workspace.id, Duration::ZERO) {
         Ok(Some(exports)) => exports.collect(today, &Policy::keep_all()),
         Ok(None) => Vec::new(),
         Err(err) => not_removed(&err.message),
@@ -381,9 +393,19 @@ fn held(path: &Path) -> Held {
 }
 
 /// Writes today's backup unless another process wrote it first, and returns
-/// the still-locked directory for collection.
+/// the still-locked directory for collection. A holder that keeps the lock
+/// past [`WAIT`] is an error, since it may write no backup.
 fn back_up(here: &Here, today: Date) -> Result<Option<Exports>, CliError> {
-    let exports = Exports::lock(&here.home, here.workspace.id)?;
+    let Some(exports) = Exports::try_lock(&here.home, here.workspace.id, WAIT)? else {
+        return Err(CliError::new(
+            "io",
+            format!(
+                "another tm process held {} for {} s; a later write tries again",
+                dir(&here.home, here.workspace.id).join(".lock").display(),
+                WAIT.as_secs()
+            ),
+        ));
+    };
     let file = exports.file(today);
     match held(&file) {
         Held::Backup => return Ok(None),

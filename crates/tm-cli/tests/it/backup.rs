@@ -337,7 +337,56 @@ fn a_write_with_backups_off_does_not_wait_for_a_running_export() {
         "[backups]\nenabled = false\n",
     )
     .unwrap();
+    let (held, took) = write_beside_a_running_export(&scratch, &repo);
+    assert_eq!(held["warnings"], serde_json::json!([]), "{held}");
+    assert!(took < Duration::from_secs(2), "the write waited {took:?}");
+}
+
+#[test]
+fn a_write_waits_briefly_for_a_running_export_then_warns() {
+    let scratch = Scratch::new();
+    let (repo, _store, _) = initialized(&scratch);
+    let (held, took) = write_beside_a_running_export(&scratch, &repo);
+    let lock = exports(&scratch).0.join(".lock");
+    let warning = format!(
+        "today's backup was not written: another tm process held {} for 5 s; a later write tries again",
+        lock.display()
+    );
+    assert_eq!(held["warnings"], serde_json::json!([warning]), "{held}");
+    assert!(
+        took >= Duration::from_secs(5),
+        "the write gave up after {took:?}"
+    );
+
+    let done = create(&scratch, &repo, "after");
+    assert_eq!(done["warnings"], serde_json::json!([]), "{done}");
+    assert_eq!(exports(&scratch).1, [format!("{}.jsonl", today())]);
+}
+
+#[test]
+fn a_write_backs_up_after_a_running_export_finishes() {
+    let scratch = Scratch::new();
+    let (repo, _store, _) = initialized(&scratch);
     let (dir, _) = exports(&scratch);
+    fs::create_dir_all(&dir).unwrap();
+    let lock = fs::File::create(dir.join(".lock")).unwrap();
+    lock.lock().unwrap();
+    // As an export that read the log before this write, so writes no backup.
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(1));
+        drop(lock);
+    });
+    let done = create(&scratch, &repo, "waited");
+    release.join().unwrap();
+    assert_eq!(done["warnings"], serde_json::json!([]), "{done}");
+    assert_eq!(exports(&scratch).1, [format!("{}.jsonl", today())]);
+}
+
+/// Writes while the exports lock stays held, as by a hung export, and checks
+/// the write finished, touching nothing beside that export's staging; its
+/// output, and how long it ran.
+fn write_beside_a_running_export(scratch: &Scratch, repo: &Path) -> (Value, Duration) {
+    let (dir, _) = exports(scratch);
     fs::create_dir_all(dir.join(".tm-import-running")).unwrap();
     // As a running export holds it.
     let lock = fs::File::create(dir.join(".lock")).unwrap();
@@ -345,19 +394,19 @@ fn a_write_with_backups_off_does_not_wait_for_a_running_export() {
 
     let mut child = tm_command()
         .args(["--json", "create", "--type", "task", "--title", "held"])
-        .current_dir(&repo)
+        .current_dir(repo)
         .env("TM_HOME", scratch.home())
         .env("TM_ACTOR", "jace")
         .env("GIT_CONFIG_GLOBAL", scratch.git_config())
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .spawn()
         .unwrap();
     let started = Instant::now();
     let finished = loop {
         if let Some(status) = child.try_wait().unwrap() {
-            break Some(status);
+            break Some((status, started.elapsed()));
         }
         if started.elapsed() > Duration::from_secs(20) {
             let _ = child.kill();
@@ -367,11 +416,14 @@ fn a_write_with_backups_off_does_not_wait_for_a_running_export() {
         std::thread::sleep(Duration::from_millis(20));
     };
     drop(lock);
-    assert!(
-        finished.is_some_and(|status| status.success()),
-        "the write waited on the lock"
-    );
-    assert!(dir.join(".tm-import-running").exists(), "the export's own");
+    let Some((status, took)) = finished else {
+        panic!("the write hung on the lock");
+    };
+    assert!(status.success());
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(exports(scratch).1, [".tm-import-running"]);
+    fs::remove_dir(dir.join(".tm-import-running")).unwrap();
+    (serde_json::from_slice(&out.stdout).unwrap(), took)
 }
 
 #[test]

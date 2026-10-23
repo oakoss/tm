@@ -26,7 +26,7 @@
 
 **The first write of each local day backs up its Workspace**, after the write commits and the Snapshot is published, as `exports/<Workspace id>/<local date>.jsonl` in tm's home: the file `tm export --dated` writes, read back with `tm import`'s check before it takes its name.
 
-- A write whose command added to the log checks for today's file, one `stat`, and returns when it is there. Otherwise it takes the exports directory's lock, checks again, and writes the backup only if still missing, so two first writes of a day write one backup. A day with no writes takes none, and the writes after the first are in the next day's.
+- A write whose command added to the log checks for today's file, one `stat`, and returns when it is there. Otherwise it takes the exports directory's lock, checks again, and writes the backup only if still missing, so two first writes of a day write one backup. A write waits at most 5 seconds for the lock, past the 0.7 s an export takes at 10,000 Issues; a holder that keeps it longer, such as a hung export, costs that write its backup and a warning, and a later write tries again. A day with no writes takes none, and the writes after the first are in the next day's.
 - Only a non-empty regular file counts as today's backup. An empty one is replaced; anything else at that name, such as a directory or a link, is left alone with a warning on every write until it is moved, and no old backup is removed meanwhile.
 - `tm init` and `tm import`'s restore take none: a new Workspace has nothing to lose, and a restore's source is itself a backup.
 - A failed backup or collection is a warning on the write, in its JSON envelope too ([ADR 0011](0011-the-cli-speaks-one-json-envelope-and-flat-coded-errors.md)); the write stands.
