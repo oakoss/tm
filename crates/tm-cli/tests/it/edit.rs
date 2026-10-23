@@ -159,11 +159,27 @@ fn an_edit_refuses_what_another_command_or_the_store_owns() {
 
     let (_, doc) = run(&scratch, &repo, &["TM-2", "--unset", "title"]);
     assert_eq!(doc["error"], "missing_fields", "{doc}");
+    assert_eq!(
+        doc["message"],
+        "Issue TM-2 is missing required fields: title"
+    );
+    assert_eq!(doc["key"], "TM-2");
+    assert_eq!(doc["source"], Value::Null);
+    assert!(
+        doc["issue"].as_str().unwrap().parse::<uuid::Uuid>().is_ok(),
+        "{doc}"
+    );
 
     let (code, _) = run(&scratch, &repo, &["TM-2", "--parent", "TM-1"]);
     assert_eq!(code, Some(0));
     let (_, doc) = run(&scratch, &repo, &["TM-1", "--parent", "TM-2"]);
     assert_eq!(doc["error"], "cycle", "{doc}");
+    assert_eq!(
+        doc["message"],
+        "parent would close a cycle: TM-1 -> TM-2 -> TM-1"
+    );
+    assert_eq!(doc["keys"], json!(["TM-1", "TM-2", "TM-1"]));
+    assert_eq!(doc["path"].as_array().unwrap().len(), 3, "{doc}");
 
     for twice in [
         &["TM-2", "--set", "assignee=a", "--unset", "assignee"][..],

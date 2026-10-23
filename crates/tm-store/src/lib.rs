@@ -123,11 +123,11 @@ pub enum StoreError {
         /// The values that would be accepted, when they can be listed.
         valid: Vec<String>,
     },
-    #[error("{relation} would close a cycle: {}", path.iter().map(Uuid::to_string).collect::<Vec<_>>().join(" -> "))]
+    #[error("{relation} would close a cycle: {}", path.iter().map(Named::to_string).collect::<Vec<_>>().join(" -> "))]
     Cycle {
         relation: &'static str,
         /// From the Issue written, around the cycle and back to it.
-        path: Vec<Uuid>,
+        path: Vec<Named>,
     },
     #[error("no batch {0} was written on this Replica")]
     UnknownBatch(Uuid),
@@ -155,7 +155,7 @@ pub enum StoreError {
         holder: Holder,
     },
     #[error("Issue {issue} is missing required fields: {}", fields.join(", "))]
-    MissingFields { issue: Uuid, fields: Vec<String> },
+    MissingFields { issue: Named, fields: Vec<String> },
     #[error("Issue {issue} belongs to Project {expected}, not {found}")]
     ProjectMismatch {
         issue: Uuid,
@@ -194,7 +194,89 @@ pub enum StoreError {
     Filter(#[from] FilterError),
 }
 
+/// An Issue as an error names it: by its Key, else by the import record
+/// that created it, else by its id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Named {
+    pub id: Uuid,
+    pub key: Option<String>,
+    /// The `source` of the record an import created the Issue from, which
+    /// the file being imported holds where a Key or id would mean nothing.
+    pub source: Option<String>,
+}
+
+impl From<Uuid> for Named {
+    fn from(id: Uuid) -> Self {
+        Self {
+            id,
+            key: None,
+            source: None,
+        }
+    }
+}
+
+impl std::fmt::Display for Named {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (&self.key, &self.source) {
+            (Some(key), _) => f.write_str(key),
+            (None, Some(source)) => f.write_str(source),
+            (None, None) => self.id.fmt(f),
+        }
+    }
+}
+
 impl StoreError {
+    /// This error with `name` applied to each Issue it names.
+    fn map_named(self, mut name: impl FnMut(Named) -> Named) -> Self {
+        match self {
+            Self::Cycle { relation, path } => Self::Cycle {
+                relation,
+                path: path.into_iter().map(name).collect(),
+            },
+            Self::MissingFields { issue, fields } => Self::MissingFields {
+                issue: name(issue),
+                fields,
+            },
+            other => other,
+        }
+    }
+
+    /// This error with each Issue it names given its Key, read from `conn`
+    /// once the refused write rolled back, so a Key the write would have
+    /// assigned is never named. Past a Key that cannot be read, the rest keep
+    /// their ids.
+    fn named(self, conn: &Connection) -> Self {
+        if !conn.is_autocommit() {
+            return self;
+        }
+        let mut readable = true;
+        self.map_named(|issue| {
+            if readable {
+                match project::key_of(conn, issue.id) {
+                    Ok(key) => return Named { key, ..issue },
+                    Err(_) => readable = false,
+                }
+            }
+            issue
+        })
+    }
+
+    /// This error with `issue`, which an import created from the record
+    /// `source`, named by that record.
+    pub(crate) fn sourced(self, issue: Uuid, source: &str) -> Self {
+        self.map_named(|named| {
+            if named.id == issue {
+                Named {
+                    key: None,
+                    source: Some(source.to_owned()),
+                    ..named
+                }
+            } else {
+                named
+            }
+        })
+    }
+
     /// Whether opening an existing store failed because this process may not
     /// open it, as in a sandbox that denies every write. SQLite reports a
     /// missing file the same way, so the caller checks it exists first.
@@ -1000,6 +1082,17 @@ impl Store {
     /// held is judged as the write will be.
     fn append_with(
         &mut self,
+        drafts: Vec<(Draft, Option<Provenance>)>,
+        guard: impl FnOnce(&Transaction<'_>, i64) -> Result<Vec<Draft>, StoreError>,
+        commit: bool,
+        undid: Option<Uuid>,
+    ) -> Result<Vec<Op>, StoreError> {
+        self.append_unnamed(drafts, guard, commit, undid)
+            .map_err(|err| err.named(&self.conn))
+    }
+
+    fn append_unnamed(
+        &mut self,
         mut drafts: Vec<(Draft, Option<Provenance>)>,
         guard: impl FnOnce(&Transaction<'_>, i64) -> Result<Vec<Draft>, StoreError>,
         commit: bool,
@@ -1470,7 +1563,10 @@ fn no_worse(
             .filter(|field| !missing.contains(field))
             .collect();
         if !fields.is_empty() {
-            return Err(StoreError::MissingFields { issue, fields });
+            return Err(StoreError::MissingFields {
+                issue: issue.into(),
+                fields,
+            });
         }
         if fitted && !validate::status_fits_type(tx, scheme, issue)? {
             return Err(StoreError::Invalid {

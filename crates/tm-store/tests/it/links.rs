@@ -5,8 +5,8 @@ use tm_store::{Direction, Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, OTHER, TempDir, draft, insert_acked, insert_acked_raw, jace, links, new_issue,
-    open, remote_op,
+    ManualClock, OTHER, TempDir, draft, insert_acked, insert_acked_raw, jace, key, links,
+    new_issue, open, remote_op,
 };
 
 fn link_versions(store: &Store) -> i64 {
@@ -213,11 +213,45 @@ fn a_blocking_link_that_closes_a_cycle_is_refused_with_its_path() {
         panic!("{err}");
     };
     assert_eq!(relation, "blocks");
-    assert_eq!(path, [c, a, b, c]);
+    let named: Vec<String> = path.iter().map(ToString::to_string).collect();
+    assert_eq!(named, [c, a, b, c].map(|id| key(&store, id)));
+    assert!(path.iter().map(|issue| issue.id).eq([c, a, b, c]));
     store.link(&jace(), "causes", c, a).unwrap();
     store.link(&jace(), "relates_to", c, a).unwrap();
     store.link(&jace(), "blocks", a, c).unwrap();
     assert_eq!(links(&store).len(), 6);
+}
+
+#[test]
+fn a_cycle_names_by_id_an_issue_without_a_confirmed_key_or_when_keys_cannot_be_read() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let [a, b] = [(); 2].map(|()| new_issue(&mut store));
+    store.link(&jace(), "blocks", a, b).unwrap();
+    let b_key = key(&store, b);
+    store
+        .connection()
+        .execute(
+            "UPDATE keys SET provisional = 1 WHERE issue_id = ?1",
+            [a.as_bytes()],
+        )
+        .unwrap();
+    let err = store.link(&jace(), "blocks", b, a).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        format!("blocks would close a cycle: {b_key} -> {a} -> {b_key}")
+    );
+
+    store
+        .connection()
+        .execute_batch("DROP INDEX keys_by_issue")
+        .unwrap();
+    let err = store.link(&jace(), "blocks", b, a).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        format!("blocks would close a cycle: {b} -> {a} -> {b}"),
+        "a refusal stands when its Keys cannot be read"
+    );
 }
 
 #[test]

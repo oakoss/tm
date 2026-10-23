@@ -9,7 +9,7 @@ use tm_core::OpError;
 use tm_core::filter::FilterError;
 use tm_core::op::{CURRENT_VERSION, MAX_PAYLOAD_BYTES};
 use tm_store::workspace::WorkspaceError;
-use tm_store::{Claim, ClaimState, Holder, StoreError};
+use tm_store::{Claim, ClaimState, Holder, Named, StoreError};
 use uuid::Uuid;
 
 /// Keys the document itself uses, which details never take.
@@ -79,6 +79,15 @@ impl CliError {
         debug_assert!(!RESERVED.contains(&key), "{key} is reserved");
         self.details.insert(key.to_owned(), value.into());
         self
+    }
+
+    /// The Issue an error names: its id, and its Key or import record when
+    /// the message names it by one.
+    #[must_use]
+    fn issue(self, issue: Named) -> Self {
+        self.with("issue", issue.id.to_string())
+            .with("key", issue.key)
+            .with("source", issue.source)
     }
 
     pub(crate) fn internal(cause: &str, message: impl Into<String>) -> Self {
@@ -181,16 +190,14 @@ impl CliError {
             .fix("retry")
     }
 
-    fn missing_fields(message: String, issue: Uuid, fields: Vec<String>) -> Self {
-        Self::new("missing_fields", message)
-            .with("issue", issue.to_string())
-            .with(
-                "fields",
-                fields
-                    .into_iter()
-                    .map(|name| json!({ "name": name }))
-                    .collect::<Vec<_>>(),
-            )
+    fn missing_fields(message: String, issue: Named, fields: Vec<String>) -> Self {
+        Self::new("missing_fields", message).issue(issue).with(
+            "fields",
+            fields
+                .into_iter()
+                .map(|name| json!({ "name": name }))
+                .collect::<Vec<_>>(),
+        )
     }
 
     /// A store, or an export, this command cannot use as it is.
@@ -284,9 +291,17 @@ impl From<StoreError> for CliError {
                 .with("field", field)
                 .with("reason", reason)
                 .with("allowed", valid),
-            StoreError::Cycle { relation, path } => Self::new("cycle", message)
-                .with("relation", relation)
-                .with("path", ids(&path)),
+            StoreError::Cycle { relation, path } => {
+                let (path, (keys, sources)): (Vec<_>, (Vec<_>, Vec<_>)) = path
+                    .into_iter()
+                    .map(|issue| (issue.id.to_string(), (issue.key, issue.source)))
+                    .unzip();
+                Self::new("cycle", message)
+                    .with("relation", relation)
+                    .with("path", path)
+                    .with("keys", keys)
+                    .with("sources", sources)
+            }
             StoreError::NoAgent { actor } => Self::new("no_agent", message).with("actor", actor),
             StoreError::UnknownBatch(batch) => Self::new("not_found", message)
                 .with("kind", "batch")
@@ -429,10 +444,6 @@ impl From<WorkspaceError> for CliError {
             WorkspaceError::Store(err) => Self::from(err),
         }
     }
-}
-
-fn ids(ids: &[uuid::Uuid]) -> Vec<String> {
-    ids.iter().map(ToString::to_string).collect()
 }
 
 /// The variant's name, for `internal`'s `cause`.

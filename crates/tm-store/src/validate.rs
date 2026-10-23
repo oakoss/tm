@@ -230,7 +230,7 @@ fn check_link(
     {
         return Err(StoreError::Cycle {
             relation: link::BLOCKS,
-            path: [source].into_iter().chain(path).collect(),
+            path: [source].into_iter().chain(path).map(Into::into).collect(),
         });
     }
     Ok(())
@@ -624,7 +624,7 @@ fn check_value(
             {
                 return Err(StoreError::Cycle {
                     relation: "parent",
-                    path: [issue_id].into_iter().chain(path).collect(),
+                    path: [issue_id].into_iter().chain(path).map(Into::into).collect(),
                 });
             }
             Ok(None)

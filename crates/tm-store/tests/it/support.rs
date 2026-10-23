@@ -276,6 +276,10 @@ pub(crate) fn new_issue(store: &mut Store) -> Uuid {
     store.create_issue(&jace(), PROJECT, "task", "t").unwrap().0
 }
 
+pub(crate) fn key(store: &Store, issue: Uuid) -> String {
+    store.issue(issue).unwrap().unwrap().key.unwrap()
+}
+
 /// One field of an Issue as it reads now.
 pub(crate) fn field(store: &Store, issue: Uuid, name: &str) -> Option<serde_json::Value> {
     store

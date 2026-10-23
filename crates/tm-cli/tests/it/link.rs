@@ -152,4 +152,8 @@ fn link_refuses_an_unknown_name_too_few_words_and_a_cycle() {
     let (code, doc) = run(&scratch, &repo, &["link", "TM-2", "blocks", "TM-1"]);
     assert_eq!(code, Some(1));
     assert_eq!(doc["error"], "cycle", "{doc}");
+    assert_eq!(
+        doc["message"],
+        "blocks would close a cycle: TM-2 -> TM-1 -> TM-2"
+    );
 }
