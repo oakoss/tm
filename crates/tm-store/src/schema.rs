@@ -3,7 +3,7 @@
 
 /// Stamped into `PRAGMA user_version`; a store with a different value is
 /// rebuilt on open.
-pub(crate) const PROJECTION_VERSION: i64 = 10;
+pub(crate) const PROJECTION_VERSION: i64 = 11;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
 /// Until tm v1 is released the log changes in place (ADR 0010).
@@ -144,6 +144,9 @@ CREATE TABLE IF NOT EXISTS undo_batches (
 ";
 
 pub(crate) const DROP_PROJECTIONS: &str = "
+DROP TABLE IF EXISTS shortlist_actors;
+DROP TABLE IF EXISTS shortlist_versions;
+DROP TABLE IF EXISTS shortlists;
 DROP TABLE IF EXISTS comments;
 DROP TABLE IF EXISTS links;
 DROP TABLE IF EXISTS set_members;
@@ -300,4 +303,40 @@ CREATE TABLE claims (
   ttl_ms INTEGER,
   session TEXT
 ) STRICT;
+
+-- Short-lists (ADR 0016). A name is not unique here: two Replicas may each
+-- choose one, which a write refuses but a merge can bring.
+CREATE TABLE shortlists (
+  id BLOB PRIMARY KEY,
+  project TEXT NOT NULL,
+  created_hlc INTEGER NOT NULL,
+  name TEXT,
+  size INTEGER NOT NULL DEFAULT 10,
+  deleted INTEGER NOT NULL DEFAULT 0
+) STRICT;
+
+CREATE INDEX shortlists_by_name ON shortlists (project, name COLLATE NOCASE);
+
+-- As `field_versions`, for Short-list fields and Actors.
+CREATE TABLE shortlist_versions (
+  shortlist_id BLOB NOT NULL REFERENCES shortlists (id),
+  field TEXT NOT NULL,
+  elem TEXT NOT NULL,
+  present INTEGER NOT NULL,
+  op_id BLOB NOT NULL,
+  hlc INTEGER NOT NULL,
+  replica_id BLOB NOT NULL,
+  base_seq INTEGER NOT NULL,
+  server_seq INTEGER,
+  server_received_ms INTEGER,
+  PRIMARY KEY (shortlist_id, field, elem)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE shortlist_actors (
+  shortlist_id BLOB NOT NULL REFERENCES shortlists (id),
+  actor TEXT NOT NULL,
+  PRIMARY KEY (shortlist_id, actor)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX shortlist_actors_by_actor ON shortlist_actors (actor, shortlist_id);
 ";

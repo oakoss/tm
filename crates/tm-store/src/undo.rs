@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tm_core::op::{COMMENTS_FIELD, ClaimAction};
-use tm_core::{Actor, Change, Hlc, Op, ProjectId, Scheme, link};
+use tm_core::{Actor, Change, Hlc, Op, ProjectId, Scheme, Subject, link, shortlist};
 use uuid::Uuid;
 
 use crate::apply::{Version, issue_project, uuid_from};
@@ -16,7 +16,8 @@ use crate::{Draft, Provenance, Store, StoreError, WallTime};
 /// One field or set element as undo finds it and would leave it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Restore {
-    pub issue: Uuid,
+    #[serde(flatten)]
+    pub target: Target,
     pub field: String,
     /// The set element, for a set field, Link or comment.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -24,6 +25,20 @@ pub struct Restore {
     /// What it holds now: a field's value, or whether the element is present.
     pub from: Value,
     pub to: Value,
+}
+
+/// The record a [`Restore`] writes to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum Target {
+    Issue {
+        issue: Uuid,
+    },
+    Shortlist {
+        shortlist: Uuid,
+        /// None when a merge left the list without one.
+        name: Option<String>,
+    },
 }
 
 /// What undoing a batch writes, and the operations that write it.
@@ -286,17 +301,12 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
     let ops = batch_ops(conn, batch)?;
     let first_seq = ops.first().ok_or(StoreError::UnknownBatch(batch))?.seq;
     let in_batch: BTreeSet<Uuid> = ops.iter().map(|op| op.op_id).collect();
-    let created: BTreeSet<Uuid> = ops
-        .iter()
-        .filter(|op| matches!(op.change, Change::Create))
-        .map(|op| op.issue)
-        .collect();
     let cannot = |reason: &str| StoreError::CannotUndo {
         batch,
         reason: reason.to_owned(),
     };
 
-    let mut targets: BTreeSet<(Uuid, String, String)> = BTreeSet::new();
+    let mut targets: BTreeSet<(Subject, Uuid, String, String)> = BTreeSet::new();
     let mut plan = UndoPlan {
         batch,
         restores: Vec::new(),
@@ -304,9 +314,7 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
         changes: Vec::new(),
     };
     let mut conflicts = Vec::new();
-    for issue in &created {
-        archive(conn, *issue, &mut plan)?;
-    }
+    let created = remove_created(conn, &ops, &mut plan)?;
     for op in &ops {
         if created.contains(&op.issue) {
             continue;
@@ -315,7 +323,9 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
             Change::CreateProject { .. } | Change::RenameProject { .. } => {
                 return Err(cannot("it wrote a Project, which undo does not revert"));
             }
-            Change::Create => unreachable!("created Issues are archived above"),
+            Change::Create | Change::CreateShortlist => {
+                unreachable!("created Issues and Short-lists are handled above")
+            }
             // A Claim taken since holds the Issue, so nothing stays released.
             Change::Claim {
                 action: ClaimAction::Release { .. },
@@ -340,29 +350,41 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
                 action: ClaimAction::Renew { .. },
             } => {}
             Change::Comment { .. } => {
-                targets.insert((op.issue, COMMENTS_FIELD.into(), op.op_id.to_string()));
+                targets.insert((
+                    Subject::Issue,
+                    op.issue,
+                    COMMENTS_FIELD.into(),
+                    op.op_id.to_string(),
+                ));
             }
             other => {
-                let field = other.field().expect("every other Issue kind names a field");
+                let field = other.field().expect("every other kind names a field");
                 let elem = other
                     .elem()
                     .map(std::borrow::Cow::into_owned)
                     .unwrap_or_default();
-                targets.insert((op.issue, field.to_owned(), elem));
+                targets.insert((other.subject(), op.issue, field.to_owned(), elem));
             }
         }
     }
     let ignored = ignored_since(conn, first_seq)?;
+    let deleted: BTreeSet<Uuid> = ops
+        .iter()
+        .filter(|op| deletes(&op.change, true))
+        .map(|op| op.issue)
+        .collect();
     let batch_ops = BatchContext {
+        batch,
+        deleted: &deleted,
         first_seq,
         in_batch: &in_batch,
         ignored: &ignored,
         scheme,
     };
-    for (issue, field, elem) in targets {
+    for (subject, id, field, elem) in targets {
         restore(
             conn,
-            (issue, &field, &elem),
+            (subject, id, &field, &elem),
             &batch_ops,
             &mut plan,
             &mut conflicts,
@@ -371,12 +393,31 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
     if !conflicts.is_empty() {
         return Err(StoreError::UndoConflict { batch, conflicts });
     }
+    plan.changes
+        .sort_by_key(|(_, _, change)| write_order(change));
     if plan.changes.is_empty() {
         return Err(cannot(
             "everything it wrote already holds what it held before",
         ));
     }
     Ok(plan)
+}
+
+/// Writes refuse a deleted list and one left with no Actor, so restores and
+/// Actor adds go first and deletes last.
+fn write_order(change: &Change) -> u8 {
+    match change {
+        restore if deletes(restore, false) => 0,
+        Change::ShortlistActor { present: true, .. } => 1,
+        delete if deletes(delete, true) => 3,
+        _ => 2,
+    }
+}
+
+/// Whether `change` sets a Short-list's deleted mark to `deleted`.
+fn deletes(change: &Change, deleted: bool) -> bool {
+    matches!(change, Change::SetShortlist { field: shortlist::Field::Deleted, value }
+        if value == &json!(deleted))
 }
 
 fn batch_ops(conn: &Connection, batch: Uuid) -> Result<Vec<BatchOp>, StoreError> {
@@ -409,6 +450,26 @@ fn batch_ops(conn: &Connection, batch: Uuid) -> Result<Vec<BatchOp>, StoreError>
     Ok(ops)
 }
 
+/// Archives each Issue and deletes each Short-list the batch created, and
+/// returns them: their other writes in the batch need no undo of their own.
+fn remove_created(
+    conn: &Connection,
+    ops: &[BatchOp],
+    plan: &mut UndoPlan,
+) -> Result<BTreeSet<Uuid>, StoreError> {
+    let mut created = BTreeSet::new();
+    for op in ops {
+        match op.change {
+            Change::Create if created.insert(op.issue) => archive(conn, op.issue, plan)?,
+            Change::CreateShortlist if created.insert(op.issue) => {
+                tombstone(conn, op.issue, plan)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(created)
+}
+
 /// A created Issue is archived, which keeps its Key and everything since.
 fn archive(conn: &Connection, issue: Uuid, plan: &mut UndoPlan) -> Result<(), StoreError> {
     let archived: bool = conn.query_row(
@@ -421,7 +482,7 @@ fn archive(conn: &Connection, issue: Uuid, plan: &mut UndoPlan) -> Result<(), St
     }
     let project = issue_project(conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?;
     plan.restores.push(Restore {
-        issue,
+        target: Target::Issue { issue },
         field: "archived".into(),
         elem: None,
         from: json!(false),
@@ -429,6 +490,33 @@ fn archive(conn: &Connection, issue: Uuid, plan: &mut UndoPlan) -> Result<(), St
     });
     plan.changes
         .push((project, issue, set_field("archived", json!(true))));
+    Ok(())
+}
+
+/// A created Short-list is deleted, which keeps its record and everything since.
+fn tombstone(conn: &Connection, list: Uuid, plan: &mut UndoPlan) -> Result<(), StoreError> {
+    let read = crate::shortlist::read(conn, list)?.ok_or(StoreError::UnknownShortlist(list))?;
+    if read.deleted {
+        return Ok(());
+    }
+    plan.restores.push(Restore {
+        target: Target::Shortlist {
+            shortlist: list,
+            name: read.name,
+        },
+        field: shortlist::Field::Deleted.as_str().into(),
+        elem: None,
+        from: json!(false),
+        to: json!(true),
+    });
+    plan.changes.push((
+        read.project,
+        list,
+        Change::SetShortlist {
+            field: shortlist::Field::Deleted,
+            value: json!(true),
+        },
+    ));
     Ok(())
 }
 
@@ -442,7 +530,7 @@ fn release(
     let current = crate::claim::current(conn, op.issue)?.map(|held| held.id);
     if current != Some(op.op_id) {
         conflicts.push(Restore {
-            issue: op.issue,
+            target: Target::Issue { issue: op.issue },
             field: tm_core::op::CLAIM_FIELD.into(),
             elem: None,
             from: json!(current.map(|_| "held by a later Claim")),
@@ -452,7 +540,7 @@ fn release(
     }
     let project = issue_project(conn, op.issue)?.ok_or(StoreError::UnknownIssue(op.issue))?;
     plan.restores.push(Restore {
-        issue: op.issue,
+        target: Target::Issue { issue: op.issue },
         field: tm_core::op::CLAIM_FIELD.into(),
         elem: None,
         from: json!(true),
@@ -470,6 +558,9 @@ fn release(
 
 /// What every target of one batch is restored against.
 struct BatchContext<'a> {
+    batch: Uuid,
+    /// The Short-lists the batch deleted, which its undo restores first.
+    deleted: &'a BTreeSet<Uuid>,
     first_seq: i64,
     in_batch: &'a BTreeSet<Uuid>,
     ignored: &'a BTreeSet<Uuid>,
@@ -489,12 +580,35 @@ struct TargetOp {
 /// the batch is a conflict, unless its batch is ignored.
 fn restore(
     conn: &Connection,
-    (issue, field, elem): (Uuid, &str, &str),
+    (subject, issue, field, elem): (Subject, Uuid, &str, &str),
     batch: &BatchContext<'_>,
     plan: &mut UndoPlan,
     conflicts: &mut Vec<Restore>,
 ) -> Result<(), StoreError> {
-    let current = current_state(conn, batch.scheme, issue, field, elem)?;
+    let list = match subject {
+        Subject::Shortlist => {
+            Some(crate::shortlist::read(conn, issue)?.ok_or(StoreError::UnknownShortlist(issue))?)
+        }
+        Subject::Issue | Subject::Project => None,
+    };
+    // A list deleted since takes no writes until its delete is undone.
+    if let Some(list) = &list
+        && list.deleted
+        && field != shortlist::Field::Deleted.as_str()
+        && !batch.deleted.contains(&issue)
+    {
+        return Err(StoreError::CannotUndo {
+            batch: batch.batch,
+            reason: format!(
+                "Short-list {} has been deleted since; undo its delete first",
+                list.name.as_deref().unwrap_or("without a name")
+            ),
+        });
+    }
+    let current = match &list {
+        Some(_) => list_state(conn, issue, field, elem)?,
+        None => current_state(conn, batch.scheme, issue, field, elem)?,
+    };
     let mut prior: Option<TargetOp> = None;
     let mut written_since = false;
     for target_op in target_ops(conn, issue, field, elem)? {
@@ -513,9 +627,16 @@ fn restore(
         }
     }
     let elem_out = (!elem.is_empty()).then(|| elem.to_owned());
+    let target = match &list {
+        Some(list) => Target::Shortlist {
+            shortlist: issue,
+            name: list.name.clone(),
+        },
+        None => Target::Issue { issue },
+    };
     if written_since {
         conflicts.push(Restore {
-            issue,
+            target,
             field: field.to_owned(),
             elem: elem_out,
             from: current,
@@ -523,17 +644,28 @@ fn restore(
         });
         return Ok(());
     }
-    // A comment the batch wrote has no earlier state; the batch's own comment
-    // is undone by retracting it, a retraction by showing the comment again.
-    let wrote_comment = field == COMMENTS_FIELD
-        && Uuid::parse_str(elem).is_ok_and(|comment| batch.in_batch.contains(&comment));
-    let (to, change) = inverse(field, elem, prior.map(|op| op.change), wrote_comment)?;
+    let prior = prior.map(|op| op.change);
+    let (to, change) = if list.is_some() {
+        list_inverse(field, elem, prior).ok_or_else(|| StoreError::CannotUndo {
+            batch: batch.batch,
+            reason: format!("Short-list field {field} held no value before it to restore"),
+        })?
+    } else {
+        // A comment the batch wrote has no earlier state; the batch's own comment
+        // is undone by retracting it, a retraction by showing the comment again.
+        let wrote_comment = field == COMMENTS_FIELD
+            && Uuid::parse_str(elem).is_ok_and(|comment| batch.in_batch.contains(&comment));
+        inverse(field, elem, prior, wrote_comment)?
+    };
     if to == current {
         return Ok(());
     }
-    let project = issue_project(conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?;
+    let project = match &list {
+        Some(list) => list.project,
+        None => issue_project(conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?,
+    };
     plan.restores.push(Restore {
-        issue,
+        target,
         field: field.to_owned(),
         elem: elem_out,
         from: current,
@@ -600,6 +732,54 @@ fn current_state(
         .first()
         .and_then(|view| view.fields.get(field).cloned())
         .unwrap_or(Value::Null))
+}
+
+/// What a Short-list field holds now, or whether an Actor is on it.
+fn list_state(conn: &Connection, list: Uuid, field: &str, elem: &str) -> Result<Value, StoreError> {
+    if !elem.is_empty() {
+        let present: Option<bool> = conn
+            .query_row(
+                "SELECT present FROM shortlist_versions
+                 WHERE shortlist_id = ?1 AND field = ?2 AND elem = ?3",
+                params![list.as_bytes(), field, elem],
+                |row| row.get(0),
+            )
+            .optional()?;
+        return Ok(json!(present.unwrap_or(false)));
+    }
+    let read = crate::shortlist::read(conn, list)?.ok_or(StoreError::UnknownShortlist(list))?;
+    Ok(match field {
+        "name" => json!(read.name),
+        "size" => json!(read.size),
+        "deleted" => json!(read.deleted),
+        other => return Err(StoreError::Corrupt(format!("Short-list field {other:?}"))),
+    })
+}
+
+/// [`inverse`] for a Short-list. With no prior winner, the list is not
+/// deleted, an Actor is absent and the size is the default; a name has no
+/// value to restore, which a merge that brought the list without one leaves,
+/// so none is returned and the batch cannot be undone.
+fn list_inverse(field: &str, elem: &str, prior: Option<Change>) -> Option<(Value, Change)> {
+    let unset = |field, value: Value| Some((value.clone(), Change::SetShortlist { field, value }));
+    match prior {
+        Some(Change::SetShortlist { field, value }) => unset(field, value),
+        Some(change @ Change::ShortlistActor { present, .. }) => Some((json!(present), change)),
+        None if field == shortlist::ACTORS => Some((
+            json!(false),
+            Change::ShortlistActor {
+                actor: elem.to_owned(),
+                present: false,
+            },
+        )),
+        None if field == shortlist::Field::Deleted.as_str() => {
+            unset(shortlist::Field::Deleted, json!(false))
+        }
+        None if field == shortlist::Field::Size.as_str() => {
+            unset(shortlist::Field::Size, json!(shortlist::DEFAULT_SIZE))
+        }
+        _ => None,
+    }
 }
 
 /// The state the prior winner left and the change that writes it back; with

@@ -45,16 +45,22 @@ pub(crate) fn check(
     change: Change,
 ) -> Result<Change, StoreError> {
     check_writer(tx, writing, issue_id, &change)?;
-    if change.subject() == Subject::Project {
-        return check_project(change);
+    match change.subject() {
+        Subject::Project => return check_project(change),
+        Subject::Shortlist => return crate::shortlist::check(tx, issue_id, change),
+        Subject::Issue => {}
     }
     if !matches!(change, Change::Create) && !exists(tx, issue_id)? {
         return Err(StoreError::UnknownIssue(issue_id));
     }
     match change {
         Change::Create | Change::Comment { .. } => Ok(change),
-        Change::CreateProject { .. } | Change::RenameProject { .. } => {
-            unreachable!("Project operations return above")
+        Change::CreateProject { .. }
+        | Change::RenameProject { .. }
+        | Change::CreateShortlist
+        | Change::SetShortlist { .. }
+        | Change::ShortlistActor { .. } => {
+            unreachable!("Project and Short-list operations return above")
         }
         Change::SetField { field, value, .. } => {
             // A stored value can be cleared even when the Scheme lacks its field.

@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 use tm_core::op::COMMENTS_FIELD;
 use tm_core::{Actor, link};
-use tm_store::Restore;
+use tm_store::{Restore, Target};
 use uuid::Uuid;
 
 use crate::error::CliError;
@@ -56,7 +56,7 @@ fn undo(
     let touched: BTreeSet<Uuid> = plan
         .restores
         .iter()
-        .flat_map(|restore| [Some(restore.issue), link_target(restore)])
+        .flat_map(|restore| [issue_of(restore), link_target(restore)])
         .flatten()
         .chain(plan.released.iter().copied())
         .collect();
@@ -77,7 +77,9 @@ fn undo(
         .iter()
         .map(|restore| {
             let mut entry = json!(restore);
-            entry["key"] = keys.get(&restore.issue).cloned().unwrap_or(Value::Null);
+            if let Some(issue) = issue_of(restore) {
+                entry["key"] = keys.get(&issue).cloned().unwrap_or(Value::Null);
+            }
             entry
         })
         .collect();
@@ -147,6 +149,13 @@ fn last(here: &Here, actor: &Actor) -> Result<(Uuid, Option<Uuid>), CliError> {
     }
 }
 
+const fn issue_of(restore: &Restore) -> Option<Uuid> {
+    match restore.target {
+        Target::Issue { issue } => Some(issue),
+        Target::Shortlist { .. } => None,
+    }
+}
+
 /// The other end of a restored Link, from its element `type/target`.
 fn link_target(restore: &Restore) -> Option<Uuid> {
     if restore.field != link::FIELD {
@@ -159,7 +168,13 @@ fn link_target(restore: &Restore) -> Option<Uuid> {
 /// One restore as a person reads it: Keys for Issues, and a set element
 /// added or removed rather than true or false.
 fn describe(restore: &Restore, name: &impl Fn(Uuid) -> String) -> String {
-    let issue = name(restore.issue);
+    let issue = match &restore.target {
+        Target::Issue { issue } => name(*issue),
+        Target::Shortlist {
+            name: Some(list), ..
+        } => format!("Short-list {}", printable(list)),
+        Target::Shortlist { shortlist, .. } => format!("Short-list {shortlist}"),
+    };
     let present = restore.to == json!(true);
     match (restore.field.as_str(), restore.elem.as_deref()) {
         (field, Some(elem)) if field == link::FIELD => {

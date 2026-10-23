@@ -9,6 +9,7 @@ pub mod op;
 pub mod project;
 pub mod rank;
 pub mod scheme;
+pub mod shortlist;
 
 pub use actor::Actor;
 pub use hlc::Hlc;

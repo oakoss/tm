@@ -17,6 +17,7 @@ mod projects;
 mod ready;
 mod rebuild;
 mod renewals;
+mod shortlists;
 mod snapshot;
 mod support;
 mod undo;

@@ -17,6 +17,7 @@ mod read;
 mod ready;
 mod record;
 mod schema;
+mod shortlist;
 mod snapshot;
 mod undo;
 mod validate;
@@ -47,7 +48,8 @@ pub use import::{Conflict, RecordOutcome, RecordsImported};
 pub use read::{CommentView, Direction, IssueView, LinkView};
 pub use ready::Ready;
 pub use record::{CommentRecord, IssueRecord, LinkRecord, tm_source};
-pub use undo::{Restore, UndoPlan};
+pub use shortlist::{Shortlist, ShortlistEdit};
+pub use undo::{Restore, Target, UndoPlan};
 
 /// How long a writer waits for another writer before giving up.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -69,6 +71,16 @@ pub enum StoreError {
     UnknownProject(ProjectId),
     #[error("Project {0} already exists")]
     DuplicateProject(ProjectId),
+    #[error("Short-list {0} does not exist")]
+    UnknownShortlist(Uuid),
+    #[error("Short-list {0} already exists")]
+    DuplicateShortlist(Uuid),
+    #[error("Short-list {list} belongs to Project {expected}, not {found}")]
+    ShortlistMismatch {
+        list: Uuid,
+        expected: ProjectId,
+        found: ProjectId,
+    },
     #[error("Project key {key} belongs to Project {project}")]
     KeyTaken { key: String, project: ProjectId },
     #[error("a Project operation's subject {subject} must be its own Project {project}")]
@@ -1579,6 +1591,7 @@ fn write_drafts(
         ops.push(op);
     }
     no_worse(tx, scheme, before)?;
+    shortlist::check_batch(tx, &ops)?;
     Ok((ops, hlc))
 }
 
@@ -1718,6 +1731,9 @@ fn replay(tx: &Transaction<'_>, row: &StoredOp) -> Result<bool, StoreError> {
             | StoreError::KeyTaken { .. }
             | StoreError::ProjectMismatch { .. }
             | StoreError::SubjectNotProject { .. }
+            | StoreError::UnknownShortlist(_)
+            | StoreError::DuplicateShortlist(_)
+            | StoreError::ShortlistMismatch { .. }
             | StoreError::Invalid { .. }),
         ) => {
             sql(tx.execute("ROLLBACK TO replay_op", []))?;

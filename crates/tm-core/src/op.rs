@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::Hlc;
 use crate::project::ProjectId;
+use crate::{Hlc, shortlist};
 
 /// The operation format this binary writes and fully understands. Until tm
 /// v1 is released the format changes in place (ADR 0010).
@@ -56,11 +56,16 @@ pub enum OpError {
         "Project key {0:?} must be an uppercase letter then 1 to 9 uppercase letters or digits"
     )]
     InvalidProjectKey(String),
+    #[error("Short-list {field} {reason}")]
+    InvalidShortlist {
+        field: &'static str,
+        reason: &'static str,
+    },
 }
 
-/// One change to one Issue. Field changes carry the display labels of the
-/// field and of an enumerated value at the time, so history stays readable
-/// after a rename.
+/// One change to one record, whose kind [`Change::subject`] names. Field
+/// changes carry the display labels of the field and of an enumerated value
+/// at the time, so history stays readable after a rename.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Change {
@@ -117,13 +122,25 @@ pub enum Change {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
+    /// A Short-list; its name, size and Actors are written beside it (ADR 0016).
+    CreateShortlist,
+    SetShortlist {
+        field: shortlist::Field,
+        value: serde_json::Value,
+    },
+    /// Adds or removes an Actor who works through a Short-list.
+    ShortlistActor {
+        actor: String,
+        present: bool,
+    },
 }
 
 /// The kind of record an operation's subject id names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Subject {
     Issue,
     Project,
+    Shortlist,
 }
 
 /// The field a Claim is filed under; no other kind may write it.
@@ -176,6 +193,9 @@ impl Change {
             Self::Claim { .. } => "claim",
             Self::CreateProject { .. } => "create_project",
             Self::RenameProject { .. } => "rename_project",
+            Self::CreateShortlist => "create_shortlist",
+            Self::SetShortlist { .. } => "set_shortlist",
+            Self::ShortlistActor { .. } => "shortlist_actor",
         }
     }
 
@@ -184,6 +204,9 @@ impl Change {
     pub const fn subject(&self) -> Subject {
         match self {
             Self::CreateProject { .. } | Self::RenameProject { .. } => Subject::Project,
+            Self::CreateShortlist | Self::SetShortlist { .. } | Self::ShortlistActor { .. } => {
+                Subject::Shortlist
+            }
             Self::Create
             | Self::SetField { .. }
             | Self::Add { .. }
@@ -205,10 +228,13 @@ impl Change {
             Self::Link { .. } => Some(crate::link::FIELD),
             Self::Claim { .. } => Some(CLAIM_FIELD),
             Self::Retract { .. } => Some(COMMENTS_FIELD),
+            Self::SetShortlist { field, .. } => Some(field.as_str()),
+            Self::ShortlistActor { .. } => Some(shortlist::ACTORS),
             Self::Create
             | Self::Comment { .. }
             | Self::CreateProject { .. }
-            | Self::RenameProject { .. } => None,
+            | Self::RenameProject { .. }
+            | Self::CreateShortlist => None,
         }
     }
 
@@ -221,12 +247,15 @@ impl Change {
                 link_type, target, ..
             } => Some(Cow::Owned(crate::link::elem(link_type, *target))),
             Self::Retract { comment, .. } => Some(Cow::Owned(comment.to_string())),
+            Self::ShortlistActor { actor, .. } => Some(Cow::Borrowed(actor)),
             Self::Create
             | Self::SetField { .. }
             | Self::Comment { .. }
             | Self::Claim { .. }
             | Self::CreateProject { .. }
-            | Self::RenameProject { .. } => None,
+            | Self::RenameProject { .. }
+            | Self::CreateShortlist
+            | Self::SetShortlist { .. } => None,
         }
     }
 
@@ -268,7 +297,45 @@ impl Change {
         {
             return Err(OpError::InvalidProjectKey(key.clone()));
         }
-        Ok(())
+        match self {
+            Self::SetShortlist { field, value } => check_shortlist(*field, value),
+            Self::ShortlistActor { actor, .. } => {
+                check_name("actor", actor)?;
+                // One spelling per Actor, so adds and removes meet as one element.
+                if *actor != shortlist::actor_key(actor) {
+                    return Err(OpError::InvalidShortlist {
+                        field: "actor",
+                        reason: "must be lowercase, without surrounding spaces",
+                    });
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Held to on replay too, so a value another Replica wrote is read the same way.
+fn check_shortlist(field: shortlist::Field, value: &serde_json::Value) -> Result<(), OpError> {
+    let invalid = |reason| {
+        Err(OpError::InvalidShortlist {
+            field: field.as_str(),
+            reason,
+        })
+    };
+    match field {
+        shortlist::Field::Name => match value.as_str() {
+            Some(name) if shortlist::is_name(name) => Ok(()),
+            _ => invalid(
+                "must be 1 to 64 letters, digits, '.', '-' or '_', starting with a letter or digit",
+            ),
+        },
+        shortlist::Field::Size => match value.as_u64() {
+            Some(size) if (1..=shortlist::MAX_SIZE).contains(&size) => Ok(()),
+            _ => invalid("must be a whole number from 1 to 1000"),
+        },
+        shortlist::Field::Deleted if value.is_boolean() => Ok(()),
+        shortlist::Field::Deleted => invalid("must be true or false"),
     }
 }
 
@@ -501,6 +568,15 @@ mod tests {
                 key: None,
                 name: Some("Core".into()),
             },
+            Change::CreateShortlist,
+            Change::SetShortlist {
+                field: shortlist::Field::Name,
+                value: serde_json::json!("docs"),
+            },
+            Change::ShortlistActor {
+                actor: "claude".into(),
+                present: true,
+            },
         ]
     }
 
@@ -576,6 +652,37 @@ mod tests {
             );
         }
         assert!(sample_agent().change().is_ok());
+    }
+
+    #[test]
+    fn short_list_values_are_checked_as_written_and_replayed() {
+        let set = |field, value| Change::SetShortlist { field, value };
+        let actor = |name: &str| Change::ShortlistActor {
+            actor: name.into(),
+            present: true,
+        };
+        let refused = [
+            set(shortlist::Field::Name, serde_json::json!("my list")),
+            set(shortlist::Field::Size, serde_json::json!(0)),
+            set(shortlist::Field::Size, serde_json::json!(1001)),
+            set(shortlist::Field::Deleted, serde_json::json!("x")),
+            actor(""),
+            actor("Codex"),
+            actor(" codex"),
+        ];
+        for change in refused {
+            assert!(
+                matches!(
+                    change.validate(),
+                    Err(OpError::InvalidShortlist { .. } | OpError::InvalidName { .. })
+                ),
+                "{change:?}"
+            );
+        }
+        set(shortlist::Field::Deleted, serde_json::json!(false))
+            .validate()
+            .unwrap();
+        actor("codex").validate().unwrap();
     }
 
     #[test]

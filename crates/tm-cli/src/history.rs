@@ -273,9 +273,11 @@ fn describe(
             format!("{verb}: {name} {}", names.key(other)?)
         }
         Change::Claim { action } => claim_line(action),
-        Change::CreateProject { .. } | Change::RenameProject { .. } => {
-            entry.change.kind().to_owned()
-        }
+        Change::CreateProject { .. }
+        | Change::RenameProject { .. }
+        | Change::CreateShortlist
+        | Change::SetShortlist { .. }
+        | Change::ShortlistActor { .. } => entry.change.kind().to_owned(),
     };
     let line = match &entry.unapplied {
         Some(reason) => format!("{line}  (not applied: {})", printable(reason)),
