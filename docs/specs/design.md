@@ -93,6 +93,10 @@ Key, type, title, description, status, Assignee, reporter, Agent and Claim, pare
 
 Optional time-boxed periods (sprint, cycle or any name), off by default, usable as a filter (`iteration:@current`) or Swimlane.
 
+### Short-lists
+
+A Short-list is a named, ordered list of Issues in a Project with the Actors who work through it, saying what to do next apart from priority; an Issue sits on at most one, and finishing it takes it off. `tm next` starts the first unarchived todo Issue on the session Actor's lists that is not an epic, snoozed, blocked or claimed, claiming it for an Agent, and `tm prime` and `tm ready` show those lists first ([ADR 0016](../decisions/0016-short-lists-order-what-to-do-next.md)).
+
 ### Comments, mentions and attachments
 
 - Comment threads in Markdown, writable by humans and agents, recorded in the operation log.
@@ -111,7 +115,7 @@ Everything is soft-deleted: archived, hidden and restorable. `tm purge` is the o
 - Errors are structured and carry the fix, for example `{"error":"missing_fields","target":"in_progress","fields":[{"name":"area","allowed":["cli","tui","web"]}],"fix":"tm move CPL-42 in_progress --set area=<value>"}`. In a terminal, humans are prompted for the missing values instead.
 - Bare `tm` opens the TUI only on a terminal; without one it prints help, so an agent never hangs in an interactive screen. `tm human` prints the short list of commands people need.
 - List commands accept `--watch` to stream changes instead of polling.
-- `tm prime` prints a compact context block for SessionStart hooks: the Scheme, the caller's Claims, the Issues in progress (an active Status, most recently updated first), the ready queue, Notifications, and open Findings or Path Claims touching files in the current diff. It warns when an agent session has no identity set.
+- `tm prime` prints a compact context block for SessionStart hooks: the Scheme, the caller's Claims, the caller's Short-lists, the Issues in progress (an active Status, most recently updated first), the ready queue, Notifications, and open Findings or Path Claims touching files in the current diff. It warns when an agent session has no identity set.
 - `tm remember "<insight>"` stores project memory that `tm prime` includes.
 - `tm setup <agent>` adds the hooks for prime, heartbeat and identity for Claude Code, Codex and others, and turns off the agent's built-in todo list so progress is tracked in one place. It shows the exact diff and writes nothing until confirmed; `tm setup <agent> --undo` removes exactly what it added.
 - `tm guide` prints Agent guidance from the binary, so it matches the installed tm; `tm init` adds a short pointer to it in AGENTS.md or CLAUDE.md on a human's yes, or prints it for an Agent to apply ([ADR 0014](../decisions/0014-tm-adds-its-instruction-lines-only-on-a-humans-yes.md)).

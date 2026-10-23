@@ -144,6 +144,10 @@ _Avoid_: Affects version, affected release
 An optional time-boxed period of work in a Project, shown under whatever name the team prefers, such as sprint or cycle.
 _Avoid_: Sprint, cycle (as canonical terms)
 
+**Short-list**:
+A named, ordered list of Issues in a Project that says what to do next and in what order, apart from priority, with the Actors who work through it; an Issue sits on at most one.
+_Avoid_: Queue, inbox, to-do list
+
 **Preset**:
 A named bundle of Scheme, Workflows, Views and automation rules offered when a Project is set up.
 _Avoid_: Template, profile
