@@ -30,15 +30,7 @@ Done when:
 
 Done on 2026-10-20: beads' Issues were imported with `tm import --from beads`, checked against `bd list --json --all --limit 0`, and frozen as a backup. Work has been tracked in `tm` since, and the first write of each day backs the Workspace up ([ADR 0015](../decisions/0015-the-first-write-of-each-day-backs-up-its-workspace.md)). Until the store has gone a month without data problems, around 2026-11-20, beads stays the fallback: if `tm` loses or corrupts data, go back to beads, fix the cause, and import again ([task-tracking.md](task-tracking.md)). After that the backup leaves the repo (`TM-74`).
 
-## Phase 2: TUI first screens
-
-Not started; Phase 3 (`TM-71`) was started ahead of it, with Short-lists (`TM-59`).
-
-Issue list with filters, Issue detail with history, Triage, Board, ready queue. Views defined in config.
-
-Done when daily triage and planning for this project happen in the TUI.
-
-## Phase 3: agent workflow
+## Phase 2: agent workflow
 
 - "On behalf of" in history; Actor detection and recording it are Phase 1 ([ADR 0010](../decisions/0010-operations-record-who-an-agent-acts-for-and-undo-names-a-batch.md)).
 - Full Claims: protected fields, `--force` beyond the finishing move it already guards ([ADR 0009](../decisions/0009-claims-apply-by-compare-and-set-and-links-are-keyed-canonically.md)), version-checked writes, expiry and heartbeat, `tm start`, `tm handoff`, `ready --claim`, Path Claims.
@@ -50,6 +42,14 @@ Done when:
 
 - the agent-usability evaluation passes: Claude and Codex, given only `tm --help`, complete a scripted set of tasks (claim the next ready Issue, hand it off, comment, record a Finding once Phase 5 lands), and every stumble is either fixed or logged as an Issue
 - two agents working at once never both hold a Claim
+
+## Phase 3: TUI first screens
+
+Built once the CLI has settled through Phase 2 and the polish between phases, so the screens rest on commands that no longer change underneath them.
+
+Issue list with filters, Issue detail with history, Triage, Board, ready queue. Views defined in config.
+
+Done when daily triage and planning for this project happen in the TUI.
 
 ## Phase 4: Schemes and Workflows in full
 
