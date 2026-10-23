@@ -19,6 +19,9 @@ use crate::apply::uuid_from;
 pub(crate) struct Writing<'a> {
     pub(crate) actor: &'a Actor,
     pub(crate) at_ms: i64,
+    /// An undo writes back what a batch replaced, which may name a list
+    /// deleted since; readers hide such a membership (ADR 0016).
+    pub(crate) undoing: bool,
 }
 
 /// Refuses a change no import may bring in, checked before anything else
@@ -77,7 +80,12 @@ pub(crate) fn check(
             if def.field_type.is_multi() {
                 return Err(invalid(def, "holds several values; add or remove them", []));
             }
-            let value_label = check_value(tx, scheme, issue_id, def, &value)?;
+            let value_label = match (def.field_type, &value) {
+                (FieldType::Shortlist, Value::String(list)) => {
+                    member_of(tx, scheme, (issue_id, def, list), writing.undoing)?
+                }
+                _ => check_value(tx, scheme, issue_id, def, &value)?,
+            };
             Ok(Change::SetField {
                 label: def.label.clone(),
                 field,
@@ -549,9 +557,11 @@ fn check_value(
 ) -> Result<Option<String>, StoreError> {
     let text = || value.as_str().filter(|text| !text.trim().is_empty());
     match (def.field_type, value) {
+        // Applying refuses a malformed rank, on replay as on a write.
         (_, Value::Null)
         | (FieldType::Number, Value::Number(_))
-        | (FieldType::Boolean, Value::Bool(_)) => Ok(None),
+        | (FieldType::Boolean, Value::Bool(_))
+        | (FieldType::Rank, Value::String(_)) => Ok(None),
         (FieldType::IssueType, Value::String(id)) => {
             let issue_type = scheme.issue_type(id).ok_or_else(|| {
                 invalid(
@@ -645,6 +655,30 @@ fn check_value(
             .map_err(|_| invalid(def, "is not an RFC 3339 timestamp", [])),
         _ => Err(invalid(def, "has the wrong value type", [])),
     }
+}
+
+/// A list an Issue may join: a live one in its Project, while the Issue is
+/// not finished, since finishing takes it off. An undo may write back what a
+/// batch replaced: a list deleted since, which readers hide, or a finished
+/// Issue's place. The list's name is the value's label, so history reads
+/// after a rename.
+fn member_of(
+    tx: &Transaction<'_>,
+    scheme: &Scheme,
+    (issue_id, def, id): (Uuid, &Field, &str),
+    undoing: bool,
+) -> Result<Option<String>, StoreError> {
+    let list = Uuid::parse_str(id).map_err(|_| invalid(def, "is not a Short-list id", []))?;
+    let read = crate::shortlist::read(tx, list)?
+        .filter(|read| undoing || !read.deleted)
+        .ok_or(StoreError::UnknownShortlist(list))?;
+    if crate::apply::issue_project(tx, issue_id)? != Some(read.project) {
+        return Err(invalid(def, "is a Short-list in another Project", []));
+    }
+    if !undoing && crate::shortlist::finished(tx, scheme, issue_id)? {
+        return Err(invalid(def, "cannot take a done or cancelled Issue", []));
+    }
+    Ok(read.name)
 }
 
 /// The parent chain from `start` up to `goal`, both included, if `goal` is an

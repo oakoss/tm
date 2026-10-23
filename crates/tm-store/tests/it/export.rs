@@ -8,7 +8,7 @@ use tm_core::Hlc;
 use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
-use crate::rebuild::{Action, ISSUES, action, change, new_list, play_list};
+use crate::rebuild::{Action, ISSUES, action, change, member, new_list, play_list};
 use crate::support::{
     ManualClock, TempDir, claude, draft, dump, field, held, jace, new_issue, open, remote_op,
     set_field,
@@ -63,6 +63,12 @@ fn play(store: &mut Store, (issues, list): (&[Uuid], Uuid), action: &Action, clo
         Action::Tick(ms) => clock.advance(i64::from(*ms)),
         Action::List(edit) => {
             let _ = play_list(store, list, edit);
+        }
+        Action::Member { issue, rank } => {
+            let drafts = member(list, *rank)
+                .into_iter()
+                .map(|change| draft(issues[*issue], change));
+            let _ = store.append_all(drafts.collect());
         }
         Action::Link {
             from,

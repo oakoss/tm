@@ -174,6 +174,9 @@ fn issue_record(
     let created = time(fields.remove("created"))?;
     let updated = time(fields.remove("updated"))?;
     let archived = fields.remove("archived") == Some(Value::Bool(true));
+    // Membership's record form (ADR 0016) comes with TM-59's export work.
+    fields.remove("shortlist");
+    fields.remove("shortlist_rank");
     // What is left are the Scheme fields.
     let labels = sets
         .remove("labels")

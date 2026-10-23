@@ -12,6 +12,7 @@ mod guards;
 mod history;
 mod import;
 mod links;
+mod members;
 mod merge;
 mod projects;
 mod ready;

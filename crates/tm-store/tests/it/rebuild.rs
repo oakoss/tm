@@ -62,6 +62,22 @@ pub(crate) enum Action {
     /// exercise the counter.
     Tick(u8),
     List(ListAction),
+    /// Puts the Issue on the list at one of [`RANKS`], or with none takes it off.
+    Member {
+        issue: usize,
+        rank: Option<usize>,
+    },
+}
+
+const RANKS: [&str; 3] = ["F", "V", "k"];
+
+/// The writes a `Member` action makes on `list`.
+pub(crate) fn member(list: Uuid, rank: Option<usize>) -> Vec<Change> {
+    let value = |text: String| rank.map_or(Value::Null, |_| json!(text));
+    vec![
+        set_field("shortlist", value(list.to_string())),
+        set_field("shortlist_rank", value(RANKS[rank.unwrap_or(0)].to_owned())),
+    ]
 }
 
 /// A write to the one Short-list [`new_list`] creates, with Actor `a`.
@@ -141,7 +157,13 @@ pub(crate) fn action() -> impl Strategy<Value = Action> {
                 .prop_map(|(elem, present)| ListAction::Actor { elem, present }),
         ]
         .prop_map(Action::List),
+        (issue_index(), proptest::option::of(0..RANKS.len()))
+            .prop_map(|(issue, rank)| Action::Member { issue, rank }),
     ]
+}
+
+fn issue_index() -> std::ops::Range<usize> {
+    0..ISSUES
 }
 
 /// The value a `Set` writes and how the Issue reads it back. Title and Status
@@ -196,7 +218,11 @@ pub(crate) fn change(action: &Action) -> Option<(usize, Change)> {
             )
         }
         Action::Comment { issue, body } => (*issue, Change::Comment { body: body.clone() }),
-        Action::Link { .. } | Action::Claim { .. } | Action::Tick(_) | Action::List(_) => {
+        Action::Link { .. }
+        | Action::Claim { .. }
+        | Action::Tick(_)
+        | Action::List(_)
+        | Action::Member { .. } => {
             return None;
         }
     })
@@ -215,6 +241,8 @@ struct Model {
     claims: Vec<Option<Uuid>>,
     /// The Short-list's name, size and Actors.
     list: (String, u64, BTreeSet<String>),
+    /// Each Issue's rank on the list, if it is on it.
+    members: Vec<Option<String>>,
 }
 
 impl Model {
@@ -263,7 +291,16 @@ impl Model {
                 tm_core::shortlist::DEFAULT_SIZE,
                 BTreeSet::from([ELEMS[0].to_owned()]),
             ),
+            members: vec![None; ISSUES],
         }
+    }
+
+    /// An Issue in a done or cancelled Status leaves the list in the same batch.
+    fn finished(&self, issue: usize) -> bool {
+        matches!(
+            self.fields[issue].get("status").and_then(Value::as_str),
+            Some("done" | "cancelled")
+        )
     }
 
     /// Records a list write, or says it must be refused: removing the last Actor.
@@ -309,13 +346,31 @@ impl Model {
                 self.labels[*issue].remove(ELEMS[*elem]);
             }
             Action::Comment { issue, .. } => self.comments[*issue] += 1,
+            Action::Member { issue, rank } => {
+                self.members[*issue] = rank.map(|rank| RANKS[rank].to_owned());
+            }
             Action::Link { .. } | Action::Claim { .. } | Action::Tick(_) | Action::List(_) => {}
+        }
+        for issue in 0..ISSUES {
+            if self.finished(issue) {
+                self.members[issue] = None;
+            }
         }
     }
 
     fn observed(store: &Store, issues: &[Uuid], list: Uuid) -> Self {
+        let members = issues
+            .iter()
+            .map(|issue| {
+                let view = store.issue(*issue).unwrap().unwrap();
+                let on = view.fields.get("shortlist") == Some(&json!(list.to_string()));
+                let rank = view.fields.get("shortlist_rank").and_then(Value::as_str);
+                rank.filter(|_| on).map(str::to_owned)
+            })
+            .collect();
         let list = store.shortlist(list).unwrap().unwrap();
         let mut model = Self {
+            members,
             list: (
                 list.name.unwrap_or_default(),
                 list.size,
@@ -381,6 +436,16 @@ proptest! {
                 } else {
                     let err = result.unwrap_err();
                     prop_assert!(matches!(&err, StoreError::Invalid { field, .. } if field == "actors"), "{}", err);
+                }
+            } else if let Action::Member { issue, rank } = action {
+                let drafts = member(list, *rank).into_iter().map(|change| draft(issues[*issue], change));
+                let result = store.append_all(drafts.collect());
+                if rank.is_some() && expected.finished(*issue) {
+                    let err = result.unwrap_err();
+                    prop_assert!(matches!(&err, StoreError::Invalid { field, .. } if field == "shortlist"), "{}", err);
+                } else {
+                    result.unwrap();
+                    expected.record(action);
                 }
             } else if let Action::Link { from, to, link_type, present } = action {
                 let (from, to, link_type) = (issues[*from], issues[*to], LINK_TYPES[*link_type]);

@@ -3,7 +3,7 @@
 
 /// Stamped into `PRAGMA user_version`; a store with a different value is
 /// rebuilt on open.
-pub(crate) const PROJECTION_VERSION: i64 = 11;
+pub(crate) const PROJECTION_VERSION: i64 = 12;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
 /// Until tm v1 is released the log changes in place (ADR 0010).
@@ -179,11 +179,16 @@ CREATE TABLE issues (
   parent_id BLOB,
   archived INTEGER NOT NULL DEFAULT 0,
   created_ms INTEGER NOT NULL,
-  updated_ms INTEGER NOT NULL
+  updated_ms INTEGER NOT NULL,
+  shortlist BLOB,
+  shortlist_rank TEXT
 ) STRICT;
 
 CREATE INDEX issues_by_status ON issues (type, status);
 CREATE INDEX issues_by_priority ON issues (priority);
+-- A list's members in order, ties broken by id (ADR 0016).
+CREATE INDEX issues_by_shortlist ON issues (shortlist, shortlist_rank, id)
+  WHERE shortlist IS NOT NULL;
 
 -- `issue_id` is NOT NULL here and in `set_members` because filters compile
 -- negation to `NOT IN`, which matches nothing once the subquery yields a NULL.

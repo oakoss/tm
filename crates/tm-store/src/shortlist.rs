@@ -1,14 +1,15 @@
 //! Short-lists (ADR 0016): applying their operations, the checks a write of
 //! one meets, and reading them.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Serialize;
 use serde_json::json;
+use tm_core::scheme::Category;
 use tm_core::shortlist::{self as core, Field};
-use tm_core::{Actor, Change, Op, ProjectId, Subject};
+use tm_core::{Actor, Change, Op, ProjectId, Scheme, Subject};
 use uuid::Uuid;
 
 use crate::apply::{Version, Versions, project_from, record_in, sql_int, uuid_from, wins_in};
@@ -125,6 +126,27 @@ impl Store {
         })
     }
 
+    /// The Issues on `list` by rank, ties by Issue id, so every Replica
+    /// orders them alike; a deleted list has none.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
+    pub fn shortlist_members(&self, list: Uuid) -> Result<Vec<Uuid>, StoreError> {
+        self.read(|store| {
+            let mut stmt = store.conn.prepare_cached(
+                "SELECT i.id FROM issues i
+                 JOIN shortlists l ON l.id = i.shortlist AND l.deleted = 0 AND l.project = i.project
+                 WHERE i.shortlist = ?1 AND i.shortlist_rank IS NOT NULL
+                 ORDER BY i.shortlist_rank, i.id",
+            )?;
+            let ids = stmt
+                .query_map([list.as_bytes()], |row| row.get::<_, Vec<u8>>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            ids.iter().map(|id| uuid_from(id)).collect()
+        })
+    }
+
     /// A Short-list by id, deleted or not.
     ///
     /// # Errors
@@ -151,10 +173,43 @@ fn live(conn: &Connection, id: Uuid) -> Result<ProjectId, StoreError> {
 }
 
 /// The checks a batch's end state meets, which [`check`] cannot make draft
-/// by draft: a list the batch creates has a name and an Actor, and every
-/// live list it wrote holds a name no other live list in its Project holds,
-/// so an undo may move names between lists in any order.
-pub(crate) fn check_batch(tx: &Transaction<'_>, ops: &[Op]) -> Result<(), StoreError> {
+/// by draft: a list the batch creates has a name and an Actor, every live
+/// list it wrote holds a name no other live list in its Project holds, so
+/// an undo may move names between lists in any order, and every Issue it
+/// wrote holds a list and a rank together or neither.
+pub(crate) fn check_batch(
+    tx: &Transaction<'_>,
+    ops: &[Op],
+    half_held: &BTreeSet<Uuid>,
+) -> Result<(), StoreError> {
+    let issues: BTreeSet<Uuid> = ops
+        .iter()
+        .filter(|op| {
+            op.change()
+                .is_ok_and(|change| change.subject() == Subject::Issue)
+        })
+        .map(|op| op.subject)
+        .collect();
+    // An Issue a merge left half on a list stays editable, as `no_worse` keeps
+    // any Issue that arrived inconsistent, unless the batch writes its
+    // membership; the read rule hides it.
+    let membership = |op: &&Op| {
+        op.change()
+            .is_ok_and(|change| matches!(change.field(), Some("shortlist" | "shortlist_rank")))
+    };
+    let rewritten: BTreeSet<Uuid> = ops.iter().filter(membership).map(|op| op.subject).collect();
+    let exempt: BTreeSet<Uuid> = half_held.difference(&rewritten).copied().collect();
+    for issue in issues.difference(&exempt) {
+        let (_, fields) = held(tx, *issue)?;
+        if let [field] = fields[..] {
+            let named = crate::project::key_of(tx, *issue)?.unwrap_or_else(|| issue.to_string());
+            return Err(StoreError::Invalid {
+                field: field.into(),
+                reason: format!("of Issue {named} is held only with both a Short-list and a rank"),
+                valid: Vec::new(),
+            });
+        }
+    }
     let written: BTreeSet<Uuid> = ops
         .iter()
         .filter(|op| {
@@ -183,6 +238,146 @@ pub(crate) fn check_batch(tx: &Transaction<'_>, ops: &[Op]) -> Result<(), StoreE
         }
     }
     Ok(())
+}
+
+/// The writes that take Issues off their lists as a batch calls for: each
+/// Issue it moved into a done or cancelled Status, not one already there,
+/// and each member of a list it deleted. Each is written by whoever wrote
+/// the operation that called for it, and logged, so history shows it and
+/// undo restores it.
+pub(crate) fn clearing(
+    tx: &Transaction<'_>,
+    scheme: &Scheme,
+    ops: &[Op],
+    was_finished: &BTreeSet<Uuid>,
+) -> Result<Vec<Draft>, StoreError> {
+    let mut issues: BTreeMap<Uuid, &Op> = BTreeMap::new();
+    for op in ops {
+        match op.change()? {
+            change if change.subject() == Subject::Issue => {
+                if was_finished.contains(&op.subject) || !finished(tx, scheme, op.subject)? {
+                    continue;
+                }
+                // The Status or type write finished it; another write stands in
+                // only until one is found.
+                let finishing = matches!(change.field(), Some("status" | "type"));
+                let cause = issues.entry(op.subject).or_insert(op);
+                if finishing {
+                    *cause = op;
+                }
+            }
+            Change::SetShortlist {
+                field: Field::Deleted,
+                value: serde_json::Value::Bool(true),
+            } => {
+                for member in members(tx, op.subject)? {
+                    issues.entry(member).or_insert(op);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut drafts = Vec::new();
+    for (issue, cause) in issues {
+        let (project, fields) = held(tx, issue)?;
+        let writer = match &cause.on_behalf_of {
+            Some(human) => Actor::agent(&cause.actor, human),
+            None => Actor::human(&cause.actor),
+        };
+        drafts.extend(fields.into_iter().map(|field| Draft {
+            actor: writer.clone(),
+            project,
+            subject: issue,
+            change: Change::SetField {
+                field: field.into(),
+                label: String::new(),
+                value: serde_json::Value::Null,
+                value_label: None,
+            },
+        }));
+    }
+    Ok(drafts)
+}
+
+pub(crate) fn finished(
+    tx: &Transaction<'_>,
+    scheme: &Scheme,
+    issue: Uuid,
+) -> Result<bool, StoreError> {
+    let row: Option<(Option<String>, Option<String>)> = tx
+        .query_row(
+            "SELECT type, status FROM issues WHERE id = ?1",
+            [issue.as_bytes()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let category = row.and_then(|(issue_type, status)| scheme.category(&issue_type?, &status?));
+    Ok(matches!(
+        category,
+        Some(Category::Done | Category::Cancelled)
+    ))
+}
+
+/// Every Issue that names `list`, whether or not it reads as a member.
+fn members(tx: &Transaction<'_>, list: Uuid) -> Result<Vec<Uuid>, StoreError> {
+    let mut stmt = tx.prepare_cached("SELECT id FROM issues WHERE shortlist = ?1")?;
+    let ids = stmt
+        .query_map([list.as_bytes()], |row| row.get::<_, Vec<u8>>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    ids.iter().map(|id| uuid_from(id)).collect()
+}
+
+/// A membership field's stored value, which reads hide when its list is not
+/// live; none for any other field.
+pub(crate) fn stored(
+    conn: &Connection,
+    issue: Uuid,
+    field: &str,
+) -> Result<Option<serde_json::Value>, StoreError> {
+    let column = match field {
+        "shortlist" => "shortlist",
+        "shortlist_rank" => "shortlist_rank",
+        _ => return Ok(None),
+    };
+    let value: Option<SqlValue> = conn
+        .query_row(
+            &format!("SELECT {column} FROM issues WHERE id = ?1"),
+            [issue.as_bytes()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(Some(match value {
+        Some(SqlValue::Blob(list)) => json!(uuid_from(&list)?.to_string()),
+        Some(SqlValue::Text(rank)) => json!(rank),
+        _ => serde_json::Value::Null,
+    }))
+}
+
+/// Whether `subject` is an Issue that stores one membership field without the
+/// other, as a merge can leave it.
+pub(crate) fn half_held(tx: &Transaction<'_>, subject: Uuid) -> Result<bool, StoreError> {
+    let held: Option<i64> = tx
+        .query_row(
+            "SELECT (shortlist IS NOT NULL) + (shortlist_rank IS NOT NULL) FROM issues WHERE id = ?1",
+            [subject.as_bytes()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(held == Some(1))
+}
+
+/// An Issue's Project and the membership fields it stores a value in.
+fn held(tx: &Transaction<'_>, issue: Uuid) -> Result<(ProjectId, Vec<&'static str>), StoreError> {
+    let (project, list, rank): (String, bool, bool) = tx.query_row(
+        "SELECT project, shortlist IS NOT NULL, shortlist_rank IS NOT NULL FROM issues WHERE id = ?1",
+        [issue.as_bytes()],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let fields = [("shortlist", list), ("shortlist_rank", rank)]
+        .into_iter()
+        .filter_map(|(field, held)| held.then_some(field))
+        .collect();
+    Ok((project_from(&project)?, fields))
 }
 
 fn set(field: Field, value: serde_json::Value) -> Change {

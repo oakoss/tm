@@ -260,7 +260,9 @@ fn scheme_field(def: &Field) -> Filterable {
         | FieldType::IssueType
         | FieldType::Status
         | FieldType::Priority
-        | FieldType::IssueReference => (Kind::Later("this field type", Some(value())), None),
+        | FieldType::IssueReference
+        | FieldType::Shortlist
+        | FieldType::Rank => (Kind::Later("this field type", Some(value())), None),
     };
     Filterable { name, kind, sort }
 }

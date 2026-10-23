@@ -411,9 +411,20 @@ fn target(field: &str, value: &Json) -> Result<Target, StoreError> {
             Target::Column("archived", SqlValue::Integer(i64::from(*archived)))
         }
         ("archived", Json::Null) => Target::Column("archived", SqlValue::Integer(0)),
+        ("shortlist", Json::String(id)) => {
+            let list = Uuid::parse_str(id).map_err(|_| invalid("is not a Short-list id"))?;
+            Target::Column("shortlist", SqlValue::Blob(list.as_bytes().to_vec()))
+        }
+        // Held on replay too, so a rank another Replica wrote sorts as ranks do.
+        ("shortlist_rank", Json::String(rank)) if tm_core::rank::is_rank(rank) => {
+            Target::Column("shortlist_rank", SqlValue::Text(rank.clone()))
+        }
+        ("shortlist_rank", Json::String(_)) => return Err(invalid("is not a rank")),
+        ("shortlist", Json::Null) => Target::Column("shortlist", SqlValue::Null),
+        ("shortlist_rank", Json::Null) => Target::Column("shortlist_rank", SqlValue::Null),
         (
             "type" | "title" | "description" | "status" | "assignee" | "priority" | "parent"
-            | "archived",
+            | "archived" | "shortlist" | "shortlist_rank",
             _,
         ) => return Err(invalid("has the wrong value type")),
         ("key" | "reporter" | "agent" | "claim" | "labels" | "created" | "updated", _) => {

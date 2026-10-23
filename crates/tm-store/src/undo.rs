@@ -264,7 +264,7 @@ pub(crate) fn probe(
         for (draft, _) in &drafts {
             draft.change.validate()?;
         }
-        crate::write_drafts(tx, scheme, drafts, now, hlc)
+        crate::write_drafts(tx, scheme, drafts, (now, true), hlc)
     });
     tx.execute_batch("ROLLBACK TO undo_probe; RELEASE undo_probe")?;
     match tried {
@@ -726,6 +726,10 @@ fn current_state(
             )
             .optional()?;
         return Ok(json!(present.unwrap_or(false)));
+    }
+    // Stored, not as read: a membership readers hide can still be undone.
+    if let Some(stored) = crate::shortlist::stored(conn, issue, field)? {
+        return Ok(stored);
     }
     let view = crate::read::issues(conn, scheme, &[issue])?;
     Ok(view

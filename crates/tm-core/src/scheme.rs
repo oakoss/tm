@@ -76,6 +76,10 @@ pub enum FieldType {
     Date,
     SingleSelect,
     MultiSelect,
+    /// The id of a Short-list in the Issue's Project (ADR 0016).
+    Shortlist,
+    /// An ordering key from [`crate::rank`].
+    Rank,
 }
 
 impl FieldType {
@@ -277,6 +281,8 @@ impl Scheme {
             Field::builtin("parent", "Parent", T::IssueReference),
             Field::builtin("labels", "Labels", T::Labels),
             Field::builtin("archived", "Archived", T::Boolean),
+            Field::builtin("shortlist", "Short-list", T::Shortlist),
+            Field::builtin("shortlist_rank", "Short-list rank", T::Rank),
             Field::builtin("created", "Created", T::Datetime).derived(),
             Field::builtin("updated", "Updated", T::Datetime).derived(),
         ];
