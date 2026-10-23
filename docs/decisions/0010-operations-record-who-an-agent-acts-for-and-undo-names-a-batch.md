@@ -48,7 +48,7 @@ design.md records an Agent's writes as "agent, on behalf of human", and `tm undo
 
 - `TM_AGENT=<name>` names an Agent detection misses, and overrides a detected name, so an orchestrator can give each sub-agent its own.
 - When variables from more than one harness are present, as when one Agent launches another, the first in the order wins, and a write carries a warning naming both and `TM_AGENT`. Variables are inherited, so only the inner Agent sees both sets, and no order is right for every nesting. Codex comes first because the expected nesting is Claude Code launching Codex, as a reviewer; Claude Code launched from a Codex shell is the case it misnames.
-- Sub-agents of one Claude Code session share its variables, so detection names them all `claude`. In Phase 3, `tm setup claude` installs a hook that names each sub-agent from the `agent_id` Claude Code passes to hooks; until then an orchestrator sets `TM_AGENT` per sub-agent.
+- Sub-agents of one Claude Code session share its variables, so detection names them all `claude`. In Phase 2, `tm setup claude` installs a hook that names each sub-agent from the `agent_id` Claude Code passes to hooks; until then an orchestrator sets `TM_AGENT` per sub-agent.
 - `CLAUDECODE` and `AI_AGENT` are not read. IDE extensions set `CLAUDECODE` in their integrated terminals, and Claude Code's own tools also see its session id; `AI_AGENT`'s values carry versions and are inherited from parent agents.
 - With an Agent, `actor` is the Agent's name and `on_behalf_of` is the human, unless the two are equal. Without one, `actor` is the human and `on_behalf_of` is empty. `on_behalf_of` is the human running the Agent, not the Issue's Assignee.
 - `@me` resolves to the human in both cases.
@@ -67,7 +67,7 @@ design.md records an Agent's writes as "agent, on behalf of human", and `tm undo
 - Bad, because until v1 a binary that predates a kind, such as `link` or `claim`, fails on parse instead of asking for an upgrade, and a store from an older build must be recreated.
 - Good, because undo works the same for humans, detected Agents, undetected Agents and parallel sub-agents.
 - Bad, because an Agent tm cannot detect, including one writing from a tmux session Claude Code started, records as the human unless it sets `TM_AGENT`.
-- Bad, because until Phase 3's hook, sub-agents of one Agent share its name unless each sets `TM_AGENT`. Claims still tell them apart by token.
+- Bad, because until Phase 2's hook, sub-agents of one Agent share its name unless each sets `TM_AGENT`. Claims still tell them apart by token.
 - Bad, because an Agent launched by another may be recorded under its parent's name; the warning says so, and `TM_AGENT` corrects it. Codex's default `shell_environment_policy.inherit` is `all` (`codex-rs/config/src/shell_environment_policy.rs`, v0.163.0), so an Agent launched from another sees both sets by default (inferred from source for Codex). Measured: a Codex launched from Claude Code with `inherit = "core"` saw only Codex's variables.
 - Bad, because a caller that loses the batch id cannot undo.
 - Neutral, because batches are lost when a store is recreated from the server, which is acceptable while undo is local.
