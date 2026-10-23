@@ -210,7 +210,6 @@ fn list_json(here: &Here, list: &Shortlist, members: &[Member]) -> Result<Value,
             let mut item = json!(Item::of(&member.issue, &projects));
             if let Some(fields) = item["fields"].as_object_mut() {
                 fields.remove("shortlist");
-                fields.remove("shortlist_rank");
             }
             item["position"] = json!(position);
             item["passed_over"] = json!(member.passed_over);

@@ -85,6 +85,7 @@ fn create_answers_in_a_fixed_shape() {
             "ui": "ui"
           }
         },
+        "shortlist": null,
         "started": []
       },
       "schema_version": 1,
@@ -150,6 +151,7 @@ fn move_answers_in_a_fixed_shape() {
         "parent": null,
         "project": "TM",
         "sets": {},
+        "shortlist": null,
         "started": []
       },
       "schema_version": 1,
@@ -424,7 +426,8 @@ fn undo_answers_in_a_fixed_shape() {
             ],
             "parent": null,
             "project": "TM",
-            "sets": {}
+            "sets": {},
+            "shortlist": null
           }
         ],
         "released": [],

@@ -246,6 +246,55 @@ fn a_deleted_list_takes_its_issues_off_and_undo_restores_both() {
 }
 
 #[test]
+fn show_names_the_list_and_no_command_shows_a_rank() {
+    let scratch = Scratch::new();
+    let repo = with_list(&scratch);
+    run(&scratch, &repo, "shortlist add docs TM-1 TM-2");
+    let shown = text(&tm(&scratch, &repo, &["show", "TM-2"]).stdout);
+    let line = "shortlist: docs (position 2 of 2)\n";
+    assert!(shown.contains(line), "{shown}");
+    assert!(!shown.contains("shortlist_rank"), "{shown}");
+
+    let (_, doc) = run(&scratch, &repo, "show TM-2");
+    let membership = &doc["data"]["shortlist"];
+    assert_eq!(membership["name"], "docs");
+    assert_eq!(membership["position"], 2);
+    let fields = &doc["data"]["fields"];
+    assert_eq!(fields.get("shortlist"), None);
+    assert_eq!(fields.get("shortlist_rank"), None);
+    for words in ["list", "ready"] {
+        let (_, doc) = run(&scratch, &repo, words);
+        let issues = doc["data"]["issues"].as_array().unwrap();
+        assert!(!issues.is_empty(), "{words}");
+        for issue in issues {
+            assert_eq!(issue["fields"].get("shortlist_rank"), None, "{words}");
+        }
+    }
+
+    run(&scratch, &repo, "shortlist move TM-2 --top");
+    let history = text(&tm(&scratch, &repo, &["history", "TM-2"]).stdout);
+    assert!(history.contains("Short-list: (none) → docs\n"), "{history}");
+    // Joining sets a rank too, which the list line covers.
+    let reordered = history.matches("Short-list: reordered").count();
+    assert_eq!(reordered, 1, "{history}");
+    assert!(!history.contains("rank"), "{history}");
+    let (_, doc) = run(&scratch, &repo, "history TM-2");
+    for write in doc["data"]["writes"].as_array().unwrap() {
+        for change in write["changes"].as_array().unwrap() {
+            assert_ne!(change["change"]["field"], "shortlist_rank", "{change}");
+        }
+    }
+
+    let (_, doc) = run(&scratch, &repo, "shortlist remove TM-1");
+    let batch = doc["data"]["batch"].as_str().unwrap().to_owned();
+    let undone = text(&tm(&scratch, &repo, &["undo", &batch]).stdout);
+    let line = "TM-1 Short-list: (none) -> docs\n";
+    assert!(undone.contains(line), "{undone}");
+    assert!(!undone.contains("rank"), "{undone}");
+    assert!(!undone.contains("order"), "{undone}");
+}
+
+#[test]
 fn membership_is_changed_only_through_tm_shortlist() {
     let scratch = Scratch::new();
     let repo = with_list(&scratch);

@@ -4,7 +4,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use serde_json::{Value, json};
 use tm_core::ProjectId;
 use tm_core::filter::{Context, FilterError, parse};
@@ -115,21 +115,26 @@ pub(crate) fn project_keys(
 
 /// An Issue as a list gives it: `show`'s shape without parent and Claim.
 pub(crate) fn item(view: &IssueView, projects: &HashMap<ProjectId, Option<String>>) -> Value {
+    let mut fields = view.fields.clone();
+    fields.remove(RANK);
     json!({
         "id": view.id,
         "key": view.key,
         "project": projects.get(&view.project),
         "category": view.category,
-        "fields": view.fields,
+        "fields": fields,
         "sets": view.sets,
     })
 }
+
+const RANK: &str = "shortlist_rank";
 
 /// [`item`] serialized as it is written, for lists of thousands: its fields
 /// are in the order a JSON value sorts its keys, so the bytes are the same.
 #[derive(Serialize)]
 pub(crate) struct Item<'a> {
     category: &'a Option<Category>,
+    #[serde(serialize_with = "without_rank")]
     fields: &'a BTreeMap<String, Value>,
     id: Uuid,
     key: &'a Option<String>,
@@ -155,6 +160,16 @@ impl<'a> Item<'a> {
             unblocks: None,
         }
     }
+}
+
+/// An Issue's fields less its Short-list rank, an ordering key readers never
+/// see (ADR 0016).
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn without_rank<S: Serializer>(
+    fields: &&BTreeMap<String, Value>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_map(fields.iter().filter(|(name, _)| *name != RANK))
 }
 
 /// A list's JSON data, its keys in sorted order as for [`Item`].
@@ -217,6 +232,7 @@ mod tests {
             fields: BTreeMap::from([
                 ("title".into(), json!("a \"quoted\" title")),
                 ("created".into(), json!(1_792_206_249_000_i64)),
+                ("shortlist_rank".into(), json!("V")),
             ]),
             sets: BTreeMap::from([(
                 "labels".into(),
@@ -226,5 +242,6 @@ mod tests {
         let projects = HashMap::from([(project, Some("TM".to_owned()))]);
         let written = serde_json::to_string(&Item::of(&view, &projects)).unwrap();
         assert_eq!(written, item(&view, &projects).to_string());
+        assert!(!written.contains("shortlist_rank"), "{written}");
     }
 }

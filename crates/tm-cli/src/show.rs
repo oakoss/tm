@@ -59,22 +59,27 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
             .collect();
         let comments = store.comments(id)?;
         let children = count_children(store.scheme(), &store.children(id)?);
+        let membership = membership(store, &view)?;
         Ok::<_, CliError>((
             view,
             project,
             parent,
             (claim, now_ms),
             links,
-            (comments, children),
+            (comments, children, membership),
         ))
     })?;
-    let (comments, children) = below;
+    let (comments, children, membership) = below;
+    let mut fields = view.fields.clone();
+    fields.remove("shortlist");
+    fields.remove("shortlist_rank");
     let data = json!({
         "id": view.id,
         "key": view.key,
         "project": project,
         "category": view.category,
-        "fields": view.fields,
+        "fields": fields,
+        "shortlist": membership.as_ref().map(Membership::json),
         "sets": view.sets,
         "parent": parent,
         "claim": claim.as_ref().and_then(ClaimState::held).map(|held| claim_json(held, now_ms)),
@@ -105,11 +110,10 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         .and_then(Value::as_str)
         .unwrap_or("");
     let mut text = format!("{name}  {}\n", printable(title));
-    for (field, value) in &view.fields {
-        if field != "title" {
-            write_field(&mut text, store, field, value, parent.as_ref());
-        }
+    for (field, value) in fields.iter().filter(|(field, _)| *field != "title") {
+        write_field(&mut text, store, field, value, parent.as_ref());
     }
+    text.extend(membership.as_ref().map(Membership::line));
     for (field, members) in &view.sets {
         let shown: Vec<String> = members.values().map(|member| printable(member)).collect();
         let _ = writeln!(text, "{field}: {}", shown.join(", "));
@@ -125,6 +129,57 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         write_comment(&mut text, comment);
     }
     Ok(Output::new(text, data))
+}
+
+/// The Short-list an Issue is on, by name and place; its id and rank are
+/// not shown (ADR 0016).
+struct Membership {
+    id: Uuid,
+    name: Option<String>,
+    position: usize,
+    count: usize,
+}
+
+impl Membership {
+    fn json(&self) -> Value {
+        json!({
+            "id": self.id,
+            "name": self.name,
+            "position": self.position,
+            "count": self.count,
+        })
+    }
+
+    fn line(&self) -> String {
+        let name = printable(self.name.as_deref().unwrap_or("(unnamed)"));
+        let (position, count) = (self.position, self.count);
+        format!("shortlist: {name} (position {position} of {count})\n")
+    }
+}
+
+/// The list `view` is on and its place there.
+fn membership(store: &Store, view: &IssueView) -> Result<Option<Membership>, CliError> {
+    let Some(id) = view
+        .fields
+        .get("shortlist")
+        .and_then(Value::as_str)
+        .and_then(|id| Uuid::parse_str(id).ok())
+    else {
+        return Ok(None);
+    };
+    let Some(list) = store.shortlist(id)?.filter(|list| !list.deleted) else {
+        return Ok(None);
+    };
+    let members = store.shortlist_members(id)?;
+    let Some(index) = members.iter().position(|member| *member == view.id) else {
+        return Ok(None);
+    };
+    Ok(Some(Membership {
+        id,
+        name: list.name,
+        position: index + 1,
+        count: members.len(),
+    }))
 }
 
 fn write_claim(text: &mut String, state: Option<&ClaimState>, view: &IssueView, now_ms: i64) {
