@@ -1,10 +1,12 @@
 # tm build plan
 
-Ordered phases for building what [design.md](../specs/design.md) describes. Each phase ends in something usable and is done when its checks pass. Work is tracked in beads until the switch milestone, then in `tm` itself.
+Ordered phases for building what [design.md](../specs/design.md) describes. Each phase ends in something usable and is done when its checks pass. Each phase's work is tracked in `tm` under an epic of its own ([task-tracking.md](task-tracking.md)).
 
 ## Phase 1: core store and CLI
 
-- Monorepo scaffold: Cargo workspace with `tm-core`, `tm-store`, `tm-sync`, `tm-server`, `tm-tui` (internal, `publish = false`) and `tm-cli` (empty where not yet needed); bundled SQLite; the repo infrastructure copied from oakum (mise tasks, pinned toolchain, lints, cargo-deny, formatters, lefthook, cog, CI with a CI Summary gate on macOS and Linux, Renovate, contributing pages). The full list is in the design notes of bead `tm-u8g.1`.
+Its checks passed on 2026-10-20, with the switch below; follow-ups found since are under `TM-72`.
+
+- Monorepo scaffold: Cargo workspace with `tm-core`, `tm-store`, `tm-sync`, `tm-server`, `tm-tui` (internal, `publish = false`) and `tm-cli` (empty where not yet needed); bundled SQLite; the repo infrastructure copied from oakum (mise tasks, pinned toolchain, lints, cargo-deny, formatters, lefthook, cog, CI with a CI Summary gate on macOS and Linux, Renovate, contributing pages). The full list is in the description of `TM-2`.
 - Snapshot tests (insta) for `--json` output, and a `clippy.toml` I/O tripwire keeping `tm-core` free of I/O, once those crates have code.
 - Operation log as the source of truth, table projections in the same transaction, `tm rebuild` ([ADR 0005](../decisions/0005-operation-log-is-the-source-of-truth.md)). Settle and document the per-field merge rule and operation versioning now, though sync comes later.
 - Invariants: unique operation IDs, deterministic link keys, Keys never reused, take-only-if-unclaimed.
@@ -26,15 +28,11 @@ Done when:
 
 ### Switch milestone: move this project from beads to tm
 
-When Phase 1's checks pass:
-
-1. Run `bd export | tm import --from beads - --dry-run` to see what tm does not keep, then `bd export | tm import --from beads -`, and check counts, dependencies and statuses against `bd list --json --all --limit 0`, since plain `bd list` hides closed Issues.
-2. Freeze the beads data as a backup; do not delete it.
-3. Track all further work in `tm`, with agents using `tm prime` at session start.
-4. Run `tm export` daily into a dated file until the store has gone a month without data problems.
-5. If `tm` loses or corrupts data, fall back to beads, fix the cause, and re-import.
+Done on 2026-10-20: beads' Issues were imported with `tm import --from beads`, checked against `bd list --json --all --limit 0`, and frozen as a backup. Work has been tracked in `tm` since, and the first write of each day backs the Workspace up ([ADR 0015](../decisions/0015-the-first-write-of-each-day-backs-up-its-workspace.md)). Until the store has gone a month without data problems, around 2026-11-20, beads stays the fallback: if `tm` loses or corrupts data, go back to beads, fix the cause, and import again ([task-tracking.md](task-tracking.md)). After that the backup leaves the repo (`TM-74`).
 
 ## Phase 2: TUI first screens
+
+Not started; Phase 3 (`TM-71`) was started ahead of it, with Short-lists (`TM-59`).
 
 Issue list with filters, Issue detail with history, Triage, Board, ready queue. Views defined in config.
 

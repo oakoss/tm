@@ -11,6 +11,7 @@ Agents start from `tm prime`, which the `SessionStart` hook in `.claude/settings
 ## Shape
 
 - One epic per build phase; only the current phase is filed. Later phases stay in the build plan until they are next.
+- Follow-ups found in daily use that belong to no phase, such as small bugs and polish, go under a standing epic, `TM-72`, and are picked up between phases.
 - Tasks are ordered by `blocks` Links, so `tm ready` gives the next task in order, and carry acceptance criteria from the build plan's checks in their description.
 - No labels yet, apart from the `beads-*` ones the import added. Add them only when a real need appears.
 

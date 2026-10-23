@@ -14,7 +14,7 @@
 
 ## Project defaults
 
-- Work is tracked in `tm` itself, Project `TM`; Phase 1 is epic `TM-1`. Run `tm ready` for the next task. Setup, flow and the frozen beads backup: [docs/contributing/task-tracking.md](docs/contributing/task-tracking.md).
+- Work is tracked in `tm` itself, Project `TM`. Run `tm ready` for the next task. Setup, flow and the frozen beads backup: [docs/contributing/task-tracking.md](docs/contributing/task-tracking.md).
 - Commit messages: `type(scope): summary`. Branches: `<type>/tm-<n>-<theme>`, for Issue `TM-n`. Details: [docs/contributing/conventions.md](docs/contributing/conventions.md).
 
 ## More detail
