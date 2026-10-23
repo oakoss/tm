@@ -157,6 +157,9 @@ fn an_agent_claims_with_a_token_and_releases_with_it() {
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(doc(&out)["error"], "already_claimed", "{out:?}");
     assert_eq!(doc(&out)["agent"], "claude");
+    assert_eq!(doc(&out)["key"], "TM-1");
+    let message = doc(&out)["message"].as_str().unwrap().to_owned();
+    assert!(message.starts_with("Issue TM-1 is held by "), "{message}");
     assert!(
         !text(&out.stdout).contains(&token),
         "an error never hands out the holder's token: {out:?}"
@@ -168,6 +171,9 @@ fn an_agent_claims_with_a_token_and_releases_with_it() {
         &["--json", "release", "TM-1", &Uuid::now_v7().to_string()],
     );
     assert_eq!(doc(&out)["error"], "not_claim_holder", "{out:?}");
+    assert_eq!(doc(&out)["key"], "TM-1");
+    let message = doc(&out)["message"].as_str().unwrap().to_owned();
+    assert!(message.contains(" does not hold Issue TM-1; "), "{message}");
     assert_eq!(doc(&out)["holder"]["agent"], "claude", "{out:?}");
     assert_eq!(doc(&out)["holder"]["state"], "holds", "{out:?}");
     assert!(
@@ -716,6 +722,7 @@ fn the_holder_or_the_human_it_is_held_for_releases_without_the_token() {
     assert_eq!(refused["error"], "not_claim_holder", "{out:?}");
     assert_eq!(refused["message"], "TM-1 is unclaimed");
     assert!(refused["issue"].is_string(), "{out:?}");
+    assert_eq!(refused["key"], "TM-1", "{out:?}");
 
     assert!(
         as_agent(&scratch, &repo, &["claim", "TM-1"])
@@ -730,6 +737,7 @@ fn the_holder_or_the_human_it_is_held_for_releases_without_the_token() {
         "TM-1 is held by claude for jace, so name its Claim to release it"
     );
     assert_eq!(refused["fix"], "tm release TM-1 <claim>");
+    assert_eq!(refused["key"], "TM-1", "{out:?}");
     let out = as_agent(&scratch, &repo, &["release", "TM-1"]);
     assert_eq!(text(&out.stdout), "released TM-1\n", "{out:?}");
 

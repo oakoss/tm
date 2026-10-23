@@ -127,7 +127,7 @@ pub(crate) fn apply(
             issue_project(tx, op.subject)?.ok_or(StoreError::UnknownIssue(op.subject))?;
         if expected != op.project {
             return Err(StoreError::ProjectMismatch {
-                issue: op.subject,
+                issue: op.subject.into(),
                 expected,
                 found: op.project,
             });

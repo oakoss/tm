@@ -7,8 +7,8 @@ use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, TempDir, draft, field, insert_acked, jace, new_issue, open, remote_op, scheme,
-    set_field,
+    ManualClock, TempDir, draft, field, insert_acked, jace, key, new_issue, open, remote_op,
+    scheme, set_field,
 };
 use crate::support::{OTHER, PROJECT};
 
@@ -214,7 +214,10 @@ fn a_parent_that_closes_a_cycle_is_refused() {
         panic!("{err}");
     };
     assert_eq!(relation, "parent");
-    assert_eq!(path, [a, c, b, a]);
+    let ids: Vec<Uuid> = path.iter().map(|issue| issue.id).collect();
+    assert_eq!(ids, [a, c, b, a]);
+    let named: Vec<String> = path.iter().map(ToString::to_string).collect();
+    assert_eq!(named, [a, c, b, a].map(|id| key(&store, id)), "by Key");
     assert_eq!(field(&store, a, "parent"), None);
     set(&mut store, a, "parent", json!(d.to_string())).unwrap();
     set(&mut store, c, "parent", json!(d.to_string())).unwrap();
@@ -232,7 +235,8 @@ fn a_parent_cycle_built_within_one_batch_is_refused() {
         ])
         .unwrap_err();
     assert!(
-        matches!(&err, StoreError::Cycle { path, .. } if *path == [a, b, a]),
+        matches!(&err, StoreError::Cycle { path, .. }
+            if path.iter().map(|issue| issue.id).eq([a, b, a])),
         "{err}"
     );
     assert_eq!(field(&store, b, "parent"), None, "the batch rolled back");
@@ -310,10 +314,11 @@ fn every_required_field_is_enforced() {
     let err = store
         .create_issue(&jace(), PROJECT, "task", "t")
         .unwrap_err();
-    let StoreError::MissingFields { fields, .. } = err else {
+    let StoreError::MissingFields { issue, fields } = err else {
         panic!("{err}");
     };
     assert_eq!(fields, ["team"]);
+    assert_eq!(issue.key, None, "a refused create is given no Key");
 }
 
 #[test]

@@ -283,9 +283,17 @@ impl Store {
             })
         };
         let (issue, created, planned) = plan(&self.conn)?;
-        let batch = self.write_plan(&planned, issue, |conn| {
-            plan(conn).map(|(again, _, plan)| (again == issue).then_some(plan))
-        })?;
+        let batch = self
+            .write_plan(&planned, issue, |conn| {
+                plan(conn).map(|(again, _, plan)| (again == issue).then_some(plan))
+            })
+            .map_err(|cause| {
+                if created {
+                    cause.sourced(issue, &record.source)
+                } else {
+                    cause
+                }
+            })?;
         Ok(RecordOutcome {
             line,
             source: record.source.clone(),
@@ -345,7 +353,7 @@ impl Store {
             if again(tx)?.as_ref() == Some(planned) {
                 Ok(())
             } else {
-                Err(StoreError::ImportChanged(issue))
+                Err(StoreError::ImportChanged(issue.into()))
             }
         })?;
         Ok(ops.first().map(|op| op.op_id))
@@ -353,12 +361,20 @@ impl Store {
 }
 
 /// `done` is the Projects' batches and the records' outcomes written so far.
+/// An Issue the import created is named by its record, so a refusal reads the
+/// same whether the import ran or was a dry run.
 fn refused(
     line: usize,
     record: &str,
     cause: StoreError,
     (projects, records): (&[Uuid], &[RecordOutcome]),
 ) -> StoreError {
+    let cause = records
+        .iter()
+        .filter(|outcome| outcome.created)
+        .fold(cause, |cause, outcome| {
+            cause.sourced(outcome.issue, &outcome.source)
+        });
     let records = records.iter().flat_map(|outcome| outcome.batches.iter());
     StoreError::RecordRefused {
         line,

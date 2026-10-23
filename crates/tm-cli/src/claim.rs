@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 use serde_json::json;
 use tm_core::Actor;
-use tm_store::{Claim, IssueView, StoreError};
+use tm_store::{Claim, IssueView, Named, StoreError};
 use uuid::Uuid;
 
 use crate::error::CliError;
@@ -356,13 +356,20 @@ fn own_claim(here: &Here, issue: Uuid, writer: &Actor, reference: &str) -> Resul
                 holder(&held)
             ),
         )
-        .with("issue", issue.to_string())
+        .issue(named(here, issue)?)
         .fix(format!("tm release {reference} <claim>"))),
         None => Err(
             CliError::new("not_claim_holder", format!("{reference} is unclaimed"))
-                .with("issue", issue.to_string()),
+                .issue(named(here, issue)?),
         ),
     }
+}
+
+fn named(here: &Here, issue: Uuid) -> Result<Named, CliError> {
+    Ok(Named {
+        key: key(here, issue)?,
+        ..issue.into()
+    })
 }
 
 fn key(here: &Here, issue: Uuid) -> Result<Option<String>, CliError> {

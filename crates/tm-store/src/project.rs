@@ -186,6 +186,19 @@ pub(crate) fn record_key(
     Ok(None)
 }
 
+/// The Key `tm show` gives `issue`, if it has one.
+pub(crate) fn key_of(conn: &Connection, issue: Uuid) -> Result<Option<String>, StoreError> {
+    Ok(conn
+        .query_row(
+            // Without fresh statistics the planner scans keys instead.
+            "SELECT key FROM keys INDEXED BY keys_by_issue
+             WHERE provisional = 0 AND issue_id = ?1",
+            [issue.as_bytes()],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
 /// The Issue holding `number` in `project`, whichever of its keys it was
 /// written with.
 pub(crate) fn issue_by_number(

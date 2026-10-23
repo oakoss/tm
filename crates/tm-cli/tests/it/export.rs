@@ -543,6 +543,67 @@ fn a_refused_records_file_says_what_stays_and_prints_escaped() {
 }
 
 #[test]
+fn a_refused_import_names_the_issues_it_created_by_their_records() {
+    let scratch = Scratch::new();
+    let (repo, _store, _) = initialized(&scratch);
+    let record = |source: &str, parent: &str| {
+        json!({
+            "_type": "issue", "source": source, "project": "TM", "type": "task",
+            "title": "t", "status": "todo", "parent": parent,
+        })
+        .to_string()
+    };
+    let cycle = scratch.0.join("cycle.jsonl");
+    fs::write(
+        &cycle,
+        [record("b:1", "b:2"), record("b:2", "b:1")].join("\n"),
+    )
+    .unwrap();
+    let cycle = cycle.to_str().unwrap();
+
+    // A dry run's copy gives out Keys that name nothing once it is gone.
+    let dry = tm(
+        &scratch,
+        &repo,
+        &["--json", "import", "--records", cycle, "--dry-run"],
+    );
+    let refused = doc(&dry);
+    assert_eq!(refused["error"], "cycle", "{refused}");
+    assert_eq!(refused["keys"], json!([null, null, null]));
+    assert_eq!(refused["sources"], json!(["b:2", "b:1", "b:2"]));
+    let message = refused["message"].as_str().unwrap();
+    assert!(
+        message.starts_with(
+            "line 2 of the import, b:2: parent would close a cycle: b:2 -> b:1 -> b:2;"
+        ),
+        "{message}"
+    );
+    let shown = tm(&scratch, &repo, &["show", "TM-1"]);
+    assert!(!shown.status.success(), "{shown:?}");
+
+    // The import itself names them the same way, though their Keys stay.
+    let ran = tm(&scratch, &repo, &["--json", "import", "--records", cycle]);
+    assert_eq!(doc(&ran)["sources"], refused["sources"], "{ran:?}");
+    let shown = tm(&scratch, &repo, &["show", "TM-1"]);
+    assert!(shown.status.success(), "{shown:?}");
+
+    let untitled = scratch.0.join("untitled.jsonl");
+    let record = json!({
+        "_type": "issue", "source": "b:3", "project": "TM", "type": "task", "status": "todo",
+    });
+    fs::write(&untitled, record.to_string()).unwrap();
+    let out = tm(
+        &scratch,
+        &repo,
+        &["--json", "import", "--records", untitled.to_str().unwrap()],
+    );
+    let refused = doc(&out);
+    assert_eq!(refused["error"], "missing_fields", "{refused}");
+    assert_eq!(refused["key"], Value::Null);
+    assert_eq!(refused["source"], "b:3");
+}
+
+#[test]
 fn outside_a_repo_import_makes_the_workspace_and_rebuild_replays_it() {
     let scratch = Scratch::new();
     let (repo, file) = exported(&scratch);

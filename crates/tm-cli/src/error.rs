@@ -9,7 +9,7 @@ use tm_core::OpError;
 use tm_core::filter::FilterError;
 use tm_core::op::{CURRENT_VERSION, MAX_PAYLOAD_BYTES};
 use tm_store::workspace::WorkspaceError;
-use tm_store::{Claim, ClaimState, Holder, StoreError};
+use tm_store::{Claim, ClaimState, Holder, Named, StoreError};
 use uuid::Uuid;
 
 /// Keys the document itself uses, which details never take.
@@ -81,6 +81,15 @@ impl CliError {
         self
     }
 
+    /// The Issue an error names: its id, and its Key or import record when
+    /// the message names it by one.
+    #[must_use]
+    pub(crate) fn issue(self, issue: Named) -> Self {
+        self.with("issue", issue.id.to_string())
+            .with("key", issue.key)
+            .with("source", issue.source)
+    }
+
     pub(crate) fn internal(cause: &str, message: impl Into<String>) -> Self {
         Self::new("internal", message).with("cause", cause)
     }
@@ -112,16 +121,16 @@ impl CliError {
 // retried with a token an error gave would take or free another session's
 // Claim. `tm show` gives the token to whoever asks for it.
 impl CliError {
-    fn already_claimed(message: String, issue: Uuid, holder: &Claim) -> Self {
+    fn already_claimed(message: String, issue: Named, holder: &Claim) -> Self {
         Self::new("already_claimed", message)
-            .with("issue", issue.to_string())
+            .issue(issue)
             .with("agent", holder.agent.clone())
             .with("on_behalf_of", holder.on_behalf_of.clone())
             .with("expires_ms", holder.expires_ms)
             .with("session", holder.session.clone())
     }
 
-    fn not_claim_holder(message: String, issue: Uuid, claim: Uuid, holder: &Holder) -> Self {
+    fn not_claim_holder(message: String, issue: Named, claim: Uuid, holder: &Holder) -> Self {
         let held = match holder {
             Holder::Unclaimed => None,
             Holder::Current(state) => Some(match &**state {
@@ -131,7 +140,7 @@ impl CliError {
             Holder::TookOver(held) => Some((&**held, "took_over")),
         };
         Self::new("not_claim_holder", message)
-            .with("issue", issue.to_string())
+            .issue(issue)
             .with("claim", claim.to_string())
             .with(
                 "holder",
@@ -175,22 +184,27 @@ impl CliError {
 
     /// An Issue another writer changed under this write, which a retry reads
     /// again.
-    fn changed(code: &'static str, message: String, issue: Uuid) -> Self {
-        Self::new(code, message)
-            .with("issue", issue.to_string())
-            .fix("retry")
+    fn changed(code: &'static str, message: String, issue: Named) -> Self {
+        Self::new(code, message).issue(issue).fix("retry")
     }
 
-    fn missing_fields(message: String, issue: Uuid, fields: Vec<String>) -> Self {
-        Self::new("missing_fields", message)
-            .with("issue", issue.to_string())
-            .with(
-                "fields",
-                fields
-                    .into_iter()
-                    .map(|name| json!({ "name": name }))
-                    .collect::<Vec<_>>(),
-            )
+    fn not_linked(message: String, link_type: String, from: Named, to: Named) -> Self {
+        Self::new("not_linked", message)
+            .with("type", link_type)
+            .with("from", from.id.to_string())
+            .with("from_key", from.key)
+            .with("to", to.id.to_string())
+            .with("to_key", to.key)
+    }
+
+    fn missing_fields(message: String, issue: Named, fields: Vec<String>) -> Self {
+        Self::new("missing_fields", message).issue(issue).with(
+            "fields",
+            fields
+                .into_iter()
+                .map(|name| json!({ "name": name }))
+                .collect::<Vec<_>>(),
+        )
     }
 
     /// A store, or an export, this command cannot use as it is.
@@ -284,9 +298,17 @@ impl From<StoreError> for CliError {
                 .with("field", field)
                 .with("reason", reason)
                 .with("allowed", valid),
-            StoreError::Cycle { relation, path } => Self::new("cycle", message)
-                .with("relation", relation)
-                .with("path", ids(&path)),
+            StoreError::Cycle { relation, path } => {
+                let (path, (keys, sources)): (Vec<_>, (Vec<_>, Vec<_>)) = path
+                    .into_iter()
+                    .map(|issue| (issue.id.to_string(), (issue.key, issue.source)))
+                    .unzip();
+                Self::new("cycle", message)
+                    .with("relation", relation)
+                    .with("path", path)
+                    .with("keys", keys)
+                    .with("sources", sources)
+            }
             StoreError::NoAgent { actor } => Self::new("no_agent", message).with("actor", actor),
             StoreError::UnknownBatch(batch) => Self::new("not_found", message)
                 .with("kind", "batch")
@@ -301,10 +323,7 @@ impl From<StoreError> for CliError {
                 link_type,
                 from,
                 to,
-            } => Self::new("not_linked", message)
-                .with("type", link_type)
-                .with("from", from.to_string())
-                .with("to", to.to_string()),
+            } => Self::not_linked(message, link_type, *from, *to),
             StoreError::AlreadyClaimed { issue, holder } => {
                 Self::already_claimed(message, issue, &holder)
             }
@@ -429,10 +448,6 @@ impl From<WorkspaceError> for CliError {
             WorkspaceError::Store(err) => Self::from(err),
         }
     }
-}
-
-fn ids(ids: &[uuid::Uuid]) -> Vec<String> {
-    ids.iter().map(ToString::to_string).collect()
 }
 
 /// The variant's name, for `internal`'s `cause`.
