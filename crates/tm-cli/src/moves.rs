@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use tm_core::op::ClaimAction;
 use tm_core::scheme::{Category, Workflow};
 use tm_core::{Actor, Change, Op, ProjectId};
-use tm_store::{Draft, IssueView, StoreError};
+use tm_store::{ClaimState, Draft, IssueView, Named, StoreError};
 use uuid::Uuid;
 
 use crate::edit::{self, Changed};
@@ -34,12 +34,23 @@ pub(crate) fn field_value(pair: &str) -> Result<(String, String), String> {
     }
 }
 
-pub(crate) fn run(
-    reference: &str,
-    target: &str,
-    set: &[(String, String)],
-) -> Result<Output, CliError> {
-    here::write(|here| write(here, reference, target, set))
+#[derive(clap::Args)]
+pub(crate) struct Move {
+    /// The Issue's Key or full id.
+    issue: String,
+    /// The Status, by id or label, such as `in_progress` or "In Review".
+    status: String,
+    /// Set a field in the same write, such as assignee=jace.
+    #[arg(long, value_name = "FIELD=VALUE", value_parser = field_value)]
+    set: Vec<(String, String)>,
+    /// Finish an Issue another Agent session holds a live Claim on, ending
+    /// that Claim; only once that session has stopped work on it.
+    #[arg(long)]
+    force: bool,
+}
+
+pub(crate) fn run(args: &Move) -> Result<Output, CliError> {
+    here::write(|here| write(here, &args.issue, &args.status, &args.set, args.force))
 }
 
 fn write(
@@ -47,6 +58,7 @@ fn write(
     reference: &str,
     target: &str,
     fields: &[(String, String)],
+    force: bool,
 ) -> Result<(Output, Vec<String>), CliError> {
     let mut given = BTreeSet::new();
     for (field, _) in fields {
@@ -112,7 +124,8 @@ fn write(
     } else if !finished {
         (here.store.append_all(drafts())?, Starts::default())
     } else {
-        let ops = finish(here, &identity.actor, (view.project, id), drafts)?;
+        let ops = finish(here, &identity.actor, (view.project, id), drafts, !force)
+            .map_err(held_elsewhere)?;
         (ops, Starts::default())
     };
     let mut shown = show::render(here, id)?;
@@ -122,32 +135,63 @@ fn write(
     Ok((output, identity.warnings))
 }
 
+/// A finish refused for another session's Claim says what overrides it, in
+/// the message and never as a `fix`, so it is not run by rote.
+fn held_elsewhere(err: StoreError) -> CliError {
+    let refused = matches!(err, StoreError::AlreadyClaimed { .. });
+    let mut err = CliError::from(err);
+    if refused {
+        err.message
+            .push_str("; finishing it would end that Claim, which tm move --force does");
+    }
+    err
+}
+
 /// Writes `drafts` for a move of `issue` into done or cancelled, releasing
-/// its Claim in the same batch.
+/// its Claim in the same batch. With `guarded`, an Agent's move is refused
+/// with [`StoreError::AlreadyClaimed`] while another session holds a live
+/// Claim (ADR 0009).
 pub(crate) fn finish(
     here: &mut Here,
     actor: &Actor,
     (project, issue): (ProjectId, Uuid),
     drafts: impl Fn() -> Vec<Draft>,
+    guarded: bool,
 ) -> Result<Vec<Op>, StoreError> {
     let mut tries = 0;
     loop {
         let mut drafts = drafts();
+        let state = here.store.claim_state(issue)?;
+        if guarded
+            && actor.is_agent()
+            && let Some(ClaimState::Held(holder)) = &state
+            && !holder.taken_by(actor)
+        {
+            let key = here.store.issue(issue)?.and_then(|view| view.key);
+            return Err(StoreError::AlreadyClaimed {
+                issue: Named {
+                    key,
+                    ..issue.into()
+                },
+                holder: Box::new(holder.clone()),
+            });
+        }
         // The release names the Claim read here, so the write refuses one
-        // that was claimed or released since and the move reads it again.
-        // A lapsed Claim is released too, so finished work holds none.
-        let held = here.store.claim_state(issue)?.map(|state| state.claim().id);
-        if let Some(claim) = held {
+        // that was taken, renewed or released since, and the move reads it
+        // and judges it again. A lapsed Claim is released too, so finished
+        // work holds none.
+        let held = state.map(|state| state.claim().clone());
+        if let Some(claim) = &held {
             drafts.push(Draft {
                 actor: actor.clone(),
                 project,
                 subject: issue,
                 change: Change::Claim {
-                    action: ClaimAction::Release { claim },
+                    action: ClaimAction::Release { claim: claim.id },
                 },
             });
         }
-        match here.store.append_if_claim(drafts, issue, held) {
+        match here.store.append_if_claim(drafts, issue, held.as_ref()) {
             Err(StoreError::ClaimChanged(_)) if tries < MOVE_TRIES => tries += 1,
             written => break written,
         }

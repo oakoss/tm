@@ -2,13 +2,14 @@
 //! done, with a comment naming where they shipped.
 
 use std::path::Path;
+use std::process::Stdio;
 
 use serde_json::{Value, json};
 use tm_core::{Actor, Change, ProjectId};
 use tm_store::{Draft, Store};
 use uuid::Uuid;
 
-use crate::support::{Scratch, git, initialized, text, tm};
+use crate::support::{Scratch, git, initialized, text, tm, tm_command};
 
 fn set(store: &mut Store, project: ProjectId, issue: Uuid, field: &str, value: Value) {
     store
@@ -130,6 +131,37 @@ fn closes_lines_on_the_default_branch_move_their_issues_to_done() {
     commit(&scratch, &repo, "fix: really (#11)", "Closes TM-1");
     let doc = scan(&scratch, &repo);
     assert_eq!(doc["data"]["moved"][0]["pr"], 11, "a new Closes line");
+}
+
+#[test]
+fn an_agents_scan_finishes_an_issue_another_agent_holds() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let jace = Actor::human("jace");
+    let issue = store
+        .create_issue(&jace, project, "task", "held")
+        .unwrap()
+        .0;
+    store
+        .take(&Actor::agent("claude", "jace"), issue, None)
+        .unwrap();
+    commit(&scratch, &repo, "feat: held (#3)", "Closes TM-1");
+
+    let out = tm_command()
+        .args(["--json", "git", "scan"])
+        .current_dir(&repo)
+        .env("TM_HOME", scratch.home())
+        .env("TM_ACTOR", "jace")
+        .env("TM_AGENT", "codex")
+        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let held = show(&scratch, &repo, "TM-1");
+    assert_eq!(held["fields"]["status"], "done");
+    assert_eq!(held["claim"], Value::Null, "a merged Closes line ends it");
 }
 
 #[test]

@@ -217,15 +217,7 @@ enum Command {
     /// that closes the parent, and reopening a child of a finished parent
     /// the move that reopens it; tm leaves both to you. It prints a line per
     /// change; `tm show` or `--json` gives the whole Issue.
-    Move {
-        /// The Issue's Key or full id.
-        issue: String,
-        /// The Status, by id or label, such as `in_progress` or "In Review".
-        status: String,
-        /// Set a field in the same write, such as assignee=jace.
-        #[arg(long, value_name = "FIELD=VALUE", value_parser = moves::field_value)]
-        set: Vec<(String, String)>,
-    },
+    Move(moves::Move),
     /// Print the context an Agent session starts from, for a `SessionStart` hook.
     Prime,
     /// Print how to work with tm: finding, starting, recording and finishing
@@ -449,7 +441,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Link { words }) => link::run(&words, true),
         Some(Command::Unlink { words }) => link::run(&words, false),
         Some(Command::List { filter, limit, all }) => list::run(&filter, limit, all, json),
-        Some(Command::Move { issue, status, set }) => moves::run(&issue, &status, &set),
+        Some(Command::Move(args)) => moves::run(&args),
         Some(Command::Prime) => prime::run(json),
         Some(Command::Guide) => Ok(guide::run()),
         Some(Command::Ready { limit }) => ready::run(limit, json),
