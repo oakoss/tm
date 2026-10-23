@@ -24,7 +24,9 @@ fn add(
     ids: &[Uuid],
     at: Place,
 ) -> Result<Vec<tm_core::Op>, StoreError> {
-    store.shortlist_add(&jace(), list, ids, at)
+    store
+        .shortlist_add(&jace(), list, ids, at)
+        .map(|placed| placed.ops)
 }
 
 fn members(store: &Store, list: Uuid) -> Vec<Uuid> {
@@ -66,8 +68,9 @@ fn a_command_is_one_batch_and_one_undo() {
     assert_eq!(members(&store, docs), Vec::<Uuid>::new());
     add(&mut store, docs, &ids, Place::End).unwrap();
     let removed = store.shortlist_remove(&jace(), &ids[..2]).unwrap();
+    assert_eq!(removed.from, [(ids[0], docs), (ids[1], docs)]);
     assert_eq!(members(&store, docs), [ids[2]]);
-    store.undo(&jace(), removed[0].op_id).unwrap();
+    store.undo(&jace(), removed.ops[0].op_id).unwrap();
     assert_eq!(members(&store, docs), ids);
 }
 

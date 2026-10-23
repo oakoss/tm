@@ -3,6 +3,7 @@
 //! inside its write so a concurrent write cannot change what it read.
 
 use rusqlite::Connection;
+use serde::Serialize;
 use serde_json::{Value, json};
 use tm_core::filter::{Context, parse, resolve};
 use tm_core::link::BLOCKS;
@@ -23,7 +24,101 @@ pub enum Place {
     After(Uuid),
 }
 
+/// Why `tm next` passes over a member: it stays on the list, marked
+/// (ADR 0016).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PassedOver {
+    Blocked,
+    Claimed,
+    Started,
+    Archived,
+    Epic,
+    Triage,
+}
+
+/// A batch that placed Issues or took them off, with the list each was on as
+/// `(issue, list)`, read inside the write so a concurrent write cannot change
+/// it. An add leaves out Issues already on the list it places them on.
+#[derive(Debug, Clone, Default)]
+pub struct Placed {
+    pub ops: Vec<Op>,
+    pub from: Vec<(Uuid, Uuid)>,
+}
+
+/// A Short-list member as read, in the list's order.
+#[derive(Debug, Clone)]
+pub struct Member {
+    pub issue: IssueView,
+    /// Empty when `tm next` could take it.
+    pub passed_over: Vec<PassedOver>,
+}
+
 impl Store {
+    /// The live lists in `project` that `actor` works through, oldest first:
+    /// an Agent's name matches that Agent whoever it acts for, and a human's
+    /// matches that human (ADR 0016).
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
+    pub fn shortlists_of(
+        &self,
+        project: ProjectId,
+        actor: &Actor,
+    ) -> Result<Vec<Shortlist>, StoreError> {
+        let name = tm_core::shortlist::actor_key(actor.name());
+        Ok(self
+            .shortlists(project)?
+            .into_iter()
+            .filter(|list| list.actors.contains(&name))
+            .collect())
+    }
+
+    /// `list`'s members in order, each with why `tm next` would pass it over.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Clock`], any SQLite failure, or [`StoreError::Corrupt`]
+    /// for a malformed row.
+    pub fn shortlist_view(&self, list: Uuid) -> Result<Vec<Member>, StoreError> {
+        let now_ms = self.utc_ms()?;
+        self.read(|store| {
+            let order: Vec<Uuid> = ranked(&store.conn, list)?
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            let views = store.issues(&order)?;
+            let blocks = open_blocks(&store.conn, &store.scheme)?;
+            let mut members = Vec::with_capacity(views.len());
+            for view in views {
+                let mut passed_over = Vec::new();
+                if blocks.iter().any(|(_, blocked)| *blocked == view.id) {
+                    passed_over.push(PassedOver::Blocked);
+                }
+                let claim = crate::claim::current(&store.conn, view.id)?;
+                if claim.is_some_and(|claim| !claim.lapsed(now_ms)) {
+                    passed_over.push(PassedOver::Claimed);
+                }
+                match view.category {
+                    Some(Category::Active) => passed_over.push(PassedOver::Started),
+                    Some(Category::Triage) | None => passed_over.push(PassedOver::Triage),
+                    Some(Category::Todo | Category::Done | Category::Cancelled) => {}
+                }
+                if view.fields.get("archived") == Some(&json!(true)) {
+                    passed_over.push(PassedOver::Archived);
+                }
+                if view.fields.get("type").and_then(Value::as_str) == Some("epic") {
+                    passed_over.push(PassedOver::Epic);
+                }
+                members.push(Member {
+                    issue: view,
+                    passed_over,
+                });
+            }
+            Ok(members)
+        })
+    }
     /// The live Short-list in `project` named `name`, compared without case.
     ///
     /// # Errors
@@ -66,17 +161,27 @@ impl Store {
         list: Uuid,
         issues: &[Uuid],
         at: Place,
-    ) -> Result<Vec<Op>, StoreError> {
+    ) -> Result<Placed, StoreError> {
         let (scheme, writer) = (self.scheme.clone(), actor.clone());
-        self.append_with(
+        let mut from = Vec::new();
+        let ops = self.append_with(
             Vec::new(),
             |tx, _| {
                 let list = live(tx, list)?;
-                placing(tx, &scheme, &writer, &list, issues, at, true)
+                let drafts = placing(tx, &scheme, &writer, &list, issues, at, true)?;
+                for issue in distinct(issues) {
+                    match list_of(tx, &scheme, issue) {
+                        Ok(was) if was != list.id => from.push((issue, was)),
+                        Ok(_) | Err(StoreError::NotOnShortlist(_)) => {}
+                        Err(err) => return Err(err),
+                    }
+                }
+                Ok(drafts)
             },
             true,
             None,
-        )
+        )?;
+        Ok(Placed { ops, from })
     }
 
     /// Moves `issue` to `at` on the list it is on.
@@ -90,17 +195,20 @@ impl Store {
         actor: &Actor,
         issue: Uuid,
         at: Place,
-    ) -> Result<Vec<Op>, StoreError> {
+    ) -> Result<Placed, StoreError> {
         let (scheme, writer) = (self.scheme.clone(), actor.clone());
-        self.append_with(
+        let mut from = Vec::new();
+        let ops = self.append_with(
             Vec::new(),
             |tx, _| {
                 let list = live(tx, list_of(tx, &scheme, issue)?)?;
+                from.push((issue, list.id));
                 placing(tx, &scheme, &writer, &list, &[issue], at, false)
             },
             true,
             None,
-        )
+        )?;
+        Ok(Placed { ops, from })
     }
 
     /// Takes `issues` off their lists in one batch.
@@ -113,14 +221,15 @@ impl Store {
         &mut self,
         actor: &Actor,
         issues: &[Uuid],
-    ) -> Result<Vec<Op>, StoreError> {
+    ) -> Result<Placed, StoreError> {
         let (scheme, writer) = (self.scheme.clone(), actor.clone());
-        self.append_with(
+        let mut from = Vec::new();
+        let ops = self.append_with(
             Vec::new(),
             |tx, _| {
                 let mut drafts = Vec::new();
                 for issue in distinct(issues) {
-                    list_of(tx, &scheme, issue)?;
+                    from.push((issue, list_of(tx, &scheme, issue)?));
                     let project = view(tx, &scheme, issue)?.project;
                     for field in ["shortlist", "shortlist_rank"] {
                         drafts.push(draft(&writer, project, issue, field, Value::Null));
@@ -130,7 +239,8 @@ impl Store {
             },
             true,
             None,
-        )
+        )?;
+        Ok(Placed { ops, from })
     }
 }
 
@@ -259,22 +369,7 @@ fn blocker_order(
     placed: &[IssueView],
     off_list_refused: &[Uuid],
 ) -> Result<(), StoreError> {
-    let open = resolve(
-        &parse("-category:done,cancelled")?,
-        scheme,
-        Context { me: None },
-    )?;
-    let (sql, params) = query::blocks_from_open(&open, BLOCKS);
-    let mut stmt = conn.prepare(&sql)?;
-    let blocks = stmt
-        .query_map(rusqlite::params_from_iter(params), |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })?
-        .map(|pair| {
-            let (src, dst) = pair?;
-            Ok((uuid_from(&src)?, uuid_from(&dst)?))
-        })
-        .collect::<Result<Vec<_>, StoreError>>()?;
+    let blocks = open_blocks(conn, scheme)?;
     let index = |id: Uuid| order.iter().position(|member| *member == id);
     let refuse = |view: &IssueView, reason: String| StoreError::CannotJoin {
         issue: named(view),
@@ -306,6 +401,26 @@ fn blocker_order(
         }
     }
     Ok(())
+}
+
+/// `(blocker, blocked)` for each `blocks` Link whose blocker is open,
+/// whatever the Issue it blocks.
+fn open_blocks(conn: &Connection, scheme: &Scheme) -> Result<Vec<(Uuid, Uuid)>, StoreError> {
+    let open = resolve(
+        &parse("-category:done,cancelled")?,
+        scheme,
+        Context { me: None },
+    )?;
+    let (sql, params) = query::blocks_from_open(&open, BLOCKS);
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
+        Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+    })?;
+    rows.map(|pair| {
+        let (src, dst) = pair?;
+        Ok((uuid_from(&src)?, uuid_from(&dst)?))
+    })
+    .collect()
 }
 
 /// Ranks for `issues` placed at `at` among `rest`, or, with no rank left

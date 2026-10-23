@@ -46,7 +46,7 @@ pub use claim::{AgentClaims, Claim, ClaimState, Holder, TakenWith, short_session
 pub use export::{Exported, Restored, copy_store, read_export};
 pub use history::HistoryEntry;
 pub use import::{Conflict, RecordOutcome, RecordsImported};
-pub use membership::Place;
+pub use membership::{Member, PassedOver, Place, Placed};
 pub use read::{CommentView, Direction, IssueView, LinkView};
 pub use ready::Ready;
 pub use record::{CommentRecord, IssueRecord, LinkRecord, tm_source};

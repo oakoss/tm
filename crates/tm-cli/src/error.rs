@@ -194,7 +194,10 @@ impl CliError {
             StoreError::ShortlistNotFound(name) => Self::new("not_found", message)
                 .with("kind", "shortlist")
                 .with("name", name)
-                .fix("tm shortlist"),
+                .fix("tm shortlist --all"),
+            StoreError::UnknownShortlist(id) => {
+                Self::not_found("shortlist", &id, message).fix("tm shortlist --all")
+            }
             StoreError::ShortlistNameShared { name, count } => {
                 Self::new("shortlist_name_shared", message)
                     .with("name", name)
@@ -297,8 +300,8 @@ impl From<StoreError> for CliError {
             StoreError::Busy(_) => Self::new("busy", message).fix("retry"),
             StoreError::UnknownIssue(id) => Self::not_found("issue", &id, message),
             StoreError::UnknownProject(id) => Self::not_found("project", &id, message),
-            StoreError::UnknownShortlist(id) => Self::not_found("shortlist", &id, message),
-            err @ (StoreError::ShortlistNotFound(_)
+            err @ (StoreError::UnknownShortlist(_)
+            | StoreError::ShortlistNotFound(_)
             | StoreError::ShortlistNameShared { .. }
             | StoreError::ShortlistFull { .. }
             | StoreError::CannotJoin { .. }

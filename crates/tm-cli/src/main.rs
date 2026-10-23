@@ -27,6 +27,7 @@ mod prompt;
 mod ready;
 mod recover;
 mod scan;
+mod shortlist;
 mod show;
 mod start;
 mod undo;
@@ -233,6 +234,12 @@ enum Command {
     /// List who holds which Issue: every held Claim with its time left, and
     /// the lapsed ones another Agent may take.
     Claims,
+    /// Show your Short-lists, the ordered lists of what to do next, or with
+    /// a subcommand create and change them.
+    ///
+    /// A member that cannot be taken next stays on its list, marked with why:
+    /// blocked, claimed, started, archived, an epic or in triage.
+    Shortlist(shortlist::Shortlists),
     /// Show an Issue's fields and Claim.
     Show {
         /// The Issue's Key, such as CPL-42, or its full id.
@@ -446,6 +453,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Guide) => Ok(guide::run()),
         Some(Command::Ready { limit }) => ready::run(limit, json),
         Some(Command::Claims) => claim::list(),
+        Some(Command::Shortlist(args)) => shortlist::run(&args, json),
         Some(Command::Show { issue }) => show::run(&issue),
         Some(Command::History { issue, limit, all }) => history::run(&issue, limit, all),
         Some(Command::Undo { batch, dry_run }) => undo::run(batch.as_deref(), dry_run),

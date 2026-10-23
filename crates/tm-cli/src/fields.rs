@@ -9,6 +9,17 @@ use tm_core::scheme::{FieldType, Scheme};
 
 use crate::error::CliError;
 
+/// Refuses the Short-list membership fields, whose ranks only `tm shortlist`
+/// chooses.
+pub(crate) fn not_membership(field: &str) -> Result<(), String> {
+    match field {
+        "shortlist" | "shortlist_rank" => {
+            Err("put an Issue on a Short-list with tm shortlist add, move or remove".into())
+        }
+        _ => Ok(()),
+    }
+}
+
 /// `FIELD=VALUE`, split at the first `=`.
 pub(crate) fn split_pair(pair: &str) -> Result<(String, String), String> {
     pair.split_once('=')

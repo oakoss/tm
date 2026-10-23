@@ -81,14 +81,19 @@ impl Store {
         id: Uuid,
         edit: &ShortlistEdit<'_>,
     ) -> Result<Vec<Op>, StoreError> {
-        let project = live(&self.conn, id)?;
-        let mut changes = Vec::new();
-        changes.extend(edit.name.map(|name| set(Field::Name, json!(name))));
-        changes.extend(edit.size.map(|size| set(Field::Size, json!(size))));
-        // Adds first, so swapping one Actor for another never leaves none.
-        changes.extend(edit.add.iter().map(|who| actor_change(who, true)));
-        changes.extend(edit.remove.iter().map(|who| actor_change(who, false)));
-        self.append_all(drafts(actor, project, id, changes))
+        let writer = actor.clone();
+        self.append_with(
+            Vec::new(),
+            |tx, _| {
+                let list = read(tx, id)?
+                    .filter(|list| !list.deleted)
+                    .ok_or(StoreError::UnknownShortlist(id))?;
+                let changes = edited(&list, edit)?;
+                Ok(drafts(&writer, list.project, id, changes))
+            },
+            true,
+            None,
+        )
     }
 
     /// Deletes a Short-list, keeping its record so an undo restores it.
@@ -155,6 +160,39 @@ impl Store {
     pub fn shortlist(&self, id: Uuid) -> Result<Option<Shortlist>, StoreError> {
         self.read(|store| read(&store.conn, id))
     }
+}
+
+/// The changes `edit` makes to `list`, leaving out what it already holds, so
+/// an edit that changes nothing writes nothing. Removing an Actor the list
+/// does not name is refused, as a mistyped name would otherwise pass.
+fn edited(list: &Shortlist, edit: &ShortlistEdit<'_>) -> Result<Vec<Change>, StoreError> {
+    for who in edit.remove {
+        if !list.actors.contains(&core::actor_key(who)) {
+            return Err(StoreError::Invalid {
+                field: core::ACTORS.into(),
+                // Quoted, as the name is not yet checked for control characters.
+                reason: format!("does not name {who:?}"),
+                valid: list.actors.clone(),
+            });
+        }
+    }
+    let mut changes = Vec::new();
+    if let Some(name) = edit.name.filter(|name| list.name.as_deref() != Some(*name)) {
+        changes.push(set(Field::Name, json!(name)));
+    }
+    if let Some(size) = edit.size.filter(|size| *size != list.size) {
+        changes.push(set(Field::Size, json!(size)));
+    }
+    // Adds first, so swapping one Actor for another never leaves none.
+    let held = |who: &String| list.actors.contains(&core::actor_key(who));
+    changes.extend(
+        edit.add
+            .iter()
+            .filter(|who| !held(who))
+            .map(|who| actor_change(who, true)),
+    );
+    changes.extend(edit.remove.iter().map(|who| actor_change(who, false)));
+    Ok(changes)
 }
 
 fn actor_change(who: &str, present: bool) -> Change {

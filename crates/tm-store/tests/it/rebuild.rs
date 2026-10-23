@@ -319,10 +319,10 @@ impl Model {
                 elem,
                 present: false,
             } => {
-                if actors.len() == 1 && actors.contains(ELEMS[*elem]) {
+                // The last Actor stays, and one the list lacks is refused.
+                if actors.len() == 1 || !actors.remove(ELEMS[*elem]) {
                     return false;
                 }
-                actors.remove(ELEMS[*elem]);
             }
         }
         true
