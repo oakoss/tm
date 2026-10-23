@@ -40,6 +40,86 @@ fn claim_of(scratch: &Scratch, repo: &Path, key: &str) -> Value {
 }
 
 #[test]
+fn an_agent_finishes_an_issue_another_session_holds_only_with_force() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    for title in ["held", "for jace", "lapsing"] {
+        store
+            .create_issue(&Actor::human("jace"), project, "task", title)
+            .unwrap();
+    }
+    drop(store);
+    let in_session = |session: &str, args: &[&str]| {
+        tm_command()
+            .args(args)
+            .current_dir(&repo)
+            .env("TM_HOME", scratch.home())
+            .env("TM_ACTOR", "jace")
+            .env("TM_AGENT", "claude")
+            .env("TM_SESSION", session)
+            .env("GIT_CONFIG_GLOBAL", scratch.git_config())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    for key in ["TM-1", "TM-2"] {
+        let out = in_session("session-one-id", &["claim", key]);
+        assert!(out.status.success(), "{out:?}");
+    }
+
+    // The same Agent's other session is refused, and nothing is written.
+    let out = in_session("session-two-id", &["--json", "move", "TM-1", "done"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let refused = doc(&out);
+    assert_eq!(refused["error"], "already_claimed", "{refused}");
+    assert_eq!(refused["key"], "TM-1");
+    assert_eq!(refused["session"], "session-one-id");
+    assert_eq!(refused["fix"], Value::Null, "an override is never a fix");
+    let message = refused["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("Issue TM-1 is held by claude ("),
+        "{message}"
+    );
+    assert!(
+        message.ends_with("; finishing it would end that Claim, which tm move --force does"),
+        "{message}"
+    );
+    let shown = doc(&tm(&scratch, &repo, &["--json", "show", "TM-1"]));
+    assert_eq!(shown["data"]["fields"]["status"], "todo");
+    assert!(shown["data"]["claim"].is_object());
+
+    let out = in_session(
+        "session-two-id",
+        &["--json", "move", "TM-1", "done", "--force"],
+    );
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(claim_of(&scratch, &repo, "TM-1"), Value::Null);
+
+    // Undoing the override reopens the Issue but leaves the Claim released.
+    let batch = doc(&out)["data"]["batch"].as_str().unwrap().to_owned();
+    let out = in_session("session-two-id", &["undo", &batch]);
+    assert!(out.status.success(), "{out:?}");
+    let note = "  TM-1's Claim stays released; its Agent takes it again with tm claim\n";
+    assert!(text(&out.stdout).contains(note), "{out:?}");
+    assert_eq!(claim_of(&scratch, &repo, "TM-1"), Value::Null);
+    let out = in_session("session-two-id", &["move", "TM-1", "done"]);
+    assert!(out.status.success(), "{out:?}");
+
+    // Neither the human it is held for nor a lapsed Claim needs --force.
+    let out = tm(&scratch, &repo, &["move", "TM-2", "cancelled"]);
+    assert!(out.status.success(), "{out:?}");
+    let out = in_session("session-one-id", &["claim", "TM-3", "--for", "1s"]);
+    assert!(out.status.success(), "{out:?}");
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    let out = in_session("session-two-id", &["move", "TM-3", "done"]);
+    assert!(
+        out.status.success(),
+        "a lapsed Claim holds nothing: {out:?}"
+    );
+}
+
+#[test]
 fn a_move_to_done_or_cancelled_releases_the_claim_and_review_keeps_it() {
     let scratch = Scratch::new();
     let (repo, mut store, project) = initialized(&scratch);

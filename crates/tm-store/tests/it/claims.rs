@@ -232,6 +232,27 @@ fn a_held_issue_is_refused_even_under_the_holders_own_agent_name() {
 }
 
 #[test]
+fn a_write_guarded_on_a_lapsed_claim_is_refused_once_its_holder_renews_it() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let issue = new_issue(&mut store);
+    store.take(&claude(), issue, Some(HOUR_MS)).unwrap();
+    clock.advance(i64::try_from(HOUR_MS).unwrap() + 1);
+    let Some(ClaimState::Lapsed(lapsed)) = store.claim_state(issue).unwrap() else {
+        panic!("the Claim lapsed");
+    };
+
+    // The renewal keeps the Claim's id, so only its expiry tells it apart.
+    store.heartbeat(&claude(), Some(issue)).unwrap();
+    let done = vec![draft(issue, set_field("status", json!("done")))];
+    let err = store
+        .append_if_claim(done, issue, Some(&lapsed))
+        .unwrap_err();
+    assert!(matches!(err, StoreError::ClaimChanged(_)), "{err}");
+}
+
+#[test]
 fn an_agent_sees_only_the_claims_it_holds_for_its_human() {
     let dir = TempDir::new();
     let clock = ManualClock::at(1_000);
@@ -271,7 +292,7 @@ fn a_write_guarded_on_a_claim_is_refused_once_the_claim_changes() {
     // Read unclaimed, then claimed before the write.
     let claim = store.take(&claude(), issue, None).unwrap();
     let err = store
-        .append_if_claim(done(), issue, before.map(|claim| claim.id))
+        .append_if_claim(done(), issue, before.as_ref())
         .unwrap_err();
     assert!(
         matches!(&err, StoreError::ClaimChanged(named) if named.id == issue),
@@ -280,7 +301,7 @@ fn a_write_guarded_on_a_claim_is_refused_once_the_claim_changes() {
     assert_eq!(
         err.to_string(),
         format!(
-            "Issue {} was claimed or released while it was being written",
+            "Issue {}'s Claim was taken, renewed or released while it was being written",
             key(&store, issue)
         )
     );
@@ -288,7 +309,7 @@ fn a_write_guarded_on_a_claim_is_refused_once_the_claim_changes() {
     // Read claimed, then released before the write.
     store.release(&claude(), issue, claim.id).unwrap();
     let err = store
-        .append_if_claim(done(), issue, Some(claim.id))
+        .append_if_claim(done(), issue, Some(&claim))
         .unwrap_err();
     assert!(
         matches!(&err, StoreError::ClaimChanged(named) if named.id == issue),
@@ -793,7 +814,7 @@ fn a_lapsed_claim_reads_as_lapsed_until_its_holder_releases_it() {
     let err = store.append_if_claim(edit(), issue, None).unwrap_err();
     assert!(matches!(err, StoreError::ClaimChanged(_)), "{err}");
     store
-        .append_if_claim(edit(), issue, Some(lapsing.id))
+        .append_if_claim(edit(), issue, Some(&lapsing))
         .unwrap();
     store.release(&claude(), issue, lapsing.id).unwrap();
     assert_eq!(store.claim_state(issue).unwrap(), None);

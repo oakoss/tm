@@ -255,7 +255,8 @@ fn close(
     let batch = if report.dry_run {
         None
     } else {
-        let ops = moves::finish(here, actor, (view.project, id), drafts)?;
+        // A merged Closes line says the work is done, whoever holds it.
+        let ops = moves::finish(here, actor, (view.project, id), drafts, false)?;
         Some(ops[0].op_id)
     };
     let before = view.fields.get("status").and_then(Value::as_str);

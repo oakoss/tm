@@ -48,7 +48,10 @@ New work found along the way
 Finish
   tm move KEY in_review                  when it is ready for review
   tm move KEY done                       when it has landed; this
-                                         releases its Claim
+                                         releases its Claim. An Agent
+                                         cannot finish an Issue another
+                                         session holds; --force does, once
+                                         that session has stopped
   tm git scan                            after a merge and git fetch:
                                          moves each Issue a "Closes KEY"
                                          line names on the default branch
