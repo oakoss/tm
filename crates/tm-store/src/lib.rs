@@ -11,6 +11,7 @@ mod export;
 mod family;
 mod history;
 mod import;
+mod import_list;
 mod membership;
 mod next;
 mod project;
@@ -47,6 +48,7 @@ pub use claim::{AgentClaims, Claim, ClaimState, Holder, TakenWith, short_session
 pub use export::{Exported, Restored, copy_store, read_export};
 pub use history::HistoryEntry;
 pub use import::{Conflict, RecordOutcome, RecordsImported};
+pub use import_list::ListOutcome;
 pub use membership::{Member, PassedOver, Place, Placed};
 pub use next::Next;
 pub use read::{CommentView, Direction, IssueView, LinkView};
@@ -1620,8 +1622,7 @@ fn write_drafts(
                 break;
             }
             cleared = true;
-            let clearing = shortlist::clearing(tx, scheme, &ops, &was_finished)?;
-            pending.extend(clearing.into_iter().map(|draft| (draft, None)));
+            pending.extend(shortlist::clearing(tx, scheme, &ops, &was_finished)?);
             continue;
         };
         if let Entry::Vacant(entry) = before.entry(draft.subject) {

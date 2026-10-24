@@ -9,6 +9,7 @@
 //! changed in tm keeps tm's value, and is a conflict if the source changed it
 //! too.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::BufRead;
 
@@ -17,13 +18,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tm_core::op::COMMENTS_FIELD;
 use tm_core::scheme::FieldType;
-use tm_core::{Actor, Change, ProjectId, Scheme, link};
+use tm_core::{Actor, Change, Op, ProjectId, Scheme, link};
 use uuid::Uuid;
 
 use crate::apply::{Version, issue_project, uuid_from};
 use crate::export::{FORMAT, VERSION, unreadable};
+use crate::import_list::{ListOutcome, place_of};
 use crate::read::{self, IssueView};
-use crate::record::{CommentRecord, IssueRecord, TM_SOURCE};
+use crate::record::{CommentRecord, IssueRecord, ListRecord, TM_SOURCE};
 use crate::{Draft, Provenance, Store, StoreError, WallTime};
 
 /// Fields a record holds one value of, read from the Issue's own columns.
@@ -38,13 +40,22 @@ const SCALARS: [&str; 7] = [
 ];
 
 /// Fields an import writes that are compared elsewhere, or not by value.
-const NOT_VALUES: [&str; 4] = ["parent", link::FIELD, "comments", "claim"];
+const NOT_VALUES: [&str; 6] = [
+    "parent",
+    link::FIELD,
+    "comments",
+    "claim",
+    "shortlist",
+    "shortlist_rank",
+];
 
 /// What an import did.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RecordsImported {
     /// The keys of the Projects it created.
     pub projects: Vec<String>,
+    /// Each Short-list the file names, as the import found or created it.
+    pub shortlists: Vec<ListOutcome>,
     pub records: Vec<RecordOutcome>,
 }
 
@@ -77,17 +88,20 @@ pub struct Conflict {
     pub source: Value,
 }
 
-/// A Project the file names, created when no Project holds its key.
+/// A Project the file names, created when no Project holds its key, with
+/// the Short-lists it holds.
 #[derive(Debug, Deserialize)]
-struct ProjectLine {
-    key: String,
+pub(crate) struct ProjectLine {
+    pub(crate) key: String,
     name: String,
+    #[serde(default)]
+    pub(crate) shortlists: Vec<ListRecord>,
 }
 
 /// A file's lines, each with its line number.
 pub(crate) struct Parsed {
-    projects: Vec<(usize, ProjectLine)>,
-    issues: Vec<(usize, IssueRecord)>,
+    pub(crate) projects: Vec<(usize, ProjectLine)>,
+    pub(crate) issues: Vec<(usize, IssueRecord)>,
 }
 
 impl Parsed {
@@ -160,7 +174,7 @@ impl Writer {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum Decision {
+pub(crate) enum Decision {
     Keep,
     Write,
     Conflict,
@@ -171,7 +185,7 @@ enum Decision {
 /// comparison starts from it. With no base, as for an Issue an import found
 /// by its `tm:` id rather than created, any difference is a conflict, so
 /// nothing tm wrote is overwritten.
-fn decide<T: PartialEq>(source: &T, base: Option<&T>, tm: &T) -> Decision {
+pub(crate) fn decide<T: PartialEq>(source: &T, base: Option<&T>, tm: &T) -> Decision {
     match base {
         None if source == tm => Decision::Keep,
         Some(base) if source == base => Decision::Keep,
@@ -211,6 +225,7 @@ impl Store {
             check_record(&self.scheme, record)
                 .map_err(|cause| refused(*line, &record.source, cause, (&[], &[])))?;
         }
+        crate::import_list::check_lists(parsed)?;
         let (now, _) = self.now()?;
         let (mut projects, mut project_batches) = (Vec::new(), Vec::new());
         for (line, project) in &parsed.projects {
@@ -224,13 +239,16 @@ impl Store {
                 project_batches.push(op.op_id);
             }
         }
+        let shortlists = self.import_lists(parsed, runner, now, &mut project_batches)?;
         let mut records: Vec<RecordOutcome> = Vec::with_capacity(parsed.issues.len());
+        let mut cleared = Vec::new();
         for (line, record) in &parsed.issues {
-            let outcome = self
-                .import_fields(*line, record, runner, now)
-                .map_err(|cause| {
-                    refused(*line, &record.source, cause, (&project_batches, &records))
-                })?;
+            let (outcome, left) =
+                self.import_fields(*line, record, runner, now)
+                    .map_err(|cause| {
+                        refused(*line, &record.source, cause, (&project_batches, &records))
+                    })?;
+            cleared.extend(left.map(|list| (records.len(), list)));
             records.push(outcome);
         }
         // A Link one record still lists is kept when another drops it.
@@ -255,17 +273,29 @@ impl Store {
                 }
             }
         }
-        Ok(RecordsImported { projects, records })
+        let mut shortlists = shortlists;
+        self.import_places(
+            parsed,
+            (&mut records, &mut shortlists, &cleared),
+            (runner, now),
+            &mut project_batches,
+        )?;
+        Ok(RecordsImported {
+            projects,
+            shortlists,
+            records,
+        })
     }
 
-    /// Pass one: the Issue's fields, sets and comments.
+    /// Pass one: the Issue's fields, sets and comments, with the list its
+    /// finish took it off.
     fn import_fields(
         &mut self,
         line: usize,
         record: &IssueRecord,
         runner: &Actor,
         now: WallTime,
-    ) -> Result<RecordOutcome, StoreError> {
+    ) -> Result<(RecordOutcome, Option<Uuid>), StoreError> {
         let new = Uuid::now_v7();
         let scheme = self.scheme.clone();
         let plan = |conn: &Connection| -> Result<(Uuid, bool, Plan), StoreError> {
@@ -282,9 +312,13 @@ impl Store {
                 ),
             })
         };
-        let (issue, created, planned) = plan(&self.conn)?;
-        let batch = self
+        let (issue, created, mut planned) = plan(&self.conn)?;
+        // Read inside the write, so another writer's move is not taken for
+        // the finish's.
+        let held = Cell::new(None);
+        let ops = self
             .write_plan(&planned, issue, |conn| {
+                held.set(place_of(conn, issue)?);
                 plan(conn).map(|(again, _, plan)| (again == issue).then_some(plan))
             })
             .map_err(|cause| {
@@ -294,17 +328,27 @@ impl Store {
                     cause
                 }
             })?;
-        Ok(RecordOutcome {
+        let cleared = held.get().filter(|_| {
+            ops.iter().any(|op| {
+                op.subject == issue
+                    && matches!(op.change(), Ok(Change::SetField { field, .. }) if field == "shortlist")
+            })
+        });
+        if cleared.is_some() {
+            planned.removed.push("shortlist".into());
+        }
+        let outcome = RecordOutcome {
             line,
             source: record.source.clone(),
             issue,
             created,
-            batches: batch.into_iter().collect(),
+            batches: ops.first().map(|op| op.op_id).into_iter().collect(),
             written: planned.written,
             removed: planned.removed,
             conflicts: planned.conflicts,
             changed_comments: planned.changed_comments,
-        })
+        };
+        Ok((outcome, cleared))
     }
 
     /// Pass two: the Issue's parent and Links, whose targets now exist; only
@@ -329,8 +373,8 @@ impl Store {
             relations_plan(conn, &scheme, record, &target, &writer)
         };
         let planned = plan(&self.conn)?;
-        let batch = self.write_plan(&planned, issue, |conn| plan(conn).map(Some))?;
-        outcome.batches.extend(batch);
+        let ops = self.write_plan(&planned, issue, |conn| plan(conn).map(Some))?;
+        outcome.batches.extend(ops.first().map(|op| op.op_id));
         outcome.written.extend(planned.written);
         outcome.removed.extend(planned.removed);
         outcome.conflicts.extend(planned.conflicts);
@@ -339,31 +383,30 @@ impl Store {
 
     /// Writes a plan as one batch, once the same plan comes out of the write
     /// transaction, so a write made between reading and writing is never
-    /// overwritten; returns the batch, if anything was written.
+    /// overwritten; returns the batch's operations, the first naming it.
     fn write_plan(
         &mut self,
         planned: &Plan,
         issue: Uuid,
         again: impl Fn(&Connection) -> Result<Option<Plan>, StoreError>,
-    ) -> Result<Option<Uuid>, StoreError> {
+    ) -> Result<Vec<Op>, StoreError> {
         if planned.drafts.is_empty() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
-        let ops = self.append_imported_guarded(planned.drafts.clone(), |tx| {
+        self.append_imported_guarded(planned.drafts.clone(), |tx| {
             if again(tx)?.as_ref() == Some(planned) {
                 Ok(())
             } else {
                 Err(StoreError::ImportChanged(issue.into()))
             }
-        })?;
-        Ok(ops.first().map(|op| op.op_id))
+        })
     }
 }
 
 /// `done` is the Projects' batches and the records' outcomes written so far.
 /// An Issue the import created is named by its record, so a refusal reads the
 /// same whether the import ran or was a dry run.
-fn refused(
+pub(crate) fn refused(
     line: usize,
     record: &str,
     cause: StoreError,
@@ -376,11 +419,18 @@ fn refused(
             cause.sourced(outcome.issue, &outcome.source)
         });
     let records = records.iter().flat_map(|outcome| outcome.batches.iter());
+    // A place batch is both a list's and each record's it placed.
+    let mut seen = HashSet::new();
     StoreError::RecordRefused {
         line,
         record: record.to_owned(),
         cause: Box::new(cause),
-        written: projects.iter().chain(records).copied().collect(),
+        written: projects
+            .iter()
+            .chain(records)
+            .copied()
+            .filter(|batch| seen.insert(*batch))
+            .collect(),
     }
 }
 
@@ -715,7 +765,7 @@ fn member(field: &str, elem: &str, present: bool) -> Change {
 /// What the last import from `source` wrote to each `(Issue, element)` of
 /// `field`, folded by the merge rule in replay order; a single value's
 /// element is empty.
-fn base(
+pub(crate) fn base(
     conn: &Connection,
     source: &str,
     issue: Option<Uuid>,
@@ -780,7 +830,7 @@ fn base_member(
 
 /// Whether the record's Issue is one this import's source did not create,
 /// found instead by its `tm:` id.
-fn adopted(conn: &Connection, source: &str, issue: Uuid) -> Result<bool, StoreError> {
+pub(crate) fn adopted(conn: &Connection, source: &str, issue: Uuid) -> Result<bool, StoreError> {
     Ok(created_by(conn, source)? != Some(issue))
 }
 

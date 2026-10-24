@@ -553,6 +553,7 @@ mod tests {
         let (first, second) = (Uuid::now_v7(), Uuid::now_v7());
         let imported = RecordsImported {
             projects: Vec::new(),
+            shortlists: Vec::new(),
             records: vec![RecordOutcome {
                 line: 1,
                 source: "beads:a".into(),
