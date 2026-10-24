@@ -95,7 +95,7 @@ Optional time-boxed periods (sprint, cycle or any name), off by default, usable 
 
 ### Short-lists
 
-A Short-list is a named, ordered list of Issues in a Project with the Actors who work through it, saying what to do next apart from priority; an Issue sits on at most one, and finishing it takes it off. `tm next` starts the first unarchived todo Issue on the session Actor's lists that is not an epic, snoozed, blocked or claimed, claiming it for an Agent, and `tm prime` and `tm ready` show those lists first ([ADR 0016](../decisions/0016-short-lists-order-what-to-do-next.md)).
+A Short-list is a named, ordered list of Issues in a Project with the Actors who work through it, saying what to do next apart from priority; an Issue sits on at most one, and finishing it takes it off. `tm next` starts the first unarchived todo Issue on the session Actor's lists that is not an epic, snoozed, blocked or claimed, claiming it for an Agent, or with no list the most urgent such Issue in its Project's ready queue that no list holds, and `tm prime` and `tm ready` show those lists first ([ADR 0016](../decisions/0016-short-lists-order-what-to-do-next.md)).
 
 ### Comments, mentions and attachments
 
@@ -139,7 +139,6 @@ Everything is soft-deleted: archived, hidden and restorable. `tm purge` is the o
 - `tm claims` lists who holds which Issue; it, `tm show` and `tm prime` give each Claim's time left, and their JSON carries `expires_in_ms` so an Agent need not read a clock. `tm hook print claude` prints Claude Code hooks to paste, which run `tm hook heartbeat claude` after each tool use and `tm release --mine` when the session ends; tm writes no hook config itself. The hook heartbeat is silent unless it has a warning this session has not been given, such as a takeover or an identity it cannot resolve: a takeover once per Claim that took over, an error once until a heartbeat succeeds.
 - `tm handoff CPL-42 --to <agent> "<note>"` transfers a Claim with context.
 - **Path Claims** (`--paths`, or the Issue's file-path field) warn, not block, when another agent is about to edit the same files.
-- `tm ready --claim` atomically takes the next ready Issue.
 
 ## Findings
 
