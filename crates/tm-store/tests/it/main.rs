@@ -11,6 +11,7 @@ mod find;
 mod guards;
 mod history;
 mod import;
+mod import_lists;
 mod links;
 mod members;
 mod merge;

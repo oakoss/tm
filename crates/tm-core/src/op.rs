@@ -133,6 +133,9 @@ pub enum Change {
         actor: String,
         present: bool,
     },
+    /// Carries a source an import matched a Short-list to by name, so a later
+    /// import from it finds the list (ADR 0016).
+    ShortlistSource,
 }
 
 /// The kind of record an operation's subject id names.
@@ -196,6 +199,7 @@ impl Change {
             Self::CreateShortlist => "create_shortlist",
             Self::SetShortlist { .. } => "set_shortlist",
             Self::ShortlistActor { .. } => "shortlist_actor",
+            Self::ShortlistSource => "shortlist_source",
         }
     }
 
@@ -204,9 +208,10 @@ impl Change {
     pub const fn subject(&self) -> Subject {
         match self {
             Self::CreateProject { .. } | Self::RenameProject { .. } => Subject::Project,
-            Self::CreateShortlist | Self::SetShortlist { .. } | Self::ShortlistActor { .. } => {
-                Subject::Shortlist
-            }
+            Self::CreateShortlist
+            | Self::SetShortlist { .. }
+            | Self::ShortlistActor { .. }
+            | Self::ShortlistSource => Subject::Shortlist,
             Self::Create
             | Self::SetField { .. }
             | Self::Add { .. }
@@ -234,7 +239,8 @@ impl Change {
             | Self::Comment { .. }
             | Self::CreateProject { .. }
             | Self::RenameProject { .. }
-            | Self::CreateShortlist => None,
+            | Self::CreateShortlist
+            | Self::ShortlistSource => None,
         }
     }
 
@@ -255,7 +261,8 @@ impl Change {
             | Self::CreateProject { .. }
             | Self::RenameProject { .. }
             | Self::CreateShortlist
-            | Self::SetShortlist { .. } => None,
+            | Self::SetShortlist { .. }
+            | Self::ShortlistSource => None,
         }
     }
 
@@ -393,6 +400,12 @@ impl Op {
             });
         }
         change.validate()?;
+        if matches!(change, Change::ShortlistSource) && self.source.is_none() {
+            return Err(OpError::InvalidName {
+                field: "source",
+                reason: "is needed by a Short-list source operation",
+            });
+        }
         Ok(change)
     }
 
@@ -497,6 +510,22 @@ mod tests {
         }
     }
 
+    /// A Short-list source operation without a source records nothing, so
+    /// replay refuses it as a write does.
+    #[test]
+    fn a_list_source_operation_needs_a_source() {
+        let change = Change::ShortlistSource;
+        let mut op = Op {
+            kind: change.kind().into(),
+            payload: serde_json::to_string(&change).unwrap(),
+            ..sample()
+        };
+        let refused = op.change().unwrap_err().to_string();
+        assert_eq!(refused, "source is needed by a Short-list source operation");
+        op.source = Some("tm:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into());
+        assert_eq!(op.change().unwrap(), change);
+    }
+
     /// An Agent's operation.
     fn sample_agent() -> Op {
         Op {
@@ -577,6 +606,7 @@ mod tests {
                 actor: "claude".into(),
                 present: true,
             },
+            Change::ShortlistSource,
         ]
     }
 

@@ -13,7 +13,7 @@ use tm_core::{Actor, Change, Op, ProjectId, Scheme, Subject};
 use uuid::Uuid;
 
 use crate::apply::{Version, Versions, project_from, record_in, sql_int, uuid_from, wins_in};
-use crate::{Draft, Store, StoreError};
+use crate::{Draft, Provenance, Store, StoreError, WallTime};
 
 /// A Short-list as read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -280,15 +280,14 @@ pub(crate) fn check_batch(
 
 /// The writes that take Issues off their lists as a batch calls for: each
 /// Issue it moved into a done or cancelled Status, not one already there,
-/// and each member of a list it deleted. Each is written by whoever wrote
-/// the operation that called for it, and logged, so history shows it and
-/// undo restores it.
+/// and each member of a list it deleted. Each is written as the operation
+/// that called for it was, source included, so history and undo see it.
 pub(crate) fn clearing(
     tx: &Transaction<'_>,
     scheme: &Scheme,
     ops: &[Op],
     was_finished: &BTreeSet<Uuid>,
-) -> Result<Vec<Draft>, StoreError> {
+) -> Result<Vec<(Draft, Option<Provenance>)>, StoreError> {
     let mut issues: BTreeMap<Uuid, &Op> = BTreeMap::new();
     for op in ops {
         match op.change()? {
@@ -322,26 +321,32 @@ pub(crate) fn clearing(
             Some(human) => Actor::agent(&cause.actor, human),
             None => Actor::human(&cause.actor),
         };
-        drafts.extend(fields.into_iter().map(|field| Draft {
-            actor: writer.clone(),
-            project,
-            subject: issue,
-            change: Change::SetField {
-                field: field.into(),
-                label: String::new(),
-                value: serde_json::Value::Null,
-                value_label: None,
+        let provenance = cause.source.as_ref().map(|source| Provenance {
+            source: source.clone(),
+            at: WallTime {
+                utc_ms: cause.utc_ms,
+                offset_min: cause.offset_min,
             },
+        });
+        drafts.extend(fields.into_iter().map(|field| {
+            let draft = Draft {
+                actor: writer.clone(),
+                project,
+                subject: issue,
+                change: Change::SetField {
+                    field: field.into(),
+                    label: String::new(),
+                    value: serde_json::Value::Null,
+                    value_label: None,
+                },
+            };
+            (draft, provenance.clone())
         }));
     }
     Ok(drafts)
 }
 
-pub(crate) fn finished(
-    tx: &Transaction<'_>,
-    scheme: &Scheme,
-    issue: Uuid,
-) -> Result<bool, StoreError> {
+pub(crate) fn finished(tx: &Connection, scheme: &Scheme, issue: Uuid) -> Result<bool, StoreError> {
     let row: Option<(Option<String>, Option<String>)> = tx
         .query_row(
             "SELECT type, status FROM issues WHERE id = ?1",
@@ -554,6 +559,10 @@ pub(crate) fn apply(
             expected,
             found: op.project,
         });
+    }
+    // Its source is on the operation, which every reader looks up there.
+    if matches!(change, Change::ShortlistSource) {
+        return Ok(());
     }
     let list = op.subject;
     let (field, elem, present) = match change {

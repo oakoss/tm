@@ -61,7 +61,8 @@ impl Store {
                  FROM ops o LEFT JOIN op_batches b ON b.op_id = o.op_id
                  WHERE (o.issue_id = ?1 OR (o.field = ?2 AND o.elem LIKE ?3))
                    AND o.kind NOT IN ('create_project', 'rename_project',
-                                      'create_shortlist', 'set_shortlist', 'shortlist_actor')
+                                      'create_shortlist', 'set_shortlist', 'shortlist_actor',
+                                      'shortlist_source')
                  ORDER BY o.server_seq IS NULL, o.server_seq, o.hlc, o.replica_id, o.op_id",
             )?;
             // A Link's element ends in the id of the Issue it points at.

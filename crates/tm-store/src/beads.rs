@@ -301,6 +301,7 @@ fn record(
         links: Vec::new(),
         comments,
         fields: BTreeMap::new(),
+        shortlist: None,
         created: text(bead, "created_at")?,
         updated: text(bead, "updated_at")?,
     })

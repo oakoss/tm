@@ -415,6 +415,54 @@ fn a_repo_mapped_to_another_workspace_or_a_damaged_file_is_refused() {
     );
 }
 
+#[test]
+fn a_records_import_reports_each_short_list() {
+    let scratch = Scratch::new();
+    let (repo, _store, _) = initialized(&scratch);
+    let lines = [
+        serde_json::json!({"_type": "project", "key": "TM", "name": "tm", "shortlists": [
+            {"source": "x:docs", "name": "docs", "actors": ["jace"], "size": 1}
+        ]}),
+        serde_json::json!({"_type": "issue", "source": "x:1", "project": "TM", "type": "task",
+            "title": "one", "status": "todo", "reporter": "jace",
+            "shortlist": {"source": "x:docs", "name": "docs", "position": 1}}),
+        serde_json::json!({"_type": "issue", "source": "x:2", "project": "TM", "type": "epic",
+            "title": "two", "status": "todo", "reporter": "jace",
+            "shortlist": {"source": "x:docs", "name": "docs", "position": 2}}),
+    ];
+    let file = scratch.0.join("lists.jsonl");
+    let body: Vec<String> = lines.iter().map(Value::to_string).collect();
+    fs::write(&file, body.join("\n")).unwrap();
+    let file = file.to_str().unwrap();
+
+    let out = tm(
+        &scratch,
+        &repo,
+        &["--json", "import", "--records", file, "--dry-run"],
+    );
+    let list = &doc(&out)["data"]["shortlists"][0];
+    assert_eq!(list["created"], true, "{out:?}");
+    let none = serde_json::json!([]);
+    assert_eq!(list["batches"], none, "a dry run's batches do not exist");
+    let out = tm(&scratch, &repo, &["import", "--records", file, "--dry-run"]);
+    let printed = text(&out.stdout);
+    let would = "would create Short-list docs (x:docs): would place 2, take off 0, hold 2 of 1";
+    assert!(printed.contains(would), "{printed}");
+
+    let out = tm(&scratch, &repo, &["import", "--records", file]);
+    let printed = text(&out.stdout);
+    for line in [
+        "created Short-list docs (x:docs): 2 placed, 0 taken off, 2 of 1, over size",
+        "Short-list docs: tm next passes over TM-2 [epic]",
+    ] {
+        assert!(printed.contains(line), "{printed}");
+    }
+    assert!(!printed.contains("Short-list docs: set"), "{printed}");
+    // The create; the place batch is named by its records.
+    let undo = |line: &&str| line.starts_with("x:docs: undo with tm undo");
+    assert_eq!(printed.lines().filter(undo).count(), 1, "{printed}");
+}
+
 /// The refusals a restore meets name `--records`, which brings the Issues
 /// into this repo's Workspace, once.
 #[test]

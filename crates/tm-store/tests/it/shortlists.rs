@@ -583,3 +583,44 @@ fn a_list_restore_names_the_list_not_an_issue() {
     assert_eq!(json["name"], json!("docs"));
     assert_eq!(json.get("issue"), None);
 }
+
+/// ADR 0016: an import records a source it matched a list to by name in an
+/// operation of its own, which changes nothing else and which undo keeps.
+#[test]
+fn a_list_source_is_recorded_only_by_an_import_and_kept_by_undo() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let id = create(&mut store, "docs", &["codex"]);
+    let draft = Draft {
+        actor: jace(),
+        project: PROJECT,
+        subject: id,
+        change: Change::ShortlistSource,
+    };
+    let err = store.append(draft.clone()).unwrap_err();
+    assert!(
+        matches!(&err, StoreError::Invalid { field, .. } if field == "source"),
+        "{err}"
+    );
+
+    let before = dump(&store);
+    let provenance = tm_store::Provenance {
+        source: "tm:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into(),
+        at: tm_store::WallTime {
+            utc_ms: 500,
+            offset_min: 0,
+        },
+    };
+    let ops = store
+        .append_imported(vec![(draft, provenance.clone())])
+        .unwrap();
+    assert_eq!(ops[0].source.as_deref(), Some(provenance.source.as_str()));
+    assert_eq!(ops[0].kind, "shortlist_source");
+    assert_eq!(dump(&store), before, "the projection is unchanged");
+    assert_eq!(read(&store, id).name.as_deref(), Some("docs"));
+
+    let err = store.undo(&jace(), ops[0].op_id).unwrap_err();
+    assert!(matches!(err, StoreError::CannotUndo { .. }), "{err}");
+    let mut store = store;
+    assert_eq!(store.rebuild().unwrap(), 0);
+}

@@ -532,7 +532,7 @@ fn draft(actor: &Actor, project: ProjectId, issue: Uuid, field: &str, value: Val
 }
 
 /// A list's members with their ranks, in order.
-fn ranked(conn: &Connection, list: Uuid) -> Result<Vec<(Uuid, String)>, StoreError> {
+pub(crate) fn ranked(conn: &Connection, list: Uuid) -> Result<Vec<(Uuid, String)>, StoreError> {
     let mut stmt = conn.prepare_cached(
         "SELECT i.id, i.shortlist_rank FROM issues i
          JOIN shortlists l ON l.id = i.shortlist AND l.deleted = 0 AND l.project = i.project
