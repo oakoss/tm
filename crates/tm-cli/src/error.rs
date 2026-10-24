@@ -434,8 +434,14 @@ impl From<FilterError> for CliError {
             Ok(Value::Object(details)) => details,
             _ => Map::new(),
         };
-        if matches!(err, FilterError::NoIssue { .. }) {
-            details.insert("kind".into(), "issue".into());
+        match err {
+            FilterError::NoIssue { .. } => {
+                details.insert("kind".into(), "issue".into());
+            }
+            FilterError::NoShortlist { .. } | FilterError::ShortlistNameShared { .. } => {
+                details.insert("kind".into(), "shortlist".into());
+            }
+            _ => {}
         }
         let code = match err {
             FilterError::Syntax { .. } => "syntax",
@@ -445,13 +451,21 @@ impl From<FilterError> for CliError {
             FilterError::UnknownValue { .. } => "unknown_value",
             FilterError::InvalidValue { .. } => "invalid_value",
             FilterError::NoIdentity { .. } => "no_identity",
-            FilterError::NoIssue { .. } => "not_found",
+            FilterError::NoIssue { .. } | FilterError::NoShortlist { .. } => "not_found",
+            FilterError::ShortlistNameShared { .. } => "shortlist_name_shared",
         };
         details.retain(|key, _| !RESERVED.contains(&key.as_str()));
+        let fix = match err {
+            FilterError::NoShortlist { .. } => Some("tm shortlist --all".into()),
+            FilterError::ShortlistNameShared { .. } => {
+                Some("name a list by the id tm shortlist --all --json gives".into())
+            }
+            _ => None,
+        };
         Self {
             code,
             message,
-            fix: None,
+            fix,
             details,
             warnings: Vec::new(),
         }

@@ -295,6 +295,28 @@ fn show_names_the_list_and_no_command_shows_a_rank() {
 }
 
 #[test]
+fn tm_list_selects_a_lists_issues() {
+    let scratch = Scratch::new();
+    let repo = with_list(&scratch);
+    run(&scratch, &repo, "shortlist add docs TM-1 TM-3");
+    let (code, doc) = run(&scratch, &repo, "list shortlist:docs sort:title");
+    assert_eq!(code, Some(0), "{doc}");
+    let keys: Vec<&Value> = doc["data"]["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|issue| &issue["key"])
+        .collect();
+    assert_eq!(keys, [&json!("TM-1"), &json!("TM-3")]);
+
+    let (code, doc) = run(&scratch, &repo, "list shortlist:nope");
+    assert_eq!(code, Some(1));
+    assert_eq!(doc["error"], "not_found");
+    assert_eq!(doc["kind"], "shortlist");
+    assert_eq!(doc["fix"], "tm shortlist --all");
+}
+
+#[test]
 fn membership_is_changed_only_through_tm_shortlist() {
     let scratch = Scratch::new();
     let repo = with_list(&scratch);
