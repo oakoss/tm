@@ -21,6 +21,7 @@ mod instructions;
 mod link;
 mod list;
 mod moves;
+mod next;
 mod output;
 mod prime;
 mod prompt;
@@ -98,6 +99,16 @@ enum Command {
     Start {
         /// The Issue's Key or full id.
         issue: String,
+        #[command(flatten)]
+        lasts: claim::Lasts,
+    },
+    /// Take and start, as `tm start` does, the first Issue your Short-lists
+    /// hold that can start now (`TM_SHORTLIST` names one list), or the most
+    /// urgent ready Issue when you have none; with nothing to take, says why.
+    Next {
+        /// Show the Issue it would take, without taking it.
+        #[arg(long, conflicts_with_all = ["ttl_ms", "no_expiry"])]
+        peek: bool,
         #[command(flatten)]
         lasts: claim::Lasts,
     },
@@ -394,6 +405,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         }) => scheme_type(&Scheme::built_in(), &issue_type),
         Some(Command::Init { key, name, yes }) => init::run(&init::Init { key, name, yes }, json),
         Some(Command::Start { issue, lasts }) => start::run(&issue, &lasts),
+        Some(Command::Next { peek, lasts }) => next::run(peek, &lasts),
         Some(Command::Claim { issue, lasts }) => claim::take(&issue, &lasts),
         Some(Command::Heartbeat { issue }) => claim::heartbeat(issue.as_deref()),
         Some(Command::Release {

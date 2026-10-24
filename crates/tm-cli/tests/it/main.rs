@@ -14,6 +14,7 @@ mod json;
 mod link;
 mod list;
 mod moves;
+mod next;
 mod prime;
 mod ready;
 mod scan;

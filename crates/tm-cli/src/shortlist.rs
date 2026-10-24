@@ -188,7 +188,7 @@ fn over_size(list: &Shortlist, count: usize) -> bool {
     u64::try_from(count).is_ok_and(|count| count > list.size)
 }
 
-const fn reason(passed: PassedOver) -> &'static str {
+pub(crate) const fn reason(passed: PassedOver) -> &'static str {
     match passed {
         PassedOver::Blocked => "blocked",
         PassedOver::Claimed => "claimed",

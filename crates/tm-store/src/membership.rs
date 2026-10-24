@@ -82,35 +82,30 @@ impl Store {
     /// [`StoreError::Clock`], any SQLite failure, or [`StoreError::Corrupt`]
     /// for a malformed row.
     pub fn shortlist_view(&self, list: Uuid) -> Result<Vec<Member>, StoreError> {
-        let now_ms = self.utc_ms()?;
         self.read(|store| {
             let order: Vec<Uuid> = ranked(&store.conn, list)?
                 .into_iter()
                 .map(|(id, _)| id)
                 .collect();
-            let views = store.issues(&order)?;
+            store.eligibility(&order)
+        })
+    }
+
+    /// `issues` in order, each with why `tm next` would pass it over, as
+    /// [`Store::take_next`] judges them.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Clock`], any SQLite failure, or [`StoreError::Corrupt`]
+    /// for a malformed row.
+    pub fn eligibility(&self, issues: &[Uuid]) -> Result<Vec<Member>, StoreError> {
+        let now_ms = self.utc_ms()?;
+        self.read(|store| {
+            let views = store.issues(issues)?;
             let blocks = open_blocks(&store.conn, &store.scheme)?;
             let mut members = Vec::with_capacity(views.len());
             for view in views {
-                let mut passed_over = Vec::new();
-                if blocks.iter().any(|(_, blocked)| *blocked == view.id) {
-                    passed_over.push(PassedOver::Blocked);
-                }
-                let claim = crate::claim::current(&store.conn, view.id)?;
-                if claim.is_some_and(|claim| !claim.lapsed(now_ms)) {
-                    passed_over.push(PassedOver::Claimed);
-                }
-                match view.category {
-                    Some(Category::Active) => passed_over.push(PassedOver::Started),
-                    Some(Category::Triage) | None => passed_over.push(PassedOver::Triage),
-                    Some(Category::Todo | Category::Done | Category::Cancelled) => {}
-                }
-                if view.fields.get("archived") == Some(&json!(true)) {
-                    passed_over.push(PassedOver::Archived);
-                }
-                if view.fields.get("type").and_then(Value::as_str) == Some("epic") {
-                    passed_over.push(PassedOver::Epic);
-                }
+                let passed_over = passed_over(&store.conn, &view, &blocks, now_ms)?;
                 members.push(Member {
                     issue: view,
                     passed_over,
@@ -403,9 +398,43 @@ fn blocker_order(
     Ok(())
 }
 
+/// Why `tm next` passes over `view` at `now_ms`, given the open `blocks`;
+/// empty when it could take it. The marks `tm shortlist` shows and the
+/// take read this one function, so they cannot disagree.
+pub(crate) fn passed_over(
+    conn: &Connection,
+    view: &IssueView,
+    blocks: &[(Uuid, Uuid)],
+    now_ms: i64,
+) -> Result<Vec<PassedOver>, StoreError> {
+    let mut passed_over = Vec::new();
+    if blocks.iter().any(|(_, blocked)| *blocked == view.id) {
+        passed_over.push(PassedOver::Blocked);
+    }
+    let claim = crate::claim::current(conn, view.id)?;
+    if claim.is_some_and(|claim| !claim.lapsed(now_ms)) {
+        passed_over.push(PassedOver::Claimed);
+    }
+    match view.category {
+        Some(Category::Active) => passed_over.push(PassedOver::Started),
+        Some(Category::Triage) | None => passed_over.push(PassedOver::Triage),
+        Some(Category::Todo | Category::Done | Category::Cancelled) => {}
+    }
+    if view.fields.get("archived") == Some(&json!(true)) {
+        passed_over.push(PassedOver::Archived);
+    }
+    if view.fields.get("type").and_then(Value::as_str) == Some("epic") {
+        passed_over.push(PassedOver::Epic);
+    }
+    Ok(passed_over)
+}
+
 /// `(blocker, blocked)` for each `blocks` Link whose blocker is open,
 /// whatever the Issue it blocks.
-fn open_blocks(conn: &Connection, scheme: &Scheme) -> Result<Vec<(Uuid, Uuid)>, StoreError> {
+pub(crate) fn open_blocks(
+    conn: &Connection,
+    scheme: &Scheme,
+) -> Result<Vec<(Uuid, Uuid)>, StoreError> {
     let open = resolve(
         &parse("-category:done,cancelled")?,
         scheme,

@@ -22,6 +22,12 @@ Start
   tm start KEY               when work starts, not when it ends: an Agent
                              claims the Issue, it moves to in_progress, and
                              it gains an Assignee if it has none
+  tm next                    takes and starts the first Issue on your
+                             Short-lists that can start now, or when no
+                             Short-list names you, the most urgent ready
+                             Issue on no list; --peek only shows it
+  When your human names an Issue, start it; when they leave the choice to
+  you, take the next.
 
 Claims
   A Claim tells other Agents an Issue is taken. It lasts 2 hours unless
