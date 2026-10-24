@@ -49,8 +49,15 @@ Keep it current
   Progress, what was learned and changes of plan go in comments, which
   keep a dated trail an edit would overwrite:
     tm comment KEY -                     (reads the text from stdin)
-  Other fields, labels and the parent change with tm edit; the Status
-  changes only with tm move.
+  Pipe long text in, from a file or a heredoc whose marker is quoted, so
+  the shell leaves $, backticks and quotes in it alone:
+    tm edit KEY --set description=- < plan.md
+    tm comment KEY - <<'EOF'
+    ...
+    EOF
+  Any --set FIELD=- on create, edit or move reads stdin, one field per
+  command. Other fields, labels and the parent change with tm edit; the
+  Status changes only with tm move.
 
 New work found along the way
   tm create --type task --title TEXT --parent KEY

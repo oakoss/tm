@@ -1,7 +1,6 @@
 //! `tm move`: an Issue to another Status of its Workflow, with any `--set`
 //! fields written in the same batch.
 
-use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
@@ -40,7 +39,8 @@ pub(crate) struct Move {
     issue: String,
     /// The Status, by id or label, such as `in_progress` or "In Review".
     status: String,
-    /// Set a field in the same write, such as assignee=jace.
+    /// Set a field in the same write, such as assignee=jace; FIELD=- reads
+    /// the value from stdin.
     #[arg(long, value_name = "FIELD=VALUE", value_parser = field_value)]
     set: Vec<(String, String)>,
     /// Finish an Issue another Agent session holds a live Claim on, ending
@@ -50,7 +50,10 @@ pub(crate) struct Move {
 }
 
 pub(crate) fn run(args: &Move) -> Result<Output, CliError> {
-    here::write(|here| write(here, &args.issue, &args.status, &args.set, args.force))
+    crate::fields::given_once(args.set.iter().map(|(field, _)| field))?;
+    // Read before the write, which may retry, since stdin is spent once read.
+    let set = crate::fields::read_stdin(&args.set, "leave the field out")?;
+    here::write(|here| write(here, &args.issue, &args.status, &set, args.force))
 }
 
 fn write(
@@ -60,15 +63,6 @@ fn write(
     fields: &[(String, String)],
     force: bool,
 ) -> Result<(Output, Vec<String>), CliError> {
-    let mut given = BTreeSet::new();
-    for (field, _) in fields {
-        if !given.insert(field) {
-            return Err(
-                CliError::new("invalid_value", format!("{field} is given more than once"))
-                    .with("field", field.as_str()),
-            );
-        }
-    }
     let id = here.issue(reference)?;
     let scheme = here.store.scheme().clone();
     let view = here.store.issue(id)?.ok_or_else(|| {
