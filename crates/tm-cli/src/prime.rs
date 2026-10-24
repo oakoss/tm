@@ -9,7 +9,7 @@ use std::io::IsTerminal as _;
 use serde_json::{Value, json};
 use tm_core::filter::Context;
 use tm_core::{Actor, ProjectId, Scheme};
-use tm_store::{AgentClaims, Claim, IssueView};
+use tm_store::{AgentClaims, Claim, IssueView, Member, Shortlist};
 use uuid::Uuid;
 
 use crate::claim;
@@ -18,11 +18,22 @@ use crate::guide::HABITS;
 use crate::here;
 use crate::identity;
 use crate::list::{item, line_within, project_keys};
+use crate::next;
 use crate::output::{Output, printable};
 
 /// Ready Issues shown; the rest are counted, so 200 Issues stay near 1k
 /// tokens.
 pub(crate) const READY_SHOWN: usize = 15;
+
+/// Fewer for a session with Short-lists, which `tm next` takes from first.
+const READY_SHOWN_WITH_LISTS: usize = 3;
+
+/// The lists' share of the budget, 1,000 bytes, which the one `tm next`
+/// takes from, at most about 450 bytes, may pass.
+const LISTS_ROOM: next::Room = next::Room {
+    title_bytes: TITLE_BYTES,
+    bytes: 1_000,
+};
 
 /// Issues in an active Status shown, most recently updated first, so a new
 /// session sees where the last one left off.
@@ -39,7 +50,14 @@ pub(crate) const TITLE_BYTES: usize = 64;
 /// over a missing identity or Project.
 pub(crate) fn run(json: bool) -> Result<Output, CliError> {
     let here = here::read()?;
-    let (actor, project, warnings) = context(&here);
+    let (actor, mapped, mut warnings) = context(&here);
+    let lists = lists(&here, actor.as_ref(), mapped.as_ref(), &mut warnings);
+    let project = mapped.map(|(_, key)| key);
+    let ready_shown = if lists.is_empty() {
+        READY_SHOWN
+    } else {
+        READY_SHOWN_WITH_LISTS
+    };
     let read = here.store.read(|store| {
         let claims = match actor.as_ref().filter(|actor| actor.is_agent()) {
             Some(actor) => store.claims_by(actor.name(), holder(actor))?,
@@ -50,7 +68,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
         active.truncate(ACTIVE_SHOWN);
         let mut ready = store.ready()?;
         let total = ready.len();
-        ready.truncate(READY_SHOWN);
+        ready.truncate(ready_shown);
         let ids: Vec<Uuid> = claims
             .held
             .iter()
@@ -84,19 +102,16 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
             let _ = writeln!(text, "warning: {}", printable(warning));
         }
     }
-    let who = actor.as_ref().map_or_else(|| "nobody".to_owned(), named);
-    let _ = writeln!(
-        text,
-        "tm: Project {}, writing as {}",
-        project.as_deref().unwrap_or("-"),
-        printable(&who)
-    );
+    let who = printable(&actor.as_ref().map_or_else(|| "nobody".to_owned(), named));
+    let key = project.as_deref().unwrap_or("-");
+    let _ = writeln!(text, "tm: Project {key}, writing as {who}");
     let scheme = scheme_brief(&mut text, scheme);
 
     let session = actor.as_ref().and_then(Actor::session);
     let now_ms = claims.at_ms;
     let sessions = by_session(claims, session);
     let claim_items = claims_sections(&mut text, &sessions, &claimed, &projects, now_ms);
+    let shortlists = next::lists_section(&mut text, &lists, LISTS_ROOM);
     section(
         &mut text,
         ("In progress", "none", "tm list category:active"),
@@ -117,14 +132,11 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
     let data = json!({
         "project": project,
         "scheme": scheme,
-        "actor": actor.as_ref().map(|actor| json!({
-            "name": actor.name(),
-            "agent": actor.is_agent(),
-            "on_behalf_of": actor.on_behalf_of(),
-        })),
+        "actor": actor.as_ref().map(actor_json),
         "claims": claim_items.held,
         "other_session_claims": claim_items.others,
         "lapsed_claims": claim_items.lapsed,
+        "shortlists": shortlists,
         "in_progress": {
             "issues": active.iter().map(|view| item(view, &projects)).collect::<Vec<_>>(),
             "total": active_total,
@@ -144,7 +156,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
 
 /// Who the session writes as and its Project, each `None` with a warning
 /// rather than an error.
-fn context(here: &here::Here) -> (Option<Actor>, Option<String>, Vec<String>) {
+fn context(here: &here::Here) -> (Option<Actor>, Option<(ProjectId, String)>, Vec<String>) {
     let mut warnings = here.warnings.clone();
     let actor = match identity::resolve(identity::env, || identity::git_email(&here.found.dir)) {
         Ok(identity) => {
@@ -167,13 +179,38 @@ fn context(here: &here::Here) -> (Option<Actor>, Option<String>, Vec<String>) {
         ));
     }
     let project = match here::mapped_project(&here.store, &here.found, &here.cwd) {
-        Ok((_, key)) => Some(key.to_owned()),
+        Ok((id, key)) => Some((id, key.to_owned())),
         Err(err) => {
             warnings.push(err.message);
             None
         }
     };
     (actor, project, warnings)
+}
+
+fn actor_json(actor: &Actor) -> Value {
+    json!({
+        "name": actor.name(),
+        "agent": actor.is_agent(),
+        "on_behalf_of": actor.on_behalf_of(),
+    })
+}
+
+/// The session's lists; one it cannot read is a warning, as prime never
+/// fails a session start.
+fn lists(
+    here: &here::Here,
+    actor: Option<&Actor>,
+    mapped: Option<&(ProjectId, String)>,
+    warnings: &mut Vec<String>,
+) -> Vec<(Shortlist, Vec<Member>)> {
+    let (Some(actor), Some((project, _))) = (actor, mapped) else {
+        return Vec::new();
+    };
+    next::session_lists(here, *project, actor).unwrap_or_else(|err| {
+        warnings.push(next::unread(&err));
+        Vec::new()
+    })
 }
 
 /// An Agent's Claims as one session sees them.

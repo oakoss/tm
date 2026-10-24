@@ -57,9 +57,7 @@ impl Source {
     /// The Issue a take would choose, as read now.
     fn first(&self) -> Option<Uuid> {
         self.members()
-            .find(|member| {
-                member.passed_over.is_empty() && member.issue.category == Some(Category::Todo)
-            })
+            .find(|member| eligible(member))
             .map(|member| member.issue.id)
     }
 
@@ -168,11 +166,23 @@ fn take(here: &mut Here, actor: &Actor, lasts: &Lasts) -> Result<Output, CliErro
     Ok(output)
 }
 
-/// The session's lists, or the one `TM_SHORTLIST` names, which never falls
-/// back to the others; the Project's ready queue only when the session has
-/// no list.
+/// The session's lists, or the Project's ready queue when it has none.
 fn source(here: &Here, actor: &Actor) -> Result<Source, CliError> {
     let project = here.project()?;
+    let lists = session_lists(here, project, actor)?;
+    if lists.is_empty() {
+        return ready(here, project);
+    }
+    Ok(Source::Lists(lists))
+}
+
+/// The session's lists in `project`, oldest first, each with its members,
+/// or the one `TM_SHORTLIST` names, which never falls back to the others.
+pub(crate) fn session_lists(
+    here: &Here,
+    project: ProjectId,
+    actor: &Actor,
+) -> Result<Vec<(Shortlist, Vec<Member>)>, CliError> {
     let mut lists = here.store.shortlists_of(project, actor)?;
     if let Some(bound) = bound()? {
         let named: Vec<Shortlist> = lists
@@ -189,15 +199,201 @@ fn source(here: &Here, actor: &Actor) -> Result<Source, CliError> {
         };
         lists = vec![list.clone()];
     }
-    if lists.is_empty() {
-        return ready(here, project);
-    }
     let mut read = Vec::with_capacity(lists.len());
     for list in lists {
         let members = here.store.shortlist_view(list.id)?;
         read.push((list, members));
     }
-    Ok(Source::Lists(read))
+    Ok(read)
+}
+
+/// Lists shown at session start; `tm shortlist` shows the rest.
+const LISTS_SHOWN: usize = 3;
+
+/// Members shown of the list `tm next` takes from, from the one it takes;
+/// one fewer of each other list.
+const MEMBERS_SHOWN: usize = 3;
+
+/// How the section is cut: titles and names to `title_bytes`, and lists to
+/// `bytes` in all, the one `tm next` takes from counted first; `tm prime`
+/// cuts to its budget, `tm ready` not at all.
+#[derive(Clone, Copy)]
+pub(crate) struct Room {
+    pub(crate) title_bytes: usize,
+    pub(crate) bytes: usize,
+}
+
+impl Room {
+    pub(crate) const WHOLE: Self = Self {
+        title_bytes: usize::MAX,
+        bytes: usize::MAX,
+    };
+}
+
+/// The session's lists as `tm prime` and `tm ready` lead with them: each
+/// list's first Issue that can start and the few after it, members `tm next`
+/// passes over marked with why, those above it counted by reason, and a
+/// count of the rest, within `room`. Only the Issue `tm next` takes is
+/// marked next, and its list always shows. Each list as `--json` gives it.
+/// No lists, no section.
+pub(crate) fn lists_section(
+    text: &mut String,
+    lists: &[(Shortlist, Vec<Member>)],
+    room: Room,
+) -> Vec<Value> {
+    if lists.is_empty() {
+        return Vec::new();
+    }
+    text.push_str("Short-lists (tm next takes the first that can start):\n");
+    let taken = lists
+        .iter()
+        .position(|(_, members)| members.iter().any(eligible));
+    let windows: Vec<(Option<usize>, Vec<&Member>)> = lists
+        .iter()
+        .enumerate()
+        .map(|(at, (_, members))| {
+            let first = members.iter().position(eligible);
+            let size = MEMBERS_SHOWN - usize::from(taken != Some(at));
+            let window = members.iter().skip(first.unwrap_or(0)).take(size).collect();
+            (first, window)
+        })
+        .collect();
+    let rendered: Vec<String> = lists
+        .iter()
+        .zip(&windows)
+        .enumerate()
+        .map(|(at, ((list, members), (first, window)))| {
+            let mark = if taken == Some(at) { "next" } else { "then" };
+            let mut one = String::new();
+            write_list(&mut one, (list, members), *first, (window, mark), room);
+            one
+        })
+        .collect();
+    let printed = fit(&rendered, taken, room.bytes);
+    for (at, one) in rendered.iter().enumerate() {
+        if printed.contains(&at) {
+            text.push_str(one);
+        }
+    }
+    let mut shown = Vec::with_capacity(lists.len());
+    for (at, ((list, members), (first, window))) in lists.iter().zip(&windows).enumerate() {
+        let first = first.map(|at| &members[at].issue);
+        shown.push(json!({
+            "id": list.id,
+            "name": list.name,
+            "count": members.len(),
+            "first": first.map(|issue| json!({ "id": issue.id, "key": issue.key })),
+            "next": taken == Some(at),
+            "members": window.iter().map(|member| json!({
+                "id": member.issue.id,
+                "key": member.issue.key,
+                "passed_over": member.passed_over,
+            })).collect::<Vec<_>>(),
+        }));
+    }
+    let more = lists.len() - printed.len();
+    if more > 0 {
+        let lists = if more == 1 { "list" } else { "lists" };
+        let _ = writeln!(text, "  and {more} more {lists}: tm shortlist");
+    }
+    shown
+}
+
+/// Which of `rendered` print: the one `taken` names, then the others in
+/// order while they fit in `bytes` and number at most [`LISTS_SHOWN`].
+fn fit(rendered: &[String], taken: Option<usize>, bytes: usize) -> Vec<usize> {
+    let mut used = taken.map_or(0, |at| rendered[at].len());
+    let mut printed: Vec<usize> = taken.into_iter().collect();
+    for (at, one) in rendered.iter().enumerate() {
+        if Some(at) == taken || printed.len() >= LISTS_SHOWN {
+            continue;
+        }
+        if used.saturating_add(one.len()) > bytes {
+            break;
+        }
+        used += one.len();
+        printed.push(at);
+    }
+    printed
+}
+
+/// One list: its heading, the members above its first that can start
+/// counted by reason, `window` from that member with it marked `mark`, and
+/// how many follow.
+fn write_list(
+    text: &mut String,
+    (list, members): (&Shortlist, &[Member]),
+    first: Option<usize>,
+    (window, mark): (&[&Member], &str),
+    room: Room,
+) {
+    let title_bytes = room.title_bytes;
+    // Half a title's room, so names cannot crowd out the Issues.
+    let name = crate::list::cut(&name(list), title_bytes / 2);
+    let count = members.len();
+    let issues = if count == 1 { "Issue" } else { "Issues" };
+    let Some(first) = first else {
+        let why = "none can start now; tm shortlist shows why";
+        let _ = if count == 0 {
+            writeln!(text, "  {name}: no Issues")
+        } else {
+            writeln!(text, "  {name} ({count} {issues}): {why}")
+        };
+        return;
+    };
+    let _ = writeln!(text, "  {name} ({count} {issues})");
+    if first > 0 {
+        let above = crate::list::cut(&counted(&members[..first]), title_bytes / 2);
+        let _ = if above.is_empty() {
+            writeln!(text, "    {first} above it passed over")
+        } else {
+            writeln!(text, "    {first} above it passed over: {above}")
+        };
+    }
+    for (n, member) in window.iter().enumerate() {
+        let mark = if n == 0 { mark } else { "    " };
+        let line = crate::list::line_within(&member.issue, title_bytes);
+        let _ = write!(text, "    {mark}  {line}");
+        let why: Vec<&str> = member.passed_over.iter().map(|why| reason(*why)).collect();
+        // Cut lines name the first reason and count the rest, to keep a budget.
+        let _ = match why.as_slice() {
+            [] => Ok(()),
+            [first, rest @ ..] if title_bytes < usize::MAX && !rest.is_empty() => {
+                write!(text, "  [{first} +{}]", rest.len())
+            }
+            all => write!(text, "  [{}]", all.join(", ")),
+        };
+        text.push('\n');
+    }
+    let rest = count - first - window.len();
+    if rest > 0 {
+        let _ = writeln!(text, "    and {rest} more: tm shortlist");
+    }
+}
+
+/// `members`' reasons counted, as "1 blocked, 2 started".
+fn counted(members: &[Member]) -> String {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for member in members {
+        for why in &member.passed_over {
+            *counts.entry(reason(*why)).or_default() += 1;
+        }
+    }
+    let counted: Vec<String> = counts.iter().map(|(why, n)| format!("{n} {why}")).collect();
+    counted.join(", ")
+}
+
+fn eligible(member: &Member) -> bool {
+    member.passed_over.is_empty() && member.issue.category == Some(Category::Todo)
+}
+
+/// A list read that failed, as the warning `tm prime` and `tm ready` give
+/// in its place, with its fix.
+pub(crate) fn unread(err: &CliError) -> String {
+    match &err.fix {
+        Some(fix) => format!("{}; {fix}", err.message),
+        None => err.message.clone(),
+    }
 }
 
 /// The Project's ready queue, less Issues on a Short-list, which another

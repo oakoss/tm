@@ -660,7 +660,8 @@ fn prime_answers_in_a_fixed_shape() {
               ]
             }
           ]
-        }
+        },
+        "shortlists": []
       },
       "schema_version": 1,
       "warnings": [

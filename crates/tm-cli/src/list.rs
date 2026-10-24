@@ -62,7 +62,13 @@ fn list(
     // as much as reading them.
     if json {
         let issues = views.iter().map(|view| Item::of(view, &projects)).collect();
-        return Listed { issues, total }.output();
+        let shortlists = None;
+        return Listed {
+            issues,
+            shortlists,
+            total,
+        }
+        .output();
     }
     let mut text = String::new();
     for view in &views {
@@ -176,6 +182,9 @@ fn without_rank<S: Serializer>(
 #[derive(Serialize)]
 pub(crate) struct Listed<'a> {
     pub(crate) issues: Vec<Item<'a>>,
+    /// Only `tm ready` leads with the session's Short-lists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) shortlists: Option<Vec<Value>>,
     pub(crate) total: usize,
 }
 
@@ -193,22 +202,26 @@ pub(crate) fn line(view: &IssueView) -> String {
     line_within(view, usize::MAX)
 }
 
+/// `text` cut to at most `bytes`, on a character boundary, ending in `…`.
+pub(crate) fn cut(text: &str, bytes: usize) -> String {
+    if text.len() <= bytes {
+        return text.to_owned();
+    }
+    let room = bytes.saturating_sub('…'.len_utf8());
+    let end = text
+        .char_indices()
+        .map(|(at, c)| at + c.len_utf8())
+        .take_while(|end| *end <= room)
+        .last()
+        .unwrap_or(0);
+    format!("{}…", &text[..end])
+}
+
 /// [`line`] with the printed title cut to at most `title_bytes`, on a
 /// character boundary, ending in `…`.
 pub(crate) fn line_within(view: &IssueView, title_bytes: usize) -> String {
     let field = |name: &str| view.fields.get(name).and_then(Value::as_str).unwrap_or("-");
-    let mut title = printable(field("title"));
-    if title.len() > title_bytes {
-        let room = title_bytes.saturating_sub('…'.len_utf8());
-        let end = title
-            .char_indices()
-            .map(|(at, c)| at + c.len_utf8())
-            .take_while(|end| *end <= room)
-            .last()
-            .unwrap_or(0);
-        title.truncate(end);
-        title.push('…');
-    }
+    let title = cut(&printable(field("title")), title_bytes);
     format!(
         "{}  {}  {}  {title}",
         view.key.clone().unwrap_or_else(|| view.id.to_string()),
