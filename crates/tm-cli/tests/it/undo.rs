@@ -260,10 +260,7 @@ fn a_write_that_changed_nothing_offers_no_undo() {
     assert!(out.status.success(), "{out:?}");
     assert!(!text(&out.stdout).contains("undo this with"), "{out:?}");
     let (_, doc) = run(&scratch, &repo, &["move", "TM-1", "in_progress"]);
-    assert!(
-        doc["data"]["batch"].is_string(),
-        "the batch is still reported"
-    );
+    assert!(doc["data"]["batch"].is_null(), "nothing was written: {doc}");
 }
 
 #[test]
