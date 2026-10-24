@@ -59,7 +59,7 @@ fn sql_value(value: &Literal) -> Sql {
         Literal::Text(text) | Literal::Name(text) => Sql::Text(text.clone()),
         Literal::Number(number) => Sql::Real(*number),
         Literal::Integer(integer) => Sql::Integer(*integer),
-        Literal::Issue(id) => Sql::Blob(id.as_bytes().to_vec()),
+        Literal::Issue(id) | Literal::Shortlist(id) => Sql::Blob(id.as_bytes().to_vec()),
     }
 }
 
@@ -191,6 +191,10 @@ fn condition_sql(b: &mut Builder, condition: &Condition) {
                     b.push(" AND elem IN ");
                     b.list(values);
                 }),
+                Target::Shortlist => on_shortlist(b, *negated, |b| {
+                    b.push(" AND m.shortlist IN ");
+                    b.list(values);
+                }),
             }
         }
         Condition::Present { target, present } => match target {
@@ -206,6 +210,7 @@ fn condition_sql(b: &mut Builder, condition: &Condition) {
             }
             Target::SchemeValue(field) => member_of(b, "field_values", field, !present, |_| {}),
             Target::Set(field) => member_of(b, "set_members", field, !present, |_| {}),
+            Target::Shortlist => on_shortlist(b, !present, |_| {}),
         },
         Condition::Category {
             pairs,
@@ -252,6 +257,19 @@ fn member_of(
         if negated { "NOT " } else { "" }
     ));
     b.param(Sql::Text(field.to_owned()));
+    rest(b);
+    b.push(")");
+}
+
+/// `id [NOT] IN` the Issues on a Short-list by ADR 0016's read rule: a live
+/// list in the Issue's Project, and a rank. A membership the rule hides
+/// reads as no list, so negation matches it.
+fn on_shortlist(b: &mut Builder, negated: bool, rest: impl FnOnce(&mut Builder)) {
+    b.push(&format!(
+        "id {}IN (SELECT m.id FROM issues m JOIN shortlists l ON l.id = m.shortlist \
+         AND l.deleted = 0 AND l.project = m.project WHERE m.shortlist_rank IS NOT NULL",
+        if negated { "NOT " } else { "" }
+    ));
     rest(b);
     b.push(")");
 }

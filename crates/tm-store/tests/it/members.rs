@@ -2,6 +2,7 @@
 //! read, and how finishing an Issue or deleting its list clears them.
 
 use serde_json::{Value, json};
+use tm_core::filter::Context;
 use tm_core::{Change, Hlc};
 use tm_store::{Store, StoreError};
 use uuid::Uuid;
@@ -234,7 +235,13 @@ fn a_merged_membership_of_a_deleted_or_foreign_list_reads_as_none() {
         assert_eq!(store.rebuild().unwrap(), 0);
         assert_eq!(on(&store, issue), (None, None), "{list}");
         assert_eq!(store.shortlist_members(list).unwrap(), Vec::<Uuid>::new());
+        assert_eq!(filtered(&store, "no:shortlist"), [issue], "{list}");
     }
+}
+
+/// The ids a filter matches, which the read rule must agree with.
+fn filtered(store: &Store, filter: &str) -> Vec<Uuid> {
+    store.find(filter, Context::default()).unwrap()
 }
 
 #[test]
@@ -275,8 +282,10 @@ fn a_finish_undone_after_its_list_was_deleted_restores_a_hidden_membership() {
     store.undo(&jace(), finished).unwrap();
     assert_eq!(field(&store, issue, "status"), Some(json!("todo")));
     assert_eq!(on(&store, issue), (None, None));
+    assert_eq!(filtered(&store, "no:shortlist"), [issue]);
     store.undo(&jace(), deleted).unwrap();
     assert_eq!(store.shortlist_members(docs).unwrap(), [issue]);
+    assert_eq!(filtered(&store, "shortlist:docs"), [issue]);
 }
 
 #[test]
@@ -302,6 +311,7 @@ fn an_issue_a_merge_left_half_on_a_list_stays_editable() {
     store.rebuild().unwrap();
     assert_eq!(on(&store, issue), (None, None));
     assert_eq!(store.shortlist_members(docs).unwrap(), Vec::<Uuid>::new());
+    assert_eq!(filtered(&store, "no:shortlist"), [issue]);
     store
         .append(draft(issue, set_field("title", json!("edited"))))
         .unwrap();

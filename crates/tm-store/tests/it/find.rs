@@ -2,8 +2,8 @@
 
 use serde_json::{Value, json};
 use tm_core::filter::{Context, FilterError, Span};
-use tm_core::{Change, Hlc};
-use tm_store::{Store, StoreError};
+use tm_core::{Change, Hlc, ProjectId};
+use tm_store::{Place, Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::PROJECT;
@@ -443,4 +443,125 @@ fn filter_errors_come_back_structured() {
         matches!(err, StoreError::Filter(FilterError::NoIdentity { .. })),
         "{err}"
     );
+}
+
+fn on_list(store: &mut Store, project: ProjectId, name: &str, issues: &[Uuid]) -> Uuid {
+    let actors = ["codex".to_owned()];
+    let (list, _) = store
+        .create_shortlist(&jace(), project, name, &actors, None)
+        .unwrap();
+    store
+        .shortlist_add(&jace(), list, issues, Place::End)
+        .unwrap();
+    list
+}
+
+/// ADR 0016: `shortlist:NAME` selects a list's Issues by the read rule, so
+/// a membership in a deleted list reads as none.
+#[test]
+fn a_shortlist_term_selects_its_members_by_name_or_id() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let [a, b, c, d] = [(); 4].map(|()| issue(&mut store, &clock, &[], &[]));
+    let docs = on_list(&mut store, PROJECT, "docs", &[a, b]);
+    let ops = on_list(&mut store, PROJECT, "ops", &[c]);
+
+    assert_eq!(sorted(find(&store, "shortlist:DOCS")), sorted(vec![a, b]));
+    assert_eq!(find(&store, &format!("shortlist:{docs}")).len(), 2);
+    let either = find(&store, "shortlist:docs,ops");
+    assert_eq!(sorted(either), sorted(vec![a, b, c]));
+    assert_eq!(sorted(find(&store, "-shortlist:docs")), sorted(vec![c, d]));
+    assert_eq!(sorted(find(&store, "has:shortlist")), sorted(vec![a, b, c]));
+    assert_eq!(find(&store, "no:shortlist"), [d]);
+
+    store.delete_shortlist(&jace(), ops).unwrap();
+    assert_eq!(sorted(find(&store, "has:shortlist")), sorted(vec![a, b]));
+    assert_eq!(sorted(find(&store, "no:shortlist")), sorted(vec![c, d]));
+    assert_eq!(sorted(find(&store, "-shortlist:docs")), sorted(vec![c, d]));
+}
+
+#[test]
+fn a_shortlist_name_matches_its_lists_in_every_project() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let (other, _) = store.create_project(&jace(), "WEB", "Web").unwrap();
+    let (here, _) = store.create_issue(&jace(), PROJECT, "task", "t").unwrap();
+    let (there, _) = store.create_issue(&jace(), other, "task", "t").unwrap();
+    on_list(&mut store, PROJECT, "docs", &[here]);
+    on_list(&mut store, other, "Docs", &[there]);
+    let both = find(&store, "shortlist:docs");
+    assert_eq!(sorted(both), sorted(vec![here, there]));
+}
+
+#[test]
+fn a_shortlist_that_does_not_exist_is_named() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let (issue, _) = store.create_issue(&jace(), PROJECT, "task", "t").unwrap();
+    let gone = on_list(&mut store, PROJECT, "gone", &[issue]);
+    store.delete_shortlist(&jace(), gone).unwrap();
+    let named = |filter: &str| match store.find(filter, ME).unwrap_err() {
+        StoreError::Filter(FilterError::NoShortlist { value, span }) => (value, span),
+        err => panic!("{filter}: {err}"),
+    };
+    let nope = named("status:todo shortlist:nope");
+    assert_eq!(nope, ("nope".into(), Span(22, 26)));
+    assert_eq!(named("shortlist:gone"), ("gone".into(), Span(10, 14)));
+    // The missing name earlier in the text is the one named.
+    let first = named("shortlist:nope parent:CPL-9");
+    assert_eq!(first, ("nope".into(), Span(10, 14)));
+    for filter in ["shortlist:@me", "shortlist:\" \""] {
+        let err = store.find(filter, ME).unwrap_err();
+        assert!(
+            matches!(err, StoreError::Filter(FilterError::InvalidValue { .. })),
+            "{filter}: {err}"
+        );
+    }
+}
+
+/// An id names its list even when another list took that id as its name.
+#[test]
+fn a_shortlist_id_wins_over_a_name_that_spells_it() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let (a, _) = store.create_issue(&jace(), PROJECT, "task", "t").unwrap();
+    let (b, _) = store.create_issue(&jace(), PROJECT, "task", "t").unwrap();
+    let docs = on_list(&mut store, PROJECT, "docs", &[a]);
+    on_list(&mut store, PROJECT, &docs.to_string(), &[b]);
+    assert_eq!(find(&store, &format!("shortlist:{docs}")), [a]);
+}
+
+/// ADR 0016: a name a merge left on two lists in one Project is refused
+/// until one is renamed.
+#[test]
+fn a_shortlist_name_two_lists_share_is_refused() {
+    let dir = TempDir::new();
+    let store = open(&dir.db(), &ManualClock::at(1_000));
+    let name = Change::SetShortlist {
+        field: tm_core::shortlist::Field::Name,
+        value: json!("docs"),
+    };
+    for (n, list) in (0..).zip([Uuid::now_v7(), Uuid::now_v7()]) {
+        let created = remote_op(8, list, &Change::CreateShortlist, Hlc::new(1_000, 2 * n), 0);
+        let named = remote_op(8, list, &name, Hlc::new(1_000, 2 * n + 1), 0);
+        insert_acked(&store, &created, i64::from(2 * n) + 3, 1_000);
+        insert_acked(&store, &named, i64::from(2 * n) + 4, 1_000);
+    }
+    let mut store = store;
+    store.rebuild().unwrap();
+    let shared = |filter: &str| match store.find(filter, ME).unwrap_err() {
+        StoreError::Filter(FilterError::ShortlistNameShared { span, count, .. }) => (span, count),
+        err => panic!("{filter}: {err}"),
+    };
+    assert_eq!(shared("shortlist:DOCS"), (Span(10, 14), 2));
+    assert_eq!(shared("shortlist:docs parent:CPL-9"), (Span(10, 14), 2));
+    // A filter that does not fit the Scheme, or a missing parent earlier in
+    // the text, is named first.
+    let err = store.find("shortlist:docs nosuch:x", ME).unwrap_err();
+    let unknown = matches!(err, StoreError::Filter(FilterError::UnknownField { .. }));
+    assert!(unknown, "{err}");
+    let err = store.find("parent:CPL-9 shortlist:docs", ME).unwrap_err();
+    let parent = matches!(err, StoreError::Filter(FilterError::NoIssue { .. }));
+    assert!(parent, "{err}");
 }

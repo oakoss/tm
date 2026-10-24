@@ -476,6 +476,41 @@ pub(crate) fn read(conn: &Connection, id: Uuid) -> Result<Option<Shortlist>, Sto
     }))
 }
 
+/// The live lists `given` names: the list with that id, else the lists in
+/// every Project with that name, compared without case. `Err` holds how many
+/// lists in one Project a merge left sharing the name, at most.
+pub(crate) fn live_named(
+    conn: &Connection,
+    given: &str,
+) -> Result<Result<Vec<Uuid>, usize>, StoreError> {
+    if let Ok(id) = Uuid::parse_str(given)
+        && read(conn, id)?.is_some_and(|list| !list.deleted)
+    {
+        return Ok(Ok(vec![id]));
+    }
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, project FROM shortlists WHERE deleted = 0 AND name = ?1 COLLATE NOCASE
+         ORDER BY project, id",
+    )?;
+    let rows = stmt.query_map([given], |row| {
+        Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut lists: Vec<(Uuid, String)> = Vec::new();
+    for row in rows {
+        let (id, project) = row?;
+        lists.push((uuid_from(&id)?, project));
+    }
+    let shared = lists
+        .chunk_by(|a, b| a.1 == b.1)
+        .map(<[_]>::len)
+        .max()
+        .unwrap_or(0);
+    if shared > 1 {
+        return Ok(Err(shared));
+    }
+    Ok(Ok(lists.into_iter().map(|(id, _)| id).collect()))
+}
+
 pub(crate) fn project_of(conn: &Connection, id: Uuid) -> Result<Option<ProjectId>, StoreError> {
     let text: Option<String> = conn
         .query_row(

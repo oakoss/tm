@@ -1312,7 +1312,15 @@ impl Store {
     /// the Scheme or names a parent no Issue is, or any SQLite failure.
     pub fn find(&self, filter: &str, context: Context<'_>) -> Result<Vec<Uuid>, StoreError> {
         let mut query = parse(filter)?;
-        let missing = self.issues_by_id(&mut query)?;
+        let issues = self.issues_by_id(&mut query)?;
+        let lists = self.shortlists_by_id(&mut query)?;
+        // The one earlier in the filter text, as a reader meets it.
+        let missing = issues.into_iter().chain(lists).min_by_key(|err| match err {
+            FilterError::NoIssue { span, .. }
+            | FilterError::NoShortlist { span, .. }
+            | FilterError::ShortlistNameShared { span, .. } => span.0,
+            _ => usize::MAX,
+        });
         let resolved = resolve(&query, &self.scheme, context)?;
         // After resolving, so a filter that does not fit the Scheme is named first.
         if let Some(missing) = missing {
@@ -1361,6 +1369,55 @@ impl Store {
                 }
                 *text = found.unwrap_or_else(Uuid::nil).to_string();
             }
+        }
+        Ok(missing)
+    }
+
+    /// Rewrites each list a `shortlist:` term names as the ids of the live
+    /// lists it names, returning the first that names none or is shared. An
+    /// id names its list; a name matches without case in every Project, as
+    /// the filter spans them, and one a merge left on two lists in a Project
+    /// is refused until one is renamed (ADR 0016).
+    fn shortlists_by_id(&self, query: &mut Query) -> Result<Option<FilterError>, StoreError> {
+        let mut missing = None;
+        for term in &mut query.terms {
+            let Term::Match { field, values, .. } = term else {
+                continue;
+            };
+            if !field.0.eq_ignore_ascii_case("shortlist") {
+                continue;
+            }
+            let mut ids = Vec::with_capacity(values.len());
+            for (value, span) in values.drain(..) {
+                let FilterValue::Text(text) = &value else {
+                    ids.push((value, span));
+                    continue;
+                };
+                // Left for resolving to refuse as blank.
+                if text.trim().is_empty() {
+                    ids.push((value, span));
+                    continue;
+                }
+                let value = text.trim().to_owned();
+                let found = match shortlist::live_named(&self.conn, &value)? {
+                    Ok(found) if found.is_empty() => {
+                        missing.get_or_insert(FilterError::NoShortlist { value, span });
+                        vec![Uuid::nil()]
+                    }
+                    Ok(found) => found,
+                    Err(count) => {
+                        let shared = FilterError::ShortlistNameShared { value, span, count };
+                        missing.get_or_insert(shared);
+                        vec![Uuid::nil()]
+                    }
+                };
+                ids.extend(
+                    found
+                        .into_iter()
+                        .map(|id| (FilterValue::Text(id.to_string()), span)),
+                );
+            }
+            *values = ids;
         }
         Ok(missing)
     }

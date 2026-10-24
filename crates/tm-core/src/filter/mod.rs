@@ -95,4 +95,13 @@ pub enum FilterError {
     NoIdentity { span: Span },
     #[error("no Issue is {value}")]
     NoIssue { value: String, span: Span },
+    #[error("no Short-list is named {value}")]
+    NoShortlist { value: String, span: Span },
+    /// A merge left the name on several lists in one Project (ADR 0016).
+    #[error("{count} Short-lists in one Project are named {value}; name one by its id")]
+    ShortlistNameShared {
+        value: String,
+        span: Span,
+        count: usize,
+    },
 }

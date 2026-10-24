@@ -25,6 +25,9 @@ pub enum Target {
     SchemeValue(String),
     /// A set field's elements.
     Set(String),
+    /// The Short-list an Issue is on, as ADR 0016's read rule gives it: a
+    /// live list in the Issue's Project, with a rank.
+    Shortlist,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +39,8 @@ pub enum Literal {
     Integer(i64),
     /// An Issue, compared by id.
     Issue(Uuid),
+    /// A Short-list, compared by id.
+    Shortlist(Uuid),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -112,6 +117,9 @@ enum Kind {
     Category,
     /// An Issue, named by id; a store turns Keys into ids before resolving.
     Issue(Target),
+    /// A Short-list, named by id; a store turns names into ids before
+    /// resolving.
+    Shortlist,
     /// Known, but filtering by value arrives later; `has:`/`no:` still work
     /// when there is a target.
     Later(&'static str, Option<Target>),
@@ -193,6 +201,7 @@ fn filterable(scheme: &Scheme) -> Vec<Filterable> {
             Some((SortTarget::Name("reporter"), false)),
         ),
         field("parent", Kind::Issue(Target::Column("parent_id")), None),
+        field("shortlist", Kind::Shortlist, None),
         field("key", Kind::Later("filtering by Key", None), None),
         field("agent", Kind::Later("filtering by Agent", None), None),
         field("claim", Kind::Later("filtering by Claim", None), None),
@@ -357,6 +366,7 @@ fn present_target(def: &Filterable, span: Span) -> Result<Target, FilterError> {
         }
         Kind::MultiSelect(field, _) => Ok(Target::Set(field.clone())),
         Kind::Labels => Ok(Target::Set("labels".into())),
+        Kind::Shortlist => Ok(Target::Shortlist),
     }
 }
 
@@ -377,6 +387,7 @@ fn match_condition(
         }
         Kind::MultiSelect(field, _) => Target::Set(field.clone()),
         Kind::Labels => Target::Set("labels".into()),
+        Kind::Shortlist => Target::Shortlist,
         Kind::Category => return category(def, values, negated, scheme),
         Kind::Later(construct, _) => {
             return Err(FilterError::Unsupported {
@@ -412,6 +423,9 @@ fn literal(
         }
         (Kind::Issue(_), Value::Me) => {
             return Err(invalid(def, "@me", span, "an Issue's Key or id"));
+        }
+        (Kind::Shortlist, Value::Me) => {
+            return Err(invalid(def, "@me", span, SHORTLIST_VALUE));
         }
         (_, Value::Me) => return Err(invalid(def, "@me", span, "a value, not a person")),
         (_, Value::Text(text)) if text.trim().is_empty() => {
@@ -452,9 +466,14 @@ fn literal(
         Kind::Issue(_) => Uuid::parse_str(text.trim())
             .map(Literal::Issue)
             .map_err(|_| invalid(def, text, span, "an Issue's Key or id")),
+        Kind::Shortlist => Uuid::parse_str(text.trim())
+            .map(Literal::Shortlist)
+            .map_err(|_| invalid(def, text, span, SHORTLIST_VALUE)),
         Kind::Category | Kind::Later(..) => Err(invalid(def, text, span, "a supported field")),
     }
 }
+
+const SHORTLIST_VALUE: &str = "a Short-list's name or id";
 
 /// The id in `ids` that `text` names, ignoring case.
 fn choose(def: &Filterable, text: &str, span: Span, ids: &[String]) -> Result<String, FilterError> {
