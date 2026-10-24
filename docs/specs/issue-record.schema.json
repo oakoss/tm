@@ -81,7 +81,7 @@
     },
     "fields": { "description": "Scheme fields by id.", "type": "object" },
     "shortlist": {
-      "description": "The Short-list it is on (ADR 0016); never a rank. An import matches the list by source, then by name, and creates one it cannot match, taking its Actors and size from the file's project line for that source, else the import's runner and size 10.",
+      "description": "The Short-list it is on (ADR 0016); never a rank. An import matches the list by source, then by name, and creates one it cannot match, taking its Actors and size from the file's project line for that source, else the import's runner and size 10. A list matched by name takes the recorded name. A list whose source finds only lists deleted here, with no live list of its name, is not made again: the Issue is not placed and the record reports a conflict.",
       "type": "object",
       "required": ["source", "position"],
       "additionalProperties": false,
