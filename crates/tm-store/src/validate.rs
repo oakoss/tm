@@ -62,7 +62,8 @@ pub(crate) fn check(
         | Change::RenameProject { .. }
         | Change::CreateShortlist
         | Change::SetShortlist { .. }
-        | Change::ShortlistActor { .. } => {
+        | Change::ShortlistActor { .. }
+        | Change::ShortlistSource => {
             unreachable!("Project and Short-list operations return above")
         }
         Change::SetField { field, value, .. } => {

@@ -320,7 +320,8 @@ fn describe(
         | Change::RenameProject { .. }
         | Change::CreateShortlist
         | Change::SetShortlist { .. }
-        | Change::ShortlistActor { .. } => entry.change.kind().to_owned(),
+        | Change::ShortlistActor { .. }
+        | Change::ShortlistSource => entry.change.kind().to_owned(),
     };
     let line = match &entry.unapplied {
         Some(reason) => format!("{line}  (not applied: {})", printable(reason)),

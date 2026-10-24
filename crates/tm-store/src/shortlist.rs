@@ -555,6 +555,10 @@ pub(crate) fn apply(
             found: op.project,
         });
     }
+    // Its source is on the operation, which every reader looks up there.
+    if matches!(change, Change::ShortlistSource) {
+        return Ok(());
+    }
     let list = op.subject;
     let (field, elem, present) = match change {
         Change::SetShortlist { field, .. } => (field.as_str(), "", true),

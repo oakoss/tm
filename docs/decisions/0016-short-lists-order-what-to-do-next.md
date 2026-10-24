@@ -52,7 +52,7 @@ Chosen options: **a Short-list of its own; membership in two fields on each Issu
 
 ### Who changes it
 
-- Any Actor may create a list, add, move or remove Issues, and change a list's name, Actors or size, Agents included. Each change is an operation, so `tm history` shows who made it and `tm undo` reverses it, and every new kind has an inverse. Refusing Agents would block the common case of a human telling their Agent to arrange a list; `tm guide` tells Agents to change a list only when their human asks.
+- Any Actor may create a list, add, move or remove Issues, and change a list's name, Actors or size, Agents included. Each change is an operation, so `tm history` shows who made it and `tm undo` reverses it, and every new kind has an inverse, except the one recording a list's source, which undo keeps as it keeps a Claim renewal, so a later import still finds the list. Refusing Agents would block the common case of a human telling their Agent to arrange a list; `tm guide` tells Agents to change a list only when their human asks.
 
 ### The commands
 

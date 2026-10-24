@@ -1635,6 +1635,13 @@ fn write_drafts(
             }
         }
         let (source, at) = provenance.map_or((None, now), |p| (Some(p.source), p.at));
+        if matches!(draft.change, Change::ShortlistSource) && source.is_none() {
+            return Err(StoreError::Invalid {
+                field: "source".into(),
+                reason: "a Short-list's source is written only by an import".into(),
+                valid: Vec::new(),
+            });
+        }
         let writing = validate::Writing {
             actor: &draft.actor,
             at_ms: at.utc_ms,

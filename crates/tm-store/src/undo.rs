@@ -344,11 +344,13 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
             Change::Claim {
                 action: ClaimAction::Take { .. },
             } => release(conn, op, &mut plan, &mut conflicts)?,
-            // A renewal records that the session was active, which undoing
-            // the write beside it does not make untrue (ADR 0009).
+            // A renewal records that the session was active (ADR 0009), and a
+            // list's source where it came from; undoing the batch makes
+            // neither untrue, so later imports still find the list.
             Change::Claim {
                 action: ClaimAction::Renew { .. },
-            } => {}
+            }
+            | Change::ShortlistSource => {}
             Change::Comment { .. } => {
                 targets.insert((
                     Subject::Issue,
