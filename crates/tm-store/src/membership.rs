@@ -82,13 +82,26 @@ impl Store {
     /// [`StoreError::Clock`], any SQLite failure, or [`StoreError::Corrupt`]
     /// for a malformed row.
     pub fn shortlist_view(&self, list: Uuid) -> Result<Vec<Member>, StoreError> {
-        let now_ms = self.utc_ms()?;
         self.read(|store| {
             let order: Vec<Uuid> = ranked(&store.conn, list)?
                 .into_iter()
                 .map(|(id, _)| id)
                 .collect();
-            let views = store.issues(&order)?;
+            store.eligibility(&order)
+        })
+    }
+
+    /// `issues` in order, each with why `tm next` would pass it over, as
+    /// [`Store::take_next`] judges them.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Clock`], any SQLite failure, or [`StoreError::Corrupt`]
+    /// for a malformed row.
+    pub fn eligibility(&self, issues: &[Uuid]) -> Result<Vec<Member>, StoreError> {
+        let now_ms = self.utc_ms()?;
+        self.read(|store| {
+            let views = store.issues(issues)?;
             let blocks = open_blocks(&store.conn, &store.scheme)?;
             let mut members = Vec::with_capacity(views.len());
             for view in views {

@@ -91,9 +91,10 @@ pub(crate) fn fixture(scratch: &Scratch, name: &str) -> PathBuf {
 
 /// Variables of the session the tests run in that would change what `tm`
 /// does, such as an Agent's, so each spawned `tm` starts without them.
-const SESSION_VARS: [&str; 10] = [
+const SESSION_VARS: [&str; 11] = [
     "TM_AGENT",
     "TM_SESSION",
+    "TM_SHORTLIST",
     "CODEX_SESSION_ID",
     "CODEX_THREAD_ID",
     "CLAUDE_CODE_CHILD_SESSION",

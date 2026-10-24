@@ -5,8 +5,9 @@ use std::fmt::Write as _;
 
 use serde_json::{Value, json};
 use tm_core::scheme::Category;
-use tm_core::{Actor, Change, Scheme};
-use tm_store::{Draft, IssueView};
+use tm_core::{Actor, Change, Op, Scheme};
+use tm_store::{Claim, Draft, IssueView};
+use uuid::Uuid;
 
 use crate::claim::{self, Lasts};
 use crate::edit::{self, Changed};
@@ -20,13 +21,22 @@ use crate::show;
 
 /// What starting an Issue changes on it, beside its Claim.
 #[derive(Default)]
-struct Begun {
+pub(crate) struct Begun {
     /// The Issue as the write read it.
     issue: Option<IssueView>,
     changes: Vec<Change>,
     warnings: Vec<String>,
     /// Its parents the write started too.
     starts: Starts,
+}
+
+pub(crate) struct Started {
+    pub(crate) id: Uuid,
+    pub(crate) claim: Option<Claim>,
+    /// A Claim this session already held, kept rather than taken again.
+    pub(crate) held: Option<Claim>,
+    pub(crate) ops: Vec<Op>,
+    pub(crate) begun: Begun,
 }
 
 pub(crate) fn run(reference: &str, lasts: &Lasts) -> Result<Output, CliError> {
@@ -45,7 +55,7 @@ fn write(
     let scheme = here.store.scheme().clone();
     let drafts = |lineage: &[IssueView]| begin(&scheme, &actor, lineage);
     // A human starts the work without a Claim, which only an Agent holds.
-    let (claim, held, ops, mut begun) = if actor.is_agent() {
+    let (claim, held, ops, begun) = if actor.is_agent() {
         let ttl_ms = lasts.ttl_ms(here);
         let started = here.store.take_with(&actor, id, ttl_ms, drafts)?;
         let (taken, kept) = if started.kept {
@@ -58,6 +68,32 @@ fn write(
         let (ops, begun) = here.store.append_with_lineage(Vec::new(), id, drafts)?;
         (None, None, ops, begun)
     };
+    let started = Started {
+        id,
+        claim,
+        held,
+        ops,
+        begun,
+    };
+    let output = report(here, &actor, reference, started)?;
+    Ok((output, identity.warnings))
+}
+
+/// What a start wrote, as `tm start` and `tm next` print it: the Claim, the
+/// changes, a branch name and the Issue.
+pub(crate) fn report(
+    here: &mut Here,
+    actor: &Actor,
+    reference: &str,
+    started: Started,
+) -> Result<Output, CliError> {
+    let Started {
+        id,
+        claim,
+        held,
+        ops,
+        mut begun,
+    } = started;
     if !actor.is_agent()
         && let Some(state) = here.store.claim_state(id)?
         && let Some(other) = state.held()
@@ -111,17 +147,16 @@ fn write(
     shown.data["branch"] = json!(branch);
     shown.warnings.extend(begun.warnings);
     let shown = follow::report(&here.store, shown, begun.starts, id)?;
-    let output = match ops.first() {
-        Some(op) => here.undoable(shown, op.op_id, &actor)?,
-        None => shown,
-    };
-    Ok((output, identity.warnings))
+    match ops.first() {
+        Some(op) => here.undoable(shown, op.op_id, actor),
+        None => Ok(shown),
+    }
 }
 
 /// The drafts that begin `lineage`'s first Issue: moving it out of triage or
 /// todo into its first active Status, and its parents with it, and making the
 /// human `actor` works for its Assignee when it has none.
-fn begin(scheme: &Scheme, actor: &Actor, lineage: &[IssueView]) -> (Vec<Draft>, Begun) {
+pub(crate) fn begin(scheme: &Scheme, actor: &Actor, lineage: &[IssueView]) -> (Vec<Draft>, Begun) {
     let Some((issue, parents)) = lineage.split_first() else {
         return (Vec::new(), Begun::default());
     };
