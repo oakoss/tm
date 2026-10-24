@@ -1428,6 +1428,15 @@ impl Store {
         Ok(missing)
     }
 
+    /// Refuses `parent` for `issue` ahead of the write, which checks again.
+    ///
+    /// # Errors
+    ///
+    /// As setting it would: itself, or a descendant.
+    pub fn check_parent(&self, issue: Uuid, parent: Uuid) -> Result<(), StoreError> {
+        validate::parent_allowed(&self.conn, issue, parent).map_err(|err| err.named(&self.conn))
+    }
+
     /// An Issue as it currently reads, labelled from the Scheme.
     ///
     /// # Errors

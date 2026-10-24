@@ -5,7 +5,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 use tm_core::op::{CLAIM_FIELD, COMMENTS_FIELD};
 use tm_core::scheme::{Field, FieldType, Scheme, is_date, priority_rank};
@@ -328,7 +328,7 @@ fn blocking_path(
 /// Issues `next` selects for `?1`. Visiting each Issue once keeps it finite
 /// on a cycle a merge left.
 fn shortest_path(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     next: &str,
     start: Uuid,
     goal: Uuid,
@@ -685,7 +685,7 @@ fn member_of(
 /// The parent chain from `start` up to `goal`, both included, if `goal` is an
 /// ancestor of `start`. Stops at a cycle a merge left among the ancestors.
 fn ancestry_reaches(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     start: Uuid,
     goal: Uuid,
 ) -> Result<Option<Vec<Uuid>>, StoreError> {
@@ -695,6 +695,29 @@ fn ancestry_reaches(
         start,
         goal,
     )
+}
+
+/// Refuses `parent` for `issue` as writing it would: the Issue itself, or
+/// one of its descendants.
+pub(crate) fn parent_allowed(
+    conn: &Connection,
+    issue: Uuid,
+    parent: Uuid,
+) -> Result<(), StoreError> {
+    if parent == issue {
+        return Err(StoreError::Invalid {
+            field: "parent".into(),
+            reason: "cannot refer to the Issue itself".into(),
+            valid: Vec::new(),
+        });
+    }
+    match ancestry_reaches(conn, parent, issue)? {
+        Some(path) => Err(StoreError::Cycle {
+            relation: "parent",
+            path: [issue].into_iter().chain(path).map(Into::into).collect(),
+        }),
+        None => Ok(()),
+    }
 }
 
 fn current(

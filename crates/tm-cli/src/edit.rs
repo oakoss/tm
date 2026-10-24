@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 use tm_core::Change;
 use tm_core::scheme::Scheme;
-use tm_store::{Draft, IssueView, StoreError};
+use tm_store::{Draft, IssueView, Named, StoreError};
 use uuid::Uuid;
 
 use crate::error::CliError;
@@ -57,7 +57,7 @@ pub(crate) fn run(reference: &str, edit: &Edit) -> Result<Output, CliError> {
 
 fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<String>), CliError> {
     refuse_status(reference, edit)?;
-    let values = values(edit)?;
+    fields::given_once(edit.set.iter().map(|(field, _)| field).chain(&edit.unset))?;
     let id = here.issue(reference)?;
     let view = here.store.issue(id)?.ok_or_else(|| {
         CliError::new("not_found", format!("no Issue is {reference}"))
@@ -68,6 +68,19 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
         Some(parent) => Some(here.issue(parent)?),
         None => None,
     };
+    // Only a parent that changes is written, so only it is checked: a cycle a
+    // merge left stays editable.
+    let current = view.fields.get("parent").and_then(Value::as_str);
+    if let Some(parent) = parent
+        && current != Some(parent.to_string().as_str())
+    {
+        here.store.check_parent(id, parent)?;
+    }
+    let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
+        .map_err(|message| CliError::new("no_identity", message))?;
+    check_flags(here.store.scheme(), &view, edit)?;
+    // Read once all else is checked, so a mistake keeps the piped text.
+    let values = fields::read_stdin(&edit.set, "clear a field with --unset")?;
     let (changes, report) = changes(here, &view, edit, &values, parent)?;
     let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
     let data = |report: &[Changed]| {
@@ -86,8 +99,6 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
         return Ok((output, Vec::new()));
     }
 
-    let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map_err(|message| CliError::new("no_identity", message))?;
     let drafts = changes
         .into_iter()
         .map(|change| Draft {
@@ -134,10 +145,32 @@ fn refuse_status(reference: &str, edit: &Edit) -> Result<(), CliError> {
     }
 }
 
-/// Each `--set` value, with `-` read from stdin.
-fn values(edit: &Edit) -> Result<Vec<(String, String)>, CliError> {
-    fields::given_once(edit.set.iter().map(|(field, _)| field).chain(&edit.unset))?;
-    fields::read_stdin(&edit.set, "clear a field with --unset")
+/// Refuses what the flags ask for that no value could make right: a field
+/// the Scheme lacks or computes, one that cannot be cleared, a blank label
+/// to add, or a label both added and removed.
+fn check_flags(scheme: &Scheme, view: &IssueView, edit: &Edit) -> Result<(), CliError> {
+    fields::known(scheme, edit.set.iter().map(|(field, _)| field))?;
+    fields::labels(&edit.labels)?;
+    for name in &edit.unset {
+        unsettable(scheme, view, name)?;
+    }
+    if let Some(both) = edit.labels.iter().find(|label| {
+        edit.remove_labels
+            .iter()
+            .any(|removed| key(removed) == key(label))
+    }) {
+        return Err(CliError::new(
+            "invalid_value",
+            format!("{} is both added and removed", printable(both.trim())),
+        )
+        .with("field", "labels"));
+    }
+    Ok(())
+}
+
+/// A label keyed as the store keys labels: trimmed and lowercased.
+fn key(label: &str) -> String {
+    label.trim().to_lowercase()
 }
 
 /// The changes the flags ask for, leaving out any that would write a value
@@ -167,23 +200,9 @@ fn changes(
         field(name, typed(scheme, name, value), view.fields.get(name));
     }
     for name in &edit.unset {
-        unsettable(scheme, view, name)?;
         field(name, Value::Null, view.fields.get(name));
     }
 
-    // Keyed as the store keys labels: trimmed and lowercased.
-    let key = |label: &str| label.trim().to_lowercase();
-    if let Some(both) = edit.labels.iter().find(|label| {
-        edit.remove_labels
-            .iter()
-            .any(|removed| key(removed) == key(label))
-    }) {
-        return Err(CliError::new(
-            "invalid_value",
-            format!("{} is both added and removed", printable(both.trim())),
-        )
-        .with("field", "labels"));
-    }
     let before = view.sets.get("labels").cloned().unwrap_or_default();
     let mut after = before.clone();
     for label in &edit.labels {
@@ -243,6 +262,10 @@ pub(crate) fn same(before: &Value, after: &Value) -> bool {
     before == after || before.as_f64().is_some_and(|b| after.as_f64() == Some(b))
 }
 
+fn held(value: &Value) -> bool {
+    !value.is_null() && value.as_str().is_none_or(|text| !text.trim().is_empty())
+}
+
 /// Whether `--unset` can clear `name`. Priority and archived always hold a
 /// value, so clearing them would write their default; a field the Scheme
 /// lacks clears only while the Issue still holds it.
@@ -253,6 +276,23 @@ fn unsettable(scheme: &Scheme, view: &IssueView, name: &str) -> Result<(), CliEr
             format!("{name} always holds a value; set it instead, such as with --set {name}=..."),
         )
         .with("field", name));
+    }
+    match scheme.field(name) {
+        Some(field) if field.derived => return Err(fields::computed(name)),
+        // The store refuses only a required field the write would empty, and
+        // counts blank text as empty.
+        Some(field) if field.required && view.fields.get(name).is_some_and(held) => {
+            return Err(StoreError::MissingFields {
+                issue: Named {
+                    id: view.id,
+                    key: view.key.clone(),
+                    source: None,
+                },
+                fields: vec![name.to_owned()],
+            }
+            .into());
+        }
+        _ => {}
     }
     if scheme.field(name).is_none() && !view.fields.contains_key(name) {
         return Err(StoreError::UnknownField {

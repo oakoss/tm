@@ -15,11 +15,6 @@ pub(crate) fn run(reference: &str, body: &str) -> Result<Output, CliError> {
 }
 
 fn write(here: &mut Here, reference: &str, body: &str) -> Result<(Output, Vec<String>), CliError> {
-    let body = if body == "-" {
-        fields::read_stdin_text("body")?
-    } else {
-        body.to_owned()
-    };
     // Comments are append-only, so a blank one from a failed `$(cmd)` would
     // stay for good.
     if body.trim().is_empty() {
@@ -35,6 +30,16 @@ fn write(here: &mut Here, reference: &str, body: &str) -> Result<(Output, Vec<St
         .ok_or_else(|| CliError::new("not_found", format!("no Issue is {reference}")))?;
     let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
         .map_err(|message| CliError::new("no_identity", message))?;
+    // Read once all else is checked, so a mistake keeps the piped text.
+    let body = if body == "-" {
+        let read = fields::read_stdin_text("body")?;
+        if read.trim().is_empty() {
+            return Err(fields::refused("body", "is blank"));
+        }
+        read
+    } else {
+        body.to_owned()
+    };
     let op = here.store.append(Draft {
         actor: identity.actor.clone(),
         project,
