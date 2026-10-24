@@ -697,7 +697,7 @@ fn expiry(op: &Op, ttl_ms: u64) -> Result<i64, StoreError> {
 
 /// The Claim a take makes, held to the rules that need no state, so replay
 /// holds a pulled take to them too.
-fn taken(
+pub(crate) fn taken(
     op: &Op,
     agent: &str,
     ttl_ms: Option<u64>,
