@@ -228,6 +228,60 @@ fn every_issue_is_exported_as_its_current_record() {
     assert_eq!(records[1]["source"], tm(parent), "ordered by id");
 }
 
+/// ADR 0016: a record names its list by source and name with its position,
+/// never its rank; a project line names each live list with its Actors and
+/// size, and a deleted list is not carried.
+#[test]
+fn a_record_carries_its_place_and_a_project_line_its_lists() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = source(&dir, &clock);
+    let [a, b, c] = [(); 3].map(|()| new_issue(&mut store));
+    let actors = ["codex".to_owned(), "claude".to_owned()];
+    let (docs, _) = store
+        .create_shortlist(&jace(), crate::support::PROJECT, "docs", &actors, Some(5))
+        .unwrap();
+    store
+        .shortlist_add(&jace(), docs, &[b, a], tm_store::Place::End)
+        .unwrap();
+    let (gone, _) = store
+        .create_shortlist(&jace(), crate::support::PROJECT, "gone", &actors, None)
+        .unwrap();
+    store
+        .shortlist_add(&jace(), gone, &[c], tm_store::Place::End)
+        .unwrap();
+    store.delete_shortlist(&jace(), gone).unwrap();
+
+    let records = lines(&export(&store));
+    let project = records
+        .iter()
+        .find(|record| record["_type"] == "project" && record["key"] == "CPL")
+        .unwrap();
+    let list = json!({
+        "source": format!("tm:{docs}"),
+        "name": "docs",
+        "actors": ["claude", "codex"],
+        "size": 5,
+    });
+    assert_eq!(project["shortlists"], json!([list]));
+    let place = |issue: Uuid| {
+        records
+            .iter()
+            .find(|record| record["source"] == format!("tm:{issue}"))
+            .unwrap()["shortlist"]
+            .clone()
+    };
+    let source = format!("tm:{docs}");
+    let at = |position: u64| json!({"source": source, "name": "docs", "position": position});
+    assert_eq!((place(b), place(a)), (at(1), at(2)));
+    assert_eq!(place(c), Value::Null, "a deleted list is no list");
+    for record in records.iter().filter(|record| record["_type"] == "issue") {
+        let fields = &record["fields"];
+        assert_eq!(fields.get("shortlist_rank"), None, "no rank in {record}");
+        assert_eq!(fields.get("shortlist"), None, "{record}");
+    }
+}
+
 #[test]
 fn a_copy_of_a_store_in_use_holds_what_its_wal_holds() {
     let (dir, other) = (TempDir::new(), TempDir::new());

@@ -51,7 +51,9 @@ pub use membership::{Member, PassedOver, Place, Placed};
 pub use next::Next;
 pub use read::{CommentView, Direction, IssueView, LinkView};
 pub use ready::Ready;
-pub use record::{CommentRecord, IssueRecord, LinkRecord, tm_source};
+pub use record::{
+    CommentRecord, IssueRecord, LinkRecord, ListRecord, MemberRecord, list_source, tm_source,
+};
 pub use shortlist::{Shortlist, ShortlistEdit};
 pub use undo::{Restore, Target, UndoPlan};
 

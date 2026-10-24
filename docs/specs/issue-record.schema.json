@@ -80,6 +80,28 @@
       }
     },
     "fields": { "description": "Scheme fields by id.", "type": "object" },
+    "shortlist": {
+      "description": "The Short-list it is on (ADR 0016); never a rank. An import matches the list by source, then by name, and creates one it cannot match, taking its Actors and size from the file's project line for that source, else the import's runner and size 10.",
+      "type": "object",
+      "required": ["source", "position"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "description": "The list's source; a tm export writes tm:<list id>. An import matches it first, then the name.",
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "description": "Absent only for a list a merge brought without one; an import cannot create such a list.",
+          "type": "string"
+        },
+        "position": {
+          "description": "From 1, in the list's order.",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
     "created": { "type": "string", "format": "date-time" },
     "updated": { "type": "string", "format": "date-time" }
   }

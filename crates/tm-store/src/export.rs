@@ -14,7 +14,7 @@ use tm_core::{Hlc, Op, ProjectId};
 use uuid::Uuid;
 
 use crate::apply::{project_from, rust_int, sql_int, uuid_from};
-use crate::record::{IssueRecord, issue_records};
+use crate::record::{IssueRecord, ListRecord, issue_records};
 use crate::{Store, StoreError, rebuild_in};
 
 pub(crate) const FORMAT: &str = "tm-export";
@@ -38,13 +38,16 @@ struct Header {
     exported_ms: i64,
 }
 
-/// For a reader; restore takes Projects from their operations.
+/// For a reader and a record import; restore takes Projects from their
+/// operations.
 #[derive(Debug, Serialize, Deserialize)]
 struct ProjectRecord {
     id: ProjectId,
     key: String,
     keys: Vec<String>,
     name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    shortlists: Vec<ListRecord>,
 }
 
 /// Every logged column but the local `seq`.
@@ -281,11 +284,13 @@ fn projects(conn: &rusqlite::Connection) -> Result<Vec<Record>, StoreError> {
             let held = keys
                 .query_map([&id], |row| row.get::<_, String>(0))?
                 .collect::<Result<Vec<_>, _>>()?;
+            let shortlists = crate::record::lists(conn, &id)?;
             Ok(Record::Project(ProjectRecord {
                 id: project_from(&id)?,
                 key,
                 keys: held,
                 name,
+                shortlists,
             }))
         })
         .collect()

@@ -63,6 +63,9 @@ pub struct IssueRecord {
     /// Scheme fields by id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub fields: BTreeMap<String, Value>,
+    /// The Short-list it is on (ADR 0016).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shortlist: Option<MemberRecord>,
     /// RFC 3339.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created: Option<String>,
@@ -91,6 +94,60 @@ pub struct CommentRecord {
     /// RFC 3339.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<String>,
+}
+
+/// The list an Issue is on, named as its project line names it, and the
+/// Issue's place there; never its rank, which has no meaning outside tm.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemberRecord {
+    /// The list's source, such as `tm:<list id>`; an import matches by it
+    /// first, then by name.
+    pub source: String,
+    /// Absent only for a list a merge brought without its name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// From 1, in the list's order.
+    pub position: u64,
+}
+
+/// A Short-list on a `project` line (ADR 0016).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListRecord {
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub actors: Vec<String>,
+    pub size: u64,
+}
+
+/// The source a tm export gives Short-list `id`, as it gives an Issue.
+#[must_use]
+pub fn list_source(id: Uuid) -> String {
+    format!("{TM_SOURCE}{id}")
+}
+
+/// The live lists in `project`, ordered by id, as its project line names them.
+pub(crate) fn lists(conn: &Connection, project: &str) -> Result<Vec<ListRecord>, StoreError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id FROM shortlists WHERE project = ?1 AND deleted = 0 ORDER BY id",
+    )?;
+    let ids = stmt
+        .query_map([project], |row| row.get::<_, Vec<u8>>(0))?
+        .map(|id| uuid_from(&id?))
+        .collect::<Result<Vec<_>, StoreError>>()?;
+    let mut lists = Vec::with_capacity(ids.len());
+    for id in ids {
+        let list = crate::shortlist::read(conn, id)?.ok_or(StoreError::UnknownShortlist(id))?;
+        lists.push(ListRecord {
+            source: list_source(id),
+            name: list.name,
+            actors: list.actors,
+            size: list.size,
+        });
+    }
+    Ok(lists)
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -124,10 +181,38 @@ pub(crate) fn issue_records(
             .collect::<Result<Vec<_>, _>>()?
     };
     let keys = project_keys(conn)?;
+    let mut places = places(conn)?;
     read::issues(conn, scheme, &ids)?
         .into_iter()
-        .map(|view| issue_record(conn, &keys, view))
+        .map(|view| {
+            let place = places.remove(&view.id);
+            issue_record(conn, &keys, view, place)
+        })
         .collect()
+}
+
+/// Each member of a list, by Issue, as its record names its place; the read
+/// rule leaves a deleted list none.
+fn places(conn: &Connection) -> Result<BTreeMap<Uuid, MemberRecord>, StoreError> {
+    let mut stmt = conn.prepare("SELECT id FROM shortlists ORDER BY id")?;
+    let lists = stmt
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))?
+        .map(|id| uuid_from(&id?))
+        .collect::<Result<Vec<_>, StoreError>>()?;
+    let mut places = BTreeMap::new();
+    for list in lists {
+        let name = crate::shortlist::read(conn, list)?.and_then(|list| list.name);
+        let members = crate::membership::ranked(conn, list)?;
+        for (position, (issue, _)) in (1..).zip(members) {
+            let place = MemberRecord {
+                source: list_source(list),
+                name: name.clone(),
+                position,
+            };
+            places.insert(issue, place);
+        }
+    }
+    Ok(places)
 }
 
 fn project_keys(conn: &Connection) -> Result<BTreeMap<String, String>, StoreError> {
@@ -140,6 +225,7 @@ fn issue_record(
     conn: &Connection,
     keys: &BTreeMap<String, String>,
     view: IssueView,
+    shortlist: Option<MemberRecord>,
 ) -> Result<IssueRecord, StoreError> {
     let IssueView {
         id,
@@ -174,7 +260,7 @@ fn issue_record(
     let created = time(fields.remove("created"))?;
     let updated = time(fields.remove("updated"))?;
     let archived = fields.remove("archived") == Some(Value::Bool(true));
-    // Membership's record form (ADR 0016) comes with TM-59's export work.
+    // Membership is `shortlist`, its place by position rather than rank.
     fields.remove("shortlist");
     fields.remove("shortlist_rank");
     // What is left are the Scheme fields.
@@ -232,6 +318,7 @@ fn issue_record(
         links,
         comments,
         fields,
+        shortlist,
         created,
         updated,
     })
@@ -296,9 +383,21 @@ mod tests {
             links: vec![link.clone()],
             comments: vec![comment.clone()],
             fields: BTreeMap::from([("f".to_owned(), json!(1))]),
+            shortlist: Some(MemberRecord {
+                source: "x:list".into(),
+                name: text("docs"),
+                position: 1,
+            }),
             created: text("c"),
             updated: text("u"),
         };
+        let member = serde_json::to_value(full.shortlist.clone()).unwrap();
+        let member_schema = &schema["properties"]["shortlist"];
+        assert_eq!(keys(&member), keys(&member_schema["properties"]));
+        let unnamed: MemberRecord =
+            serde_json::from_value(json!({"source": "x:list", "position": 1})).unwrap();
+        let unnamed = serde_json::to_value(unnamed).unwrap();
+        assert_eq!(names(&member_schema["required"]), keys(&unnamed));
         let (comment, link) = (
             serde_json::to_value(comment).unwrap(),
             serde_json::to_value(link).unwrap(),
