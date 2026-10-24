@@ -185,7 +185,10 @@ fn a_place_is_compared_three_ways() {
     let moved = [record(1, Some(("later", 1))), record(2, Some(("docs", 1)))];
     let conflicted = import(&mut store, &moved).unwrap();
     assert_eq!(order(&store, "other"), [one], "tm's place is kept");
-    assert_eq!(conflicted.records[0].conflicts[0].field, "shortlist");
+    let conflict = &conflicted.records[0].conflicts[0];
+    assert_eq!(conflict.field, "shortlist");
+    assert_eq!(conflict.tm["name"], "other", "named, not only an id");
+    assert_eq!(conflict.reason, None);
     assert_eq!(order(&store, "later"), Vec::<Uuid>::new());
     assert_eq!(order(&store, "docs"), [two], "the source put it back");
 }
@@ -204,7 +207,10 @@ fn an_import_reports_what_an_add_would_refuse() {
     let list = &imported.shortlists[0];
     assert_eq!((list.members, list.size), (2, 1));
     let epic = issue(&imported, 2);
-    assert_eq!(list.passed_over, [(epic, vec![PassedOver::Epic])]);
+    assert_eq!(passed(list), [(epic, vec![PassedOver::Epic])]);
+    let key = store.issue(epic).unwrap().unwrap().key;
+    assert!(key.is_some());
+    assert_eq!(list.passed_over[0].key, key, "named as tm shows it");
 }
 
 /// Each refusal names the line, and the message says why.
@@ -352,7 +358,7 @@ fn a_finished_issue_is_not_placed_and_says_so() {
     assert_eq!(order(&store, "docs"), Vec::<Uuid>::new());
     let conflict = &imported.records[0].conflicts[0];
     assert_eq!(conflict.field, "shortlist");
-    assert_eq!(conflict.tm, json!("finished"));
+    assert_eq!(conflict.reason, Some("the Issue is finished"));
 
     // Finished in tm, while the source still holds the place it last sent.
     let lines = [record(2, Some(("docs", 1)))];
@@ -363,7 +369,7 @@ fn a_finished_issue_is_not_placed_and_says_so() {
     let again = import(&mut store, &lines).unwrap();
     let shortlist = |c: &&tm_store::Conflict| c.field == "shortlist";
     let conflict = again.records[0].conflicts.iter().find(shortlist).unwrap();
-    assert_eq!(conflict.tm, json!("finished"));
+    assert_eq!(conflict.reason, Some("the Issue is finished"));
 }
 
 /// A placed or moved record names the batch that placed it, whether or not
@@ -436,7 +442,7 @@ fn every_member_tm_next_passes_over_is_reported() {
     let again = import(&mut store, &[epic]).unwrap();
     let list = &again.shortlists[0];
     assert_eq!(list.placed, Vec::<Uuid>::new());
-    assert_eq!(list.passed_over, [(one, vec![PassedOver::Epic])]);
+    assert_eq!(passed(list), [(one, vec![PassedOver::Epic])]);
 }
 
 /// A list tm deleted is not made again by a file that names it: each place
@@ -459,7 +465,9 @@ fn a_deleted_list_is_kept_deleted() {
     let list = &kept.shortlists[0];
     assert_eq!((list.list, list.deleted), (docs, true));
     assert_eq!(list.batches, Vec::<Uuid>::new());
-    assert_eq!(kept.records[0].conflicts[0].tm, json!("deleted"));
+    let conflict = &kept.records[0].conflicts[0];
+    assert_eq!(conflict.reason, Some("the source's list is deleted here"));
+    assert_eq!(conflict.source["name"], "docs", "{conflict:?}");
     assert!(store.shortlist_named(PROJECT, "docs").is_err(), "not made");
     assert!(kept.records[1].created);
 
@@ -477,7 +485,8 @@ fn a_deleted_list_is_kept_deleted() {
     store.delete_shortlist(&jace(), gone).unwrap();
     let skipped = import(&mut store, &[by_id]).unwrap();
     assert!(skipped.shortlists[0].deleted);
-    assert_eq!(skipped.records[0].conflicts[0].tm, json!("deleted"));
+    let deleted = Some("the source's list is deleted here");
+    assert_eq!(skipped.records[0].conflicts[0].reason, deleted);
 }
 
 /// A logged place that is neither a list id nor none is corrupt, not "on no
@@ -648,6 +657,12 @@ fn an_edit_to_a_placed_issue_takes_nothing_off() {
     assert_eq!(edited.shortlists[0].taken_off, Vec::<Uuid>::new());
 }
 
+fn passed(list: &tm_store::ListOutcome) -> Vec<(Uuid, Vec<PassedOver>)> {
+    let each = list.passed_over.iter();
+    each.map(|member| (member.issue, member.reasons.clone()))
+        .collect()
+}
+
 fn issue_from(imported: &RecordsImported, source: &str) -> Uuid {
     let record = imported.records.iter().find(|r| r.source == source);
     record.unwrap().issue
@@ -667,7 +682,7 @@ fn an_imported_finish_clears_the_place_from_its_source() {
     assert_eq!(field(&store, one, "shortlist"), None);
     let (record, list) = (&finished.records[0], &finished.shortlists[0]);
     assert_eq!(record.removed, ["shortlist"]);
-    assert_eq!(record.conflicts[0].tm, json!("finished"));
+    assert_eq!(record.conflicts[0].reason, Some("the Issue is finished"));
     assert_eq!(list.taken_off, [one]);
     assert_eq!(list.batches, record.batches);
     let sources: Vec<Option<String>> = store

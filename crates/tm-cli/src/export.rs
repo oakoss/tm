@@ -1,17 +1,17 @@
 //! `tm export`, `tm import` and `tm rebuild`: the log out, back in, and the
 //! projections rebuilt from it (ADR 0013).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::json;
+use serde_json::{Value, json};
 use tm_core::Actor;
 use tm_store::workspace::{self, Workspace, WorkspaceError};
-use tm_store::{RecordOutcome, RecordsImported, Restored, Store, StoreError};
+use tm_store::{Conflict, RecordOutcome, RecordsImported, Restored, Store, StoreError};
 use uuid::Uuid;
 
 use crate::error::{CliError, RECORDS_FIX};
@@ -251,6 +251,9 @@ pub(crate) fn import_records(
         for record in &mut imported.records {
             record.batches.clear();
         }
+        for list in &mut imported.shortlists {
+            list.batches.clear();
+        }
         ((imported, dropped), BTreeMap::new())
     } else {
         let mut here = here::open()?;
@@ -283,7 +286,12 @@ pub(crate) fn undo_states(
     imported: &RecordsImported,
 ) -> BTreeMap<Uuid, Undo> {
     let mut undo = BTreeMap::new();
-    for batch in imported.records.iter().flat_map(|record| &record.batches) {
+    let records = imported.records.iter().flat_map(|record| &record.batches);
+    let lists = imported.shortlists.iter().flat_map(|list| &list.batches);
+    for batch in records.chain(lists) {
+        if undo.contains_key(batch) {
+            continue;
+        }
         let state = match store.undo_plan(runner, *batch) {
             Ok(_) => Undo::Can,
             Err(
@@ -341,41 +349,31 @@ pub(crate) fn records_output(
         imported.records.len(),
         if imported.records.len() == 1 { "" } else { "s" },
     );
-    // Writing to a String cannot fail; what a file names is escaped. A bare
-    // undo skips imports, so each record's batches are named.
+    // A bare undo skips imports, so each batch is named; a list's batch a
+    // record already names, as a place batch is, is not named again.
+    let mut named = BTreeSet::new();
     for record in &imported.records {
-        let source = output::printable(&record.source);
         for batch in &record.batches {
-            let _ = match undo.get(batch) {
-                Some(Undo::Can) => writeln!(text, "{source}: undo with tm undo {batch}"),
-                Some(Undo::Cannot) => writeln!(
-                    text,
-                    "{source}: batch {batch}, which {} cannot undo as things stand",
-                    output::printable(runner)
-                ),
-                Some(Undo::Unknown(reason)) => writeln!(
-                    text,
-                    "{source}: batch {batch}; whether it can be undone was not checked: {}",
-                    output::printable(reason)
-                ),
-                None => writeln!(text, "{source}: batch {batch}"),
-            };
+            named.insert(*batch);
+            batch_line(&mut text, &record.source, *batch, undo, runner);
+        }
+    }
+    for list in &imported.shortlists {
+        for batch in &list.batches {
+            if named.insert(*batch) {
+                batch_line(&mut text, &list.source, *batch, undo, runner);
+            }
         }
     }
     let create = if dry_run { "would create" } else { "created" };
     for key in &imported.projects {
         let _ = writeln!(text, "{create} Project {}", output::printable(key));
     }
+    lists_text(&mut text, imported, dry_run);
     for record in &imported.records {
         let source = output::printable(&record.source);
         for conflict in &record.conflicts {
-            let _ = writeln!(
-                text,
-                "conflict: {source} {}: kept tm's {}, the source has {}",
-                output::printable(&conflict.field),
-                output::printable(&conflict.tm.to_string()),
-                output::printable(&conflict.source.to_string()),
-            );
+            conflict_line(&mut text, &source, conflict, dry_run);
         }
         for comment in &record.changed_comments {
             let _ = writeln!(
@@ -387,6 +385,7 @@ pub(crate) fn records_output(
     }
     let data = json!({
         "projects": imported.projects,
+        "shortlists": imported.shortlists,
         "records": imported.records,
         "created": created,
         "updated": updated,
@@ -401,6 +400,163 @@ pub(crate) fn records_output(
         "a record import keeps each Issue's current state and comments, not its history, operation ids or retracted comments".into(),
     );
     output
+}
+
+/// A field both tm and the source changed, or one tm's value stands for by
+/// `reason`. A place shows its list's name, else its id.
+fn conflict_line(text: &mut String, subject: &str, conflict: &Conflict, dry_run: bool) {
+    let field = output::printable(&conflict.field);
+    let shown = |value: &Value| {
+        if value.is_null() && conflict.field == "shortlist" {
+            return "no list".to_owned();
+        }
+        let place = value.get("name").filter(|name| !name.is_null());
+        let value = place.or_else(|| value.get("id")).unwrap_or(value);
+        output::printable(&value.to_string())
+    };
+    let (tm, source) = (shown(&conflict.tm), shown(&conflict.source));
+    // A reason means tm refused the source's value, not that both changed it.
+    let _ = match (conflict.reason, dry_run) {
+        (Some(reason), false) if conflict.tm.is_null() => {
+            writeln!(text, "{subject} {field}: not placed on {source} ({reason})")
+        }
+        (Some(reason), true) if conflict.tm.is_null() => writeln!(
+            text,
+            "{subject} {field}: would not be placed on {source} ({reason})"
+        ),
+        (Some(reason), false) => writeln!(
+            text,
+            "{subject} {field}: not placed on {source} ({reason}); stays on {tm}"
+        ),
+        (Some(reason), true) => writeln!(
+            text,
+            "{subject} {field}: would not be placed on {source} ({reason}); would stay on {tm}"
+        ),
+        (None, false) => writeln!(
+            text,
+            "conflict: {subject} {field}: kept tm's {tm}, the source has {source}"
+        ),
+        (None, true) => writeln!(
+            text,
+            "conflict: {subject} {field}: would keep tm's {tm}, the source has {source}"
+        ),
+    };
+}
+
+/// Names a batch an import wrote for `source`, with whether `runner` can
+/// undo it. Writing to a String cannot fail; what a file names is escaped.
+fn batch_line(
+    text: &mut String,
+    source: &str,
+    batch: Uuid,
+    undo: &BTreeMap<Uuid, Undo>,
+    runner: &str,
+) {
+    let source = output::printable(source);
+    let _ = match undo.get(&batch) {
+        Some(Undo::Can) => writeln!(text, "{source}: undo with tm undo {batch}"),
+        Some(Undo::Cannot) => writeln!(
+            text,
+            "{source}: batch {batch}, which {} cannot undo as things stand",
+            output::printable(runner)
+        ),
+        Some(Undo::Unknown(reason)) => writeln!(
+            text,
+            "{source}: batch {batch}; whether it can be undone was not checked: {}",
+            output::printable(reason)
+        ),
+        None => writeln!(text, "{source}: batch {batch}"),
+    };
+}
+
+/// Each Short-list the file names: how it was found, what it gained and
+/// lost, its own fields changed, its conflicts, and the members `tm next`
+/// passes over, by Key, else by their record, else by id.
+fn lists_text(text: &mut String, imported: &RecordsImported, dry_run: bool) {
+    let by_issue: BTreeMap<Uuid, &str> = imported
+        .records
+        .iter()
+        .map(|record| (record.issue, record.source.as_str()))
+        .collect();
+    for list in &imported.shortlists {
+        let source = output::printable(&list.source);
+        let name = output::printable(list.name.as_deref().unwrap_or("(unnamed)"));
+        if list.deleted {
+            let placed = if dry_run { "would be" } else { "was" };
+            let _ = writeln!(
+                text,
+                "Short-list {name} ({source}) is deleted here; nothing {placed} placed on it"
+            );
+        } else {
+            let how = match (list.created, list.by_name, dry_run) {
+                (true, _, true) => "would create",
+                (true, _, false) => "created",
+                (false, true, true) => "would match by name",
+                (false, true, false) => "matched by name",
+                (false, false, _) => "found",
+            };
+            let over = if u64::try_from(list.members).is_ok_and(|count| count > list.size) {
+                ", over size"
+            } else {
+                ""
+            };
+            let (placed, off, members, size) = (
+                list.placed.len(),
+                list.taken_off.len(),
+                list.members,
+                list.size,
+            );
+            let _ = if dry_run {
+                writeln!(
+                    text,
+                    "{how} Short-list {name} ({source}): would place {placed}, take off {off}, hold {members} of {size}{over}"
+                )
+            } else {
+                writeln!(
+                    text,
+                    "{how} Short-list {name} ({source}): {placed} placed, {off} taken off, {members} of {size}{over}"
+                )
+            };
+            let set: Vec<String> = list
+                .written
+                .iter()
+                .filter(|field| *field != "created")
+                .map(|field| output::printable(field))
+                .collect();
+            let removed: Vec<String> = list.removed.iter().map(|f| output::printable(f)).collect();
+            let (write, remove) = if dry_run {
+                ("would set", "would remove")
+            } else {
+                ("set", "removed")
+            };
+            for (verb, fields) in [(write, set), (remove, removed)] {
+                if !fields.is_empty() {
+                    let _ = writeln!(text, "Short-list {name}: {verb} {}", fields.join(", "));
+                }
+            }
+        }
+        let subject = format!("Short-list {name} ({source})");
+        for conflict in &list.conflicts {
+            conflict_line(text, &subject, conflict, dry_run);
+        }
+        for member in &list.passed_over {
+            let who = match (&member.key, by_issue.get(&member.issue)) {
+                (Some(key), _) => output::printable(key),
+                (None, Some(source)) => output::printable(source),
+                (None, None) => member.issue.to_string(),
+            };
+            let reasons: Vec<&str> = member
+                .reasons
+                .iter()
+                .map(|r| crate::shortlist::reason(*r))
+                .collect();
+            let _ = writeln!(
+                text,
+                "Short-list {name}: tm next passes over {who} [{}]",
+                reasons.join(", ")
+            );
+        }
+    }
 }
 
 /// An existing Workspace's store; a directory without one, which may be
@@ -584,6 +740,120 @@ mod tests {
         ] {
             assert!(text.contains(&line), "{text}");
         }
+    }
+
+    #[test]
+    fn a_records_import_says_how_it_found_each_list() {
+        let list = |source: &str, by_name: bool, deleted: bool| tm_store::ListOutcome {
+            line: 1,
+            source: source.into(),
+            list: Uuid::now_v7(),
+            name: Some("docs".into()),
+            created: false,
+            by_name,
+            deleted,
+            batches: Vec::new(),
+            written: Vec::new(),
+            removed: Vec::new(),
+            conflicts: Vec::new(),
+            placed: Vec::new(),
+            taken_off: Vec::new(),
+            passed_over: Vec::new(),
+            members: 0,
+            size: 10,
+        };
+        let mut found = list("x:found", false, false);
+        found.conflicts.push(tm_store::Conflict {
+            field: "size".into(),
+            tm: json!(5),
+            source: json!(3),
+            reason: None,
+        });
+        found.written = vec!["name".into(), "actors/alice".into()];
+        found.removed = vec!["actors/bob".into()];
+        let member = Uuid::now_v7();
+        found.passed_over.push(tm_store::Passed {
+            issue: member,
+            key: Some("TM-4".into()),
+            reasons: vec![tm_store::PassedOver::Blocked],
+        });
+        let imported = RecordsImported {
+            projects: Vec::new(),
+            shortlists: vec![
+                found,
+                list("x:named", true, false),
+                list("x:gone", false, true),
+            ],
+            records: Vec::new(),
+        };
+        let text = records_output(&imported, None, false, &BTreeMap::new(), "jace").text;
+        for line in [
+            "found Short-list docs (x:found): 0 placed, 0 taken off, 0 of 10",
+            "Short-list docs: set name, actors/alice",
+            "Short-list docs: removed actors/bob",
+            "conflict: Short-list docs (x:found) size: kept tm's 5, the source has 3\n",
+            "Short-list docs: tm next passes over TM-4 [blocked]",
+            "matched by name Short-list docs (x:named)",
+            "Short-list docs (x:gone) is deleted here; nothing was placed on it",
+        ] {
+            assert!(text.contains(line), "{text}");
+        }
+        let text = records_output(&imported, None, true, &BTreeMap::new(), "jace").text;
+        for line in [
+            "found Short-list docs (x:found): would place 0, take off 0, hold 0 of 10",
+            "Short-list docs: would set name, actors/alice",
+            "Short-list docs: would remove actors/bob",
+            "would match by name Short-list docs (x:named)",
+            "conflict: Short-list docs (x:found) size: would keep tm's 5",
+            "Short-list docs (x:gone) is deleted here; nothing would be placed on it",
+        ] {
+            assert!(text.contains(line), "{text}");
+        }
+    }
+
+    /// A place tm refused says why, and where the Issue stays, not that
+    /// tm kept a value it never had.
+    #[test]
+    fn a_refused_place_says_why_and_where_the_issue_stays() {
+        let place = |name: Option<&str>| json!({"id": Uuid::now_v7().to_string(), "name": name});
+        let conflict = |tm: Value, source: Value, reason| Conflict {
+            field: "shortlist".into(),
+            tm,
+            source,
+            reason,
+        };
+        let conflicts = [
+            conflict(
+                place(Some("mine")),
+                place(Some("docs")),
+                Some("the source's list is deleted here"),
+            ),
+            conflict(
+                Value::Null,
+                place(Some("fin")),
+                Some("the Issue is finished"),
+            ),
+            conflict(Value::Null, place(Some("docs")), None),
+        ];
+        let said = |dry_run: bool| {
+            let mut text = String::new();
+            for conflict in &conflicts {
+                conflict_line(&mut text, "x:1", conflict, dry_run);
+            }
+            text
+        };
+        assert_eq!(
+            said(false),
+            "x:1 shortlist: not placed on \"docs\" (the source's list is deleted here); stays on \"mine\"\n\
+             x:1 shortlist: not placed on \"fin\" (the Issue is finished)\n\
+             conflict: x:1 shortlist: kept tm's no list, the source has \"docs\"\n"
+        );
+        assert_eq!(
+            said(true),
+            "x:1 shortlist: would not be placed on \"docs\" (the source's list is deleted here); would stay on \"mine\"\n\
+             x:1 shortlist: would not be placed on \"fin\" (the Issue is finished)\n\
+             conflict: x:1 shortlist: would keep tm's no list, the source has \"docs\"\n"
+        );
     }
 
     #[test]

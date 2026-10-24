@@ -47,12 +47,20 @@ pub struct ListOutcome {
     /// another list included.
     pub placed: Vec<Uuid>,
     pub taken_off: Vec<Uuid>,
-    /// Each member after the import that `tm next` passes over, with why;
-    /// an import places what an add would refuse.
-    pub passed_over: Vec<(Uuid, Vec<PassedOver>)>,
+    /// Each member after the import that `tm next` passes over; an import
+    /// places what an add would refuse.
+    pub passed_over: Vec<Passed>,
     /// The members after the import, which can pass its size.
     pub members: usize,
     pub size: u64,
+}
+
+/// A member `tm next` passes over, with why.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Passed {
+    pub issue: Uuid,
+    pub key: Option<String>,
+    pub reasons: Vec<PassedOver>,
 }
 
 /// A list the file names: its project line if it has one, else what the
@@ -224,16 +232,22 @@ impl Store {
                 .map_err(|cause| refused(want.line, want.source, cause, (written, records)))?;
         }
         for want in first.iter().filter(|w| w.decision == Decision::Conflict) {
-            let tm = match (want.deleted, want.finished) {
-                (true, _) => json!("deleted"),
-                (_, true) => json!("finished"),
-                _ => list_value(want.tm),
+            let reason = match (want.deleted, want.finished) {
+                (true, _) => Some("the source's list is deleted here"),
+                (_, true) => Some("the Issue is finished"),
+                _ => None,
             };
-            records[want.record].conflicts.push(Conflict {
-                field: "shortlist".into(),
-                tm,
-                source: list_value(want.list),
+            let conflict = place_value(&self.conn, want.tm).and_then(|tm| {
+                Ok(Conflict {
+                    field: "shortlist".into(),
+                    tm,
+                    source: place_value(&self.conn, want.list)?,
+                    reason,
+                })
             });
+            let conflict = conflict
+                .map_err(|cause| refused(want.line, want.source, cause, (written, records)))?;
+            records[want.record].conflicts.push(conflict);
         }
         // Lists in source order, then the Issues the file takes off any list.
         let targets: Vec<_> = lists
@@ -290,7 +304,11 @@ impl Store {
             .eligibility(&members)?
             .into_iter()
             .filter(|member| !member.passed_over.is_empty())
-            .map(|member| (member.issue.id, member.passed_over))
+            .map(|member| Passed {
+                issue: member.issue.id,
+                key: member.issue.key,
+                reasons: member.passed_over,
+            })
             .collect();
         Ok(())
     }
@@ -614,8 +632,13 @@ fn ranks(
         .collect())
 }
 
-fn list_value(list: Option<Uuid>) -> Value {
-    list.map_or(Value::Null, |list| json!(list.to_string()))
+/// A place as a conflict shows it: the list's id and name, or null.
+fn place_value(conn: &Connection, list: Option<Uuid>) -> Result<Value, StoreError> {
+    let Some(id) = list else {
+        return Ok(Value::Null);
+    };
+    let name = crate::shortlist::read(conn, id)?.and_then(|held| held.name);
+    Ok(json!({"id": id.to_string(), "name": name}))
 }
 
 /// Refuses, before anything is written, a file whose lines disagree about a
@@ -858,6 +881,7 @@ fn compare(
                 field: field.as_str().into(),
                 tm,
                 source: wanted,
+                reason: None,
             }),
         }
         Ok(())
@@ -900,6 +924,7 @@ fn compare(
                 field: name,
                 tm: json!(tm_has),
                 source: json!(source_has),
+                reason: None,
             }),
         }
     }

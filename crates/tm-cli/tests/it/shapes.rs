@@ -493,6 +493,7 @@ fn import_records_answers_in_a_fixed_shape() {
             ]
           }
         ],
+        "shortlists": [],
         "unchanged": 0,
         "updated": 0
       },
@@ -550,6 +551,7 @@ fn import_from_beads_answers_in_a_fixed_shape() {
             ]
           }
         ],
+        "shortlists": [],
         "unchanged": 0,
         "updated": 0
       },

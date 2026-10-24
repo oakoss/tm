@@ -86,6 +86,9 @@ pub struct Conflict {
     pub field: String,
     pub tm: Value,
     pub source: Value,
+    /// Why tm's value stands when it is not that tm changed it too.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
 }
 
 /// A Project the file names, created when no Project holds its key, with
@@ -953,6 +956,7 @@ fn update_plan(
                 field,
                 tm,
                 source: wanted,
+                reason: None,
             }),
         }
     }
@@ -988,6 +992,7 @@ fn update_plan(
                     field: name,
                     tm: json!(has),
                     source: json!(want),
+                    reason: None,
                 }),
             }
         }
@@ -1251,6 +1256,7 @@ fn relations_plan(
             field: "parent".into(),
             tm,
             source: wanted,
+            reason: None,
         }),
     }
 
@@ -1291,6 +1297,7 @@ fn relations_plan(
                 field: name,
                 tm: json!(has),
                 source: json!(want),
+                reason: None,
             }),
         }
     }
