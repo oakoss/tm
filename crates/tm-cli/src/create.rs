@@ -44,14 +44,27 @@ fn write(here: &mut Here, mut create: Create) -> Result<(Output, Vec<String>), C
         .map_err(|message| CliError::new("no_identity", message))?;
     let project = here.project()?;
     fields::given_once(create.set.iter().map(|(field, _)| field))?;
-    // Stdin is spent once read, so from here on `set` holds what it gave.
-    create.set = fields::read_stdin(&create.set, "leave the field out")?;
-    let create = &create;
     let parent = match &create.parent {
         Some(reference) => Some(here.issue(reference)?),
         None => None,
     };
     let scheme = here.store.scheme().clone();
+    fields::known(&scheme, create.set.iter().map(|(field, _)| field))?;
+    fields::labels(&create.labels)?;
+    if let Some(issue_type) = &create.issue_type
+        && scheme.issue_type(issue_type).is_none()
+    {
+        return Err(StoreError::Invalid {
+            field: "type".into(),
+            reason: "is not a type".into(),
+            valid: scheme.types.iter().map(|t| t.id.clone()).collect(),
+        }
+        .into());
+    }
+    // Read once all else is checked, so a mistake keeps the piped text.
+    // Stdin is spent once read, so from here on `set` holds what it gave.
+    create.set = fields::read_stdin(&create.set, "leave the field out")?;
+    let create = &create;
     let issue = Uuid::now_v7();
     let changes = changes(&scheme, create, parent);
     let active = create.issue_type.as_deref().is_some_and(|issue_type| {

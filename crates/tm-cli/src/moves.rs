@@ -51,9 +51,7 @@ pub(crate) struct Move {
 
 pub(crate) fn run(args: &Move) -> Result<Output, CliError> {
     crate::fields::given_once(args.set.iter().map(|(field, _)| field))?;
-    // Read before the write, which may retry, since stdin is spent once read.
-    let set = crate::fields::read_stdin(&args.set, "leave the field out")?;
-    here::write(|here| write(here, &args.issue, &args.status, &set, args.force))
+    here::write(|here| write(here, &args.issue, &args.status, &args.set, args.force))
 }
 
 fn write(
@@ -94,9 +92,13 @@ fn write(
     let status = status(workflow, &issue_type, target)?;
     let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
         .map_err(|message| CliError::new("no_identity", message))?;
+    crate::fields::known(&scheme, fields.iter().map(|(field, _)| field))?;
+    // Read once all else is checked, so a mistake keeps the piped text; the
+    // append below may retry, but this runs once.
+    let fields = crate::fields::read_stdin(fields, "leave the field out")?;
 
     let mut changes = vec![set("status", json!(status))];
-    for (field, value) in fields {
+    for (field, value) in &fields {
         changes.push(set(field, typed(&scheme, field, value)));
     }
     // A move into done or cancelled releases the Claim; a review status keeps

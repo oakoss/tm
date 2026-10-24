@@ -6,6 +6,7 @@ use std::io::{self, IsTerminal as _, Read as _};
 use serde_json::{Value, json};
 use tm_core::Change;
 use tm_core::scheme::{FieldType, Scheme};
+use tm_store::StoreError;
 
 use crate::error::CliError;
 
@@ -88,6 +89,64 @@ pub(crate) fn given_once<'a>(fields: impl IntoIterator<Item = &'a String>) -> Re
     Ok(())
 }
 
+/// Refuses a field the Scheme does not define or computes itself, as the
+/// store would, but before stdin is read, so a mistyped field keeps the
+/// piped text.
+pub(crate) fn known<'a>(
+    scheme: &Scheme,
+    names: impl IntoIterator<Item = &'a String>,
+) -> Result<(), CliError> {
+    for name in names {
+        match scheme.field(name) {
+            None => {
+                let valid = scheme.fields.iter().filter(|field| !field.derived);
+                return Err(StoreError::UnknownField {
+                    field: name.clone(),
+                    valid: valid.map(|field| field.name.clone()).collect(),
+                }
+                .into());
+            }
+            Some(field) if field.derived => return Err(computed(name)),
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// A field the Scheme computes, which no write sets or clears.
+pub(crate) fn computed(name: &str) -> CliError {
+    StoreError::Invalid {
+        field: name.to_owned(),
+        reason: "is computed and cannot be set".into(),
+        valid: Vec::new(),
+    }
+    .into()
+}
+
+/// Refuses a label to add that the store would refuse whatever else is
+/// written: blank, or holding a control character.
+pub(crate) fn labels<'a>(labels: impl IntoIterator<Item = &'a String>) -> Result<(), CliError> {
+    for label in labels {
+        // Trimmed first, as the store does, so a trailing newline is no
+        // control character.
+        let written = label.trim();
+        let reason = if written.is_empty() {
+            "cannot hold an empty label"
+        } else if written.chars().any(char::is_control) {
+            "cannot hold control characters"
+        } else {
+            continue;
+        };
+        return Err(StoreError::Invalid {
+            field: "labels".into(),
+            reason: reason.into(),
+            valid: Vec::new(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 /// `--set` values with a `-` read from stdin. Stdin is read once, never from
 /// a terminal, and a blank value is refused with `blank`'s advice.
 pub(crate) fn read_stdin(
@@ -145,7 +204,7 @@ pub(crate) fn read_stdin_text(field: &str) -> Result<String, CliError> {
     }
 }
 
-fn refused(field: &str, reason: &str) -> CliError {
+pub(crate) fn refused(field: &str, reason: &str) -> CliError {
     CliError::new("invalid_value", format!("{field} from stdin {reason}"))
         .with("field", field)
         .with("reason", reason)
