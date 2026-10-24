@@ -90,7 +90,8 @@ fn as_claude(scratch: &Scratch, repo: &Path, args: &[&str], input: &str) -> Outp
 
 /// Every command the guide prints runs as printed, in order, with KEY,
 /// OTHER, TEXT and BATCH filled in: an Agent runs all but the bare
-/// `tm undo`, which the guide gives to a human.
+/// `tm undo`, which the guide gives to a human. A shell redirection ends
+/// the command; the text it would pipe in is given on stdin.
 #[test]
 fn every_command_in_the_guide_runs_as_printed() {
     let scratch = Scratch::new();
@@ -113,6 +114,7 @@ fn every_command_in_the_guide_runs_as_printed() {
             .next()
             .unwrap()
             .split_whitespace()
+            .take_while(|word| !word.starts_with('<'))
             .map(|word| match word {
                 "KEY" => "TM-1".to_owned(),
                 "OTHER" => "TM-2".to_owned(),

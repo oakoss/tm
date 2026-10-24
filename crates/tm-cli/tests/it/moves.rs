@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use tm_core::Actor;
 use tm_store::Store;
 
-use crate::support::{Scratch, initialized, text, tm};
+use crate::support::{Scratch, initialized, text, tm, tm_piped};
 
 fn run(scratch: &Scratch, repo: &Path, args: &[&str]) -> (Option<i32>, Value) {
     let out = tm(scratch, repo, &[&["--json", "move"], args].concat());
@@ -58,6 +58,29 @@ fn move_sets_the_status_and_its_fields_in_one_batch() {
         )
         .unwrap();
     assert_eq!(in_batch, 3, "status and both fields share one batch");
+}
+
+/// `FIELD=-` reads the value from stdin as it is, not a literal `-`.
+#[test]
+fn a_move_reads_a_field_from_stdin() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    store
+        .create_issue(&Actor::human("jace"), project, "task", "t")
+        .unwrap();
+    let args = ["--json", "move", "TM-1", "done", "--set", "description=-"];
+    let body = "shipped `x` for $5\nsee 'notes'\n";
+    let out = tm_piped(&scratch, &repo, &args, body);
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(0), "{doc}");
+    let description = &doc["data"]["fields"]["description"];
+    assert_eq!(description, "shipped `x` for $5\nsee 'notes'");
+
+    let before = ops(&store);
+    let out = tm_piped(&scratch, &repo, &args, " \n");
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["reason"], "is blank; leave the field out", "{doc}");
+    assert_eq!(ops(&store), before, "a blank pipe writes nothing");
 }
 
 #[test]
