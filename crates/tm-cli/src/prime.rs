@@ -2,14 +2,14 @@
 //! "Interface"): who it writes as, the Scheme, its Claims, the work in
 //! progress and the ready queue, kept small enough for a `SessionStart` hook.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::IsTerminal as _;
 
 use serde_json::{Value, json};
 use tm_core::filter::Context;
 use tm_core::{Actor, ProjectId, Scheme};
-use tm_store::{AgentClaims, Claim, IssueView, Member, Shortlist};
+use tm_store::{AgentClaims, Claim, IssueView, Member, Shortlist, Store};
 use uuid::Uuid;
 
 use crate::claim;
@@ -66,9 +66,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
         let mut active = store.find("category:active", Context { me: None })?;
         let active_total = active.len();
         active.truncate(ACTIVE_SHOWN);
-        let mut ready = store.ready()?;
-        let total = ready.len();
-        ready.truncate(ready_shown);
+        let (ready, total, passed) = ready_queue(store, ready_shown)?;
         let ids: Vec<Uuid> = claims
             .held
             .iter()
@@ -77,8 +75,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
             .collect();
         let claimed = store.issues(&ids)?;
         let active = store.issues(&active)?;
-        let ids: Vec<Uuid> = ready.iter().map(|ready| ready.issue).collect();
-        let ready = store.issues(&ids)?;
+        let ready = store.issues(&ready)?;
         let projects = project_keys(
             store,
             &[claimed.clone(), active.clone(), ready.clone()].concat(),
@@ -87,12 +84,11 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
             claims,
             claimed,
             (active, active_total),
-            ready,
-            total,
+            (ready, total, passed),
             projects,
         ))
     });
-    let (claims, claimed, (active, active_total), ready, total, projects) =
+    let (claims, claimed, (active, active_total), (ready, total, passed), projects) =
         read.map_err(|err| err.warned(warnings.clone()))?;
     let scheme = here.store.scheme();
 
@@ -115,13 +111,13 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
     section(
         &mut text,
         ("In progress", "none", "tm list category:active"),
-        &active,
+        (&active, 0),
         active_total,
     );
     section(
         &mut text,
         ("Ready", "nothing is ready", "tm ready"),
-        &ready,
+        (&ready, passed),
         total,
     );
     let _ = writeln!(text, "Habits (tm guide has the rest):");
@@ -144,6 +140,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
         "ready": {
             "issues": ready.iter().map(|view| item(view, &projects)).collect::<Vec<_>>(),
             "total": total,
+            "on_shortlists": passed,
         },
         "habits": HABITS,
     });
@@ -152,6 +149,25 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
         output.warnings = warnings;
     }
     Ok(output)
+}
+
+/// The first `shown` ready Issues, how many are ready and how many of those
+/// are on a Short-list, which are passed over: a list holds them for its
+/// Actors, and the session's own lists show above.
+fn ready_queue(store: &Store, shown: usize) -> Result<(Vec<Uuid>, usize, usize), CliError> {
+    let ready = store.ready()?;
+    let total = ready.len();
+    let listed: HashSet<Uuid> = store
+        .find("has:shortlist", Context { me: None })?
+        .into_iter()
+        .collect();
+    let open: Vec<Uuid> = ready
+        .into_iter()
+        .map(|ready| ready.issue)
+        .filter(|issue| !listed.contains(issue))
+        .collect();
+    let passed = total - open.len();
+    Ok((open.into_iter().take(shown).collect(), total, passed))
 }
 
 /// Who the session writes as and its Project, each `None` with a warning
@@ -355,8 +371,13 @@ fn claims_section(
 
 /// A heading with the count of `total`, the first of them, and the command
 /// that lists the rest: `words` is the heading, the line for none, and that
-/// command.
-fn section(text: &mut String, words: (&str, &str, &str), shown: &[IssueView], total: usize) {
+/// command. `passed` of `total` are on a Short-list and only counted.
+fn section(
+    text: &mut String,
+    words: (&str, &str, &str),
+    (shown, passed): (&[IssueView], usize),
+    total: usize,
+) {
     let (heading, none, more) = words;
     let _ = writeln!(text, "{heading} ({total}):");
     if total == 0 {
@@ -365,8 +386,15 @@ fn section(text: &mut String, words: (&str, &str, &str), shown: &[IssueView], to
     for view in shown {
         let _ = writeln!(text, "  {}", line_within(view, TITLE_BYTES));
     }
-    if shown.len() < total {
-        let _ = writeln!(text, "  and {} more: {more}", total - shown.len());
+    if passed > 0 {
+        let _ = writeln!(
+            text,
+            "  {passed} on Short-lists, passed over: {more} marks them"
+        );
+    }
+    let rest = total - shown.len() - passed;
+    if rest > 0 {
+        let _ = writeln!(text, "  and {rest} more: {more}");
     }
 }
 

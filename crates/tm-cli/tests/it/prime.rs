@@ -148,16 +148,18 @@ fn prime_for_200_issues_fits_the_budget_and_keeps_readys_order() {
         shown.len()
     );
 
-    let ready = text(&as_claude(&scratch, &repo, &["ready", "--limit", "15"]).stdout);
+    let ready = text(&as_claude(&scratch, &repo, &["ready"]).stdout);
     assert!(
         ready.lines().all(|line| !line.contains('…')),
         "only prime cuts titles: {ready}"
     );
     let key = |line: &str| line.split_whitespace().next().unwrap_or("").to_owned();
-    // Both lead with the session's lists; with them prime shows 3 ready.
+    // Both lead with the session's lists; with them prime shows 3 ready, in
+    // ready's order, passing over those tm ready marks as on a list.
     let queue = |text: &str| -> Vec<String> {
         let lines = text.lines().skip_while(|line| !line.starts_with("Ready ("));
-        lines.skip(1).take(3).map(key).collect()
+        let open = lines.skip(1).filter(|line| !line.contains("  [on "));
+        open.take(3).map(key).collect()
     };
     assert_eq!(queue(&shown), queue(&ready));
     assert!(shown.contains("\nShort-lists ("), "{shown}");
@@ -185,11 +187,9 @@ fn prime_for_200_issues_fits_the_budget_and_keeps_readys_order() {
     assert!(both, "{titles:?}");
     lists_are_cut(&shown);
     assert!(shown.contains("Ready (152):\n"), "{shown}");
-    assert!(shown.contains("  and 149 more: tm ready\n"), "{shown}");
-    let theirs = text(&as_agent(&scratch, &repo, "codex", &[], &["prime"]).stdout);
-    // No list names codex.
-    assert!(!theirs.contains("Short-lists ("), "{theirs}");
-    assert!(theirs.contains("  and 137 more: tm ready\n"), "{theirs}");
+    assert!(shown.contains(PASSED), "{shown}");
+    assert!(shown.contains("  and 125 more: tm ready\n"), "{shown}");
+    a_session_without_lists_fits_too(&scratch, &repo);
     let active: Vec<String> = under(&shown, "In progress (20):")
         .into_iter()
         .map(key)
@@ -214,6 +214,23 @@ fn prime_for_200_issues_fits_the_budget_and_keeps_readys_order() {
         "{shown}"
     );
     json_lists_every_claim_and_the_first_active(&scratch, &repo);
+}
+
+/// The ready Issues on [`fill_lists`]'s lists, which prime counts.
+const PASSED: &str = "  24 on Short-lists, passed over: tm ready marks them\n";
+
+/// Prime over the 200-Issue Workspace for codex, whom no list names: 15
+/// ready Issues in place of the lists, within the budget.
+fn a_session_without_lists_fits_too(scratch: &Scratch, repo: &Path) {
+    let theirs = text(&as_agent(scratch, repo, "codex", &[], &["prime"]).stdout);
+    assert!(!theirs.contains("Short-lists ("), "{theirs}");
+    assert!(theirs.contains(PASSED), "{theirs}");
+    assert!(theirs.contains("  and 113 more: tm ready\n"), "{theirs}");
+    assert!(
+        theirs.len() <= BUDGET_BYTES,
+        "{} bytes over the budget:\n{theirs}",
+        theirs.len()
+    );
 }
 
 /// `--json` prime over the 200-Issue Workspace: every Claim, and the first
@@ -531,6 +548,24 @@ fn prime_and_ready_lead_with_the_sessions_lists() {
     assert_eq!(docs["next"], true);
     let ready = text(&as_claude(&scratch, &repo, &["ready"]).stdout);
     assert!(ready.starts_with("Short-lists ("), "{ready}");
+    // A session no list names sees which ready Issues tm next passes over:
+    // tm ready marks them, and prime counts them instead of showing them.
+    let theirs = |args: &[&str]| text(&as_agent(&scratch, &repo, "codex", &[], args).stdout);
+    let ready = theirs(&["ready"]);
+    assert!(
+        ready.contains("TM-2  todo  none  b  [on docs]\n"),
+        "{ready}"
+    );
+    assert!(
+        ready.contains("TM-5  todo  none  e  (unblocks TM-3)  [on later]\n"),
+        "{ready}"
+    );
+    let shown = theirs(&["prime"]);
+    let section = "Ready (3):\n  3 on Short-lists, passed over: tm ready marks them\nHabits";
+    assert!(shown.contains(section), "{shown}");
+    let doc: Value = serde_json::from_str(&theirs(&["--json", "prime"])).unwrap();
+    assert_eq!(doc["data"]["ready"]["on_shortlists"], 3, "{doc}");
+    assert_eq!(doc["data"]["ready"]["issues"], json!([]), "{doc}");
     let doc: Value =
         serde_json::from_slice(&as_claude(&scratch, &repo, &["--json", "ready"]).stdout).unwrap();
     assert_eq!(doc["data"]["shortlists"][0]["first"]["key"], "TM-2");
