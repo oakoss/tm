@@ -613,6 +613,7 @@ fn prime_answers_in_a_fixed_shape() {
               "sets": {}
             }
           ],
+          "on_shortlists": 0,
           "total": 1
         },
         "scheme": {

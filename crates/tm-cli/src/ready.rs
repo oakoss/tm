@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::error::CliError;
 use crate::here::{self, Here};
 use crate::identity;
-use crate::list::{Item, Listed, line, project_keys};
+use crate::list::{Item, Listed, line, project_keys, shortlists_of};
 use crate::next;
 use crate::output::Output;
 
@@ -32,9 +32,10 @@ pub(crate) fn run(limit: Option<usize>, json: bool) -> Result<Output, CliError> 
             .map(|view| (view.id, view.key))
             .collect();
         let projects = project_keys(store, &views)?;
-        Ok::<_, CliError>((total, ready, views, keys, projects))
+        let on = shortlists_of(store, &views)?;
+        Ok::<_, CliError>((total, ready, views, keys, projects, on))
     });
-    let (total, ready, views, keys, projects) = match read {
+    let (total, ready, views, keys, projects, on) = match read {
         Ok(read) => read,
         Err(err) => return Err(err.warned(here.warnings)),
     };
@@ -88,6 +89,9 @@ pub(crate) fn run(limit: Option<usize>, json: bool) -> Result<Output, CliError> 
                 })
                 .collect();
             let _ = write!(text, "  (unblocks {})", named.join(", "));
+        }
+        if let Some(list) = on.get(&view.id) {
+            let _ = write!(text, "  [on {list}]");
         }
         text.push('\n');
     }

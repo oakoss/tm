@@ -173,6 +173,34 @@ pub(crate) fn project_keys(
     Ok(projects)
 }
 
+/// The name of the Short-list each of `views` is on, for those on one: `tm
+/// next` passes them over for a session no list names (ADR 0016).
+pub(crate) fn shortlists_of(
+    store: &Store,
+    views: &[IssueView],
+) -> Result<HashMap<Uuid, String>, CliError> {
+    let mut names: HashMap<&str, String> = HashMap::new();
+    let mut on = HashMap::new();
+    for view in views {
+        let Some(list) = view.fields.get("shortlist").and_then(Value::as_str) else {
+            continue;
+        };
+        let name = match names.entry(list) {
+            Entry::Occupied(entry) => entry.get().clone(),
+            Entry::Vacant(entry) => {
+                let read = match Uuid::parse_str(list) {
+                    Ok(id) => store.shortlist(id)?.and_then(|list| list.name),
+                    Err(_) => None,
+                };
+                let name = printable(read.as_deref().unwrap_or("(unnamed)"));
+                entry.insert(name).clone()
+            }
+        };
+        on.insert(view.id, name);
+    }
+    Ok(on)
+}
+
 /// An Issue as a list gives it: `show`'s shape without parent and Claim.
 pub(crate) fn item(view: &IssueView, projects: &HashMap<ProjectId, Option<String>>) -> Value {
     let mut fields = view.fields.clone();
