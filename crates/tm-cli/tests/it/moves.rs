@@ -60,6 +60,38 @@ fn move_sets_the_status_and_its_fields_in_one_batch() {
     assert_eq!(in_batch, 3, "status and both fields share one batch");
 }
 
+/// A move writes only what changes: the current Status alone writes no
+/// batch, and with a field set writes only that field. A finished Issue a
+/// Claim still holds is let go by moving it again.
+#[test]
+fn a_move_writes_only_what_changes() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let (issue, _) = store
+        .create_issue(&Actor::human("jace"), project, "task", "t")
+        .unwrap();
+    let before = ops(&store);
+
+    let (code, doc) = run(&scratch, &repo, &["TM-1", "todo"]);
+    assert_eq!(code, Some(0), "{doc}");
+    assert_eq!(doc["data"]["batch"], Value::Null, "{doc}");
+    assert_eq!(doc["data"]["fields"]["status"], "todo");
+    assert_eq!(ops(&store), before, "nothing written");
+
+    let (_, doc) = run(&scratch, &repo, &["TM-1", "todo", "--set=priority=high"]);
+    assert_eq!(doc["data"]["fields"]["priority"], "high", "{doc}");
+    assert_eq!(ops(&store), before + 1, "the priority alone");
+
+    run(&scratch, &repo, &["TM-1", "done"]);
+    store
+        .take(&Actor::agent("claude", "jace"), issue, None)
+        .unwrap();
+    let out = tm(&scratch, &repo, &["move", "TM-1", "done"]);
+    let stdout = text(&out.stdout);
+    assert!(stdout.starts_with("TM-1  Claim released\n"), "{stdout}");
+    assert_eq!(store.claim_state(issue).unwrap(), None);
+}
+
 /// `FIELD=-` reads the value from stdin as it is, not a literal `-`.
 #[test]
 fn a_move_reads_a_field_from_stdin() {

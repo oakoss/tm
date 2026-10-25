@@ -101,10 +101,21 @@ fn write(
     for (field, value) in &fields {
         changes.push(set(field, typed(&scheme, field, value)));
     }
+    changes.retain(|change| match change {
+        Change::SetField { field, value, .. } => !view
+            .fields
+            .get(field)
+            .is_some_and(|before| edit::same(before, value)),
+        _ => true,
+    });
     // A move into done or cancelled releases the Claim; a review status keeps
     // it (ADR 0009).
     let category = workflow.status(&status).map(|status| status.category);
     let finished = matches!(category, Some(Category::Done | Category::Cancelled));
+    // A finished Issue a Claim still holds is let go by moving it again.
+    if changes.is_empty() && !(finished && here.store.claim_state(id)?.is_some()) {
+        return Ok((unchanged(here, &view)?, identity.warnings));
+    }
     let draft = |change| Draft {
         actor: identity.actor.clone(),
         project: view.project,
@@ -122,6 +133,10 @@ fn write(
     } else {
         let ops = finish(here, &identity.actor, (view.project, id), drafts, !force)
             .map_err(held_elsewhere)?;
+        // Another session can release the Claim this move came to release.
+        if ops.is_empty() {
+            return Ok((unchanged(here, &view)?, identity.warnings));
+        }
         (ops, Starts::default())
     };
     let mut shown = show::render(here, id)?;
@@ -129,6 +144,14 @@ fn write(
     let shown = follow::report(&here.store, shown, starts, id)?;
     let output = here.undoable(shown, ops[0].op_id, &identity.actor)?;
     Ok((output, identity.warnings))
+}
+
+fn unchanged(here: &Here, view: &IssueView) -> Result<Output, CliError> {
+    let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
+    let mut output = show::render(here, view.id)?;
+    output.text = format!("{name}: nothing changed\n");
+    output.data["batch"] = Value::Null;
+    Ok(output)
 }
 
 /// A finish refused for another session's Claim says what overrides it, in
