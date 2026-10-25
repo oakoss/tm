@@ -235,6 +235,16 @@ fn list_keeps_the_filters_order_negation_and_one_line_per_issue() {
     );
     assert!(ok, "{doc}");
     assert_eq!(keys(&doc), ["TM-2", "TM-3", "TM-4"]);
+    let (ok, doc) = list(&scratch, &repo, &["-priority:low,none", "--limit", "2"]);
+    assert!(ok, "a negated term needs no --: {doc}");
+    assert_eq!(doc["data"]["issues"].as_array().unwrap().len(), 2, "{doc}");
+    assert_eq!(doc["data"]["total"], 3);
+    let (ok, doc) = list(&scratch, &repo, &["-priority:low", "--limt", "2"]);
+    assert!(!ok);
+    assert_eq!(
+        doc["error"], "usage",
+        "a mistyped flag is still clap's: {doc}"
+    );
 
     let out = tm(&scratch, &repo, &["list", "priority:none"]);
     assert_eq!(text(&out.stdout).lines().count(), 1, "{out:?}");

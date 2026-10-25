@@ -211,8 +211,7 @@ enum Command {
     },
     /// List the Issues a filter matches; with none, the open work.
     List {
-        /// A filter such as `status:todo priority:high`. Negated terms go
-        /// after `--`, as in `tm list -- -category:done`.
+        /// A filter such as `status:todo priority:high -labels:bug`.
         filter: Vec<String>,
         /// Show at most this many.
         #[arg(long)]
@@ -366,7 +365,8 @@ fn main() -> ExitCode {
     if json {
         output::install_panic_hook();
     }
-    let cli = match Cli::try_parse_from(std::env::args_os()) {
+    let args = list::filter_last(&mut Cli::command(), std::env::args_os().collect());
+    let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(err) => return parse_failed(json, &err),
     };

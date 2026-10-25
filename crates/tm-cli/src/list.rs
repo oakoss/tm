@@ -2,6 +2,7 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
+use std::ffi::OsString;
 use std::fmt::Write as _;
 
 use serde::{Serialize, Serializer};
@@ -80,6 +81,59 @@ fn list(
         let _ = writeln!(text, "({} of {total} shown)", views.len());
     }
     Ok(Output::new(text, Value::Null))
+}
+
+/// `args` with `tm list`'s filter words moved after a `--`, in the order
+/// typed, so clap reads a negated term such as `-type:spike` as a filter
+/// word rather than a flag. Flags stay before it, each with the value `cli`
+/// says it takes; other commands' arguments are returned as they are.
+pub(crate) fn filter_last(cli: &mut clap::Command, args: Vec<OsString>) -> Vec<OsString> {
+    let Some(at) = args
+        .iter()
+        .skip(1)
+        .position(|arg| !arg.to_string_lossy().starts_with('-'))
+        .map(|at| at + 1)
+    else {
+        return args;
+    };
+    if args[at] != "list" {
+        return args;
+    }
+    cli.build();
+    let Some(list) = cli.find_subcommand("list") else {
+        return args;
+    };
+    let takes_value = |word: &str| {
+        list.get_arguments().any(|arg| {
+            let long = arg.get_long().map(|long| format!("--{long}"));
+            let short = arg.get_short().map(|short| format!("-{short}"));
+            arg.get_action().takes_values() && [long, short].contains(&Some(word.to_owned()))
+        })
+    };
+    let negated = |word: &str| {
+        word.strip_prefix('-')
+            .is_some_and(|term| !term.starts_with('-') && term.contains(':'))
+    };
+    let mut rewritten = args[..=at].to_vec();
+    let mut words = Vec::new();
+    let mut rest = args[at + 1..].iter().peekable();
+    while let Some(arg) = rest.next() {
+        let word = arg.to_string_lossy();
+        if word == "--" {
+            words.extend(rest.by_ref().cloned());
+        } else if word == "-" || negated(&word) || !word.starts_with('-') {
+            words.push(arg.clone());
+        } else {
+            rewritten.push(arg.clone());
+            if takes_value(&word) {
+                let value = rest.next_if(|next| !negated(&next.to_string_lossy()));
+                rewritten.extend(value.cloned());
+            }
+        }
+    }
+    rewritten.push("--".into());
+    rewritten.extend(words);
+    rewritten
 }
 
 /// The matching ids. `@me` is the human, also when an Agent runs the
@@ -256,5 +310,45 @@ mod tests {
         let written = serde_json::to_string(&Item::of(&view, &projects)).unwrap();
         assert_eq!(written, item(&view, &projects).to_string());
         assert!(!written.contains("shortlist_rank"), "{written}");
+    }
+
+    #[test]
+    fn filter_words_go_after_dashes_in_order_and_flags_keep_their_values() {
+        use clap::CommandFactory;
+        let rewrite = |line: &str| {
+            let args = line.split(' ').map(OsString::from).collect();
+            let rewritten = filter_last(&mut crate::Cli::command(), args);
+            rewritten
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert_eq!(
+            rewrite("tm list status:todo -type:spike --limit 2 priority:low --json"),
+            "tm list --limit 2 --json -- status:todo -type:spike priority:low"
+        );
+        assert_eq!(
+            rewrite("tm --json list -labels:bug --limit=2 --all"),
+            "tm --json list --limit=2 --all -- -labels:bug"
+        );
+        assert_eq!(
+            rewrite("tm list -h --limt 2 -x"),
+            "tm list -h --limt -x -- 2",
+            "a word without a colon stays a flag for clap to judge"
+        );
+        assert_eq!(
+            rewrite("tm list -type:task -- -category:done --limit"),
+            "tm list -- -type:task -category:done --limit",
+            "what follows the typed -- stays filter"
+        );
+        assert_eq!(
+            rewrite("tm list --limit -type:task"),
+            "tm list --limit -- -type:task",
+            "a flag's missing value is not taken from the filter"
+        );
+        assert_eq!(rewrite("tm list a:b - c:d"), "tm list -- a:b - c:d");
+        assert_eq!(rewrite("tm show -type:task"), "tm show -type:task");
+        assert_eq!(rewrite("tm --json"), "tm --json");
     }
 }
