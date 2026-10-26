@@ -48,6 +48,10 @@ pub(crate) struct Edit {
     /// that session has stopped work on it.
     #[arg(long)]
     force: bool,
+    /// Refuse the write if a field it sets changed after this version, the
+    /// one tm show printed when you read the Issue.
+    #[arg(long, value_name = "VERSION")]
+    if_version: Option<u64>,
 }
 
 /// `--set FIELD=VALUE`. Labels and parent have their own flags; a Status is
@@ -85,11 +89,13 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
     refuse_status(reference, edit)?;
     fields::given_once(edit.set.iter().map(|(field, _)| field).chain(&edit.unset))?;
     let id = here.issue(reference)?;
-    let view = here.store.issue(id)?.ok_or_else(|| {
+    let (view, read) = here.store.issue_with_version(id)?.ok_or_else(|| {
         CliError::new("not_found", format!("no Issue is {reference}"))
             .with("kind", "issue")
             .with("reference", reference)
     })?;
+    let based_on = crate::moves::based_on(edit.if_version, read);
+    here.store.base_writes_on(id, based_on);
     let parent = match &edit.parent {
         Some(parent) => Some(here.issue(parent)?),
         None => None,
@@ -97,9 +103,11 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
     // Only a parent that changes is written, so only it is checked: a cycle a
     // merge left stays editable.
     let current = view.fields.get("parent").and_then(Value::as_str);
-    if let Some(parent) = parent
-        && current != Some(parent.to_string().as_str())
-    {
+    let reparents = match parent {
+        Some(parent) => current != Some(parent.to_string().as_str()),
+        None => edit.no_parent && current.is_some(),
+    };
+    if let Some(parent) = parent.filter(|_| reparents) {
         here.store.check_parent(id, parent)?;
     }
     let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
@@ -112,10 +120,14 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
     // A refusal would lose piped text, so check before reading it; the write
     // checks again.
     if !fields::piped(&edit.set).is_empty() {
-        let written = fields::written(here.store.scheme(), &view, &edit.set, &edit.unset);
+        let mut written = fields::written(here.store.scheme(), &view, &edit.set, &edit.unset);
+        if reparents {
+            written.push("parent");
+        }
         here.store
             .check_protected(&identity.actor, id, &written)
             .map_err(forced)?;
+        here.store.check_version(id, based_on, &written)?;
     }
     // Read once all else is checked, so a mistake keeps the piped text.
     let values = fields::read_stdin(&edit.set, "clear a field with --unset")?;
@@ -132,6 +144,9 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
         })
     };
     if changes.is_empty() {
+        // Writing nothing loses nothing, but a version not read from the
+        // Issue is still a mistake to report.
+        here.store.check_version(id, based_on, &[])?;
         let mut output = Output::new(format!("{name}: nothing changed\n"), data(&[]));
         output.data["batch"] = Value::Null;
         return Ok((output, Vec::new()));

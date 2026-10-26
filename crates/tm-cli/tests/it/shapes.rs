@@ -86,7 +86,8 @@ fn create_answers_in_a_fixed_shape() {
           }
         },
         "shortlist": null,
-        "started": []
+        "started": [],
+        "version": 16
       },
       "schema_version": 1,
       "warnings": []
@@ -152,7 +153,8 @@ fn move_answers_in_a_fixed_shape() {
         "project": "TM",
         "sets": {},
         "shortlist": null,
-        "started": []
+        "started": [],
+        "version": 12
       },
       "schema_version": 1,
       "warnings": []
@@ -427,7 +429,8 @@ fn undo_answers_in_a_fixed_shape() {
             "parent": null,
             "project": "TM",
             "sets": {},
-            "shortlist": null
+            "shortlist": null,
+            "version": 12
           }
         ],
         "released": [],

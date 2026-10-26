@@ -56,6 +56,7 @@ impl Store {
             last_write: None,
             forcing: false,
             passed: Vec::new(),
+            based_on: None,
         };
         store.check_log_columns()?;
         Ok(store)

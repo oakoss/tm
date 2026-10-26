@@ -134,10 +134,25 @@ impl CliError {
 // retried with a token an error gave would take or free another session's
 // Claim. `tm show` gives the token to whoever asks for it.
 impl CliError {
-    /// A take refused for another's Claim, or a write to a field it protects,
-    /// naming the field.
-    fn already_claimed(message: String, err: StoreError) -> Self {
+    /// A take refused for another's Claim, a write to a field it protects,
+    /// naming the field, or a write based on a version a field moved past,
+    /// with each such field's current value.
+    fn refused_write(message: String, err: StoreError) -> Self {
         let (issue, holder, field) = match err {
+            StoreError::Stale {
+                issue,
+                based_on,
+                version,
+                current,
+            } => {
+                let shown = issue.key.clone().unwrap_or_else(|| issue.id.to_string());
+                return Self::new("stale_value", message)
+                    .issue(issue)
+                    .with("based_on", based_on)
+                    .with("version", version)
+                    .with("current", json!(current))
+                    .fix(format!("tm show {shown}"));
+            }
             StoreError::AlreadyClaimed { issue, holder } => (issue, holder, None),
             StoreError::Protected {
                 issue,
@@ -391,9 +406,9 @@ impl From<StoreError> for CliError {
                 from,
                 to,
             } => Self::not_linked(message, link_type, *from, *to),
-            err @ (StoreError::AlreadyClaimed { .. } | StoreError::Protected { .. }) => {
-                Self::already_claimed(message, err)
-            }
+            err @ (StoreError::AlreadyClaimed { .. }
+            | StoreError::Protected { .. }
+            | StoreError::Stale { .. }) => Self::refused_write(message, err),
             StoreError::NotClaimHolder {
                 issue,
                 claim,

@@ -60,16 +60,17 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         let comments = store.comments(id)?;
         let children = count_children(store.scheme(), &store.children(id)?);
         let membership = membership(store, &view)?;
+        let version = store.issue_version(id)?;
         Ok::<_, CliError>((
             view,
             project,
             parent,
             (claim, now_ms),
             links,
-            (comments, children, membership),
+            (comments, children, membership, version),
         ))
     })?;
-    let (comments, children, membership) = below;
+    let (comments, children, membership, version) = below;
     let mut fields = view.fields.clone();
     fields.remove("shortlist");
     fields.remove("shortlist_rank");
@@ -78,6 +79,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         "key": view.key,
         "project": project,
         "category": view.category,
+        "version": version,
         "fields": fields,
         "shortlist": membership.as_ref().map(Membership::json),
         "sets": view.sets,
@@ -87,18 +89,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
             .as_ref()
             .and_then(ClaimState::lapsed)
             .map(|lapsed| claim_json(lapsed, now_ms)),
-        "links": links.iter().map(|(link, other)| json!({
-            "type": link.link_type,
-            "direction": link.direction,
-            "name": link.name,
-            "other": {
-                "id": link.other,
-                "key": other.as_ref().and_then(|other| other.key.clone()),
-                "status": other.as_ref().and_then(|other| other.fields.get("status")),
-                "category": other.as_ref().and_then(|other| other.category),
-                "archived": other.as_ref().map(follow::archived),
-            },
-        })).collect::<Vec<_>>(),
+        "links": links.iter().map(|(link, other)| link_json(link, other.as_ref())).collect::<Vec<_>>(),
         "comments": comments.iter().map(comment_json).collect::<Vec<_>>(),
         "children": children.json(),
     });
@@ -113,6 +104,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
     for (field, value) in fields.iter().filter(|(field, _)| *field != "title") {
         write_field(&mut text, store, field, value, parent.as_ref());
     }
+    let _ = writeln!(text, "version: {version}");
     text.extend(membership.as_ref().map(Membership::line));
     for (field, members) in &view.sets {
         let shown: Vec<String> = members.values().map(|member| printable(member)).collect();
@@ -129,6 +121,21 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         write_comment(&mut text, comment);
     }
     Ok(Output::new(text, data))
+}
+
+fn link_json(link: &LinkView, other: Option<&IssueView>) -> Value {
+    json!({
+        "type": link.link_type,
+        "direction": link.direction,
+        "name": link.name,
+        "other": {
+            "id": link.other,
+            "key": other.and_then(|other| other.key.clone()),
+            "status": other.and_then(|other| other.fields.get("status")),
+            "category": other.and_then(|other| other.category),
+            "archived": other.map(follow::archived),
+        },
+    })
 }
 
 /// The Short-list an Issue is on, by name and place; its id and rank are
