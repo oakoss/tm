@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::claim::{Claim, current, taken};
 use crate::membership::{open_blocks, passed_over};
-use crate::{Draft, IssueView, Store, StoreError};
+use crate::{Draft, Lineage, Store, StoreError};
 
 /// The Issue [`Store::take_next`] took, with what its `extend` made.
 #[derive(Debug)]
@@ -38,7 +38,7 @@ impl Store {
         actor: &Actor,
         candidates: &[Uuid],
         ttl_ms: Option<u64>,
-        extend: impl FnOnce(&[IssueView]) -> (Vec<Draft>, T),
+        extend: impl FnOnce(&Lineage) -> (Vec<Draft>, T),
     ) -> Result<Option<Next<T>>, StoreError> {
         let scheme = self.scheme.clone();
         let writer = actor.clone();
@@ -56,7 +56,8 @@ impl Store {
                     }
                     let twice = || StoreError::Corrupt("tm next began two Issues".into());
                     let extend = extend.take().ok_or_else(twice)?;
-                    let (begin, out) = extend(&crate::family::lineage(tx, &scheme, view.id)?);
+                    let (begin, out) =
+                        extend(&crate::family::lineage(tx, &scheme, view.id, at_ms)?);
                     made = out;
                     chosen = Some(view.id);
                     let mut drafts = Vec::with_capacity(begin.len() + 1);

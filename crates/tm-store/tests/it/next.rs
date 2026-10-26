@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde_json::json;
 use tm_core::Actor;
 use tm_core::actor::SessionId;
-use tm_store::{Draft, IssueView, Next, Store};
+use tm_store::{Draft, Lineage, Next, Store};
 use uuid::Uuid;
 
 use crate::support::{
@@ -15,8 +15,8 @@ use crate::support::{
 };
 
 /// What `tm start` would write: the Issue's Status to in progress.
-fn begin(lineage: &[IssueView]) -> (Vec<Draft>, ()) {
-    let issue = &lineage[0];
+fn begin(lineage: &Lineage) -> (Vec<Draft>, ()) {
+    let issue = &lineage.issues()[0];
     let started = draft(issue.id, set_field("status", json!("in_progress")));
     let begun = Draft {
         project: issue.project,

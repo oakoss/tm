@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 use tm_core::Actor;
 use tm_core::scheme::{Category, Scheme};
-use tm_store::{Draft, IssueView, Store, StoreError};
+use tm_store::{Draft, IssueView, Lineage, Store, StoreError};
 use uuid::Uuid;
 
 use crate::fields::set;
@@ -24,10 +24,12 @@ pub(crate) struct Starts {
 }
 
 /// The moves starting each of `candidates` still in triage or todo, into the
-/// first active Status of its own Workflow.
-pub(crate) fn starts<'a>(
+/// first active Status of its own Workflow. An Agent leaves one another
+/// session's Claim holds in `lineage` to its holder.
+pub(crate) fn starts(
     scheme: &Scheme,
-    candidates: impl IntoIterator<Item = &'a IssueView>,
+    candidates: &[IssueView],
+    lineage: &Lineage,
     actor: &Actor,
 ) -> (Vec<Draft>, Starts) {
     let mut drafts = Vec::new();
@@ -41,6 +43,17 @@ pub(crate) fn starts<'a>(
             starts
                 .warnings
                 .push(format!("{name} was not started: it is archived"));
+            continue;
+        }
+        if actor.is_agent()
+            && let Some(holder) = lineage
+                .held(parent.id)
+                .filter(|holder| !holder.taken_by(actor))
+        {
+            starts.warnings.push(format!(
+                "{name} was not started: {} holds it",
+                crate::claim::holder(holder)
+            ));
             continue;
         }
         let issue_type = text(parent, "type");

@@ -93,6 +93,33 @@ fn write(
     let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
         .map_err(|message| CliError::new("no_identity", message))?;
     crate::fields::known(&scheme, fields.iter().map(|(field, _)| field))?;
+    // A move into done or cancelled releases the Claim; a review status keeps
+    // it (ADR 0009).
+    let category = workflow.status(&status).map(|status| status.category);
+    let finished = matches!(category, Some(Category::Done | Category::Cancelled));
+    if force {
+        here.store.force_past_claims();
+    }
+    let forced = |err| CliError::past_claim(err, "tm move --force");
+    // A refusal would lose piped text, so check before reading it; the write
+    // checks again.
+    if !crate::fields::piped(fields).is_empty() {
+        if finished {
+            refuse_finish(here, &identity.actor, id, !force).map_err(held_elsewhere)?;
+        } else {
+            let mut written = crate::fields::written(&scheme, &view, fields, &[]);
+            let moves = !view
+                .fields
+                .get("status")
+                .is_some_and(|before| edit::same(before, &json!(status)));
+            if moves {
+                written.push("status");
+            }
+            here.store
+                .check_protected(&identity.actor, id, &written)
+                .map_err(forced)?;
+        }
+    }
     // Read once all else is checked, so a mistake keeps the piped text; the
     // append below may retry, but this runs once.
     let fields = crate::fields::read_stdin(fields, "leave the field out")?;
@@ -108,10 +135,6 @@ fn write(
             .is_some_and(|before| edit::same(before, value)),
         _ => true,
     });
-    // A move into done or cancelled releases the Claim; a review status keeps
-    // it (ADR 0009).
-    let category = workflow.status(&status).map(|status| status.category);
-    let finished = matches!(category, Some(Category::Done | Category::Cancelled));
     // A finished Issue a Claim still holds is let go by moving it again.
     if changes.is_empty() && !(finished && here.store.claim_state(id)?.is_some()) {
         return Ok((unchanged(here, &view)?, identity.warnings));
@@ -124,12 +147,15 @@ fn write(
     };
     let drafts = || changes.iter().cloned().map(draft).collect::<Vec<_>>();
     let (ops, starts) = if category == Some(Category::Active) {
-        here.store.append_with_lineage(drafts(), id, |lineage| {
-            let parents = lineage.iter().filter(|issue| issue.id != id);
-            follow::starts(&scheme, parents, &identity.actor)
-        })?
+        here.store
+            .append_with_lineage(drafts(), id, |lineage| {
+                let parents = lineage.issues().get(1..).unwrap_or_default();
+                follow::starts(&scheme, parents, lineage, &identity.actor)
+            })
+            .map_err(forced)?
     } else if !finished {
-        (here.store.append_all(drafts())?, Starts::default())
+        let ops = here.store.append_all(drafts()).map_err(forced)?;
+        (ops, Starts::default())
     } else {
         let ops = finish(here, &identity.actor, (view.project, id), drafts, !force)
             .map_err(held_elsewhere)?;
@@ -180,21 +206,7 @@ pub(crate) fn finish(
     let mut tries = 0;
     loop {
         let mut drafts = drafts();
-        let state = here.store.claim_state(issue)?;
-        if guarded
-            && actor.is_agent()
-            && let Some(ClaimState::Held(holder)) = &state
-            && !holder.taken_by(actor)
-        {
-            let key = here.store.issue(issue)?.and_then(|view| view.key);
-            return Err(StoreError::AlreadyClaimed {
-                issue: Named {
-                    key,
-                    ..issue.into()
-                },
-                holder: Box::new(holder.clone()),
-            });
-        }
+        let state = refuse_finish(here, actor, issue, guarded)?;
         // The release names the Claim read here, so the write refuses one
         // that was taken, renewed or released since, and the move reads it
         // and judges it again. A lapsed Claim is released too, so finished
@@ -215,6 +227,32 @@ pub(crate) fn finish(
             written => break written,
         }
     }
+}
+
+/// `issue`'s Claim, unless `guarded` refuses an Agent's finish of it while
+/// another session holds it.
+fn refuse_finish(
+    here: &Here,
+    actor: &Actor,
+    issue: Uuid,
+    guarded: bool,
+) -> Result<Option<ClaimState>, StoreError> {
+    let state = here.store.claim_state(issue)?;
+    if guarded
+        && actor.is_agent()
+        && let Some(ClaimState::Held(holder)) = &state
+        && !holder.taken_by(actor)
+    {
+        let key = here.store.issue(issue)?.and_then(|view| view.key);
+        return Err(StoreError::AlreadyClaimed {
+            issue: Named {
+                key,
+                ..issue.into()
+            },
+            holder: Box::new(holder.clone()),
+        });
+    }
+    Ok(state)
 }
 
 /// A line for each field the move set, as `tm edit` prints them, and one for

@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 use tm_core::scheme::Category;
 use tm_core::{Actor, Change, Op, Scheme};
-use tm_store::{Claim, Draft, IssueView};
+use tm_store::{Claim, Draft, IssueView, Lineage};
 use uuid::Uuid;
 
 use crate::claim::{self, Lasts};
@@ -53,7 +53,7 @@ fn write(
         .map_err(|message| CliError::new("no_identity", message))?;
     let actor = identity.actor.clone();
     let scheme = here.store.scheme().clone();
-    let drafts = |lineage: &[IssueView]| begin(&scheme, &actor, lineage);
+    let drafts = |lineage: &Lineage| begin(&scheme, &actor, lineage);
     // A human starts the work without a Claim, which only an Agent holds.
     let (claim, held, ops, begun) = if actor.is_agent() {
         let ttl_ms = lasts.ttl_ms(here);
@@ -94,19 +94,13 @@ pub(crate) fn report(
         ops,
         mut begun,
     } = started;
+    // Warned even when the start writes no field the Claim protects.
     if !actor.is_agent()
         && let Some(state) = here.store.claim_state(id)?
         && let Some(other) = state.held()
     {
-        begun.warnings.push(format!(
-            "{} is claimed by {}, who may be working on it",
-            begun
-                .issue
-                .as_ref()
-                .and_then(|issue| issue.key.clone())
-                .unwrap_or_else(|| id.to_string()),
-            claim::holder(other)
-        ));
+        let key = begun.issue.as_ref().and_then(|issue| issue.key.as_deref());
+        begun.warnings.push(claim::held_warning(key, other));
     }
     let issue = begun.issue.ok_or_else(|| {
         CliError::new("not_found", format!("no Issue is {reference}"))
@@ -156,8 +150,8 @@ pub(crate) fn report(
 /// The drafts that begin `lineage`'s first Issue: moving it out of triage or
 /// todo into its first active Status, and its parents with it, and making the
 /// human `actor` works for its Assignee when it has none.
-pub(crate) fn begin(scheme: &Scheme, actor: &Actor, lineage: &[IssueView]) -> (Vec<Draft>, Begun) {
-    let Some((issue, parents)) = lineage.split_first() else {
+pub(crate) fn begin(scheme: &Scheme, actor: &Actor, lineage: &Lineage) -> (Vec<Draft>, Begun) {
+    let Some((issue, parents)) = lineage.issues().split_first() else {
         return (Vec::new(), Begun::default());
     };
     let mut begun = Begun::default();
@@ -199,7 +193,7 @@ pub(crate) fn begin(scheme: &Scheme, actor: &Actor, lineage: &[IssueView]) -> (V
         })
         .collect();
     if moved {
-        let (more, starts) = follow::starts(scheme, parents, actor);
+        let (more, starts) = follow::starts(scheme, parents, lineage, actor);
         drafts.extend(more);
         begun.starts = starts;
     }

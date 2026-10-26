@@ -405,6 +405,16 @@ pub(crate) fn holder(claim: &Claim) -> String {
     format!("{} for {}", claim.taker(), claim.on_behalf_of)
 }
 
+/// The warning a human's or a forced write gets for another session's Claim
+/// on the Issue `key` names, else its id.
+pub(crate) fn held_warning(key: Option<&str>, held: &Claim) -> String {
+    let name = key.map_or_else(|| held.issue.to_string(), str::to_owned);
+    format!(
+        "{name} is claimed by {}, who may be working on it",
+        holder(held)
+    )
+}
+
 /// Whether an Agent may take a lapsed Claim on `issue`: a take is refused on
 /// an archived Issue.
 pub(crate) fn takeable(issue: &IssueView) -> bool {

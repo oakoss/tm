@@ -44,8 +44,11 @@ use uuid::Uuid;
 use apply::{apply, project_from, rust_int, sql_int, uuid_from};
 
 pub use beads::{BeadsExport, BeadsImported, read_beads};
-pub use claim::{AgentClaims, Claim, ClaimState, Holder, TakenWith, short_session};
+pub use claim::{
+    AgentClaims, Claim, ClaimState, Holder, PROTECTED_FIELDS, TakenWith, short_session,
+};
 pub use export::{Exported, Restored, copy_store, read_export};
+pub use family::Lineage;
 pub use history::HistoryEntry;
 pub use import::{Conflict, RecordOutcome, RecordsImported};
 pub use import_list::{ListOutcome, Passed};
@@ -178,6 +181,12 @@ pub enum StoreError {
     NoAgent { actor: String },
     #[error("Issue {issue} is held by {} for {}{}", holder.taker(), holder.on_behalf_of, holder.expires_ms.map_or_else(String::new, |ms| format!(", expiring at {ms} ms")))]
     AlreadyClaimed { issue: Named, holder: Box<Claim> },
+    #[error("Issue {issue}'s {field} is protected: {} holds it for {}{}", holder.taker(), holder.on_behalf_of, holder.expires_ms.map_or_else(String::new, |ms| format!(", expiring at {ms} ms")))]
+    Protected {
+        issue: Named,
+        field: String,
+        holder: Box<Claim>,
+    },
     #[error("Claim {claim} does not hold Issue {issue}; {holder}")]
     NotClaimHolder {
         issue: Named,
@@ -285,6 +294,15 @@ impl StoreError {
             },
             Self::AlreadyClaimed { issue, holder } => Self::AlreadyClaimed {
                 issue: name(issue),
+                holder,
+            },
+            Self::Protected {
+                issue,
+                field,
+                holder,
+            } => Self::Protected {
+                issue: name(issue),
+                field,
                 holder,
             },
             Self::NotClaimHolder {
@@ -450,6 +468,9 @@ pub struct Store {
     scheme: Scheme,
     opened: bool,
     last_write: Option<LastWrite>,
+    forcing: bool,
+    /// Claims a human's or a forced write went past, for the caller to warn of.
+    passed: Vec<Claim>,
 }
 
 /// Whether undoing the last batch this Store wrote would succeed, as tried
@@ -650,6 +671,8 @@ impl Store {
             scheme: Scheme::built_in(),
             opened: false,
             last_write: None,
+            forcing: false,
+            passed: Vec::new(),
         };
         store.init()?;
         store.opened = true;
@@ -1108,6 +1131,16 @@ impl Store {
         self.append_with(drafts, |tx, _| guard(tx).map(|()| Vec::new()), true, None)
     }
 
+    /// Lets an Agent's later writes past another session's Claim, as `--force` asks.
+    pub fn force_past_claims(&mut self) {
+        self.forcing = true;
+    }
+
+    /// The Claims writes went past since last asked.
+    pub fn passed_claims(&mut self) -> Vec<Claim> {
+        std::mem::take(&mut self.passed)
+    }
+
     /// [`Store::append_all`], refused with [`StoreError::ClaimChanged`] unless
     /// `issue`'s Claim is still exactly `held`, expiry included, so what was
     /// judged from it holds when the write begins.
@@ -1176,6 +1209,7 @@ impl Store {
             draft.change.validate()?;
             drafts.push((draft, None));
         }
+        let passed = claim::protected(&tx, &drafts, now.0.utc_ms, self.forcing)?;
         if let Some(writer) = claim::renewing(&drafts) {
             let claimed = claim::claimed_in(&drafts);
             let due = |held: &Claim| held.due(now.0.utc_ms) && !claimed.contains(&held.issue);
@@ -1226,6 +1260,7 @@ impl Store {
                 },
             );
         }
+        self.passed.extend(passed);
         Ok(ops)
     }
 

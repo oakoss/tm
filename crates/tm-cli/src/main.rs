@@ -169,35 +169,7 @@ enum Command {
     ///
     /// The description holds the current plan; record progress against it
     /// with `tm comment`.
-    #[command(group(
-        ArgGroup::new("changes")
-            .required(true)
-            .multiple(true)
-            .args(["set", "unset", "labels", "remove_labels", "parent", "no_parent"])
-    ))]
-    Edit {
-        /// The Issue's Key or full id.
-        issue: String,
-        /// Set a field, such as priority=high; FIELD=- reads the value from
-        /// stdin. Repeat for more.
-        #[arg(long, value_name = "FIELD=VALUE", value_parser = edit::field_value)]
-        set: Vec<(String, String)>,
-        /// Clear a field; repeat for more.
-        #[arg(long, value_name = "FIELD", value_parser = edit::unset_field)]
-        unset: Vec<String>,
-        /// Add a label; repeat for more.
-        #[arg(long = "label", value_name = "LABEL")]
-        labels: Vec<String>,
-        /// Remove a label; repeat for more.
-        #[arg(long = "remove-label", value_name = "LABEL")]
-        remove_labels: Vec<String>,
-        /// The new parent Issue's Key or id.
-        #[arg(long, conflicts_with = "no_parent")]
-        parent: Option<String>,
-        /// Remove the parent.
-        #[arg(long)]
-        no_parent: bool,
-    },
+    Edit(edit::Edit),
     /// Link two Issues, read from either end: `tm link TM-1 blocks TM-2` or
     /// `tm link TM-2 is blocked by TM-1`.
     Link {
@@ -305,6 +277,10 @@ enum Command {
         /// Show what would be restored, and write nothing.
         #[arg(long)]
         dry_run: bool,
+        /// Restore a field another Agent session's live Claim protects; only
+        /// once that session has stopped work on it.
+        #[arg(long)]
+        force: bool,
     },
     /// Inspect the Scheme.
     Scheme {
@@ -438,25 +414,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             labels,
             parent,
         }),
-        Some(Command::Edit {
-            issue,
-            set,
-            unset,
-            labels,
-            remove_labels,
-            parent,
-            no_parent,
-        }) => edit::run(
-            &issue,
-            &edit::Edit {
-                set,
-                unset,
-                labels,
-                remove_labels,
-                parent,
-                no_parent,
-            },
-        ),
+        Some(Command::Edit(args)) => edit::run(&args),
         Some(Command::Link { words }) => link::run(&words, true),
         Some(Command::Unlink { words }) => link::run(&words, false),
         Some(Command::List { filter, limit, all }) => list::run(&filter, limit, all, json),
@@ -468,7 +426,11 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Shortlist(args)) => shortlist::run(&args, json),
         Some(Command::Show { issue }) => show::run(&issue),
         Some(Command::History { issue, limit, all }) => history::run(&issue, limit, all),
-        Some(Command::Undo { batch, dry_run }) => undo::run(batch.as_deref(), dry_run),
+        Some(Command::Undo {
+            batch,
+            dry_run,
+            force,
+        }) => undo::run(batch.as_deref(), dry_run, force),
         Some(Command::Export { dated: true }) => backup::dated(),
         Some(Command::Export { dated: false }) => unreachable!("main writes the export itself"),
         Some(Command::Import {

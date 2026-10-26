@@ -11,7 +11,7 @@ use tm_core::{Actor, Change, Op};
 use uuid::Uuid;
 
 use crate::apply::{issue_project, uuid_from};
-use crate::{Draft, IssueView, Provenance, Store, StoreError};
+use crate::{Draft, Lineage, Provenance, Store, StoreError};
 
 /// Begins the `unapplied` reason of a take or release that lost to another,
 /// telling lost Claims apart from operations that do not fit.
@@ -253,7 +253,7 @@ impl Store {
         actor: &Actor,
         issue: Uuid,
         ttl_ms: Option<u64>,
-        extend: impl FnOnce(&[IssueView]) -> (Vec<Draft>, T),
+        extend: impl FnOnce(&Lineage) -> (Vec<Draft>, T),
     ) -> Result<TakenWith<T>, StoreError> {
         let take = |prev| ClaimAction::Take {
             agent: actor.name().to_owned(),
@@ -269,7 +269,7 @@ impl Store {
             Vec::new(),
             |tx, at_ms| {
                 let held = current(tx, issue)?;
-                let (more, out) = extend(&crate::family::lineage(tx, &scheme, issue)?);
+                let (more, out) = extend(&crate::family::lineage(tx, &scheme, issue, at_ms)?);
                 made = out;
                 if let Some(own) = held
                     .as_ref()
@@ -327,6 +327,37 @@ impl Store {
     pub fn release(&mut self, actor: &Actor, issue: Uuid, claim: Uuid) -> Result<Op, StoreError> {
         let draft = self.claim_draft(actor.clone(), issue, ClaimAction::Release { claim })?;
         self.append(draft)
+    }
+
+    /// Refuses as the write would when `actor` sets one of `fields` on
+    /// `issue` past another session's live Claim. The write checks again;
+    /// this only fails early, such as before piped text is read.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Protected`], or as [`Store::claim_state`].
+    pub fn check_protected(
+        &self,
+        actor: &Actor,
+        issue: Uuid,
+        fields: &[&str],
+    ) -> Result<(), StoreError> {
+        let Some(field) = fields.iter().find(|field| PROTECTED_FIELDS.contains(field)) else {
+            return Ok(());
+        };
+        match self.claim_state(issue)? {
+            Some(ClaimState::Held(holder))
+                if actor.is_agent() && !self.forcing && !holder.taken_by(actor) =>
+            {
+                Err(StoreError::Protected {
+                    issue: issue.into(),
+                    field: (*field).to_owned(),
+                    holder: Box::new(holder),
+                }
+                .named(&self.conn))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// The Claim on `issue`, held or lapsed, read against one clock reading.
@@ -595,6 +626,62 @@ pub(crate) fn renewing(drafts: &[(Draft, Option<Provenance>)]) -> Option<Actor> 
         .iter()
         .all(|(draft, provenance)| draft.actor == first.actor && provenance.is_none());
     (alone && first.actor.is_agent()).then(|| first.actor.clone())
+}
+
+/// The fields a live Claim keeps another session from writing (ADR 0009).
+pub const PROTECTED_FIELDS: [&str; 2] = ["status", "description"];
+
+/// The live Claims a local batch writes past: each on an Issue whose
+/// protected field a draft sets while another session holds it. An Agent's
+/// write is refused unless `forced`; a human's goes through. A batch that
+/// takes or releases the Issue's Claim is judged by that Claim's own rules,
+/// as a finishing move is.
+pub(crate) fn protected(
+    conn: &Connection,
+    drafts: &[(Draft, Option<Provenance>)],
+    at_ms: i64,
+    forced: bool,
+) -> Result<Vec<Claim>, StoreError> {
+    let taken_or_released: HashSet<Uuid> = drafts
+        .iter()
+        .filter(|(draft, _)| {
+            matches!(
+                draft.change,
+                Change::Claim {
+                    action: ClaimAction::Take { .. } | ClaimAction::Release { .. }
+                }
+            )
+        })
+        .map(|(draft, _)| draft.subject)
+        .collect();
+    let mut passed: Vec<Claim> = Vec::new();
+    for (draft, provenance) in drafts {
+        let Change::SetField { field, .. } = &draft.change else {
+            continue;
+        };
+        if provenance.is_some()
+            || !PROTECTED_FIELDS.contains(&field.as_str())
+            || taken_or_released.contains(&draft.subject)
+        {
+            continue;
+        }
+        let Some(holder) = current(conn, draft.subject)?
+            .filter(|claim| !claim.lapsed(at_ms) && !claim.taken_by(&draft.actor))
+        else {
+            continue;
+        };
+        if draft.actor.is_agent() && !forced {
+            return Err(StoreError::Protected {
+                issue: draft.subject.into(),
+                field: field.clone(),
+                holder: Box::new(holder),
+            });
+        }
+        if !passed.contains(&holder) {
+            passed.push(holder);
+        }
+    }
+    Ok(passed)
 }
 
 /// The Issues whose Claim `drafts` take, renew or release, which a renewal

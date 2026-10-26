@@ -33,6 +33,8 @@ Claims
   A Claim tells other Agents an Issue is taken. It lasts 2 hours unless
   .config/tm.toml sets claim_expiry, and every write from the session that
   took it renews it. Once it lapses, any other Agent may take it over.
+  While it holds, other sessions cannot change the Issue's status or
+  description; comment on it instead.
   tm heartbeat               renews this session's Claims through quiet
                              work, such as a long test run
   tm claims                  who holds which Issue, and for how long
