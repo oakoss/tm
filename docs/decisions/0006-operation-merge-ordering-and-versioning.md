@@ -44,6 +44,8 @@ A pending operation has no `server_received_ms` yet. On its own Replica it appli
 
 A merge that leaves an Issue breaking its Workflow is applied and flagged by `tm doctor`, not rejected; rejection is reserved for permissions and purged Issues.
 
+Within a Replica, a write is checked against the version it was based on, apart from `base_seq` (amended 2026-10-25). An Issue's version is this Replica's log position of the latest write to its fields or set elements; a new comment or a Claim does not move it. `tm show` prints it, and `tm edit` and `tm move` refuse with `stale_value`, naming each field and its current value, when a single-value field they set was written after the version given by `--if-version`, else after the one the command read. The version is checked when the write is made and never recorded in it, so the operation format, the hash chain and imports are unchanged, and pulled operations merge by the rules above.
+
 ## Verifying agreement
 
 Synced operations form a linear hash chain in `server_seq` order, one chain per Project starting from a fixed genesis value:

@@ -47,27 +47,36 @@ pub(crate) struct Move {
     /// that Claim; only once that session has stopped work on it.
     #[arg(long)]
     force: bool,
+    /// Refuse the write if a field it sets changed after this version, the
+    /// one tm show printed when you read the Issue.
+    #[arg(long, value_name = "VERSION")]
+    if_version: Option<u64>,
+}
+
+/// The version a write is based on: `given` by `--if-version`, else the one
+/// `read` with the Issue. One too large for the log is ahead of any Issue,
+/// and refused as such.
+pub(crate) fn based_on(given: Option<u64>, read: i64) -> i64 {
+    given.map_or(read, |given| i64::try_from(given).unwrap_or(i64::MAX))
 }
 
 pub(crate) fn run(args: &Move) -> Result<Output, CliError> {
     crate::fields::given_once(args.set.iter().map(|(field, _)| field))?;
-    here::write(|here| write(here, &args.issue, &args.status, &args.set, args.force))
+    here::write(|here| write(here, args))
 }
 
-fn write(
-    here: &mut Here,
-    reference: &str,
-    target: &str,
-    fields: &[(String, String)],
-    force: bool,
-) -> Result<(Output, Vec<String>), CliError> {
+fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>), CliError> {
+    let (reference, target) = (args.issue.as_str(), args.status.as_str());
+    let (fields, force) = (args.set.as_slice(), args.force);
     let id = here.issue(reference)?;
     let scheme = here.store.scheme().clone();
-    let view = here.store.issue(id)?.ok_or_else(|| {
+    let (view, read) = here.store.issue_with_version(id)?.ok_or_else(|| {
         CliError::new("not_found", format!("no Issue is {reference}"))
             .with("kind", "issue")
             .with("reference", reference)
     })?;
+    let based_on = based_on(args.if_version, read);
+    here.store.base_writes_on(id, based_on);
     let issue_type = view
         .fields
         .get("type")
@@ -101,24 +110,9 @@ fn write(
         here.store.force_past_claims();
     }
     let forced = |err| CliError::past_claim(err, "tm move --force");
-    // A refusal would lose piped text, so check before reading it; the write
-    // checks again.
     if !crate::fields::piped(fields).is_empty() {
-        if finished {
-            refuse_finish(here, &identity.actor, id, !force).map_err(held_elsewhere)?;
-        } else {
-            let mut written = crate::fields::written(&scheme, &view, fields, &[]);
-            let moves = !view
-                .fields
-                .get("status")
-                .is_some_and(|before| edit::same(before, &json!(status)));
-            if moves {
-                written.push("status");
-            }
-            here.store
-                .check_protected(&identity.actor, id, &written)
-                .map_err(forced)?;
-        }
+        let to = (status.as_str(), finished);
+        refuse_early(here, &identity.actor, &view, to, args, based_on)?;
     }
     // Read once all else is checked, so a mistake keeps the piped text; the
     // append below may retry, but this runs once.
@@ -137,6 +131,8 @@ fn write(
     });
     // A finished Issue a Claim still holds is let go by moving it again.
     if changes.is_empty() && !(finished && here.store.claim_state(id)?.is_some()) {
+        // A version not read from the Issue is a mistake even here.
+        here.store.check_version(id, based_on, &[])?;
         return Ok((unchanged(here, &view)?, identity.warnings));
     }
     let draft = |change| Draft {
@@ -227,6 +223,34 @@ pub(crate) fn finish(
             written => break written,
         }
     }
+}
+
+/// Refuses a move to `status` as its write would, before piped text is read,
+/// since a refusal after would lose it; the write checks again.
+fn refuse_early(
+    here: &Here,
+    actor: &Actor,
+    view: &IssueView,
+    (status, finished): (&str, bool),
+    args: &Move,
+    based_on: i64,
+) -> Result<(), CliError> {
+    let mut written = crate::fields::written(here.store.scheme(), view, &args.set, &[]);
+    let moves = !view
+        .fields
+        .get("status")
+        .is_some_and(|before| edit::same(before, &json!(status)));
+    if moves {
+        written.push("status");
+    }
+    if finished {
+        refuse_finish(here, actor, view.id, !args.force).map_err(held_elsewhere)?;
+    } else {
+        here.store
+            .check_protected(actor, view.id, &written)
+            .map_err(|err| CliError::past_claim(err, "tm move --force"))?;
+    }
+    Ok(here.store.check_version(view.id, based_on, &written)?)
 }
 
 /// `issue`'s Claim, unless `guarded` refuses an Agent's finish of it while

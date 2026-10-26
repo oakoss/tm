@@ -26,4 +26,5 @@ mod shortlists;
 mod snapshot;
 mod support;
 mod undo;
+mod versions;
 mod workspace;

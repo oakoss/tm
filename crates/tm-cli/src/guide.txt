@@ -60,6 +60,8 @@ Keep it current
   Any --set FIELD=- on create, edit or move reads stdin, one field per
   command. Other fields, labels and the parent change with tm edit; the
   Status changes only with tm move.
+  When you rewrite text you read earlier, pass the version tm show
+  printed, --if-version N, so a change made since is refused, not lost.
 
 New work found along the way
   tm create --type task --title TEXT --parent KEY

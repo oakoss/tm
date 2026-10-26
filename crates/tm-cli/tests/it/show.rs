@@ -263,7 +263,8 @@ fn show_gives_an_issues_fields_parent_labels_and_claim() {
             "docs": "docs"
           }
         },
-        "shortlist": null
+        "shortlist": null,
+        "version": 11
       },
       "schema_version": 1,
       "warnings": []

@@ -24,6 +24,7 @@ mod shortlist;
 mod snapshot;
 mod undo;
 mod validate;
+mod version;
 pub mod workspace;
 
 use std::collections::btree_map::Entry;
@@ -187,6 +188,13 @@ pub enum StoreError {
         field: String,
         holder: Box<Claim>,
     },
+    #[error("Issue {issue}'s {} changed after version {based_on}, so nothing was written; it is at version {version}", current.keys().cloned().collect::<Vec<_>>().join(" and "))]
+    Stale {
+        issue: Named,
+        based_on: i64,
+        version: i64,
+        current: BTreeMap<String, serde_json::Value>,
+    },
     #[error("Claim {claim} does not hold Issue {issue}; {holder}")]
     NotClaimHolder {
         issue: Named,
@@ -304,6 +312,17 @@ impl StoreError {
                 issue: name(issue),
                 field,
                 holder,
+            },
+            Self::Stale {
+                issue,
+                based_on,
+                version,
+                current,
+            } => Self::Stale {
+                issue: name(issue),
+                based_on,
+                version,
+                current,
             },
             Self::NotClaimHolder {
                 issue,
@@ -471,6 +490,7 @@ pub struct Store {
     forcing: bool,
     /// Claims a human's or a forced write went past, for the caller to warn of.
     passed: Vec<Claim>,
+    based_on: Option<(Uuid, i64)>,
 }
 
 /// Whether undoing the last batch this Store wrote would succeed, as tried
@@ -673,6 +693,7 @@ impl Store {
             last_write: None,
             forcing: false,
             passed: Vec::new(),
+            based_on: None,
         };
         store.init()?;
         store.opened = true;
@@ -1210,6 +1231,10 @@ impl Store {
             drafts.push((draft, None));
         }
         let passed = claim::protected(&tx, &drafts, now.0.utc_ms, self.forcing)?;
+        if let Some((issue, based_on)) = self.based_on {
+            let fields = version::written(&drafts, issue);
+            version::check(&tx, &self.scheme, (issue, based_on), fields)?;
+        }
         if let Some(writer) = claim::renewing(&drafts) {
             let claimed = claim::claimed_in(&drafts);
             let due = |held: &Claim| held.due(now.0.utc_ms) && !claimed.contains(&held.issue);
