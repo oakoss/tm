@@ -22,6 +22,7 @@ mod protected;
 mod ready;
 mod scan;
 mod scheme;
+mod setup;
 mod shapes;
 mod shortlist;
 mod show;

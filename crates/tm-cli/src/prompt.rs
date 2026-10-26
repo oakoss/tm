@@ -22,11 +22,14 @@ fn is_human(terminal: bool, agent: bool) -> bool {
     terminal && !agent
 }
 
+/// Writes through a copy of the descriptor, as `output::finish` does: std's
+/// stdout reports success for a write to one that takes none, and a caller
+/// shows `text` to gate a write on it being seen.
 pub(crate) fn print_now(text: &str) -> Result<(), String> {
-    let mut stdout = io::stdout().lock();
-    stdout
-        .write_all(text.as_bytes())
-        .and_then(|()| stdout.flush())
+    io::stdout()
+        .flush()
+        .and_then(|()| crate::output::stdout())
+        .and_then(|mut out| out.write_all(text.as_bytes()))
         .map_err(|err| format!("cannot write output: {err}"))
 }
 
