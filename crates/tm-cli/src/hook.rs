@@ -18,6 +18,15 @@ pub(crate) enum Harness {
     Claude,
 }
 
+impl Harness {
+    /// The name the commands take.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+        }
+    }
+}
+
 /// `tm heartbeat` for a hook: silent unless it has news, then the harness's
 /// hook JSON, which is how an async hook reaches the Agent. Each warning is
 /// told once per session, or it would repeat after every tool use: a takeover

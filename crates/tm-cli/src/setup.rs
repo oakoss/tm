@@ -1,7 +1,7 @@
 //! `tm setup`: tm's hooks written into an agent harness's settings for the
-//! repo, shown as a diff and written only on a yes (ADR 0014), and taken out
-//! again by `--undo`. A handler is tm's when its command is one tm writes, so
-//! one added by hand with the same command counts too.
+//! repo, shown as a diff and written only on a person's yes (ADR 0014), and
+//! taken out again by `--undo`. A handler is tm's when its command is one tm
+//! writes, so one added by hand with the same command counts too.
 
 use std::fmt;
 use std::fs;
@@ -16,6 +16,7 @@ use tm_store::workspace;
 use crate::diff;
 use crate::error::CliError;
 use crate::hook::Harness;
+use crate::identity;
 use crate::instructions;
 use crate::output::Output;
 use crate::prompt::{ask, human, print_now};
@@ -61,7 +62,7 @@ pub(crate) fn run(setup: &Setup, json: bool) -> Result<Output, CliError> {
     let emptied = setup.undo && settings == Json::Object(Vec::new());
     let after = (!emptied).then(|| render(&settings, before.as_deref()));
     let shown = diff::unified(SETTINGS, before.as_deref(), after.as_deref().unwrap_or(""));
-    confirmed(&shown, emptied, setup.yes, json)?;
+    confirmed(&shown, emptied, setup, json)?;
     // The file may have been edited while tm asked; writing the text
     // computed before would lose that edit.
     if read(&path)? != before {
@@ -138,10 +139,25 @@ fn read(path: &Path) -> Result<Option<String>, CliError> {
 }
 
 /// Shows `shown` and asks, unless `--yes` confirms it already. JSON mode
-/// shows and asks nothing; its refusal carries the diff.
-fn confirmed(shown: &str, emptied: bool, yes: bool, json: bool) -> Result<(), CliError> {
+/// shows and asks nothing; its refusal carries the diff. An Agent is only
+/// shown it, `--yes` or not: the hooks run commands in every session, so a
+/// person writes them (ADR 0014).
+fn confirmed(shown: &str, emptied: bool, setup: &Setup, json: bool) -> Result<(), CliError> {
     let not_written =
         |why: &str| refused(format!("{SETTINGS} not written{why}")).with("diff", shown);
+    if identity::agent_detected(identity::env) {
+        let unshown = if json { None } else { print_now(shown).err() };
+        let undo = if setup.undo { " --undo" } else { "" };
+        let refusal = not_written(&format!(
+            ": an Agent is shown the diff; a person runs tm setup {}{undo} to write it",
+            setup.harness.name()
+        ));
+        return Err(match unshown {
+            Some(err) => refusal.warned(vec![format!("the diff was not shown: {err}")]),
+            None => refusal,
+        });
+    }
+    let yes = setup.yes;
     if json {
         return if yes {
             Ok(())

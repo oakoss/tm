@@ -1,5 +1,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
+use std::path::Path;
+use std::process::{Command, Output};
 
 use serde_json::Value;
 
@@ -9,6 +11,21 @@ const SETTINGS: &str = ".claude/settings.json";
 
 fn doc(stdout: &[u8]) -> Value {
     serde_json::from_slice(stdout).unwrap()
+}
+
+fn agent_command(scratch: &Scratch, repo: &Path, args: &[&str]) -> Command {
+    let mut command = tm_command();
+    command
+        .args(args)
+        .current_dir(repo)
+        .env("TM_HOME", scratch.home())
+        .env("TM_AGENT", "claude")
+        .env("TM_ACTOR", "jace");
+    command
+}
+
+fn as_agent(scratch: &Scratch, repo: &Path, args: &[&str]) -> Output {
+    agent_command(scratch, repo, args).output().unwrap()
 }
 
 #[test]
@@ -158,28 +175,70 @@ fn nothing_is_written_without_a_yes() {
         "{refusal}"
     );
 
-    let agent = tm_command()
-        .args(["setup", "claude"])
-        .current_dir(&repo)
-        .env("TM_HOME", scratch.home())
-        .env("TM_AGENT", "claude")
-        .env("TM_ACTOR", "jace")
-        .output()
-        .unwrap();
+    let agent = as_agent(&scratch, &repo, &["setup", "claude"]);
     assert!(!agent.status.success(), "{agent:?}");
     assert!(
         text(&agent.stdout).starts_with("--- /dev/null\n"),
         "the diff is shown"
     );
     assert!(
-        text(&agent.stderr).contains("confirm with --yes when not a person at a terminal"),
+        text(&agent.stderr).contains("a person runs tm setup claude to write it"),
         "{agent:?}"
     );
     assert!(!repo.join(".claude").exists());
 
-    // A stdout that takes no writes cannot show the diff a --yes confirms.
+    // An Agent's --yes is not a person's, in JSON or not.
+    let yes = as_agent(&scratch, &repo, &["setup", "claude", "--yes"]);
+    assert!(!yes.status.success(), "{yes:?}");
+    assert!(text(&yes.stdout).starts_with("--- /dev/null\n"), "{yes:?}");
+    let json = as_agent(&scratch, &repo, &["--json", "setup", "claude", "--yes"]);
+    assert!(!json.status.success(), "{json:?}");
+    let refusal = doc(&json.stdout);
+    assert_eq!(refusal["error"], "setup_refused");
+    assert!(
+        refusal["diff"].as_str().unwrap().contains("tm prime"),
+        "{refusal}"
+    );
+    let harness = agent_command(&scratch, &repo, &["setup", "claude", "--yes"])
+        .env_remove("TM_AGENT")
+        .env("CLAUDE_CODE_SESSION_ID", "s1")
+        .output()
+        .unwrap();
+    assert!(!harness.status.success(), "{harness:?}");
+    assert!(!repo.join(".claude").exists());
+
+    // An Agent is refused even when the diff cannot be shown to it.
     let unwritable = scratch.0.join("read-only-stdout");
     fs::write(&unwritable, "").unwrap();
+    let unshown = agent_command(&scratch, &repo, &["setup", "claude", "--yes"])
+        .stdout(fs::File::open(&unwritable).unwrap())
+        .output()
+        .unwrap();
+    let stderr = text(&unshown.stderr);
+    assert!(
+        stderr.contains("a person runs tm setup claude to write it")
+            && stderr.contains("the diff was not shown: cannot write output"),
+        "{unshown:?}"
+    );
+    assert!(!repo.join(".claude").exists());
+
+    // Nor can an Agent take them out.
+    let made = tm(&scratch, &repo, &["setup", "claude", "--yes"]);
+    assert!(made.status.success(), "{made:?}");
+    let undo = as_agent(&scratch, &repo, &["setup", "claude", "--undo", "--yes"]);
+    assert!(!undo.status.success(), "{undo:?}");
+    assert!(
+        text(&undo.stdout).starts_with("--- a/.claude/settings.json\n"),
+        "{undo:?}"
+    );
+    assert!(
+        text(&undo.stderr).contains("a person runs tm setup claude --undo to write it"),
+        "{undo:?}"
+    );
+    assert!(repo.join(SETTINGS).exists());
+    fs::remove_dir_all(repo.join(".claude")).unwrap();
+
+    // A stdout that takes no writes cannot show the diff a --yes confirms.
     let blind = tm_command()
         .args(["setup", "claude", "--yes"])
         .current_dir(&repo)

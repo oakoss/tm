@@ -911,7 +911,9 @@ fn an_agent_is_given_the_lines_and_hook_and_writes_neither() {
         "{shown}"
     );
     assert!(
-        shown.contains("run tm setup claude, which adds tm's hooks to .claude/settings.json"),
+        shown.contains(
+            "a person runs tm setup claude, which adds tm's hooks to .claude/settings.json"
+        ),
         "{shown}"
     );
     assert!(

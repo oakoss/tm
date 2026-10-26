@@ -294,13 +294,13 @@ enum Command {
     /// Write tm's hooks into an agent harness's settings for this repo: tm
     /// prime when a session starts, a heartbeat after each tool use, and
     /// releasing the session's Claims when it ends. Shows the diff and writes
-    /// only on a yes.
+    /// only on a person's yes; an Agent is only shown it.
     Setup {
         harness: hook::Harness,
         /// Remove the hooks tm setup adds, and nothing else.
         #[arg(long)]
         undo: bool,
-        /// Write without asking; needed when not at a terminal.
+        /// Write without asking, for a person not at a terminal.
         #[arg(long)]
         yes: bool,
     },
