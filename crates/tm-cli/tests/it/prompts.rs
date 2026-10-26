@@ -45,3 +45,81 @@ fn a_refused_key_is_asked_again_and_the_typed_one_is_written() {
     let agents = std::fs::read_to_string(repo.join("AGENTS.md")).unwrap();
     assert_eq!(agents, "agents\n", "a no leaves AGENTS.md as it was");
 }
+
+#[test]
+fn setup_writes_the_hooks_on_a_yes_and_nothing_on_a_no() {
+    let scratch = Scratch::new();
+    let repo = fixture(&scratch, "repo");
+    let settings = repo.join(".claude/settings.json");
+
+    let mut tm = tm_pty(&scratch, &repo, &["setup", "claude"]);
+    tm.exp_string("+++ b/.claude/settings.json").unwrap();
+    tm.exp_string("Write .claude/settings.json? [y/N] ")
+        .unwrap();
+    tm.send_line("n").unwrap();
+    let rest = tm.exp_eof().unwrap();
+    assert!(rest.contains(".claude/settings.json not written"), "{rest}");
+    assert!(!settings.exists());
+
+    let mut tm = tm_pty(&scratch, &repo, &["setup", "claude"]);
+    tm.exp_string("Write .claude/settings.json? [y/N] ")
+        .unwrap();
+    tm.send_line("y").unwrap();
+    let rest = tm.exp_eof().unwrap();
+    assert!(rest.contains("Commit .claude/settings.json\r\n"), "{rest}");
+    assert!(
+        std::fs::read_to_string(&settings)
+            .unwrap()
+            .contains("tm prime")
+    );
+
+    let mut tm = tm_pty(&scratch, &repo, &["setup", "claude", "--undo"]);
+    tm.exp_string("Remove .claude/settings.json? [y/N] ")
+        .unwrap();
+    tm.send_line("y").unwrap();
+    tm.exp_eof().unwrap();
+    assert!(!settings.exists());
+}
+
+#[test]
+fn setup_writes_nothing_when_the_file_changed_while_it_asked() {
+    let scratch = Scratch::new();
+    let repo = fixture(&scratch, "repo");
+    let settings = repo.join(".claude/settings.json");
+    std::fs::create_dir_all(repo.join(".claude")).unwrap();
+    std::fs::write(&settings, "{}\n").unwrap();
+
+    let mut tm = tm_pty(&scratch, &repo, &["setup", "claude"]);
+    tm.exp_string("Write .claude/settings.json? [y/N] ")
+        .unwrap();
+    std::fs::write(&settings, "{\"model\": \"edited\"}\n").unwrap();
+    tm.send_line("y").unwrap();
+    let rest = tm.exp_eof().unwrap();
+    assert!(
+        rest.contains(".claude/settings.json changed while tm asked; nothing written"),
+        "{rest}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&settings).unwrap(),
+        "{\"model\": \"edited\"}\n"
+    );
+
+    // A link to the same text, swapped in while tm asked, is still a link.
+    let shared = scratch.0.join("shared.json");
+    std::fs::write(&shared, "{}\n").unwrap();
+    std::fs::write(&settings, "{}\n").unwrap();
+    let mut tm = tm_pty(&scratch, &repo, &["setup", "claude"]);
+    tm.exp_string("Write .claude/settings.json? [y/N] ")
+        .unwrap();
+    std::fs::remove_file(&settings).unwrap();
+    std::os::unix::fs::symlink(&shared, &settings).unwrap();
+    tm.send_line("y").unwrap();
+    let rest = tm.exp_eof().unwrap();
+    assert!(
+        rest.contains("is a symlink, so tm leaves it alone"),
+        "{rest}"
+    );
+    let link = std::fs::symlink_metadata(&settings).unwrap();
+    assert!(link.file_type().is_symlink());
+    assert_eq!(std::fs::read_to_string(&shared).unwrap(), "{}\n");
+}

@@ -936,42 +936,6 @@ fn a_session_releases_all_it_holds_and_nothing_else() {
 }
 
 #[test]
-fn hook_print_gives_claude_codes_hooks_to_paste() {
-    let scratch = Scratch::new();
-    let (repo, _, _) = initialized(&scratch);
-    let out = tm(&scratch, &repo, &["--json", "hook", "print", "claude"]);
-    assert_eq!(
-        doc(&out)["data"]["settings"],
-        json!({
-            "hooks": {
-                "PostToolUse": [{
-                    "matcher": "*",
-                    "hooks": [{
-                        "type": "command",
-                        "command": "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm hook heartbeat claude",
-                        "async": true,
-                    }],
-                }],
-                "SessionEnd": [{
-                    "hooks": [{
-                        "type": "command",
-                        "command": "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm release --mine",
-                        "timeout": 10,
-                    }],
-                }],
-            },
-        })
-    );
-    let out = tm(&scratch, &repo, &["hook", "print", "claude"]);
-    assert!(
-        text(&out.stdout).starts_with("Merge this into .claude/settings.json"),
-        "{out:?}"
-    );
-    let out = tm(&scratch, &repo, &["hook", "print", "vim"]);
-    assert_eq!(out.status.code(), Some(2), "{out:?}");
-}
-
-#[test]
 fn the_hook_heartbeat_tells_the_agent_each_warning_once() {
     let scratch = Scratch::new();
     let (repo, mut store, project) = initialized(&scratch);

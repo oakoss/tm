@@ -29,6 +29,7 @@ mod prompt;
 mod ready;
 mod recover;
 mod scan;
+mod setup;
 mod shortlist;
 mod show;
 mod start;
@@ -63,9 +64,8 @@ enum Command {
     /// .config/tm.toml, after showing the file.
     ///
     /// It also offers a pointer to `tm guide` for AGENTS.md or CLAUDE.md,
-    /// written only on a yes from a person at a terminal, and prints the
-    /// `SessionStart` hook that runs `tm prime`; an Agent is given both to add
-    /// itself.
+    /// written only on a yes from a person at a terminal, which an Agent is
+    /// given to add itself; and points at `tm setup claude` for the hooks.
     ///
     /// A person at a terminal is also asked for an export to restore a fresh
     /// clone's Workspace from, and in a repo with .beads/ for a `bd export`
@@ -291,7 +291,20 @@ enum Command {
         #[command(subcommand)]
         action: SchemeAction,
     },
-    /// Hooks an agent harness can run tm from; tm writes no hook config.
+    /// Write tm's hooks into an agent harness's settings for this repo: tm
+    /// prime when a session starts, a heartbeat after each tool use, and
+    /// releasing the session's Claims when it ends. Shows the diff and writes
+    /// only on a yes.
+    Setup {
+        harness: hook::Harness,
+        /// Remove the hooks tm setup adds, and nothing else.
+        #[arg(long)]
+        undo: bool,
+        /// Write without asking; needed when not at a terminal.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// What the hooks tm setup writes run.
     Hook {
         #[command(subcommand)]
         action: HookAction,
@@ -318,9 +331,6 @@ enum GitAction {
 
 #[derive(Subcommand)]
 enum HookAction {
-    /// Print the hook entries to paste into a harness's settings: a heartbeat
-    /// after each tool use, and releasing the session's Claims when it ends.
-    Print { harness: hook::Harness },
     /// Renew this session's Claims as tm heartbeat does, printing the
     /// harness's hook output only for a warning not yet given this session.
     Heartbeat { harness: hook::Harness },
@@ -395,9 +405,9 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         }) => claim::release(&issue, claim),
         Some(Command::Release { issue: None, .. }) => claim::release_mine(),
         Some(Command::Handoff(args)) => handoff::run(&args),
-        Some(Command::Hook {
-            action: HookAction::Print { harness },
-        }) => Ok(hook::print(harness)),
+        Some(Command::Setup { harness, undo, yes }) => {
+            setup::run(&setup::Setup { harness, undo, yes }, json)
+        }
         Some(Command::Hook {
             action: HookAction::Heartbeat { .. },
         }) => unreachable!("main runs the hook heartbeat outside JSON mode"),

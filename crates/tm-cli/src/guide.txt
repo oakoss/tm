@@ -44,8 +44,10 @@ Claims
                              hands it to another Agent, with what is left
                              piped in as a note; tm prime shows it to that
                              Agent's sessions, and tm start KEY takes it
-  tm hook print claude       hooks that heartbeat after each tool use and
-                             release the session's Claims when it ends
+  tm setup claude            for a person: shows, asks, then adds hooks that
+                             run tm prime at session start, heartbeat after
+                             each tool use and release the session's Claims
+                             when it ends
   Sessions of one Agent are told apart by the harness's session id, or
   TM_SESSION when set.
 

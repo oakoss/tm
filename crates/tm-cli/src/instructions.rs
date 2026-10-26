@@ -1,5 +1,5 @@
 //! The lines `tm init` offers a repo's instruction file, pointing Agents at
-//! `tm guide`, and the `SessionStart` hook it prints (ADR 0014). tm writes the
+//! `tm guide`, and its pointer to `tm setup claude` (ADR 0014). tm writes the
 //! lines only on a human's yes; an Agent is given them to apply itself.
 
 use std::fmt::Write as _;
@@ -17,7 +17,6 @@ const START: &str = "<!-- tm:start -->";
 const END: &str = "<!-- tm:end -->";
 const LINE: &str = "This repo tracks its work in tm. Run `tm guide` for how to work with it.";
 const SETTINGS: &str = ".claude/settings.json";
-const LOCAL_SETTINGS: &str = ".claude/settings.local.json";
 
 fn block() -> String {
     ending_lines("\n")
@@ -297,7 +296,7 @@ impl Offer {
 /// Writes `text` to `path` whole or not at all: a new file only where none
 /// is, an existing one by renaming a finished copy over it with its
 /// permissions, so a failure midway never cuts the owner's text short.
-fn write(path: &Path, text: &str, create: bool) -> io::Result<()> {
+pub(crate) fn write(path: &Path, text: &str, create: bool) -> io::Result<()> {
     if create {
         let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
         let written = file
@@ -328,27 +327,13 @@ fn write(path: &Path, text: &str, create: bool) -> io::Result<()> {
     written
 }
 
-/// Whether neither Claude Code settings file has a hook running `tm prime`.
-/// One that cannot be read is named in `warnings`, and the hook is printed.
+/// Whether `tm setup claude` would add any of tm's hooks. A settings file it
+/// cannot read or merge into is named in `warnings`, and setup still pointed
+/// at.
 fn needs_hook(root: &Path, warnings: &mut Vec<String>) -> bool {
-    let mut found = false;
-    for file in [SETTINGS, LOCAL_SETTINGS] {
-        match fs::read_to_string(root.join(file)) {
-            Ok(text) => found |= text.contains("tm prime"),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => warnings.push(format!("cannot read {file}: {err}")),
-        }
-    }
-    !found
-}
-
-fn hook_settings() -> Value {
-    json!({
-        "hooks": {
-            "SessionStart": [
-                { "hooks": [{ "type": "command", "command": "tm prime" }] }
-            ]
-        }
+    crate::setup::needed(root).unwrap_or_else(|err| {
+        warnings.push(err);
+        true
     })
 }
 
@@ -412,11 +397,10 @@ pub(crate) fn report(output: &mut Output, offer: Offer) {
         ),
     };
     if hook {
-        let settings =
-            serde_json::to_string_pretty(&hook_settings()).expect("a json! value serializes");
         let _ = writeln!(
             text,
-            "For Claude Code to start each session from tm prime, add to {SETTINGS}:\n{settings}"
+            "For Claude Code to start each session from tm prime, run tm setup claude, which adds \
+             tm's hooks to {SETTINGS}"
         );
     }
     output.data["instructions"] = json!({
@@ -427,7 +411,7 @@ pub(crate) fn report(output: &mut Output, offer: Offer) {
         "state": state,
     });
     output.data["hook"] = if hook {
-        json!({ "file": SETTINGS, "settings": hook_settings() })
+        json!({ "file": SETTINGS, "setup": "tm setup claude" })
     } else {
         Value::Null
     };
@@ -862,19 +846,45 @@ mod tests {
     }
 
     #[test]
-    fn a_hook_in_either_settings_file_counts_and_an_unreadable_one_is_named() {
+    fn setup_is_pointed_at_until_every_hook_is_in_and_an_unreadable_file_is_named() {
         let dir = scratch();
         let mut warnings = Vec::new();
         assert!(needs_hook(&dir, &mut warnings));
         fs::create_dir(dir.join(".claude")).unwrap();
-        fs::write(dir.join(LOCAL_SETTINGS), r#"{"command":"tm prime"}"#).unwrap();
+        let group = |command: &str| format!(r#"[{{"hooks":[{{"command":{command:?}}}]}}]"#);
+        let prime = format!(r#"{{"hooks":{{"SessionStart":{}}}}}"#, group("tm prime"));
+        fs::write(dir.join(SETTINGS), prime).unwrap();
+        assert!(
+            needs_hook(&dir, &mut warnings),
+            "a tm prime alone lacks the heartbeat"
+        );
+        let all = format!(
+            r#"{{"hooks":{{"SessionStart":{},"PostToolUse":{},"SessionEnd":{}}}}}"#,
+            group("tm prime"),
+            group(r#"cd "${CLAUDE_PROJECT_DIR:?}" && tm hook heartbeat claude"#),
+            group(r#"cd "${CLAUDE_PROJECT_DIR:?}" && tm release --mine"#),
+        );
+        fs::write(dir.join(SETTINGS), &all).unwrap();
         assert!(!needs_hook(&dir, &mut warnings));
         assert!(warnings.is_empty(), "{warnings:?}");
-        fs::remove_file(dir.join(LOCAL_SETTINGS)).unwrap();
+
+        // A symlinked file is read through; only one setup must write to is
+        // named, since setup leaves a link alone.
+        let shared = dir.join("shared.json");
+        fs::write(&shared, &all).unwrap();
+        fs::remove_file(dir.join(SETTINGS)).unwrap();
+        symlink(&shared, dir.join(SETTINGS)).unwrap();
+        assert!(!needs_hook(&dir, &mut warnings));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        fs::write(&shared, "{}").unwrap();
+        assert!(needs_hook(&dir, &mut warnings));
+        assert!(warnings.remove(0).contains("is a symlink"));
+
+        fs::remove_file(dir.join(SETTINGS)).unwrap();
         fs::create_dir(dir.join(SETTINGS)).unwrap();
         assert!(needs_hook(&dir, &mut warnings));
         assert!(
-            warnings[0].starts_with("cannot read .claude/settings.json"),
+            warnings[0].contains(".claude/settings.json"),
             "{warnings:?}"
         );
         fs::remove_dir_all(&dir).unwrap();

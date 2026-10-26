@@ -1,6 +1,5 @@
-//! `tm hook`: hook entries a harness runs tm from, printed for the user to
-//! paste, since tm writes nothing outside its Workspace unasked; and the
-//! heartbeat those hooks run.
+//! `tm hook`: the heartbeat the hooks `tm setup` writes run after each tool
+//! use.
 
 use std::collections::HashSet;
 use std::fs;
@@ -17,46 +16,6 @@ use crate::output::Output;
 pub(crate) enum Harness {
     /// Claude Code.
     Claude,
-}
-
-pub(crate) fn print(harness: Harness) -> Output {
-    let settings = match harness {
-        Harness::Claude => claude(),
-    };
-    let pretty = serde_json::to_string_pretty(&settings).expect("JSON values always serialize");
-    let text = format!(
-        "Merge this into .claude/settings.json for this repo, or ~/.claude/settings.json for every \
-         repo:\n{pretty}\n\
-         After each tool use, tm hook heartbeat renews this session's Claims in the background \
-         and tells the Agent, once, of a Claim another Agent took over or a hook that cannot \
-         work; when the session ends, tm release --mine gives the Claims up.\n"
-    );
-    Output::new(text, json!({ "settings": settings }))
-}
-
-/// From `$CLAUDE_PROJECT_DIR`, since a hook's working directory follows the
-/// Agent's `cd` out of the repo; async, so no tool use waits on a heartbeat.
-fn claude() -> Value {
-    let command = |args: &str| format!("cd \"${{CLAUDE_PROJECT_DIR:?}}\" && tm {args}");
-    json!({
-        "hooks": {
-            "PostToolUse": [{
-                "matcher": "*",
-                "hooks": [{
-                    "type": "command",
-                    "command": command("hook heartbeat claude"),
-                    "async": true,
-                }],
-            }],
-            "SessionEnd": [{
-                "hooks": [{
-                    "type": "command",
-                    "command": command("release --mine"),
-                    "timeout": 10,
-                }],
-            }],
-        },
-    })
 }
 
 /// `tm heartbeat` for a hook: silent unless it has news, then the harness's

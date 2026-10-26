@@ -910,8 +910,10 @@ fn an_agent_is_given_the_lines_and_hook_and_writes_neither() {
         )),
         "{shown}"
     );
-    assert!(shown.contains("add to .claude/settings.json:"), "{shown}");
-    assert!(shown.contains("\"command\": \"tm prime\""), "{shown}");
+    assert!(
+        shown.contains("run tm setup claude, which adds tm's hooks to .claude/settings.json"),
+        "{shown}"
+    );
     assert!(
         shown.ends_with("Commit .config/tm.toml and AGENTS.md\n"),
         "{shown}"
@@ -940,10 +942,9 @@ fn json_init_names_the_file_lines_hook_and_what_to_commit() {
             "state": "to_add",
         })
     );
-    assert_eq!(data["hook"]["file"], ".claude/settings.json");
     assert_eq!(
-        data["hook"]["settings"]["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-        "tm prime"
+        data["hook"],
+        serde_json::json!({ "file": ".claude/settings.json", "setup": "tm setup claude" })
     );
     assert_eq!(
         data["commit"],
@@ -967,12 +968,11 @@ fn a_rerun_with_the_lines_and_hook_in_place_has_nothing_to_offer() {
     let lines = format!("# Repo\n\n{START}\n{LINE}\n{END}\n");
     fs::write(repo.join("AGENTS.md"), &lines).unwrap();
     fs::write(repo.join("CLAUDE.md"), "@AGENTS.md\n").unwrap();
-    fs::create_dir_all(repo.join(".claude")).unwrap();
-    fs::write(
-        repo.join(".claude/settings.json"),
-        r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"tm prime"}]}]}}"#,
-    )
-    .unwrap();
+    assert!(
+        tm(&scratch, &repo, &["setup", "claude", "--yes"])
+            .status
+            .success()
+    );
 
     let again = init_as_agent(&scratch, &repo, &["--json"]);
     let doc: serde_json::Value = serde_json::from_slice(&again.stdout).unwrap();

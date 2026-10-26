@@ -29,7 +29,7 @@ Chosen option: **write them on a human's yes; print them for an Agent**, because
 - **For a human**, `tm init` shows the exact lines and asks, defaulting to no. The file is `AGENTS.md` when it exists, including when `CLAUDE.md` only imports it; `CLAUDE.md` when it is the only one; with neither, `tm init` offers to create `AGENTS.md`. The lines sit between marker comments, so running `tm init` again updates them instead of adding a second copy.
 - **For an Agent**, `tm init` writes no instruction file. Its output, text and `--json`, carries the same lines and names the file, for the Agent to apply with its own edits, where they show in its diff for review.
 - **What the lines say** is short and points at the guide built into the binary: that the repo tracks work in tm and that `tm guide` says how, so they do not go stale as tm changes.
-- **Only these two files.** `tm init` prints other tools' settings, such as the SessionStart hook in `.claude/settings.json`, with how to add them, and writes none. Writing an Agent's hooks stays with the separate `tm setup <agent>` the design spec plans, behind its own confirmed diff and `--undo`.
+- **Only these two files.** `tm init` writes no other tool's settings. Writing an Agent's hooks stays with the separate `tm setup <agent>`, behind its own confirmed diff and `--undo`; `tm init` points at `tm setup claude` while any of tm's hooks are missing from `.claude/settings.json` (amended 2026-10-26).
 
 The invariant "tm writes only what it owns" changes from "never edits `AGENTS.md` or `CLAUDE.md`" to "edits `AGENTS.md` or `CLAUDE.md` only to add its own lines, shown first and confirmed by a human at a terminal".
 
