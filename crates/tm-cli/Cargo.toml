@@ -21,6 +21,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+rexpect = "0.7.1"
 rusqlite.workspace = true
 
 [[bin]]

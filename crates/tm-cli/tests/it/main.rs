@@ -17,6 +17,7 @@ mod list;
 mod moves;
 mod next;
 mod prime;
+mod prompts;
 mod protected;
 mod ready;
 mod scan;

@@ -18,3 +18,5 @@ The web UI will live in `web/` (pnpm) and the npm wrapper in `npm/`; neither exi
 ## Integration tests
 
 `crates/tm-cli/tests/it/main.rs` is the one integration-test binary; each suite is a module declared there. Add a suite as a module, not as a new `tests/*.rs` file: Cargo builds every top-level file as its own binary, and each one relinks on every library change. Filter with `cargo test -p tm-cli --test it <module>::`.
+
+A question tm asks a person is tested in the `prompts` suite: `support::tm_pty` runs `tm` at a pseudo-terminal through rexpect, and the test waits for each question's text before typing its answer, never sleeping.
