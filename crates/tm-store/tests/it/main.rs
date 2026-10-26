@@ -18,6 +18,7 @@ mod merge;
 mod next;
 mod placing;
 mod projects;
+mod protected;
 mod ready;
 mod rebuild;
 mod renewals;

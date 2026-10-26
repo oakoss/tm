@@ -1,5 +1,6 @@
 //! The Workspace the working directory maps to, opened for a command.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -176,6 +177,9 @@ pub(crate) fn write(
     let (mut output, mut warnings, published) = write_with(write)?;
     warnings.append(&mut output.warnings);
     warnings.extend(published);
+    // A command may warn of a Claim the store also reports passing.
+    let mut seen = HashSet::new();
+    warnings.retain(|warning| seen.insert(warning.clone()));
     output.warnings = warnings;
     Ok(output)
 }
@@ -188,6 +192,7 @@ pub(crate) fn write_with<T>(
     let mut here = open()?;
     let mut warnings = std::mem::take(&mut here.warnings);
     let written = write(&mut here);
+    warnings.extend(here.passed());
     let published = here.after_write();
     match written {
         Ok((value, identity_warnings)) => {
@@ -276,6 +281,30 @@ impl Here {
             )),
         }
         Ok(output.batched(batch, self.store.can_undo(batch)?))
+    }
+
+    /// A warning for each Issue whose protected field a human's or a forced
+    /// write set while another session's Claim held it. The write has
+    /// landed, so a Key that cannot be read falls back to the id.
+    fn passed(&mut self) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut warnings = Vec::new();
+        for held in self.store.passed_claims() {
+            if !seen.insert(held.issue) {
+                continue;
+            }
+            match self.store.issue(held.issue) {
+                Ok(view) => warnings.push(crate::claim::held_warning(
+                    view.and_then(|view| view.key).as_deref(),
+                    &held,
+                )),
+                Err(err) => warnings.push(format!(
+                    "{}; its Key could not be read: {err}",
+                    crate::claim::held_warning(None, &held)
+                )),
+            }
+        }
+        warnings
     }
 
     /// A warning for each Claim another Agent took over from `writer`, among

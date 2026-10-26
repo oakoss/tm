@@ -54,6 +54,8 @@ impl Store {
             scheme: Scheme::built_in(),
             opened: false,
             last_write: None,
+            forcing: false,
+            passed: Vec::new(),
         };
         store.check_log_columns()?;
         Ok(store)

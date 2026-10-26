@@ -1,5 +1,6 @@
 //! Every failure as a coded document (ADR 0011).
 
+use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
 use std::process::ExitCode;
@@ -9,7 +10,7 @@ use tm_core::OpError;
 use tm_core::filter::FilterError;
 use tm_core::op::{CURRENT_VERSION, MAX_PAYLOAD_BYTES};
 use tm_store::workspace::WorkspaceError;
-use tm_store::{Claim, ClaimState, Holder, Named, StoreError};
+use tm_store::{ClaimState, Holder, Named, StoreError};
 use uuid::Uuid;
 
 /// Keys the document itself uses, which details never take.
@@ -68,6 +69,18 @@ impl CliError {
         self
     }
 
+    /// A write refused for another session's Claim names `forced`, the
+    /// command that overrides it, in the message and never as a `fix`, so it
+    /// is not run by rote (ADR 0009).
+    pub(crate) fn past_claim(err: StoreError, forced: &str) -> Self {
+        let protected = matches!(err, StoreError::Protected { .. });
+        let mut err = Self::from(err);
+        if protected {
+            let _ = write!(err.message, "; {forced} writes it anyway");
+        }
+        err
+    }
+
     #[must_use]
     pub(crate) fn fix(mut self, fix: impl Into<String>) -> Self {
         self.fix = Some(fix.into());
@@ -121,13 +134,28 @@ impl CliError {
 // retried with a token an error gave would take or free another session's
 // Claim. `tm show` gives the token to whoever asks for it.
 impl CliError {
-    fn already_claimed(message: String, issue: Named, holder: &Claim) -> Self {
-        Self::new("already_claimed", message)
+    /// A take refused for another's Claim, or a write to a field it protects,
+    /// naming the field.
+    fn already_claimed(message: String, err: StoreError) -> Self {
+        let (issue, holder, field) = match err {
+            StoreError::AlreadyClaimed { issue, holder } => (issue, holder, None),
+            StoreError::Protected {
+                issue,
+                field,
+                holder,
+            } => (issue, holder, Some(field)),
+            other => return Self::internal(variant(&other), message),
+        };
+        let err = Self::new("already_claimed", message)
             .issue(issue)
             .with("agent", holder.agent.clone())
             .with("on_behalf_of", holder.on_behalf_of.clone())
             .with("expires_ms", holder.expires_ms)
-            .with("session", holder.session.clone())
+            .with("session", holder.session.clone());
+        match field {
+            Some(field) => err.with("field", field),
+            None => err,
+        }
     }
 
     fn not_claim_holder(message: String, issue: Named, claim: Uuid, holder: &Holder) -> Self {
@@ -363,8 +391,8 @@ impl From<StoreError> for CliError {
                 from,
                 to,
             } => Self::not_linked(message, link_type, *from, *to),
-            StoreError::AlreadyClaimed { issue, holder } => {
-                Self::already_claimed(message, issue, &holder)
+            err @ (StoreError::AlreadyClaimed { .. } | StoreError::Protected { .. }) => {
+                Self::already_claimed(message, err)
             }
             StoreError::NotClaimHolder {
                 issue,

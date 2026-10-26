@@ -264,6 +264,8 @@ pub(crate) fn probe(
         for (draft, _) in &drafts {
             draft.change.validate()?;
         }
+        // Unforced, as the undo it offers would run.
+        crate::claim::protected(tx, &drafts, now.0.utc_ms, false)?;
         crate::write_drafts(tx, scheme, drafts, (now, true), hlc)
     });
     tx.execute_batch("ROLLBACK TO undo_probe; RELEASE undo_probe")?;

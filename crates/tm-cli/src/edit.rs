@@ -15,13 +15,39 @@ use crate::here::{self, Here};
 use crate::identity;
 use crate::output::{Output, printable};
 
+#[derive(clap::Args)]
+#[command(group(
+    clap::ArgGroup::new("changes")
+        .required(true)
+        .multiple(true)
+        .args(["set", "unset", "labels", "remove_labels", "parent", "no_parent"])
+))]
 pub(crate) struct Edit {
-    pub(crate) set: Vec<(String, String)>,
-    pub(crate) unset: Vec<String>,
-    pub(crate) labels: Vec<String>,
-    pub(crate) remove_labels: Vec<String>,
-    pub(crate) parent: Option<String>,
-    pub(crate) no_parent: bool,
+    /// The Issue's Key or full id.
+    issue: String,
+    /// Set a field, such as priority=high; FIELD=- reads the value from
+    /// stdin. Repeat for more.
+    #[arg(long, value_name = "FIELD=VALUE", value_parser = field_value)]
+    set: Vec<(String, String)>,
+    /// Clear a field; repeat for more.
+    #[arg(long, value_name = "FIELD", value_parser = unset_field)]
+    unset: Vec<String>,
+    /// Add a label; repeat for more.
+    #[arg(long = "label", value_name = "LABEL")]
+    labels: Vec<String>,
+    /// Remove a label; repeat for more.
+    #[arg(long = "remove-label", value_name = "LABEL")]
+    remove_labels: Vec<String>,
+    /// The new parent Issue's Key or id.
+    #[arg(long, conflicts_with = "no_parent")]
+    parent: Option<String>,
+    /// Remove the parent.
+    #[arg(long)]
+    no_parent: bool,
+    /// Write a field another Agent session's live Claim protects; only once
+    /// that session has stopped work on it.
+    #[arg(long)]
+    force: bool,
 }
 
 /// `--set FIELD=VALUE`. Labels and parent have their own flags; a Status is
@@ -51,8 +77,8 @@ pub(crate) struct Changed {
     pub(crate) after: Value,
 }
 
-pub(crate) fn run(reference: &str, edit: &Edit) -> Result<Output, CliError> {
-    here::write(|here| write(here, reference, edit))
+pub(crate) fn run(edit: &Edit) -> Result<Output, CliError> {
+    here::write(|here| write(here, &edit.issue, edit))
 }
 
 fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<String>), CliError> {
@@ -79,6 +105,18 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
     let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
         .map_err(|message| CliError::new("no_identity", message))?;
     check_flags(here.store.scheme(), &view, edit)?;
+    if edit.force {
+        here.store.force_past_claims();
+    }
+    let forced = |err| CliError::past_claim(err, "tm edit --force");
+    // A refusal would lose piped text, so check before reading it; the write
+    // checks again.
+    if !fields::piped(&edit.set).is_empty() {
+        let written = fields::written(here.store.scheme(), &view, &edit.set, &edit.unset);
+        here.store
+            .check_protected(&identity.actor, id, &written)
+            .map_err(forced)?;
+    }
     // Read once all else is checked, so a mistake keeps the piped text.
     let values = fields::read_stdin(&edit.set, "clear a field with --unset")?;
     let (changes, report) = changes(here, &view, edit, &values, parent)?;
@@ -108,7 +146,7 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
             change,
         })
         .collect();
-    let ops = here.store.append_all(drafts)?;
+    let ops = here.store.append_all(drafts).map_err(forced)?;
     let mut text = String::new();
     for change in &report {
         let _ = writeln!(text, "{name}  {}", summary(change));

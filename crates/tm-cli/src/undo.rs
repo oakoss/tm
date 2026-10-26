@@ -18,8 +18,13 @@ use crate::show;
 /// Fewer characters would too often match more than one batch.
 const MIN_PART: usize = 8;
 
-pub(crate) fn run(reference: Option<&str>, dry_run: bool) -> Result<Output, CliError> {
-    here::write(|here| undo(here, reference, dry_run))
+pub(crate) fn run(reference: Option<&str>, dry_run: bool, force: bool) -> Result<Output, CliError> {
+    here::write(|here| {
+        if force {
+            here.store.force_past_claims();
+        }
+        undo(here, reference, dry_run)
+    })
 }
 
 fn undo(
@@ -43,7 +48,7 @@ fn undo(
             .map(|(plan, ops)| (plan, ops.first().map(|op| op.op_id)))
     };
     let (plan, written) = undone.map_err(|err| {
-        let err = CliError::from(err);
+        let err = CliError::past_claim(err, "tm undo --force");
         match next {
             Some(next) if matches!(err.code, "undo_conflict" | "cannot_undo") => {
                 err.fix(format!("tm undo {}", short(next)))

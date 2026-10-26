@@ -142,7 +142,7 @@ fn take(here: &mut Here, actor: &Actor, lasts: &Lasts) -> Result<Output, CliErro
     let from = source(here, actor)?;
     let ttl_ms = lasts.ttl_ms(here);
     let scheme = here.store.scheme().clone();
-    let begin = |lineage: &[_]| start::begin(&scheme, actor, lineage);
+    let begin = |lineage: &_| start::begin(&scheme, actor, lineage);
     let Some(next) = here
         .store
         .take_next(actor, &from.candidates(), ttl_ms, begin)?

@@ -6,7 +6,7 @@ use std::io::{self, IsTerminal as _, Read as _};
 use serde_json::{Value, json};
 use tm_core::Change;
 use tm_core::scheme::{FieldType, Scheme};
-use tm_store::StoreError;
+use tm_store::{IssueView, StoreError};
 
 use crate::error::CliError;
 
@@ -147,17 +147,47 @@ pub(crate) fn labels<'a>(labels: impl IntoIterator<Item = &'a String>) -> Result
     Ok(())
 }
 
+/// The fields a write of `set` and `unset` to `view` may change, judged
+/// before stdin is read: a piped value may change its field, an inline one
+/// only when it differs, and an unset only a field that holds a value.
+pub(crate) fn written<'a>(
+    scheme: &Scheme,
+    view: &IssueView,
+    set: &'a [(String, String)],
+    unset: &'a [String],
+) -> Vec<&'a str> {
+    let set = set.iter().filter(|(field, value)| {
+        value == "-"
+            || !view
+                .fields
+                .get(field)
+                .is_some_and(|before| crate::edit::same(before, &typed(scheme, field, value)))
+    });
+    let unset = unset.iter().filter(|field| {
+        view.fields
+            .get(*field)
+            .is_some_and(|value| !value.is_null())
+    });
+    set.map(|(field, _)| field.as_str())
+        .chain(unset.map(String::as_str))
+        .collect()
+}
+
+/// The `--set` fields whose value is read from stdin.
+pub(crate) fn piped(set: &[(String, String)]) -> Vec<&str> {
+    set.iter()
+        .filter(|(_, value)| value == "-")
+        .map(|(field, _)| field.as_str())
+        .collect()
+}
+
 /// `--set` values with a `-` read from stdin. Stdin is read once, never from
 /// a terminal, and a blank value is refused with `blank`'s advice.
 pub(crate) fn read_stdin(
     set: &[(String, String)],
     blank: &str,
 ) -> Result<Vec<(String, String)>, CliError> {
-    let from_stdin: Vec<&str> = set
-        .iter()
-        .filter(|(_, value)| value == "-")
-        .map(|(field, _)| field.as_str())
-        .collect();
+    let from_stdin = piped(set);
     if from_stdin.len() > 1 {
         return Err(CliError::new(
             "invalid_value",

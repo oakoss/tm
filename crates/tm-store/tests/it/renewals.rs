@@ -373,7 +373,7 @@ fn a_take_with_keeps_the_sessions_held_claim_and_takes_a_lapsed_one_again() {
     let mut store = open(&dir.db(), &clock);
     let issue = new_issue(&mut store);
     let s1 = in_session("s1");
-    let none = |_: &[tm_store::IssueView]| (Vec::new(), ());
+    let none = |_: &tm_store::Lineage| (Vec::new(), ());
     let first = store.take_with(&s1, issue, Some(HOUR_MS), none).unwrap();
     assert!(!first.kept);
     let again = store.take_with(&s1, issue, Some(HOUR_MS), none).unwrap();
@@ -400,7 +400,7 @@ fn a_take_with_judges_the_held_claim_at_the_instant_it_writes() {
     let expires = store.take(&s1, issue, Some(HOUR_MS)).unwrap().expires_ms;
     clock.set(expires.unwrap() - 1);
     clock.step_each_read(1);
-    let retitle = |_: &[tm_store::IssueView]| {
+    let retitle = |_: &tm_store::Lineage| {
         let again = Draft {
             actor: s1.clone(),
             ..draft(issue, set_field("title", json!("again")))

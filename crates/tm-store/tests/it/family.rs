@@ -14,7 +14,9 @@ fn ids(views: &[IssueView]) -> Vec<Uuid> {
 /// `issue` and its ancestors as [`Store::append_with_lineage`] reads them.
 fn lineage(store: &mut Store, issue: Uuid) -> Vec<Uuid> {
     store
-        .append_with_lineage(Vec::new(), issue, |lineage| (Vec::new(), ids(lineage)))
+        .append_with_lineage(Vec::new(), issue, |lineage| {
+            (Vec::new(), ids(lineage.issues()))
+        })
         .unwrap()
         .1
 }
@@ -85,6 +87,7 @@ fn the_drafts_made_from_the_lineage_share_the_batch() {
             child,
             |lineage| {
                 let more = lineage
+                    .issues()
                     .iter()
                     .filter(|issue| issue.id != child)
                     .map(|issue| draft(issue.id, set_field("status", json!("in_progress"))))
