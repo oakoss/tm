@@ -175,6 +175,30 @@ fn nothing_is_written_without_a_yes() {
         "{refusal}"
     );
 
+    // A stdout that takes no writes cannot show the diff a --yes confirms.
+    let unwritable = scratch.0.join("read-only-stdout");
+    fs::write(&unwritable, "").unwrap();
+    let blind = tm_command()
+        .args(["setup", "claude", "--yes"])
+        .current_dir(&repo)
+        .env("TM_HOME", scratch.home())
+        .env("TM_ACTOR", "jace")
+        .stdout(fs::File::open(&unwritable).unwrap())
+        .output()
+        .unwrap();
+    assert!(!blind.status.success(), "{blind:?}");
+    assert!(
+        text(&blind.stderr).contains("cannot write output"),
+        "{blind:?}"
+    );
+    assert!(!repo.join(".claude").exists());
+}
+
+#[test]
+fn an_agent_is_only_shown_the_diff_even_with_yes() {
+    let scratch = Scratch::new();
+    let repo = fixture(&scratch, "repo");
+
     let agent = as_agent(&scratch, &repo, &["setup", "claude"]);
     assert!(!agent.status.success(), "{agent:?}");
     assert!(
@@ -196,7 +220,10 @@ fn nothing_is_written_without_a_yes() {
     let refusal = doc(&json.stdout);
     assert_eq!(refusal["error"], "setup_refused");
     assert!(
-        refusal["diff"].as_str().unwrap().contains("tm prime"),
+        refusal["diff"]
+            .as_str()
+            .unwrap()
+            .contains("+            \"command\": \"tm prime\""),
         "{refusal}"
     );
     let harness = agent_command(&scratch, &repo, &["setup", "claude", "--yes"])
@@ -214,6 +241,7 @@ fn nothing_is_written_without_a_yes() {
         .stdout(fs::File::open(&unwritable).unwrap())
         .output()
         .unwrap();
+    assert!(!unshown.status.success(), "{unshown:?}");
     let stderr = text(&unshown.stderr);
     assert!(
         stderr.contains("a person runs tm setup claude to write it")
@@ -235,24 +263,22 @@ fn nothing_is_written_without_a_yes() {
         text(&undo.stderr).contains("a person runs tm setup claude --undo to write it"),
         "{undo:?}"
     );
-    assert!(repo.join(SETTINGS).exists());
-    fs::remove_dir_all(repo.join(".claude")).unwrap();
-
-    // A stdout that takes no writes cannot show the diff a --yes confirms.
-    let blind = tm_command()
-        .args(["setup", "claude", "--yes"])
-        .current_dir(&repo)
-        .env("TM_HOME", scratch.home())
-        .env("TM_ACTOR", "jace")
-        .stdout(fs::File::open(&unwritable).unwrap())
-        .output()
-        .unwrap();
-    assert!(!blind.status.success(), "{blind:?}");
-    assert!(
-        text(&blind.stderr).contains("cannot write output"),
-        "{blind:?}"
+    let json = as_agent(
+        &scratch,
+        &repo,
+        &["--json", "setup", "claude", "--undo", "--yes"],
     );
-    assert!(!repo.join(".claude").exists());
+    assert!(!json.status.success(), "{json:?}");
+    let refusal = doc(&json.stdout);
+    assert_eq!(refusal["error"], "setup_refused");
+    assert!(
+        refusal["message"]
+            .as_str()
+            .unwrap()
+            .contains("a person runs tm setup claude --undo to write it"),
+        "{refusal}"
+    );
+    assert!(repo.join(SETTINGS).exists());
 }
 
 #[test]
