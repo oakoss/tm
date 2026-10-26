@@ -1036,14 +1036,20 @@ fn claims_lists_who_holds_what_and_what_has_lapsed() {
             .status
             .success()
     );
+    let mut expires_ms = 0;
     for key in ["TM-2", "TM-3"] {
-        let out = as_named(&scratch, &repo, "codex", &["claim", key, "--for", "1s"]);
+        let out = as_named(
+            &scratch,
+            &repo,
+            "codex",
+            &["--json", "claim", key, "--for", "1s"],
+        );
         assert!(out.status.success(), "{out:?}");
+        expires_ms = doc(&out)["data"]["claim"]["expires_ms"].as_i64().unwrap();
     }
     let out = tm(&scratch, &repo, &["edit", "TM-3", "--set", "archived=true"]);
     assert!(out.status.success(), "{out:?}");
-    let last = claim_of(&scratch, &repo, "TM-3");
-    wait_until(last["expires_ms"].as_i64().unwrap());
+    wait_until(expires_ms);
 
     let out = tm(&scratch, &repo, &["claims"]);
     let shown = text(&out.stdout);
