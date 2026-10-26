@@ -143,6 +143,15 @@ pub(crate) fn tm_piped(
     child.wait_with_output().unwrap()
 }
 
+/// [`tm`] at a pseudo-terminal, as a person typing would run it. Every wait,
+/// and the kill when the session drops, gives up after `TIMEOUT_MS` rather
+/// than hanging the suite. Echo is off, so typed lines never appear in what
+/// the test reads.
+pub(crate) fn tm_pty(scratch: &Scratch, dir: &Path, args: &[&str]) -> rexpect::session::PtySession {
+    const TIMEOUT_MS: u64 = 10_000;
+    rexpect::session::spawn_command(jace(scratch, dir, args), Some(TIMEOUT_MS)).unwrap()
+}
+
 fn jace(scratch: &Scratch, dir: &Path, args: &[&str]) -> Command {
     let mut command = tm_command();
     command
