@@ -6,7 +6,7 @@
 
 ## Question
 
-Phase 2 is done when Claude and Codex, given only `tm --help`, complete a scripted set of tasks and every stumble is fixed or filed (TM-85). This document is that script and its scoring. TM-94 ran it as a baseline on the commands that exist today; TM-85 runs it again once `tm handoff` (TM-81), `tm setup` (TM-77) and a release (TM-93) land.
+Phase 2 is done when Claude and Codex, given only `tm --help`, complete a scripted set of tasks and every stumble is fixed or filed (TM-85). This document is that script and its scoring. TM-94 ran it as a baseline on the commands that existed then, without `handoff`, which TM-81 made runnable; TM-85 runs it again once `tm setup` (TM-77) and a release (TM-93) land.
 
 ## Sources
 
@@ -29,7 +29,7 @@ Each task runs in a fresh headless session over a freshly seeded scratch Workspa
 | `blocked` | EV-1 blocks EV-3, EV-2 blocks EV-4, EV-5 free | name each blocked Issue and its blocker, one `BLOCKED <key> by <key>` line each | the answer has exactly those two lines |
 | `finish` | EV-1 in progress, assigned to the human, no Claim | the work has landed; finish EV-1 | EV-1 is done |
 | `undo` | EV-1 at high priority | set EV-1 to low, then undo that mistake | the Agent set EV-1 to low, and it is high again |
-| `handoff` | not yet runnable | hand the Issue to another Agent | waits for `tm handoff` (TM-81) |
+| `handoff` | EV-1 | start it, then hand it to the other Agent with what is left | EV-1's Claim is handed to the other Agent, with a note naming the error message |
 
 ### Scoring
 
@@ -67,7 +67,7 @@ docs/research/agent-usability/scripts/run.sh claude
 docs/research/agent-usability/scripts/run.sh codex take-next undo
 ```
 
-Each run writes to `$OUT`, a new temporary directory unless set: `<agent>-scores.txt`, which each run appends to under a dated heading, the tool versions with the tm binary's path and build time, and for each task its Workspace, `transcript.jsonl`, `commands.txt` and the final answer. The results hold transcripts and machine paths, so they stay out of the repository. Twelve sessions, six tasks for each Agent, count against the Claude and Codex plans.
+Each run writes to `$OUT`, a new temporary directory unless set: `<agent>-scores.txt`, which each run appends to under a dated heading, the tool versions with the tm binary's path and build time, and for each task its Workspace, `transcript.jsonl`, `commands.txt` and the final answer. The results hold transcripts and machine paths, so they stay out of the repository. Fourteen sessions, seven tasks for each Agent, count against the Claude and Codex plans.
 
 ## Conclusions
 

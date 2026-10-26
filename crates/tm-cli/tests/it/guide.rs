@@ -89,7 +89,7 @@ fn as_claude(scratch: &Scratch, repo: &Path, args: &[&str], input: &str) -> Outp
 }
 
 /// Every command the guide prints runs as printed, in order, with KEY,
-/// OTHER, TEXT and BATCH filled in: an Agent runs all but the bare
+/// OTHER, TEXT, AGENT and BATCH filled in: an Agent runs all but the bare
 /// `tm undo`, which the guide gives to a human. A shell redirection ends
 /// the command; the text it would pipe in is given on stdin.
 #[test]
@@ -119,6 +119,8 @@ fn every_command_in_the_guide_runs_as_printed() {
                 "KEY" => "TM-1".to_owned(),
                 "OTHER" => "TM-2".to_owned(),
                 "TEXT" => "found".to_owned(),
+                // Handed to itself, so the Agent's later edits stay its own.
+                "AGENT" => "claude".to_owned(),
                 "BATCH" => batch.clone(),
                 word => word.replace("KEY", "TM-1"),
             })
@@ -130,6 +132,11 @@ fn every_command_in_the_guide_runs_as_printed() {
             as_claude(&scratch, &repo, &words, "some text\n")
         };
         assert!(out.status.success(), "tm {}: {out:?}", words.join(" "));
+        // The receiver takes a handoff, as the guide says, before working on.
+        if words.first() == Some(&"handoff") {
+            let taken = as_claude(&scratch, &repo, &["start", "TM-1"], "");
+            assert!(taken.status.success(), "{taken:?}");
+        }
         let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
         if let Some(written) = doc["data"]["batch"].as_str() {
             batch = written.to_owned();

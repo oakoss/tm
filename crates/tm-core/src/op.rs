@@ -180,6 +180,18 @@ pub enum ClaimAction {
     Release {
         claim: Uuid,
     },
+    /// Replaces the Claim `claim`, lapsed or not, with one held for `agent`
+    /// in no session yet: the first of its sessions to take the Issue binds
+    /// it. It lasts `ttl_ms` from when it is written.
+    Hand {
+        claim: Uuid,
+        agent: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl_ms: Option<u64>,
+        /// What the receiver needs to carry on, also written as a comment;
+        /// here it travels with the Claim to every Replica.
+        note: String,
+    },
 }
 
 impl Change {
@@ -587,6 +599,14 @@ mod tests {
                 action: ClaimAction::Renew {
                     claim: Uuid::from_u128(6),
                     ttl_ms: 7_200_000,
+                },
+            },
+            Change::Claim {
+                action: ClaimAction::Hand {
+                    claim: Uuid::from_u128(6),
+                    agent: "codex".into(),
+                    ttl_ms: Some(7_200_000),
+                    note: "the parser is half done".into(),
                 },
             },
             Change::CreateProject {

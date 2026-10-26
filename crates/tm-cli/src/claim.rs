@@ -386,6 +386,7 @@ pub(crate) fn claim_json(claim: &Claim, now_ms: i64) -> serde_json::Value {
         "expires_ms": claim.expires_ms,
         "expires_in_ms": claim.expires_ms.map(|at| (at - now_ms).max(0)),
         "session": claim.session,
+        "handed": claim.handed,
     })
 }
 

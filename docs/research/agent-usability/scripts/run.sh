@@ -108,7 +108,7 @@ seed() {
       tm_ create --type bug --title "Fix the parser crash on empty input" --set priority=high
       tm_ create --type task --title "Add a --version flag" --set priority=medium
       ;;
-    comment | finish | undo)
+    comment | finish | undo | handoff)
       local extra=()
       [[ $1 == finish ]] && extra=(--set status=in_progress --set assignee=jace@example.com)
       [[ $1 == undo ]] && extra=(--set priority=high)
@@ -145,7 +145,13 @@ prompt() {
     blocked) echo "Which Issues are blocked right now, and by what? End your answer with one line per blocked Issue, written as: BLOCKED <key> by <key>" ;;
     finish) echo "The fix for EV-1 has landed. Mark EV-1 finished in tm." ;;
     undo) echo "Set EV-1's priority to low. Then: that was a mistake, and EV-1 should not have changed. Undo it so EV-1 is as it was before." ;;
+    handoff) echo "Start EV-1. Then hand it off to $(other) to finish: the empty-input case is fixed, and only the error message is left." ;;
   esac
+}
+
+# The Agent a handoff goes to: the one not under test.
+other() {
+  [[ $agent == claude ]] && echo codex || echo claude
 }
 
 # Prints a line per failed condition; none means the task was done.
@@ -180,6 +186,13 @@ check() {
         | select(.field == "priority" and .value == "low")] | length > 0' >/dev/null ||
         echo "the Agent never set EV-1's priority to low"
       [[ $(json show EV-1 | jq -r '.data.fields.priority') == high ]] || echo "EV-1's priority is not high again"
+      ;;
+    handoff)
+      show=$(json show EV-1)
+      jq -e --arg to "$(other)" '.data.claim.handed == true and .data.claim.agent == $to' <<<"$show" >/dev/null ||
+        echo "EV-1's Claim is not handed to $(other)"
+      jq -e '[.data.comments[].body | ascii_downcase | select(contains("error message"))] | length > 0' <<<"$show" >/dev/null ||
+        echo "EV-1 has no note naming the error message"
       ;;
   esac
 }
@@ -275,10 +288,6 @@ tm_bin=$(mise which tm 2>/dev/null || command -v tm)
 echo "# $(date -u +%Y-%m-%dT%H:%MZ)" >>"$OUT/$agent-scores.txt"
 
 for task in "${tasks[@]}"; do
-  if [[ $task == handoff ]]; then
-    echo "$agent  handoff    not run: needs tm handoff (TM-81)" | tee -a "$OUT/$agent-scores.txt"
-    continue
-  fi
   dir="$OUT/$agent-$task"
   rm -rf "$dir"
   mkdir -p "$dir/repo" "$dir/tm-home"

@@ -8,6 +8,7 @@ mod edit;
 mod export;
 mod follow;
 mod guide;
+mod handoff;
 mod history;
 mod init;
 mod json;

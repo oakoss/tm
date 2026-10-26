@@ -589,6 +589,7 @@ fn prime_answers_in_a_fixed_shape() {
         },
         "claims": [],
         "habits": "[habits]",
+        "handed_claims": [],
         "in_progress": {
           "issues": [],
           "total": 0
@@ -711,6 +712,7 @@ fn primes_claims_answer_in_a_fixed_shape() {
           "agent": "claude",
           "expires_in_ms": "[ms]",
           "expires_ms": "[ms]",
+          "handed": false,
           "id": "[id]",
           "on_behalf_of": "jace",
           "session": null

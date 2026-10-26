@@ -564,6 +564,7 @@ fn claim_release_and_doctor_answer_in_fixed_shapes() {
           "agent": "claude",
           "expires_in_ms": "[ms]",
           "expires_ms": "[ms]",
+          "handed": false,
           "id": "[id]",
           "on_behalf_of": "jace",
           "session": null

@@ -12,6 +12,7 @@ mod export;
 mod fields;
 mod follow;
 mod guide;
+mod handoff;
 mod here;
 mod history;
 mod hook;
@@ -118,6 +119,9 @@ enum Command {
         /// Renew only this Issue's Claim, by Key or full id.
         issue: Option<String>,
     },
+    /// Hand an Issue's Claim to another Agent with a note; its next session
+    /// takes it with `tm start`.
+    Handoff(handoff::Handoff),
     /// Release a Claim. The session holding it, and the human it is held
     /// for, may leave out the id `tm claim` printed.
     #[command(group = ArgGroup::new("what").required(true).args(["issue", "mine"]))]
@@ -390,6 +394,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             ..
         }) => claim::release(&issue, claim),
         Some(Command::Release { issue: None, .. }) => claim::release_mine(),
+        Some(Command::Handoff(args)) => handoff::run(&args),
         Some(Command::Hook {
             action: HookAction::Print { harness },
         }) => Ok(hook::print(harness)),
