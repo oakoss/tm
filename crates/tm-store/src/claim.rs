@@ -32,6 +32,9 @@ pub struct Claim {
     pub ttl_ms: Option<u64>,
     /// The harness session that took it; none when the harness named none.
     pub session: Option<String>,
+    /// Handed to `agent` by another session and not yet taken by one of its
+    /// own, so its first session may take it over while it holds.
+    pub handed: bool,
 }
 
 impl Claim {
@@ -48,6 +51,7 @@ impl Claim {
     pub fn taker(&self) -> String {
         match self.session_label() {
             Some(label) => format!("{} ({label})", self.agent),
+            None if self.handed => format!("{} (handed on, not yet taken)", self.agent),
             None => self.agent.clone(),
         }
     }
@@ -67,9 +71,11 @@ impl Claim {
     }
 
     /// Whether `actor` is the Agent, human and session that took it, exactly.
+    /// A handed Claim was taken by no one yet, even an Agent in no session.
     #[must_use]
     pub fn taken_by(&self, actor: &Actor) -> bool {
-        actor.is_agent()
+        !self.handed
+            && actor.is_agent()
             && self.agent == actor.name()
             && self.on_behalf_of == actor.on_behalf_of().unwrap_or(actor.name())
             && self.session.as_deref() == actor.session()
@@ -360,6 +366,86 @@ impl Store {
         }
     }
 
+    /// Hands `issue`'s Claim `claim` to `agent`, with `note` as a comment in
+    /// the same batch.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::NotClaimHolder`] when `claim` no longer holds `issue`,
+    /// or as [`Store::append_all`].
+    pub fn hand(
+        &mut self,
+        actor: &Actor,
+        held: &Claim,
+        agent: &str,
+        note: &str,
+    ) -> Result<(Vec<Op>, Claim), StoreError> {
+        let action = ClaimAction::Hand {
+            claim: held.id,
+            agent: agent.to_owned(),
+            ttl_ms: held.ttl_ms,
+            note: note.to_owned(),
+        };
+        let hand = self.claim_draft(actor.clone(), held.issue, action)?;
+        let comment = Draft {
+            change: Change::Comment {
+                body: note.to_owned(),
+            },
+            ..hand.clone()
+        };
+        // The Claim must be as judged, expiry included: one renewed since was
+        // judged lapsed but holds again.
+        let ops = self.append_if_claim(vec![hand, comment], held.issue, Some(held))?;
+        // From the operation, not the table: the receiver may take it at once.
+        let handed = Claim {
+            on_behalf_of: held.on_behalf_of.clone(),
+            handed: true,
+            ..taken(&ops[0], agent, held.ttl_ms, None)?
+        };
+        Ok((ops, handed))
+    }
+
+    /// Who handed `claim` on and their note, when a handoff made it.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed note.
+    pub fn handed_by(&self, claim: Uuid) -> Result<Option<(String, String)>, StoreError> {
+        let row: Option<(String, String)> = self
+            .conn
+            .query_row(
+                "SELECT actor, payload FROM ops WHERE op_id = ?1",
+                [claim.as_bytes()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        row.map(|(actor, payload)| match serde_json::from_str(&payload) {
+            Ok(Change::Claim {
+                action: ClaimAction::Hand { note, .. },
+            }) => Ok(Some((actor, note))),
+            Ok(_) => Ok(None),
+            Err(err) => Err(StoreError::Corrupt(format!(
+                "Claim {claim}'s operation: {err}"
+            ))),
+        })
+        .transpose()
+        .map(Option::flatten)
+    }
+
+    /// Whether `agent` has written anything in this Workspace, so a handoff
+    /// to a name never seen can warn of a typo.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure.
+    pub fn has_written(&self, agent: &str) -> Result<bool, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM ops WHERE actor = ?1)",
+            [agent],
+            |row| row.get(0),
+        )?)
+    }
+
     /// The Claim on `issue`, held or lapsed, read against one clock reading.
     ///
     /// # Errors
@@ -413,7 +499,7 @@ impl Store {
     pub fn claims(&self) -> Result<AgentClaims, StoreError> {
         let now_ms = self.utc_ms()?;
         let mut stmt = self.conn.prepare_cached(
-            "SELECT issue_id, op_id, agent, on_behalf_of, expires_ms, ttl_ms, session
+            "SELECT issue_id, op_id, agent, on_behalf_of, expires_ms, ttl_ms, session, handed
              FROM claims ORDER BY agent, on_behalf_of, session, issue_id",
         )?;
         let (lapsed, held) = stmt
@@ -448,7 +534,7 @@ impl Store {
 pub(crate) fn current(conn: &Connection, issue: Uuid) -> Result<Option<Claim>, StoreError> {
     let row = conn
         .query_row(
-            "SELECT issue_id, op_id, agent, on_behalf_of, expires_ms, ttl_ms, session
+            "SELECT issue_id, op_id, agent, on_behalf_of, expires_ms, ttl_ms, session, handed
              FROM claims WHERE issue_id = ?1",
             [issue.as_bytes()],
             ClaimRow::read,
@@ -466,6 +552,7 @@ struct ClaimRow {
     expires_ms: Option<i64>,
     ttl_ms: Option<i64>,
     session: Option<String>,
+    handed: bool,
 }
 
 impl ClaimRow {
@@ -478,6 +565,7 @@ impl ClaimRow {
             expires_ms: row.get(4)?,
             ttl_ms: row.get(5)?,
             session: row.get(6)?,
+            handed: row.get(7)?,
         })
     }
 
@@ -494,6 +582,7 @@ impl ClaimRow {
                 .transpose()
                 .map_err(|_| StoreError::Corrupt("a Claim's duration is negative".into()))?,
             session: self.session,
+            handed: self.handed,
         })
     }
 }
@@ -726,7 +815,7 @@ pub(crate) fn renewals(
 
 fn claims_of(conn: &Connection, agent: &str, on_behalf_of: &str) -> Result<Vec<Claim>, StoreError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT issue_id, op_id, agent, on_behalf_of, expires_ms, ttl_ms, session
+        "SELECT issue_id, op_id, agent, on_behalf_of, expires_ms, ttl_ms, session, handed
          FROM claims WHERE agent = ?1 AND on_behalf_of = ?2 ORDER BY issue_id",
     )?;
     let rows = stmt.query_map(params![agent, on_behalf_of], ClaimRow::read)?;
@@ -741,20 +830,24 @@ fn invalid(reason: &str) -> StoreError {
     }
 }
 
-/// Whether `action`, written at `at_ms`, may apply while `held` holds the
-/// Issue: a take only over the Claim it saw, unclaimed or lapsed by then, and
-/// a renewal or release only of the Claim it names, lapsed or not. Judged by
-/// the time the operation records, never the clock, so every Replica replays
-/// the same.
-fn stands(held: Option<&Claim>, action: &ClaimAction, at_ms: i64) -> bool {
+/// Whether `action`, written at `at_ms` for `human`, may apply while `held`
+/// holds the Issue: a take only over the Claim it saw, unclaimed, lapsed by
+/// then or handed to the taking Agent and its human, and a renewal, release or
+/// handoff only of the Claim it names, lapsed or not. Judged by the time the
+/// operation records, never the clock, so every Replica replays the same.
+fn stands(held: Option<&Claim>, action: &ClaimAction, (at_ms, human): (i64, &str)) -> bool {
     match action {
-        ClaimAction::Take { prev, .. } => match held {
+        ClaimAction::Take { prev, agent, .. } => match held {
             None => prev.is_none(),
-            Some(held) => *prev == Some(held.id) && held.lapsed(at_ms),
+            Some(held) => {
+                let handed_to_taker =
+                    held.handed && held.agent == *agent && held.on_behalf_of == human;
+                *prev == Some(held.id) && (held.lapsed(at_ms) || handed_to_taker)
+            }
         },
-        ClaimAction::Renew { claim, .. } | ClaimAction::Release { claim } => {
-            held.is_some_and(|held| held.id == *claim)
-        }
+        ClaimAction::Renew { claim, .. }
+        | ClaimAction::Release { claim }
+        | ClaimAction::Hand { claim, .. } => held.is_some_and(|held| held.id == *claim),
     }
 }
 
@@ -811,6 +904,7 @@ pub(crate) fn taken(
         expires_ms,
         ttl_ms,
         session: session.map(str::to_owned),
+        handed: false,
     })
 }
 
@@ -852,7 +946,8 @@ pub(crate) fn check(
     {
         return Err(invalid("can be renewed only by the session that took it"));
     }
-    if !stands(held.as_ref(), action, at_ms) {
+    let human = writer.on_behalf_of().unwrap_or(writer.name());
+    if !stands(held.as_ref(), action, (at_ms, human)) {
         return Err(match (action, held) {
             (ClaimAction::Take { .. }, Some(held)) if held.lapsed(at_ms) => {
                 invalid("must name the lapsed Claim it takes over")
@@ -864,19 +959,20 @@ pub(crate) fn check(
             (ClaimAction::Take { .. }, None) => {
                 invalid("names a previous Claim, but the Issue is unclaimed")
             }
-            (ClaimAction::Release { claim } | ClaimAction::Renew { claim, .. }, held) => {
-                StoreError::NotClaimHolder {
-                    issue: issue.into(),
-                    claim: *claim,
-                    holder: match held {
-                        None => Holder::Unclaimed,
-                        Some(held) if took_over(tx, &held, *claim)? => {
-                            Holder::TookOver(Box::new(held))
-                        }
-                        Some(held) => Holder::Current(Box::new(ClaimState::at(held, at_ms))),
-                    },
-                }
-            }
+            (
+                ClaimAction::Release { claim }
+                | ClaimAction::Renew { claim, .. }
+                | ClaimAction::Hand { claim, .. },
+                held,
+            ) => StoreError::NotClaimHolder {
+                issue: issue.into(),
+                claim: *claim,
+                holder: match held {
+                    None => Holder::Unclaimed,
+                    Some(held) if took_over(tx, &held, *claim)? => Holder::TookOver(Box::new(held)),
+                    Some(held) => Holder::Current(Box::new(ClaimState::at(held, at_ms))),
+                },
+            },
         });
     }
     if matches!(action, ClaimAction::Take { .. }) {
@@ -933,6 +1029,10 @@ pub(crate) fn apply(
             session,
             ..
         } => Some(taken(op, agent, *ttl_ms, session.as_deref())?),
+        ClaimAction::Hand { agent, ttl_ms, .. } => Some(Claim {
+            handed: true,
+            ..taken(op, agent, *ttl_ms, None)?
+        }),
         ClaimAction::Renew { .. } | ClaimAction::Release { .. } => None,
     };
     let renewed = match action {
@@ -940,7 +1040,8 @@ pub(crate) fn apply(
         _ => None,
     };
     renews_an_expiry(held.as_ref(), action)?;
-    if !stands(held.as_ref(), action, op.utc_ms) {
+    let human = op.on_behalf_of.as_deref().unwrap_or(&op.actor);
+    if !stands(held.as_ref(), action, (op.utc_ms, human)) {
         let holder = held.map_or_else(
             || "the Issue is unclaimed".to_owned(),
             |held| format!("{} holds it for {}", held.agent, held.on_behalf_of),
@@ -960,14 +1061,26 @@ pub(crate) fn apply(
             ClaimAction::Release { claim } => {
                 format!("{LOST} a release of Claim {claim}, but {holder}")
             }
+            ClaimAction::Hand { claim, .. } => {
+                format!("{LOST} a handoff of Claim {claim}, but {holder}")
+            }
         }));
     }
+    // A handed Claim stays held for the human the Claim it replaces was.
+    let claim = claim.map(|claim| match (&held, claim.handed) {
+        (Some(held), true) => Claim {
+            on_behalf_of: held.on_behalf_of.clone(),
+            ..claim
+        },
+        _ => claim,
+    });
     match (claim, renewed) {
-        // Replaces a lapsed Claim the take took over.
+        // Replaces a lapsed or handed Claim the take took over, or the one
+        // handed on.
         (Some(claim), _) => tx.execute(
             "INSERT OR REPLACE INTO claims
-               (issue_id, agent, on_behalf_of, op_id, expires_ms, ttl_ms, session)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+               (issue_id, agent, on_behalf_of, op_id, expires_ms, ttl_ms, session, handed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 claim.issue.as_bytes(),
                 claim.agent,
@@ -975,7 +1088,8 @@ pub(crate) fn apply(
                 claim.id.as_bytes(),
                 claim.expires_ms,
                 claim.ttl_ms.and_then(|ttl| i64::try_from(ttl).ok()),
-                claim.session
+                claim.session,
+                claim.handed
             ],
         )?,
         (None, Some((expires_ms, ttl_ms))) => tx.execute(

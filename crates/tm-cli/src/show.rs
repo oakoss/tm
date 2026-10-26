@@ -192,6 +192,16 @@ fn membership(store: &Store, view: &IssueView) -> Result<Option<Membership>, Cli
 fn write_claim(text: &mut String, state: Option<&ClaimState>, view: &IssueView, now_ms: i64) {
     match state {
         None => {}
+        Some(ClaimState::Held(claim)) if claim.handed => {
+            let _ = writeln!(
+                text,
+                "handed to {} for {}, {}; its next session takes it with tm start (Claim {})",
+                claim.agent,
+                claim.on_behalf_of,
+                claim::expiry(claim, now_ms),
+                claim.id
+            );
+        }
         Some(ClaimState::Held(claim)) => {
             let _ = writeln!(
                 text,

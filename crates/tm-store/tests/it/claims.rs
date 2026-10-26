@@ -169,6 +169,7 @@ fn a_session_name_is_shown_whole_and_a_harness_id_by_its_last_eight_digits() {
             expires_ms: None,
             ttl_ms: None,
             session: Some(session.into()),
+            handed: false,
         }
         .taker()
     };
@@ -196,6 +197,7 @@ fn a_claim_with_no_session_reads_as_taken_in_every_session() {
         expires_ms: None,
         ttl_ms: None,
         session: session.map(str::to_owned),
+        handed: false,
     };
     assert!(claim(None).taken_in(Some("s1")));
     assert!(claim(None).taken_in(None));

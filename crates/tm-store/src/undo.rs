@@ -343,8 +343,10 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
                     "it released a Claim; take the Issue again with tm claim",
                 ));
             }
+            // Undoing a handoff releases the handed Claim as undoing a take
+            // does; the Claim it replaced is not taken back.
             Change::Claim {
-                action: ClaimAction::Take { .. },
+                action: ClaimAction::Take { .. } | ClaimAction::Hand { .. },
             } => release(conn, op, &mut plan, &mut conflicts)?,
             // A renewal records that the session was active (ADR 0009), and a
             // list's source where it came from; undoing the batch makes

@@ -73,8 +73,20 @@ impl CliError {
     /// command that overrides it, in the message and never as a `fix`, so it
     /// is not run by rote (ADR 0009).
     pub(crate) fn past_claim(err: StoreError, forced: &str) -> Self {
+        // A Claim handed on is the receiver's to take, which --force skips.
+        let taken_with = match &err {
+            StoreError::Protected { issue, holder, .. } if holder.handed => Some(format!(
+                "; {} takes it with tm start {}",
+                holder.agent,
+                issue.key.clone().unwrap_or_else(|| issue.id.to_string())
+            )),
+            _ => None,
+        };
         let protected = matches!(err, StoreError::Protected { .. });
         let mut err = Self::from(err);
+        if let Some(taken_with) = taken_with {
+            err.message.push_str(&taken_with);
+        }
         if protected {
             let _ = write!(err.message, "; {forced} writes it anyway");
         }

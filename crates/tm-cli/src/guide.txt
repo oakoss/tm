@@ -40,6 +40,10 @@ Claims
   tm claims                  who holds which Issue, and for how long
   tm release KEY             gives a Claim up early
   tm claim KEY --for 30m     a shorter Claim; --no-expiry for none
+  tm handoff KEY --to AGENT -
+                             hands it to another Agent, with what is left
+                             piped in as a note; tm prime shows it to that
+                             Agent's sessions, and tm start KEY takes it
   tm hook print claude       hooks that heartbeat after each tool use and
                              release the session's Claims when it ends
   Sessions of one Agent are told apart by the harness's session id, or

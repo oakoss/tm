@@ -382,6 +382,9 @@ fn claim_line(action: &ClaimAction) -> String {
         }
         ClaimAction::Renew { ttl_ms, .. } => format!("Claim renewed{}", lasts(Some(*ttl_ms))),
         ClaimAction::Release { .. } => "Claim released".to_owned(),
+        ClaimAction::Hand { agent, ttl_ms, .. } => {
+            format!("Claim handed to {}{}", printable(agent), lasts(*ttl_ms))
+        }
     }
 }
 

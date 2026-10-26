@@ -74,6 +74,8 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
             .map(|claim| claim.issue)
             .collect();
         let claimed = store.issues(&ids)?;
+        let (notes, unread) = handed_notes(store, &claims.held);
+        warnings.extend(unread);
         let active = store.issues(&active)?;
         let ready = store.issues(&ready)?;
         let projects = project_keys(
@@ -81,14 +83,14 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
             &[claimed.clone(), active.clone(), ready.clone()].concat(),
         )?;
         Ok::<_, CliError>((
-            claims,
+            (claims, notes),
             claimed,
             (active, active_total),
             (ready, total, passed),
             projects,
         ))
     });
-    let (claims, claimed, (active, active_total), (ready, total, passed), projects) =
+    let ((claims, notes), claimed, (active, active_total), (ready, total, passed), projects) =
         read.map_err(|err| err.warned(warnings.clone()))?;
     let scheme = here.store.scheme();
 
@@ -106,7 +108,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
     let session = actor.as_ref().and_then(Actor::session);
     let now_ms = claims.at_ms;
     let sessions = by_session(claims, session);
-    let claim_items = claims_sections(&mut text, &sessions, &claimed, &projects, now_ms);
+    let claim_items = claims_sections(&mut text, (&sessions, &notes), &claimed, &projects, now_ms);
     let shortlists = next::lists_section(&mut text, &lists, LISTS_ROOM);
     section(
         &mut text,
@@ -129,6 +131,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
         "project": project,
         "scheme": scheme,
         "actor": actor.as_ref().map(actor_json),
+        "handed_claims": claim_items.handed,
         "claims": claim_items.held,
         "other_session_claims": claim_items.others,
         "lapsed_claims": claim_items.lapsed,
@@ -231,43 +234,127 @@ fn lists(
 
 /// An Agent's Claims as one session sees them.
 struct SessionClaims {
+    handed: Vec<Claim>,
     mine: Vec<Claim>,
     others: Vec<Claim>,
     lapsed: Vec<Claim>,
 }
 
-/// `claims` sorted by whether `session` took them. Another session's lapsed
-/// Claim is left out: it reaches this session through tm ready.
+/// `claims` sorted by whether `session` took them; one handed to the Agent
+/// is no session's until one takes it. Another session's lapsed Claim, and a
+/// lapsed handoff, are left out: they reach this session through tm ready.
 fn by_session(claims: AgentClaims, session: Option<&str>) -> SessionClaims {
-    let (mine, others) = claims
-        .held
-        .into_iter()
-        .partition(|held| held.taken_in(session));
+    let (handed, held): (Vec<Claim>, Vec<Claim>) =
+        claims.held.into_iter().partition(|held| held.handed);
+    let (mine, others) = held.into_iter().partition(|held| held.taken_in(session));
     let lapsed = claims
         .lapsed
         .into_iter()
-        .filter(|lapsed| lapsed.taken_in(session))
+        .filter(|lapsed| !lapsed.handed && lapsed.taken_in(session))
         .collect();
     SessionClaims {
+        handed,
         mine,
         others,
         lapsed,
     }
 }
 
+/// Each Claim handed to the session's Agent, with who handed it on and the
+/// first line of their note, as `--json` gives it with the whole note.
+fn handed_section(
+    text: &mut String,
+    shown: &[(&Claim, &IssueView)],
+    notes: &HashMap<Uuid, (String, String)>,
+    projects: &HashMap<ProjectId, Option<String>>,
+    now_ms: i64,
+) -> Vec<Value> {
+    if shown.is_empty() {
+        return Vec::new();
+    }
+    let _ = writeln!(text, "Handed to you (tm start KEY takes one):");
+    let mut items = Vec::with_capacity(shown.len());
+    for &(handed, view) in shown {
+        let found = notes.get(&handed.id);
+        let (by, note) = found.map_or(("", ""), |(by, note)| (by.as_str(), note.as_str()));
+        if items.len() < CLAIMS_SHOWN {
+            let from = if by.is_empty() {
+                String::new()
+            } else {
+                format!("from {}, ", printable(by))
+            };
+            let _ = writeln!(
+                text,
+                "  {}  ({from}{})",
+                line_within(view, TITLE_BYTES),
+                claim::expiry(handed, now_ms)
+            );
+            if let Some(first) = note.lines().next().filter(|line| !line.is_empty()) {
+                let _ = writeln!(text, "    {}", printable(&clip(first, TITLE_BYTES)));
+            }
+        }
+        let mut entry = item(view, projects);
+        entry["claim"] = claim::claim_json(handed, now_ms);
+        // Null, not blank, when the note could not be read: a note is never blank.
+        entry["from"] = json!(found.map(|(by, _)| by));
+        entry["note"] = json!(found.map(|(_, note)| note));
+        items.push(entry);
+    }
+    if items.len() > CLAIMS_SHOWN {
+        let _ = writeln!(
+            text,
+            "  and {} more: tm --json prime lists them all",
+            items.len() - CLAIMS_SHOWN
+        );
+    }
+    items
+}
+
+/// Who handed each of `held` handed on, and their note, by Claim id, and a
+/// warning for each that cannot be read: prime never fails a session start.
+fn handed_notes(store: &Store, held: &[Claim]) -> (HashMap<Uuid, (String, String)>, Vec<String>) {
+    let mut notes = HashMap::new();
+    let mut unread = Vec::new();
+    for handed in held.iter().filter(|held| held.handed) {
+        match store.handed_by(handed.id) {
+            Ok(Some(note)) => {
+                notes.insert(handed.id, note);
+            }
+            Ok(None) => {}
+            Err(err) => unread.push(format!("the note handed with Claim {}: {err}", handed.id)),
+        }
+    }
+    (notes, unread)
+}
+
+/// `text` cut to at most `bytes`, at a character boundary, marked when cut.
+fn clip(text: &str, bytes: usize) -> String {
+    if text.len() <= bytes {
+        return text.to_owned();
+    }
+    let mut end = bytes.saturating_sub(3);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &text[..end])
+}
+
 /// This session's held and takeable lapsed Claims, and those its other
 /// sessions hold, each as `--json` gives it.
 fn claims_sections(
     text: &mut String,
-    claims: &SessionClaims,
+    (claims, notes): (&SessionClaims, &HashMap<Uuid, (String, String)>),
     claimed: &[IssueView],
     projects: &HashMap<ProjectId, Option<String>>,
     now_ms: i64,
 ) -> ClaimItems {
+    let handed = with_issues(&claims.handed, claimed, |_| true);
+    let handed = handed_section(text, &handed, notes, projects, now_ms);
     let mine = with_issues(&claims.mine, claimed, |_| true);
     let others = with_issues(&claims.others, claimed, |_| true);
     let lapsed = with_issues(&claims.lapsed, claimed, claim::takeable);
     ClaimItems {
+        handed,
         held: claims_section(text, "Your Claims:", token, &mine, projects, now_ms),
         others: if others.is_empty() {
             Vec::new()
@@ -298,6 +385,7 @@ fn claims_sections(
 
 /// The caller's Claims as `--json` gives them, by section.
 struct ClaimItems {
+    handed: Vec<Value>,
     held: Vec<Value>,
     others: Vec<Value>,
     lapsed: Vec<Value>,
