@@ -366,8 +366,8 @@ impl Store {
         }
     }
 
-    /// Hands `issue`'s Claim `claim` to `agent`, with `note` as a comment in
-    /// the same batch.
+    /// Hands `issue`'s Claim `claim` to `agent` for `ttl_ms`, with `note` as a
+    /// comment in the same batch.
     ///
     /// # Errors
     ///
@@ -378,12 +378,13 @@ impl Store {
         actor: &Actor,
         held: &Claim,
         agent: &str,
+        ttl_ms: Option<u64>,
         note: &str,
     ) -> Result<(Vec<Op>, Claim), StoreError> {
         let action = ClaimAction::Hand {
             claim: held.id,
             agent: agent.to_owned(),
-            ttl_ms: held.ttl_ms,
+            ttl_ms,
             note: note.to_owned(),
         };
         let hand = self.claim_draft(actor.clone(), held.issue, action)?;
@@ -400,7 +401,7 @@ impl Store {
         let handed = Claim {
             on_behalf_of: held.on_behalf_of.clone(),
             handed: true,
-            ..taken(&ops[0], agent, held.ttl_ms, None)?
+            ..taken(&ops[0], agent, ttl_ms, None)?
         };
         Ok((ops, handed))
     }

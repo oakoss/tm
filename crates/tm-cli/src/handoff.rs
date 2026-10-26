@@ -102,7 +102,9 @@ fn write(here: &mut Here, args: &Handoff) -> Result<(Output, Vec<String>), CliEr
     } else {
         args.note.clone()
     };
-    let (ops, handed) = here.store.hand(actor, &held, to, &note)?;
+    // Nobody renews an untaken handoff, so one to a mistyped Agent still lapses.
+    let ttl_ms = held.ttl_ms.or_else(|| here.found.file.claim_ttl_ms());
+    let (ops, handed) = here.store.hand(actor, &held, to, ttl_ms, &note)?;
     let now_ms = here.store.utc_ms()?;
     let shown = key.clone().unwrap_or_else(|| id.to_string());
     let text = format!(

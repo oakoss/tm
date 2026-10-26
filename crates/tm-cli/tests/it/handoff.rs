@@ -150,6 +150,19 @@ fn a_lapsed_claim_is_handed_without_force_to_a_trimmed_name() {
 }
 
 #[test]
+fn a_claim_with_no_expiry_is_handed_on_for_the_workspace_duration() {
+    let scratch = Scratch::new();
+    let (repo, _, _) = initialized(&scratch);
+    ok(run(&scratch, &repo, HUMAN, "create --type task --title t"));
+    ok(run(&scratch, &repo, S1, "claim TM-1 --no-expiry"));
+    let words = "--json handoff TM-1 --to codxe n";
+    let handed = doc(&ok(run(&scratch, &repo, S1, words)));
+    let lasts = handed["data"]["claim"]["expires_in_ms"].as_i64();
+    let two_hours = 7_190_000..=7_200_000;
+    assert!(lasts.is_some_and(|ms| two_hours.contains(&ms)), "{handed}");
+}
+
+#[test]
 fn an_unclaimed_issue_has_nothing_to_hand_off() {
     let scratch = Scratch::new();
     let (repo, _, _) = initialized(&scratch);

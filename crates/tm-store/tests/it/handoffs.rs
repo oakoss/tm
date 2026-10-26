@@ -26,7 +26,7 @@ fn handed(dir: &TempDir, clock: &ManualClock) -> (Store, Uuid) {
         .unwrap();
     let note = "left off at the parser";
     let (_, handed) = store
-        .hand(&agent("claude", "s1"), &taken, "codex", note)
+        .hand(&agent("claude", "s1"), &taken, "codex", taken.ttl_ms, note)
         .unwrap();
     assert_eq!(held(&store, issue), Some(handed), "as the table holds it");
     (store, issue)
@@ -87,7 +87,9 @@ fn a_handoff_judged_on_a_claim_since_renewed_is_refused() {
         expires_ms: taken.expires_ms.map(|at| at - 1),
         ..taken
     };
-    let err = store.hand(&giver, &judged, "codex", "x").unwrap_err();
+    let err = store
+        .hand(&giver, &judged, "codex", judged.ttl_ms, "x")
+        .unwrap_err();
     assert!(matches!(err, StoreError::ClaimChanged(_)), "{err}");
     assert!(!held(&store, issue).unwrap().handed);
 }
@@ -185,7 +187,9 @@ fn of_many_sessions_taking_one_handoff_one_wins() {
     let (issue, _) = store.create_issue(&jace(), project, "task", "t").unwrap();
     let giver = agent("claude", "s1");
     let taken = store.take(&giver, issue, Some(HOUR_MS)).unwrap();
-    store.hand(&giver, &taken, "codex", "yours").unwrap();
+    store
+        .hand(&giver, &taken, "codex", taken.ttl_ms, "yours")
+        .unwrap();
     drop(store);
 
     run_children(
