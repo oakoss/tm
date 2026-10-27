@@ -277,10 +277,12 @@ jobs:
           exit "$failed"
 
   # Downstream of the gate on purpose, so not in its `needs`: it versions and
-  # releases only a main commit whose CI passed.
+  # releases only a main commit whose CI passed. `!cancelled()`, because GitHub
+  # skips a job when any job it needs at any depth was skipped, and Bump files
+  # is skipped on every push; a cancelled run still stops the release.
   release:
     needs: ci-summary
-    if: github.event_name == 'push' && needs.ci-summary.result == 'success'
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.ci-summary.result == 'success' }}
     permissions:
       contents: read
     uses: $/.github/workflows/oakum.yml

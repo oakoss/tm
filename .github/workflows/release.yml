@@ -21,8 +21,9 @@
 #    jdx/mise-action with its cache off (mise verifies checksums), not the
 #    curl-piped installers, in plan and build-local-artifacts.
 #    `cache-builds = false` drops rust-cache.
-# 3. Scripts read the tag from an env var, not `github.ref_name` inlined; the
-#    plan job's `tag-flag` output is gone.
+# 3. Scripts read the tag, `matrix.packages_install` and `matrix.dist_args`
+#    from env vars, not inlined expressions; the plan job's `tag-flag` output
+#    is gone. Every upload-artifact step sets `if-no-files-found: error`.
 # 4. The rustup install step is gone: no target builds in a container.
 # 5. shellcheck fixes: grouped `$GITHUB_OUTPUT` writes, `${filename%.rb}`.
 # 6. host uploads into the release `oakum release` created (oakum.yml) and keeps
@@ -98,6 +99,7 @@ jobs:
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/dist
+          if-no-files-found: error
       # A pull request only plans; a tag push creates the release.
       - id: plan
         env:
@@ -117,6 +119,7 @@ jobs:
         with:
           name: artifacts-plan-dist-manifest
           path: plan-dist-manifest.json
+          if-no-files-found: error
 
   # Build and packages all the platform-specific things
   build-local-artifacts:
@@ -170,13 +173,19 @@ jobs:
           path: target/distrib/
           merge-multiple: true
       - name: Install dependencies
+        env:
+          PACKAGES_INSTALL: ${{ matrix.packages_install }}
         run: |
-          ${{ matrix.packages_install }}
+          if [ -n "$PACKAGES_INSTALL" ]; then
+            bash -euo pipefail -c "$PACKAGES_INSTALL"
+          fi
       - name: Build artifacts
         env:
           TAG: ${{ needs.plan.outputs.tag }}
+          DIST_ARGS: ${{ matrix.dist_args }}
         run: |
-          dist build ${TAG:+"--tag=$TAG"} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
+          # shellcheck disable=SC2086 # dist's arguments are split on purpose
+          dist build ${TAG:+"--tag=$TAG"} --print=linkage --output-format=json $DIST_ARGS > dist-manifest.json
           echo "dist ran successfully"
       - name: Attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
@@ -201,6 +210,7 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
+          if-no-files-found: error
 
   # Build and package all the platform-agnostic(ish) things
   build-global-artifacts:
@@ -253,6 +263,7 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
+          if-no-files-found: error
   # Determines if we should publish/announce
   host:
     needs:
@@ -301,6 +312,7 @@ jobs:
           # Overwrite the previous copy
           name: artifacts-dist-manifest
           path: dist-manifest.json
+          if-no-files-found: error
       # Create a GitHub Release while uploading all files to it
       - name: 'Download GitHub Artifacts'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
