@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-`tm` has no release yet. Once it does, only the latest release receives security fixes; pre-1.0 minor bumps may be breaking.
+Only the latest release receives security fixes; pre-1.0 minor bumps may be breaking.
 
 ## Reporting a vulnerability
 
