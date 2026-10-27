@@ -2,6 +2,7 @@
 
 mod backup;
 mod claim;
+mod codex;
 mod comment;
 mod create;
 mod edit;

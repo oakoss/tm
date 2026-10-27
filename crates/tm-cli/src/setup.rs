@@ -21,7 +21,13 @@ use crate::instructions;
 use crate::output::Output;
 use crate::prompt::{ask, human, print_now};
 
-const SETTINGS: &str = ".claude/settings.json";
+/// The repo file `harness` reads its hooks from.
+fn settings(harness: Harness) -> &'static str {
+    match harness {
+        Harness::Claude => ".claude/settings.json",
+        Harness::Codex => ".codex/hooks.json",
+    }
+}
 
 pub(crate) struct Setup {
     pub(crate) harness: Harness,
@@ -46,35 +52,40 @@ pub(crate) fn run(setup: &Setup, json: bool) -> Result<Output, CliError> {
     let root = workspace::repo_root(&cwd)?.ok_or_else(|| {
         refused("tm setup runs inside a git repository; none contains this directory")
     })?;
-    let path = root.join(SETTINGS);
+    let file = settings(setup.harness);
+    let path = root.join(file);
     let before = read(&path)?;
-    let mut settings = parse(before.as_deref())?;
+    let mut settings = parse(before.as_deref(), file)?;
     let handlers = handlers(setup.harness);
     let changed = if setup.undo {
-        remove(&mut settings, &handlers)?
+        remove(&mut settings, &handlers, file)?
     } else {
-        add(&mut settings, &handlers)?
+        add(&mut settings, &handlers, file)?
     };
     if changed.is_empty() {
-        return Ok(unchanged(setup.undo));
+        let mut output = unchanged(setup.undo, file);
+        if !setup.undo {
+            output.warnings.extend(inline_hooks(&root, setup.harness));
+        }
+        return Ok(output);
     }
-    writable(&path)?;
+    writable(&path, file)?;
     let emptied = setup.undo && settings == Json::Object(Vec::new());
     let after = (!emptied).then(|| render(&settings, before.as_deref()));
-    let shown = diff::unified(SETTINGS, before.as_deref(), after.as_deref().unwrap_or(""));
+    let shown = diff::unified(file, before.as_deref(), after.as_deref().unwrap_or(""));
     confirmed(&shown, emptied, setup, json)?;
     // The file may have been edited while tm asked; writing the text
     // computed before would lose that edit.
     if read(&path)? != before {
         return Err(refused(format!(
-            "{SETTINGS} changed while tm asked; nothing written"
+            "{file} changed while tm asked; nothing written"
         )));
     }
-    writable(&path)?;
+    writable(&path, file)?;
     match &after {
         Some(text) => {
             let create = before.is_none();
-            let dir = root.join(".claude");
+            let dir = path.parent().unwrap_or(&root).to_path_buf();
             let made_dir = create && !dir.exists();
             if made_dir {
                 fs::create_dir_all(&dir).map_err(|err| io_failed(&dir, &err))?;
@@ -88,41 +99,77 @@ pub(crate) fn run(setup: &Setup, json: bool) -> Result<Output, CliError> {
         }
         None => fs::remove_file(&path).map_err(|err| io_failed(&path, &err))?,
     }
-    Ok(written(setup.undo, emptied, &changed, &shown))
+    let mut output = written(setup.harness, setup.undo, emptied, &changed, &shown);
+    if !setup.undo {
+        output.warnings.extend(inline_hooks(&root, setup.harness));
+    }
+    Ok(output)
+}
+
+/// Codex also reads hooks inline from `.codex/config.toml`, loading both
+/// forms and warning at startup when a layer holds both.
+fn inline_hooks(root: &Path, harness: Harness) -> Option<String> {
+    let Harness::Codex = harness else {
+        return None;
+    };
+    let text = match fs::read_to_string(root.join(".codex/config.toml")) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            return Some(format!(
+                "cannot read .codex/config.toml to check it for hooks too: {err}"
+            ));
+        }
+    };
+    match toml::from_str::<toml::Table>(&text) {
+        Ok(config) => config.contains_key("hooks").then(|| {
+            ".codex/config.toml also defines hooks; Codex loads both and warns when a session \
+             starts"
+                .to_owned()
+        }),
+        Err(err) => Some(format!(
+            ".codex/config.toml is not valid TOML, so tm cannot tell whether it defines hooks \
+             too: {}",
+            err.message()
+        )),
+    }
 }
 
 /// Whether `tm setup claude` would add anything to the repo at `root`; an
 /// error names a settings file it cannot read, merge into or write.
 pub(crate) fn needed(root: &Path) -> Result<bool, String> {
-    let path = root.join(SETTINGS);
+    let file = settings(Harness::Claude);
+    let path = root.join(file);
     let before = read(&path).map_err(|err| err.message)?;
-    let mut settings = parse(before.as_deref()).map_err(|err| err.message)?;
-    let added = add(&mut settings, &handlers(Harness::Claude)).map_err(|err| err.message)?;
+    let mut settings = parse(before.as_deref(), file).map_err(|err| err.message)?;
+    let added = add(&mut settings, &handlers(Harness::Claude), file).map_err(|err| err.message)?;
     if added.is_empty() {
         return Ok(false);
     }
-    writable(&path).map(|()| true).map_err(|err| err.message)
+    writable(&path, file)
+        .map(|()| true)
+        .map_err(|err| err.message)
 }
 
 /// Refuses a file tm would write through a symlink, whose rename would
 /// replace the link with a copy, or one marked read-only.
-fn writable(path: &Path) -> Result<(), CliError> {
+fn writable(path: &Path, file: &str) -> Result<(), CliError> {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => Err(refused(format!(
-            "{SETTINGS} is a symlink, so tm leaves it alone; change the file it points to instead"
+            "{file} is a symlink, so tm leaves it alone; change the file it points to instead"
         ))),
         Ok(meta) if meta.permissions().readonly() => Err(refused(format!(
-            "{SETTINGS} is read-only, so tm leaves it alone"
+            "{file} is read-only, so tm leaves it alone"
         ))),
         _ => Ok(()),
     }
 }
 
-fn parse(text: Option<&str>) -> Result<Json, CliError> {
+fn parse(text: Option<&str>, file: &str) -> Result<Json, CliError> {
     match text {
         Some(text) => serde_json::from_str(text).map_err(|err| {
             refused(format!(
-                "{SETTINGS} is not valid JSON ({err}); fix it, then run tm setup again"
+                "{file} is not valid JSON ({err}); fix it, then run tm setup again"
             ))
         }),
         None => Ok(Json::Object(Vec::new())),
@@ -143,8 +190,8 @@ fn read(path: &Path) -> Result<Option<String>, CliError> {
 /// shown it, `--yes` or not: the hooks run commands in every session, so a
 /// person writes them (ADR 0014).
 fn confirmed(shown: &str, emptied: bool, setup: &Setup, json: bool) -> Result<(), CliError> {
-    let not_written =
-        |why: &str| refused(format!("{SETTINGS} not written{why}")).with("diff", shown);
+    let file = settings(setup.harness);
+    let not_written = |why: &str| refused(format!("{file} not written{why}")).with("diff", shown);
     if identity::agent_detected(identity::env) {
         let unshown = if json { None } else { print_now(shown).err() };
         let undo = if setup.undo { " --undo" } else { "" };
@@ -175,9 +222,9 @@ fn confirmed(shown: &str, emptied: bool, setup: &Setup, json: bool) -> Result<()
         ));
     }
     let question = if emptied {
-        format!("Remove {SETTINGS}?")
+        format!("Remove {file}?")
     } else {
-        format!("Write {SETTINGS}?")
+        format!("Write {file}?")
     };
     match ask(shown, &question) {
         Ok(true) => Ok(()),
@@ -186,36 +233,46 @@ fn confirmed(shown: &str, emptied: bool, setup: &Setup, json: bool) -> Result<()
     }
 }
 
-fn unchanged(undo: bool) -> Output {
+fn unchanged(undo: bool, file: &str) -> Output {
     let text = if undo {
-        format!("{SETTINGS} holds none of tm's hooks; nothing to remove\n")
+        format!("{file} holds none of tm's hooks; nothing to remove\n")
     } else {
-        format!("tm's hooks are already in {SETTINGS}\n")
+        format!("tm's hooks are already in {file}\n")
     };
     Output::new(
         text,
-        json!({ "file": SETTINGS, "changed": [], "deleted": false, "commit": [] }),
+        json!({ "file": file, "changed": [], "deleted": false, "commit": [] }),
     )
 }
 
-fn written(undo: bool, deleted: bool, changed: &[String], shown: &str) -> Output {
+fn written(harness: Harness, undo: bool, deleted: bool, changed: &[String], shown: &str) -> Output {
+    let file = settings(harness);
+    let runs = match harness {
+        Harness::Claude => {
+            "Claude Code runs them once you trust this folder, which it asks when a session \
+             starts here."
+        }
+        Harness::Codex => {
+            "Codex runs them once you trust this project and approve each hook in /hooks; \
+             tm's hooks in ~/.codex would run as well, not instead."
+        }
+    };
     let text = match (undo, deleted) {
-        (true, true) => format!("Removed {SETTINGS}, which held only tm's hooks\n"),
-        (true, false) => format!("Removed tm's hooks from {SETTINGS}\n"),
+        (true, true) => format!("Removed {file}, which held only tm's hooks\n"),
+        (true, false) => format!("Removed tm's hooks from {file}\n"),
         (false, _) => format!(
-            "Added tm's hooks to {SETTINGS}: tm prime when a session starts, a heartbeat after \
-             each tool use, and tm release --mine when it ends. Claude Code runs them once you \
-             trust this folder, which it asks when a session starts here.\n"
+            "Added tm's hooks to {file}: tm prime when a session starts, a heartbeat after each \
+             tool use, and tm release --mine when it ends. {runs}\n"
         ),
     };
     Output::new(
-        format!("{text}Commit {SETTINGS}\n"),
+        format!("{text}Commit {file}\n"),
         json!({
-            "file": SETTINGS,
+            "file": file,
             "changed": changed,
             "deleted": deleted,
             "diff": shown,
-            "commit": [SETTINGS],
+            "commit": [file],
         }),
     )
 }
@@ -225,7 +282,7 @@ struct Handler {
     event: &'static str,
     matcher: Option<&'static str>,
     command: String,
-    extra: Option<(&'static str, Json)>,
+    extra: Vec<(&'static str, Json)>,
 }
 
 impl Handler {
@@ -237,8 +294,8 @@ impl Handler {
         ];
         handler.extend(
             self.extra
-                .clone()
-                .map(|(key, value)| (key.to_owned(), value)),
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), value.clone())),
         );
         let mut group: Vec<(String, Json)> = self
             .matcher
@@ -264,19 +321,47 @@ fn handlers(harness: Harness) -> Vec<Handler> {
                     event: "SessionStart",
                     matcher: None,
                     command: "tm prime".into(),
-                    extra: None,
+                    extra: Vec::new(),
                 },
                 Handler {
                     event: "PostToolUse",
                     matcher: Some("*"),
                     command: from_project("hook heartbeat claude"),
-                    extra: Some(("async", Json::Bool(true))),
+                    extra: vec![("async", Json::Bool(true))],
                 },
                 Handler {
                     event: "SessionEnd",
                     matcher: None,
                     command: from_project("release --mine"),
-                    extra: Some(("timeout", Json::Number(10.into()))),
+                    extra: vec![("timeout", Json::Number(10.into()))],
+                },
+            ]
+        }
+        // Codex runs hooks in the session's directory and caps SessionEnd at
+        // 3 seconds; each command reads the session from the hook's stdin.
+        Harness::Codex => {
+            let status = |text: &str| ("statusMessage", Json::String(text.into()));
+            vec![
+                Handler {
+                    event: "SessionStart",
+                    matcher: None,
+                    command: "tm hook session-start codex".into(),
+                    extra: vec![status("tm: priming the session")],
+                },
+                Handler {
+                    event: "PostToolUse",
+                    matcher: Some("*"),
+                    command: "tm hook heartbeat codex".into(),
+                    extra: vec![("async", Json::Bool(true)), status("tm: renewing Claims")],
+                },
+                Handler {
+                    event: "SessionEnd",
+                    matcher: None,
+                    command: "tm hook session-end codex".into(),
+                    extra: vec![
+                        ("timeout", Json::Number(3.into())),
+                        status("tm: releasing Claims"),
+                    ],
                 },
             ]
         }
@@ -285,19 +370,19 @@ fn handlers(harness: Harness) -> Vec<Handler> {
 
 /// Adds each handler `settings` lacks, in a group of its own at the end of
 /// its event; returns the commands added.
-fn add(settings: &mut Json, handlers: &[Handler]) -> Result<Vec<String>, CliError> {
+fn add(settings: &mut Json, handlers: &[Handler], file: &str) -> Result<Vec<String>, CliError> {
     let Json::Object(root) = settings else {
-        return Err(refused(format!("{SETTINGS} is not a JSON object")));
+        return Err(refused(format!("{file} is not a JSON object")));
     };
     let Json::Object(events) = field(root, "hooks", || Json::Object(Vec::new())) else {
-        return Err(refused(format!("\"hooks\" in {SETTINGS} is not an object")));
+        return Err(refused(format!("\"hooks\" in {file} is not an object")));
     };
     let mut added = Vec::new();
     for handler in handlers {
         let event = handler.event;
         let Json::Array(groups) = field(events, event, || Json::Array(Vec::new())) else {
             return Err(refused(format!(
-                "\"hooks.{event}\" in {SETTINGS} is not a list"
+                "\"hooks.{event}\" in {file} is not a list"
             )));
         };
         if groups
@@ -317,9 +402,9 @@ fn add(settings: &mut Json, handlers: &[Handler]) -> Result<Vec<String>, CliErro
 /// event and `hooks` object that removal left empty; returns the commands
 /// removed. An event's list empty before tm added to it goes too, which
 /// changes nothing Claude Code runs.
-fn remove(settings: &mut Json, handlers: &[Handler]) -> Result<Vec<String>, CliError> {
+fn remove(settings: &mut Json, handlers: &[Handler], file: &str) -> Result<Vec<String>, CliError> {
     let Json::Object(root) = settings else {
-        return Err(refused(format!("{SETTINGS} is not a JSON object")));
+        return Err(refused(format!("{file} is not a JSON object")));
     };
     let ours: Vec<&str> = handlers
         .iter()
@@ -545,19 +630,21 @@ mod tests {
     use super::{Json, add, handlers, remove, render};
     use crate::hook::Harness;
 
+    const FILE: &str = ".claude/settings.json";
+
     fn parse(text: &str) -> Json {
         serde_json::from_str(text).unwrap()
     }
 
     fn added(text: &str) -> (String, Vec<String>) {
         let mut settings = parse(text);
-        let added = add(&mut settings, &handlers(Harness::Claude)).unwrap();
+        let added = add(&mut settings, &handlers(Harness::Claude), FILE).unwrap();
         (render(&settings, Some(text)), added)
     }
 
     fn removed(text: &str) -> (String, Vec<String>) {
         let mut settings = parse(text);
-        let removed = remove(&mut settings, &handlers(Harness::Claude)).unwrap();
+        let removed = remove(&mut settings, &handlers(Harness::Claude), FILE).unwrap();
         (render(&settings, Some(text)), removed)
     }
 
@@ -627,7 +714,7 @@ mod tests {
     fn undo_of_a_file_holding_only_tms_hooks_leaves_an_empty_object() {
         let (with_tm, _) = added("{}\n");
         let mut settings = parse(&with_tm);
-        remove(&mut settings, &handlers(Harness::Claude)).unwrap();
+        remove(&mut settings, &handlers(Harness::Claude), FILE).unwrap();
         assert_eq!(settings, Json::Object(Vec::new()));
         let (_, none) = removed("{\"hooks\": {}}\n");
         assert_eq!(none, Vec::<String>::new());
@@ -642,7 +729,7 @@ mod tests {
         ] {
             let mut settings = parse(text);
             assert!(
-                add(&mut settings, &handlers(Harness::Claude)).is_err(),
+                add(&mut settings, &handlers(Harness::Claude), FILE).is_err(),
                 "{text}"
             );
         }

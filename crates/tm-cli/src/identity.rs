@@ -3,6 +3,7 @@
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
+use std::sync::OnceLock;
 
 use tm_core::Actor;
 use tm_core::actor::SessionId;
@@ -38,7 +39,7 @@ pub(crate) struct Identity {
 /// Resolves the writer from the environment `var` reads: the human is
 /// `TM_ACTOR`, else git's `user.email` from `email`; an Agent is `TM_AGENT`,
 /// else the first harness whose variables are set. An Agent's session is
-/// `TM_SESSION`, else the first detected harness's session id.
+/// [`agent_session`]'s.
 ///
 /// # Errors
 ///
@@ -68,17 +69,8 @@ pub(crate) fn resolve(
     };
     let actor = match agent {
         Some(agent) => {
-            let session = match set(&var, "TM_SESSION")? {
-                Some(session) => Some(SessionId::parse(&session).ok_or_else(|| {
-                    format!(
-                        "TM_SESSION may hold only {}; set it to the session's id, or unset it",
-                        SessionId::RULE
-                    )
-                })?),
-                None => detected
-                    .first()
-                    .and_then(|harness| session_id(&var, harness, &mut warnings)),
-            };
+            let named = var("TM_AGENT").is_some();
+            let session = agent_session(&var, named, &detected, &mut warnings)?;
             let actor = Actor::agent(&agent, &human);
             match session {
                 Some(session) => actor.in_session(session),
@@ -88,6 +80,49 @@ pub(crate) fn resolve(
         None => Actor::human(&human),
     };
     Ok(Identity { actor, warnings })
+}
+
+/// The session an Agent writes in, as [`resolve`] finds it, or `None` for a
+/// human or a variable [`resolve`] would refuse.
+pub(crate) fn session(var: impl Fn(&str) -> Option<Var>) -> Option<SessionId> {
+    let detected = harnesses(&var);
+    let named = set(&var, "TM_AGENT").ok()?.is_some();
+    if !named && detected.is_empty() {
+        return None;
+    }
+    agent_session(&var, named, &detected, &mut Vec::new())
+        .ok()
+        .flatten()
+}
+
+/// Codex's own id when detection named the Agent `codex`, since its hooks and
+/// its shell may see different `TM_SESSION`s; else `TM_SESSION`, else the
+/// first detected harness's id. A `TM_AGENT` names an Agent that may only have
+/// inherited Codex's variables, so its `TM_SESSION` stands.
+fn agent_session(
+    var: &impl Fn(&str) -> Option<Var>,
+    named: bool,
+    detected: &[&str],
+    warnings: &mut Vec<String>,
+) -> Result<Option<SessionId>, String> {
+    let exported = match set(var, "TM_SESSION")? {
+        Some(session) => Some(SessionId::parse(&session).ok_or_else(|| {
+            format!(
+                "TM_SESSION may hold only {}; set it to the session's id, or unset it",
+                SessionId::RULE
+            )
+        })?),
+        None => None,
+    };
+    let codex = detected
+        .first()
+        .filter(|harness| !named && **harness == "codex")
+        .and_then(|harness| session_id(var, harness, &mut Vec::new()));
+    Ok(codex.or(exported).or_else(|| {
+        detected
+            .first()
+            .and_then(|harness| session_id(var, harness, warnings))
+    }))
 }
 
 /// The first of `harness`'s session id variables that holds a usable value.
@@ -162,8 +197,22 @@ fn set(var: &impl Fn(&str) -> Option<Var>, name: &str) -> Result<Option<String>,
     }
 }
 
+/// The `CODEX_SESSION_ID` [`env`] reads, set by [`in_codex_session`].
+static CODEX_SESSION: OnceLock<String> = OnceLock::new();
+
+/// Reads `session` as `CODEX_SESSION_ID` for the rest of the process. Codex
+/// sets it for the Agent's commands but not its hooks, which may inherit an
+/// outer Codex's. Call it once, before anything reads the environment.
+pub(crate) fn in_codex_session(session: &SessionId) {
+    let set = CODEX_SESSION.set(session.as_str().to_owned());
+    assert!(set.is_ok(), "in_codex_session runs once a process");
+}
+
 pub(crate) fn env(name: &str) -> Option<Var> {
-    std::env::var_os(name).map(OsString::into_string)
+    match CODEX_SESSION.get() {
+        Some(session) if name == "CODEX_SESSION_ID" => Some(Ok(session.clone())),
+        _ => std::env::var_os(name).map(OsString::into_string),
+    }
 }
 
 /// git's `user.email` for the repo at `root`.
@@ -279,10 +328,59 @@ mod tests {
             session(&[("TM_AGENT", "reviewer"), ("CLAUDE_CODE_SESSION_ID", "s1")]),
             Some("s1".into())
         );
+        assert_eq!(
+            session(&[("TM_SESSION", "mine"), ("CODEX_SESSION_ID", "s1")]),
+            Some("s1".into())
+        );
+        assert_eq!(
+            session(&[("TM_SESSION", "mine"), ("CODEX_SESSION_ID", " ")]),
+            Some("mine".into())
+        );
+        assert_eq!(
+            session(&[("TM_SESSION", "mine"), ("CODEX_THREAD_ID", "t1")]),
+            Some("t1".into())
+        );
+        assert_eq!(
+            session(&[
+                ("TM_AGENT", "rev"),
+                ("TM_SESSION", "mine"),
+                ("CODEX_SESSION_ID", "s1")
+            ]),
+            Some("mine".into()),
+            "an Agent named by TM_AGENT may only have inherited Codex's id"
+        );
+        let bad = resolved(&[("TM_SESSION", "a b"), ("CODEX_SESSION_ID", "s1")]).unwrap_err();
+        assert!(bad.contains("the session's id"), "{bad}");
         assert_eq!(session(&[("TM_SESSION", "mine")]), None, "a human has none");
         for bad in [" ", "a\u{1}b", "s\u{200b}1", "…6417eead"] {
             let err = resolved(&[("TM_AGENT", "a"), ("TM_SESSION", bad)]).unwrap_err();
             assert!(err.contains("the session's id"), "{bad:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn session_finds_the_session_resolve_writes_in() {
+        for vars in [
+            &[("CLAUDE_CODE_SESSION_ID", "c1"), ("TM_SESSION", "t1")][..],
+            &[("CODEX_THREAD_ID", "x1"), ("TM_SESSION", "t1")],
+            &[("CODEX_SESSION_ID", " "), ("CODEX_THREAD_ID", "x2")],
+            &[
+                ("CODEX_SESSION_ID", "x1"),
+                ("TM_AGENT", "rev"),
+                ("TM_SESSION", "t1"),
+            ],
+            &[("CODEX_SESSION_ID", "x1"), ("CLAUDE_CODE_SESSION_ID", "c1")],
+            &[("GEMINI_CLI", "1"), ("TM_SESSION", "g1")],
+            &[("TM_SESSION", "t1")],
+        ] {
+            let map: BTreeMap<&str, &str> = vars.iter().copied().collect();
+            let found = session(|name| map.get(name).map(|v| Ok((*v).to_owned())));
+            let written = resolved(vars).unwrap().actor.session().map(str::to_owned);
+            assert_eq!(
+                found.as_ref().map(SessionId::as_str),
+                written.as_deref(),
+                "{vars:?}"
+            );
         }
     }
 

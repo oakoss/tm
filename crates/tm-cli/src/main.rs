@@ -304,7 +304,8 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
-    /// What the hooks tm setup writes run.
+    /// What the hooks tm setup writes run; for codex each reads the session
+    /// from the hook's JSON on stdin.
     Hook {
         #[command(subcommand)]
         action: HookAction,
@@ -331,9 +332,13 @@ enum GitAction {
 
 #[derive(Subcommand)]
 enum HookAction {
+    /// Print tm prime for the session that is starting.
+    SessionStart { harness: hook::Harness },
     /// Renew this session's Claims as tm heartbeat does, printing the
     /// harness's hook output only for a warning not yet given this session.
     Heartbeat { harness: hook::Harness },
+    /// Release the session's Claims as tm release --mine does.
+    SessionEnd { harness: hook::Harness },
 }
 
 #[derive(Subcommand)]
@@ -367,11 +372,19 @@ fn main() -> ExitCode {
         };
     }
     // The harness reads only its own hook format, which TM_JSON must not wrap.
-    if let Some(Command::Hook {
-        action: HookAction::Heartbeat { harness },
-    }) = cli.command
-    {
-        return output::finish(false, Ok(hook::heartbeat(harness)), &[]);
+    if let Some(Command::Hook { action }) = &cli.command {
+        let result = match *action {
+            HookAction::SessionStart { harness } => {
+                hook::enter(harness).and_then(|()| hook::session_start())
+            }
+            HookAction::Heartbeat { harness } => {
+                hook::enter(harness).map(|()| hook::heartbeat(harness))
+            }
+            HookAction::SessionEnd { harness } => {
+                hook::enter(harness).and_then(|()| hook::session_end())
+            }
+        };
+        return output::finish(false, result, &[]);
     }
     output::finish(json, run(cli.command, json), &[])
 }
@@ -408,9 +421,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Setup { harness, undo, yes }) => {
             setup::run(&setup::Setup { harness, undo, yes }, json)
         }
-        Some(Command::Hook {
-            action: HookAction::Heartbeat { .. },
-        }) => unreachable!("main runs the hook heartbeat outside JSON mode"),
+        Some(Command::Hook { .. }) => unreachable!("main runs hooks outside JSON mode"),
         Some(Command::Git {
             action: GitAction::Scan { dry_run },
         }) => scan::run(dry_run),
