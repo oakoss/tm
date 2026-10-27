@@ -859,10 +859,12 @@ mod tests {
             "a tm prime alone lacks the heartbeat"
         );
         let all = format!(
-            r#"{{"hooks":{{"SessionStart":{},"PostToolUse":{},"SessionEnd":{}}}}}"#,
+            r#"{{"hooks":{{"SessionStart":{},"PreToolUse":{},"PostToolUse":{},"SubagentStop":{},"SessionEnd":{}}}}}"#,
             group("tm prime"),
+            group("tm hook pre-bash claude || exit 1"),
             group(r#"cd "${CLAUDE_PROJECT_DIR:?}" && tm hook heartbeat claude"#),
-            group(r#"cd "${CLAUDE_PROJECT_DIR:?}" && tm release --mine"#),
+            group(r#"cd "${CLAUDE_PROJECT_DIR:?}" && tm hook subagent-stop claude || exit 1"#),
+            group(r#"cd "${CLAUDE_PROJECT_DIR:?}" && tm hook session-end claude"#),
         );
         fs::write(dir.join(SETTINGS), &all).unwrap();
         assert!(!needs_hook(&dir, &mut warnings));

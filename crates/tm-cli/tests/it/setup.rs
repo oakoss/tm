@@ -43,7 +43,14 @@ fn yes_writes_the_hooks_once_and_undo_removes_the_file_it_made() {
     assert!(shown.ends_with("Commit .claude/settings.json\n"), "{shown}");
     let written: Value =
         serde_json::from_str(&fs::read_to_string(repo.join(SETTINGS)).unwrap()).unwrap();
-    let commands: Vec<&str> = ["SessionStart", "PostToolUse", "SessionEnd"]
+    let events = [
+        "SessionStart",
+        "PreToolUse",
+        "PostToolUse",
+        "SubagentStop",
+        "SessionEnd",
+    ];
+    let commands: Vec<&str> = events
         .iter()
         .map(|event| {
             written["hooks"][event][0]["hooks"][0]["command"]
@@ -55,14 +62,21 @@ fn yes_writes_the_hooks_once_and_undo_removes_the_file_it_made() {
         commands,
         [
             "tm prime",
+            "tm hook pre-bash claude || exit 1",
             "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm hook heartbeat claude",
-            "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm release --mine",
+            "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm hook subagent-stop claude || exit 1",
+            "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm hook session-end claude",
         ]
     );
+    assert_eq!(written["hooks"]["PreToolUse"][0]["matcher"], "Bash");
     assert_eq!(written["hooks"]["PostToolUse"][0]["matcher"], "*");
     assert_eq!(
         written["hooks"]["PostToolUse"][0]["hooks"][0]["async"],
         true
+    );
+    assert_eq!(
+        written["hooks"]["SubagentStop"][0]["hooks"][0]["timeout"],
+        10
     );
     assert_eq!(written["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"], 10);
 
@@ -78,7 +92,7 @@ fn yes_writes_the_hooks_once_and_undo_removes_the_file_it_made() {
     assert!(undone.status.success(), "{undone:?}");
     let data = &doc(&undone.stdout)["data"];
     assert_eq!(data["deleted"], true);
-    assert_eq!(data["changed"].as_array().unwrap().len(), 3);
+    assert_eq!(data["changed"].as_array().unwrap().len(), 5);
     assert!(!repo.join(SETTINGS).exists());
 
     let none = tm(&scratch, &repo, &["setup", "claude", "--undo", "--yes"]);

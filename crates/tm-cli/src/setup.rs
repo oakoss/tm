@@ -247,23 +247,25 @@ fn unchanged(undo: bool, file: &str) -> Output {
 
 fn written(harness: Harness, undo: bool, deleted: bool, changed: &[String], shown: &str) -> Output {
     let file = settings(harness);
-    let runs = match harness {
-        Harness::Claude => {
+    let (hooks, runs) = match harness {
+        Harness::Claude => (
+            "tm prime when a session starts, each sub-agent's tm commands written under its own \
+             name, a heartbeat after each tool use, and releasing Claims when a sub-agent or the \
+             session ends",
             "Claude Code runs them once you trust this folder, which it asks when a session \
-             starts here."
-        }
-        Harness::Codex => {
+             starts here.",
+        ),
+        Harness::Codex => (
+            "tm prime when a session starts, a heartbeat after each tool use, and releasing \
+             Claims when it ends",
             "Codex runs them once you trust this project and approve each hook in /hooks; \
-             tm's hooks in ~/.codex would run as well, not instead."
-        }
+             tm's hooks in ~/.codex would run as well, not instead.",
+        ),
     };
     let text = match (undo, deleted) {
         (true, true) => format!("Removed {file}, which held only tm's hooks\n"),
         (true, false) => format!("Removed tm's hooks from {file}\n"),
-        (false, _) => format!(
-            "Added tm's hooks to {file}: tm prime when a session starts, a heartbeat after each \
-             tool use, and tm release --mine when it ends. {runs}\n"
-        ),
+        (false, _) => format!("Added tm's hooks to {file}: {hooks}. {runs}\n"),
     };
     Output::new(
         format!("{text}Commit {file}\n"),
@@ -283,6 +285,8 @@ struct Handler {
     matcher: Option<&'static str>,
     command: String,
     extra: Vec<(&'static str, Json)>,
+    /// The command an older tm wrote for this handler, rewritten in place.
+    replaces: Option<String>,
 }
 
 impl Handler {
@@ -316,24 +320,46 @@ fn handlers(harness: Harness) -> Vec<Handler> {
         Harness::Claude => {
             let from_project =
                 |args: &str| format!("cd \"${{CLAUDE_PROJECT_DIR:?}}\" && tm {args}");
+            let timeout = || ("timeout", Json::Number(10.into()));
+            // Exit 2 blocks the Bash call, or keeps a sub-agent from stopping,
+            // and a tm older than these hooks exits 2 for a subcommand it does
+            // not know; exit 1 shows the failure without blocking.
+            let unblocking = |command: String| format!("{command} || exit 1");
             vec![
                 Handler {
                     event: "SessionStart",
                     matcher: None,
                     command: "tm prime".into(),
                     extra: Vec::new(),
+                    replaces: None,
+                },
+                Handler {
+                    event: "PreToolUse",
+                    matcher: Some("Bash"),
+                    command: unblocking("tm hook pre-bash claude".into()),
+                    extra: Vec::new(),
+                    replaces: None,
                 },
                 Handler {
                     event: "PostToolUse",
                     matcher: Some("*"),
                     command: from_project("hook heartbeat claude"),
                     extra: vec![("async", Json::Bool(true))],
+                    replaces: None,
+                },
+                Handler {
+                    event: "SubagentStop",
+                    matcher: None,
+                    command: unblocking(from_project("hook subagent-stop claude")),
+                    extra: vec![timeout()],
+                    replaces: None,
                 },
                 Handler {
                     event: "SessionEnd",
                     matcher: None,
-                    command: from_project("release --mine"),
-                    extra: vec![("timeout", Json::Number(10.into()))],
+                    command: from_project("hook session-end claude"),
+                    extra: vec![timeout()],
+                    replaces: Some(from_project("release --mine")),
                 },
             ]
         }
@@ -347,12 +373,14 @@ fn handlers(harness: Harness) -> Vec<Handler> {
                     matcher: None,
                     command: "tm hook session-start codex".into(),
                     extra: vec![status("tm: priming the session")],
+                    replaces: None,
                 },
                 Handler {
                     event: "PostToolUse",
                     matcher: Some("*"),
                     command: "tm hook heartbeat codex".into(),
                     extra: vec![("async", Json::Bool(true)), status("tm: renewing Claims")],
+                    replaces: None,
                 },
                 Handler {
                     event: "SessionEnd",
@@ -362,6 +390,7 @@ fn handlers(harness: Harness) -> Vec<Handler> {
                         ("timeout", Json::Number(3.into())),
                         status("tm: releasing Claims"),
                     ],
+                    replaces: None,
                 },
             ]
         }
@@ -369,7 +398,8 @@ fn handlers(harness: Harness) -> Vec<Handler> {
 }
 
 /// Adds each handler `settings` lacks, in a group of its own at the end of
-/// its event; returns the commands added.
+/// its event, or in place of the older command it replaces; returns the
+/// commands added.
 fn add(settings: &mut Json, handlers: &[Handler], file: &str) -> Result<Vec<String>, CliError> {
     let Json::Object(root) = settings else {
         return Err(refused(format!("{file} is not a JSON object")));
@@ -392,7 +422,20 @@ fn add(settings: &mut Json, handlers: &[Handler], file: &str) -> Result<Vec<Stri
         {
             continue;
         }
-        groups.push(handler.group());
+        let old = groups
+            .iter_mut()
+            .filter_map(|group| match group.field_mut("hooks") {
+                Some(Json::Array(list)) => Some(list),
+                _ => None,
+            })
+            .flatten()
+            .find(|found| {
+                found.command().is_some() && found.command() == handler.replaces.as_deref()
+            });
+        match old.and_then(|found| found.field_mut("command")) {
+            Some(command) => *command = Json::String(handler.command.clone()),
+            None => groups.push(handler.group()),
+        }
         added.push(handler.command.clone());
     }
     Ok(added)
@@ -408,7 +451,8 @@ fn remove(settings: &mut Json, handlers: &[Handler], file: &str) -> Result<Vec<S
     };
     let ours: Vec<&str> = handlers
         .iter()
-        .map(|handler| handler.command.as_str())
+        .flat_map(|handler| [Some(handler.command.as_str()), handler.replaces.as_deref()])
+        .flatten()
         .collect();
     let mut removed = Vec::new();
     let Some(Json::Object(events)) = root
@@ -652,7 +696,7 @@ mod tests {
     fn the_owners_keys_keep_their_order_and_indent() {
         let before = "{\n    \"zebra\": 1,\n    \"apple\": [true, null, 2.5]\n}\n";
         let (after, added) = added(before);
-        assert_eq!(added.len(), 3);
+        assert_eq!(added.len(), 5);
         assert!(
             after.starts_with("{\n    \"zebra\": 1,\n    \"apple\": [\n        true,"),
             "{after}"
@@ -690,8 +734,8 @@ mod tests {
         let (after, removed) = removed(&with_tm);
         assert_eq!(
             removed.len(),
-            3,
-            "the one already there and the two added: {removed:?}"
+            5,
+            "the one already there and the four added: {removed:?}"
         );
         let after = parse(&after);
         let expected = parse(
@@ -708,6 +752,37 @@ mod tests {
 }"#,
         );
         assert_eq!(after, expected);
+    }
+
+    #[test]
+    fn an_older_session_end_is_rewritten_in_place_and_undone() {
+        let before = r#"{
+  "hooks": {
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm release --mine", "timeout": 30 }] }
+    ]
+  }
+}
+"#;
+        let (after, added) = added(before);
+        assert!(
+            added
+                .iter()
+                .any(|command| command.ends_with("tm hook session-end claude"))
+        );
+        let ended =
+            &serde_json::from_str::<serde_json::Value>(&after).unwrap()["hooks"]["SessionEnd"];
+        assert_eq!(ended.as_array().unwrap().len(), 1, "{after}");
+        assert_eq!(
+            ended[0]["hooks"][0],
+            serde_json::json!({
+                "type": "command",
+                "command": "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm hook session-end claude",
+                "timeout": 30,
+            })
+        );
+        let (_, removed) = removed(before);
+        assert_eq!(removed.len(), 1, "{removed:?}");
     }
 
     #[test]
