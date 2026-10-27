@@ -10,6 +10,7 @@ members = ["crates/*"]
 [workspace.package]
 authors = ["Jace Babin"]
 edition = "2024"
+homepage = "https://github.com/oakoss/tm"
 license = "MIT"
 repository = "https://github.com/oakoss/tm"
 rust-version = "1.99.1"

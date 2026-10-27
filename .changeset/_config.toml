@@ -1,0 +1,4 @@
+# :schema ./_schema.json
+change-files = true
+conventional-commits = true
+versioning = "zero-major"

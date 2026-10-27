@@ -1,0 +1,108 @@
+# Opens the version pull request and tags releases. ci.yml calls it after CI
+# Summary passes on a push to main, so a red main never releases, and a rerun
+# of CI's failed jobs runs it again. The App token is what lets the version
+# pull request run CI and the tag start release.yml; events made with
+# GITHUB_TOKEN start no workflows.
+name: oakum
+
+on:
+  workflow_call:
+    secrets:
+      BOT_CLIENT_ID:
+        required: true
+      BOT_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Harden and checkout
+        uses: $/.github/actions/harden-checkout
+
+      # `oakum ci version-pr` refuses a checkout that is not main's head, and
+      # main can move while CI runs; the newer commit's run versions it.
+      - name: Still main's head
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)
+          if ! [[ "$head" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=oakum::could not read main's head (got '$head')"
+            exit 1
+          fi
+          if [ "$head" = "$GITHUB_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=oakum::main moved from $GITHUB_SHA to $head; its CI run versions it"
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Oakoss App token
+        if: steps.head.outputs.current == 'true'
+        id: app-token
+        uses: $/.github/actions/app-token
+        with:
+          client-id: ${{ secrets.BOT_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          repositories: tm
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Setup
+        if: steps.head.outputs.current == 'true'
+        uses: $/.github/actions/setup
+        with:
+          tools: github:oakoss/oakum
+
+      - name: oakum ci version-pr
+        if: steps.head.outputs.current == 'true'
+        run: oakum ci version-pr
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Oakoss App token
+        id: app-token
+        uses: $/.github/actions/app-token
+        with:
+          client-id: ${{ secrets.BOT_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          repositories: tm
+          permission-contents: write
+          resolve-identity: true
+
+      # The tag is pushed over this checkout's credentials, so they are the
+      # App's.
+      - name: Harden and checkout
+        uses: $/.github/actions/harden-checkout
+        with:
+          persist-credentials: 'true'
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Setup
+        uses: $/.github/actions/setup
+        with:
+          tools: github:oakoss/oakum
+
+      - name: Configure git
+        env:
+          BOT_USER: ${{ steps.app-token.outputs.user }}
+          BOT_EMAIL: ${{ steps.app-token.outputs.email }}
+        run: |
+          git config user.name "$BOT_USER"
+          git config user.email "$BOT_EMAIL"
+
+      - name: oakum release
+        run: oakum release
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}

@@ -1,0 +1,67 @@
+name: Oakoss App token
+description: >
+  Mint a short-lived oakoss App installation token, limited to the named
+  repositories and permissions, and optionally the App bot's commit identity.
+  Composite actions cannot read secrets; callers pass BOT_CLIENT_ID and
+  BOT_PRIVATE_KEY as inputs.
+
+inputs:
+  client-id:
+    description: GitHub App client ID (secrets.BOT_CLIENT_ID)
+    required: true
+  private-key:
+    description: GitHub App private key (secrets.BOT_PRIVATE_KEY)
+    required: true
+  repositories:
+    description: Repository names under the oakoss org, space-separated
+    required: true
+  permission-contents:
+    description: contents permission for the token (read or write)
+    required: true
+  permission-pull-requests:
+    description: pull-requests permission for the token; empty leaves it out
+    required: false
+    default: ''
+  resolve-identity:
+    description: When true, output user and email for git commit authorship
+    required: false
+    default: 'false'
+
+outputs:
+  token:
+    description: GitHub App installation token
+    value: ${{ steps.mint.outputs.token }}
+  user:
+    description: Bot user name when resolve-identity is true
+    value: ${{ steps.identity.outputs.user }}
+  email:
+    description: Bot noreply email when resolve-identity is true
+    value: ${{ steps.identity.outputs.email }}
+
+runs:
+  using: composite
+  steps:
+    - name: Generate GitHub App token
+      id: mint
+      uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      with:
+        client-id: ${{ inputs.client-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: oakoss
+        repositories: ${{ inputs.repositories }}
+        permission-contents: ${{ inputs.permission-contents }}
+        permission-pull-requests: ${{ inputs.permission-pull-requests }}
+
+    - name: Resolve the App commit identity
+      id: identity
+      if: inputs.resolve-identity == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.mint.outputs.token }}
+        SLUG: ${{ steps.mint.outputs.app-slug }}
+      run: |
+        user_id="$(gh api "/users/${SLUG}%5Bbot%5D" --jq .id)"
+        {
+          echo "user=${SLUG}[bot]"
+          echo "email=${user_id}+${SLUG}[bot]@users.noreply.github.com"
+        } >> "$GITHUB_OUTPUT"

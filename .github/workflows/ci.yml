@@ -110,6 +110,45 @@ jobs:
           MISE_AUTO_INSTALL: 'false'
         run: mise run scan-secrets
 
+  # A pull request that changes a package carries a bump file.
+  oakum:
+    name: Bump files
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Harden and checkout
+        uses: $/.github/actions/harden-checkout
+
+      - name: Setup
+        uses: $/.github/actions/setup
+        with:
+          tools: github:oakoss/oakum
+
+      # The version pull request consumes the bump files and holds a version
+      # with no tag yet, which `check --strict` always fails, whoever pushed.
+      # A fork's branch of that name is still checked.
+      - name: oakum check
+        if: >-
+          github.head_ref != 'oakum/version-packages'
+          || github.event.pull_request.head.repo.full_name != github.repository
+        run: oakum check --strict
+
+      - name: oakum ci pr-status
+        id: pr-status
+        if: success() || failure()
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: oakum ci pr-status
+
+      - name: pr-status failed
+        if: (success() || failure()) && steps.pr-status.outcome == 'failure'
+        run: echo "::warning title=oakum ci pr-status::the release plan may not have reached the pull request; oakum check still decides"
+
   # Its own file because it also runs on a weekly cron against a fresh advisory
   # database. Called here so CI Summary gates it on pull requests.
   audit:
@@ -120,7 +159,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
-    needs: [static-analysis, tests, cold-start, secret-scan, audit]
+    needs: [static-analysis, tests, cold-start, secret-scan, oakum, audit]
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
@@ -219,3 +258,15 @@ jobs:
 
           verdict=reached
           exit "$failed"
+
+  # Downstream of the gate on purpose, so not in its `needs`: it versions and
+  # releases only a main commit whose CI passed.
+  release:
+    needs: ci-summary
+    if: github.event_name == 'push' && needs.ci-summary.result == 'success'
+    permissions:
+      contents: read
+    uses: $/.github/workflows/oakum.yml
+    secrets:
+      BOT_CLIENT_ID: ${{ secrets.BOT_CLIENT_ID }}
+      BOT_PRIVATE_KEY: ${{ secrets.BOT_PRIVATE_KEY }}
