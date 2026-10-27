@@ -26,8 +26,8 @@ gitleaks = "8.30.1"
 "aqua:cocogitto/cocogitto" = "7.0.0"
 # oakum refuses to write when its binary differs from this pin.
 "github:oakoss/oakum" = "0.7.0"
-# Same number as `cargo-dist-version` in dist-workspace.toml, which the release
-# workflow installs; `mise run check` fails when they differ. Run it as
+# release.yml installs dist from this pin. Same number as `cargo-dist-version`
+# in dist-workspace.toml; `mise run check` fails when they differ. Run it as
 # `mise exec -- dist` where Homebrew's dist comes first on PATH.
 "aqua:axodotdev/cargo-dist" = "0.33.1"
 # Embeds the dependency tree in release binaries (`cargo-auditable = true` in
@@ -62,9 +62,10 @@ run = [
   # Keyed on whether the key exists: an empty core.hooksPath also bypasses
   # lefthook. Exit 1 from git means unset; anything else is a failure.
   "out=$(git config --show-origin --get-all core.hooksPath); case $? in 1) ;; 0) printf 'core.hooksPath is set, so git is bypassing lefthook; unset it where shown:\\n%s\\n' \"$out\"; exit 1;; *) echo 'could not read core.hooksPath'; exit 1;; esac",
-  # release.yml installs dist-workspace.toml's cargo-dist; local `dist` is the
-  # mise pin. Exact names on both sides, so a moved key reads as empty.
-  "pin=$(sed -n 's/^\"aqua:axodotdev\\/cargo-dist\" = \"\\(.*\\)\"$/\\1/p' .mise.toml); dist=$(sed -n 's/^cargo-dist-version = \"\\(.*\\)\"$/\\1/p' dist-workspace.toml); [ -n \"$pin\" ] && [ \"$pin\" = \"$dist\" ] || { echo \"cargo-dist: .mise.toml pins '$pin', dist-workspace.toml has '$dist'; make them equal\"; exit 1; }",
+  # Local `dist` and release.yml run the mise pin; dist-workspace.toml's
+  # `cargo-dist-version` is what `dist generate` writes for. mise reads its own
+  # pin, and awk only the [dist] table, so a moved key reads as empty.
+  '''pin=$(mise current aqua:axodotdev/cargo-dist); dist=$(awk -F'"' '/^\[/ { table = $0 } table == "[dist]" && /^cargo-dist-version *=/ { print $2 }' dist-workspace.toml); [ -n "$pin" ] && [ "$pin" = "$dist" ] || { echo "cargo-dist: .mise.toml pins '$pin', dist-workspace.toml [dist] has '$dist'; make them equal"; exit 1; }''',
   "cargo fmt --check",
   "cargo clippy --workspace --all-targets --locked -- -D warnings",
   "dprint check",

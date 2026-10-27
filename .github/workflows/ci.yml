@@ -137,6 +137,23 @@ jobs:
           || github.event.pull_request.head.repo.full_name != github.repository
         run: oakum check --strict
 
+      # `oakum check` asks per package: a pending tm-cli bump file already on
+      # main covers this pull request, and internal crates are never asked.
+      - name: This pull request's own bump file
+        if: >-
+          github.head_ref != 'oakum/version-packages'
+          || github.event.pull_request.head.repo.full_name != github.repository
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          crates=$(git diff --name-only "$BASE" HEAD -- crates/)
+          bump=$(git diff --name-only --diff-filter=AM "$BASE" HEAD -- '.changeset/*.md' ':!.changeset/README.md')
+          if [ -n "$crates" ] && [ -z "$bump" ]; then
+            echo "::error title=Bump files::this pull request changes crates/ but adds no bump file; run oakum add, or oakum add --empty for a change that releases nothing"
+            exit 1
+          fi
+
       - name: oakum ci pr-status
         id: pr-status
         if: success() || failure()
