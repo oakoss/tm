@@ -4,6 +4,8 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tm_core::ProjectId;
 use tm_store::Store;
@@ -128,7 +130,12 @@ pub(crate) fn tm_piped(
     args: &[&str],
     input: impl AsRef<[u8]>,
 ) -> Output {
-    let mut child = jace(scratch, dir, args)
+    piped(jace(scratch, dir, args), input)
+}
+
+/// `command` with `input` on stdin.
+pub(crate) fn piped(mut command: Command, input: impl AsRef<[u8]>) -> Output {
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -178,4 +185,20 @@ pub(crate) fn initialized(scratch: &Scratch) -> (PathBuf, Store, ProjectId) {
 
 pub(crate) fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// Sleeps until the wall clock reaches `ms`, as a `tm` process reads it.
+pub(crate) fn wait_until(ms: i64) {
+    let now_ms = || {
+        i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap()
+    };
+    while now_ms() < ms {
+        thread::sleep(Duration::from_millis(50));
+    }
 }

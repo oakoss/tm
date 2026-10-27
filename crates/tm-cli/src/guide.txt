@@ -48,6 +48,7 @@ Claims
                              run tm prime at session start, heartbeat after
                              each tool use and release the session's Claims
                              when it ends
+  tm setup codex             the same for Codex, in .codex/hooks.json
   Sessions of one Agent are told apart by the harness's session id, or
   TM_SESSION when set.
 

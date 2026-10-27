@@ -1,21 +1,25 @@
-//! `tm hook`: the heartbeat the hooks `tm setup` writes run after each tool
-//! use.
+//! `tm hook`: what the hooks `tm setup` writes run when a session starts,
+//! after each tool use, and when it ends.
 
 use std::collections::HashSet;
 use std::fs;
+use std::io::{self, IsTerminal as _, Read as _};
 use std::path::PathBuf;
 
 use serde_json::{Value, json};
 use tm_core::actor::SessionId;
 use tm_store::workspace;
 
-use crate::claim;
+use crate::error::CliError;
 use crate::output::Output;
+use crate::{claim, identity, prime};
 
 #[derive(Clone, Copy, clap::ValueEnum)]
 pub(crate) enum Harness {
     /// Claude Code.
     Claude,
+    /// Codex.
+    Codex,
 }
 
 impl Harness {
@@ -23,7 +27,58 @@ impl Harness {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Claude => "claude",
+            Self::Codex => "codex",
         }
+    }
+}
+
+/// Makes this process write as the hook's Agent and session. Codex gives its
+/// hooks no `CODEX_SESSION_ID`, only the same id as `session_id` on stdin.
+pub(crate) fn enter(harness: Harness) -> Result<(), CliError> {
+    match harness {
+        Harness::Claude => Ok(()),
+        Harness::Codex => {
+            identity::in_codex_session(&stdin_session()?);
+            Ok(())
+        }
+    }
+}
+
+fn stdin_session() -> Result<SessionId, CliError> {
+    let failed = |why: String| CliError::new("hook_input", why);
+    let mut stdin = io::stdin();
+    // Run by hand at a terminal, it would wait for input that never comes.
+    if stdin.is_terminal() {
+        return Err(failed(
+            "tm hook reads the hook's JSON on stdin, which is a terminal here".into(),
+        ));
+    }
+    let mut text = String::new();
+    stdin
+        .read_to_string(&mut text)
+        .map_err(|err| failed(format!("cannot read the hook's input: {err}")))?;
+    let input: Value = serde_json::from_str(&text)
+        .map_err(|err| failed(format!("the hook's input is not JSON: {err}")))?;
+    input
+        .get("session_id")
+        .and_then(Value::as_str)
+        .and_then(SessionId::parse)
+        .ok_or_else(|| failed("the hook's input has no usable session_id".into()))
+}
+
+/// `tm prime` for a session-start hook, whose plain output the harness adds
+/// to the Agent's context. A repo tm does not track fails here, as `tm prime`
+/// does, so the hook's failure tells a person to run `tm init`.
+pub(crate) fn session_start() -> Result<Output, CliError> {
+    prime::run(false)
+}
+
+/// `tm release --mine` for a session-end hook. A repo tm does not track has
+/// nothing to release, so that ends quietly rather than as a hook failure.
+pub(crate) fn session_end() -> Result<Output, CliError> {
+    match claim::release_mine() {
+        Err(err) if err.code == "no_workspace" => Ok(Output::new(String::new(), json!({}))),
+        result => result,
     }
 }
 
@@ -58,8 +113,9 @@ pub(crate) fn heartbeat(harness: Harness) -> Output {
         String::new()
     } else {
         let context = format!("tm: {}", fresh.join("\ntm: "));
+        // Both harnesses read this shape; Codex ignores plain output here.
         let shown = match harness {
-            Harness::Claude => json!({
+            Harness::Claude | Harness::Codex => json!({
                 "hookSpecificOutput": {
                     "hookEventName": "PostToolUse",
                     "additionalContext": context,
@@ -115,9 +171,7 @@ fn unreported(notes: Vec<(String, String)>, succeeded: bool) -> Vec<String> {
 }
 
 fn reported_path() -> Option<PathBuf> {
-    let session = ["TM_SESSION", "CLAUDE_CODE_SESSION_ID"]
-        .into_iter()
-        .find_map(|var| SessionId::parse(&std::env::var(var).ok()?))?;
+    let session = identity::session(identity::env)?;
     let home = workspace::home(std::env::var_os("TM_HOME"), std::env::home_dir()).ok()?;
     Some(
         home.join("hooks")

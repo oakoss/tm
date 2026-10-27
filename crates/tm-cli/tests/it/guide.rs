@@ -90,7 +90,7 @@ fn as_claude(scratch: &Scratch, repo: &Path, args: &[&str], input: &str) -> Outp
 
 /// Every command the guide prints runs as printed, in order, with KEY,
 /// OTHER, TEXT, AGENT and BATCH filled in: an Agent runs all but the bare
-/// `tm undo` and `tm setup claude`, which the guide gives to a human, who
+/// `tm undo` and `tm setup`, which the guide gives to a human, who
 /// confirms the setup with --yes here as no terminal asks. A shell
 /// redirection ends the command; the text it would pipe in is given on stdin.
 #[test]
@@ -129,8 +129,8 @@ fn every_command_in_the_guide_runs_as_printed() {
         let words: Vec<&str> = words.iter().map(String::as_str).collect();
         let out = if words == ["undo"] {
             tm(&scratch, &repo, &["--json", "undo"])
-        } else if words == ["setup", "claude"] {
-            tm(&scratch, &repo, &["--json", "setup", "claude", "--yes"])
+        } else if let ["setup", harness] = words.as_slice() {
+            tm(&scratch, &repo, &["--json", "setup", harness, "--yes"])
         } else {
             as_claude(&scratch, &repo, &words, "some text\n")
         };

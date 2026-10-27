@@ -1,14 +1,13 @@
 use std::path::Path;
 use std::process::{Output, Stdio};
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use tm_core::{Actor, Change, ProjectId};
 use tm_store::{Draft, Store};
 use uuid::Uuid;
 
-use crate::support::{Scratch, initialized, text, tm, tm_command};
+use crate::support::{Scratch, initialized, text, tm, tm_command, wait_until};
 
 /// `tm` writing as the Agent `claude` for `jace`.
 fn as_agent(scratch: &Scratch, repo: &Path, args: &[&str]) -> Output {
@@ -297,22 +296,6 @@ fn archive(store: &mut Store, project: ProjectId, issue: Uuid) {
             },
         })
         .unwrap();
-}
-
-/// Sleeps until the wall clock reaches `ms`, as a `tm` process reads it.
-fn wait_until(ms: i64) {
-    let now_ms = || {
-        i64::try_from(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis(),
-        )
-        .unwrap()
-    };
-    while now_ms() < ms {
-        thread::sleep(Duration::from_millis(50));
-    }
 }
 
 #[test]
