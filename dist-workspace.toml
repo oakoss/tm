@@ -22,7 +22,7 @@ install-updater = false
 tap = "oakoss/homebrew-tap"
 formula = "tm"
 publish-jobs = ["homebrew"]
-pr-run-mode = "plan"
+pr-run-mode = "upload"
 github-attestations = true
 cargo-auditable = true
 # A tag build restores no cache, so no cache entry can reach a release.
