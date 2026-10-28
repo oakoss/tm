@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 
 use serde_json::json;
 use tm_core::Actor;
+use tm_core::actor::SessionId;
 use tm_store::{Claim, IssueView, Named, StoreError};
 use uuid::Uuid;
 
@@ -250,6 +251,17 @@ pub(crate) fn list() -> Result<Output, CliError> {
 /// Releases every Claim this session took, lapsed ones included;
 /// `tm release --mine`.
 pub(crate) fn release_mine() -> Result<Output, CliError> {
+    release_all(false)
+}
+
+/// Releases every Claim taken in this session for its human, its sub-agents'
+/// too, each as the Agent that took it: they share the session, and one cut
+/// short never releases its own.
+pub(crate) fn release_session() -> Result<Output, CliError> {
+    release_all(true)
+}
+
+fn release_all(whole_session: bool) -> Result<Output, CliError> {
     here::write(|here| {
         let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
             .map_err(|message| CliError::new("no_identity", message))?;
@@ -264,13 +276,21 @@ pub(crate) fn release_mine() -> Result<Output, CliError> {
             )
             .fix("TM_AGENT=<name> tm release --mine"));
         }
-        let claims = here.store.claims_by(
-            writer.name(),
-            writer.on_behalf_of().unwrap_or(writer.name()),
-        )?;
+        let human = writer.on_behalf_of().unwrap_or(writer.name());
+        let session = writer.session().and_then(SessionId::parse);
+        let claims = match (&session, whole_session) {
+            (Some(_), true) => here.store.claims()?,
+            _ => here.store.claims_by(writer.name(), human)?,
+        };
         let (mut released, mut shown, mut failed) = (Vec::new(), Vec::new(), Vec::new());
         for claim in claims.held.iter().chain(&claims.lapsed) {
-            if !claim.taken_by(writer) {
+            let holder = match &session {
+                Some(session) if whole_session && claim.agent != writer.name() => {
+                    Actor::agent(&claim.agent, human).in_session(session.clone())
+                }
+                _ => writer.clone(),
+            };
+            if !claim.taken_by(&holder) {
                 continue;
             }
             // A failure must not keep the rest held, so an unread Key falls
@@ -278,7 +298,7 @@ pub(crate) fn release_mine() -> Result<Output, CliError> {
             // session's to release.
             let key = key(here, claim.issue).ok().flatten();
             let name = key.clone().unwrap_or_else(|| claim.issue.to_string());
-            match here.store.release(writer, claim.issue, claim.id) {
+            match here.store.release(&holder, claim.issue, claim.id) {
                 Ok(_) => {
                     shown.push(name);
                     released.push(json!({ "id": claim.issue, "key": key, "claim": claim.id }));

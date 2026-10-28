@@ -197,20 +197,19 @@ fn set(var: &impl Fn(&str) -> Option<Var>, name: &str) -> Result<Option<String>,
     }
 }
 
-/// The `CODEX_SESSION_ID` [`env`] reads, set by [`in_codex_session`].
-static CODEX_SESSION: OnceLock<String> = OnceLock::new();
+static HOOK_VAR: OnceLock<(&str, String)> = OnceLock::new();
 
-/// Reads `session` as `CODEX_SESSION_ID` for the rest of the process. Codex
-/// sets it for the Agent's commands but not its hooks, which may inherit an
-/// outer Codex's. Call it once, before anything reads the environment.
-pub(crate) fn in_codex_session(session: &SessionId) {
-    let set = CODEX_SESSION.set(session.as_str().to_owned());
-    assert!(set.is_ok(), "in_codex_session runs once a process");
+/// Reads `value` as `name` for the rest of the process, as the Agent's own
+/// commands see it; a harness gives its hooks that value only on stdin. Call
+/// it once, before anything reads the environment.
+pub(crate) fn hook_var(name: &'static str, value: String) {
+    let set = HOOK_VAR.set((name, value));
+    assert!(set.is_ok(), "hook_var runs once a process");
 }
 
 pub(crate) fn env(name: &str) -> Option<Var> {
-    match CODEX_SESSION.get() {
-        Some(session) if name == "CODEX_SESSION_ID" => Some(Ok(session.clone())),
+    match HOOK_VAR.get() {
+        Some((var, value)) if *var == name => Some(Ok(value.clone())),
         _ => std::env::var_os(name).map(OsString::into_string),
     }
 }

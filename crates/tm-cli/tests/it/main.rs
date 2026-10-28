@@ -30,6 +30,7 @@ mod show;
 mod smoke;
 mod snapshot;
 mod start;
+mod subagent;
 mod support;
 mod undo;
 mod versions;

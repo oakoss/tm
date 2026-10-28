@@ -304,8 +304,8 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
-    /// What the hooks tm setup writes run; for codex each reads the session
-    /// from the hook's JSON on stdin.
+    /// What the hooks tm setup writes run, each reading the hook's JSON on
+    /// stdin: codex's session, and a Claude Code sub-agent's id.
     Hook {
         #[command(subcommand)]
         action: HookAction,
@@ -334,11 +334,24 @@ enum GitAction {
 enum HookAction {
     /// Print tm prime for the session that is starting.
     SessionStart { harness: hook::Harness },
+    /// Make a Claude Code sub-agent's Bash command that runs tm write as that
+    /// sub-agent, by exporting `TM_AGENT` first.
+    PreBash { harness: ClaudeOnly },
     /// Renew this session's Claims as tm heartbeat does, printing the
     /// harness's hook output only for a warning not yet given this session.
     Heartbeat { harness: hook::Harness },
-    /// Release the session's Claims as tm release --mine does.
+    /// Release a finished Claude Code sub-agent's Claims.
+    SubagentStop { harness: ClaudeOnly },
+    /// Release the session's Claims, a Claude Code session's sub-agents'
+    /// included.
     SessionEnd { harness: hook::Harness },
+}
+
+/// The harness of a hook only Claude Code has.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ClaudeOnly {
+    /// Claude Code.
+    Claude,
 }
 
 #[derive(Subcommand)]
@@ -375,13 +388,17 @@ fn main() -> ExitCode {
     if let Some(Command::Hook { action }) = &cli.command {
         let result = match *action {
             HookAction::SessionStart { harness } => {
-                hook::enter(harness).and_then(|()| hook::session_start())
+                hook::enter(harness).and_then(|_| hook::session_start())
             }
+            HookAction::PreBash { .. } => hook::pre_bash(),
             HookAction::Heartbeat { harness } => {
-                hook::enter(harness).map(|()| hook::heartbeat(harness))
+                hook::enter(harness).map(|_| hook::heartbeat(harness))
+            }
+            HookAction::SubagentStop { .. } => {
+                hook::enter(hook::Harness::Claude).and_then(hook::subagent_stop)
             }
             HookAction::SessionEnd { harness } => {
-                hook::enter(harness).and_then(|()| hook::session_end())
+                hook::enter(harness).and_then(|_| hook::session_end(harness))
             }
         };
         return output::finish(false, result, &[]);
