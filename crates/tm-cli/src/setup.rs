@@ -196,7 +196,9 @@ fn confirmed(shown: &str, emptied: bool, setup: &Setup, json: bool) -> Result<()
         let unshown = if json { None } else { print_now(shown).err() };
         let undo = if setup.undo { " --undo" } else { "" };
         let refusal = not_written(&format!(
-            ": an Agent is shown the diff; a person runs tm setup {}{undo} to write it",
+            ": an Agent is shown the diff; a person runs tm setup {}{undo} from their own \
+             terminal to write it, since a command run in the Agent's session, Claude Code's ! \
+             included, counts as the Agent",
             setup.harness.name()
         ));
         return Err(match unshown {

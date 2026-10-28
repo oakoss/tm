@@ -158,7 +158,10 @@ fn without_a_terminal_init_needs_yes_and_writes_nothing() {
         text(&output.stdout).contains("+++ b/.config/tm.toml"),
         "the diff is shown"
     );
-    assert!(text(&output.stderr).contains("--yes"), "{output:?}");
+    assert!(
+        text(&output.stderr).contains("confirm with --yes when not a person at a terminal"),
+        "{output:?}"
+    );
     assert_eq!(snapshot(&repo), before);
     assert!(!scratch.home().exists(), "no Workspace was made");
 }
@@ -912,7 +915,8 @@ fn an_agent_is_given_the_lines_and_hook_and_writes_neither() {
     );
     assert!(
         shown.contains(
-            "a person runs tm setup claude, which adds tm's hooks to .claude/settings.json"
+            "a person runs tm setup claude from their own terminal, which adds tm's hooks to \
+             .claude/settings.json"
         ),
         "{shown}"
     );
@@ -1025,7 +1029,12 @@ fn an_agent_needs_yes_and_is_told_to_add_lines_to_an_existing_file() {
     let repo = fixture(&scratch, "repo");
     let refused = init_as_agent(&scratch, &repo, &["--key", "TM"]);
     assert!(!refused.status.success());
-    assert!(text(&refused.stderr).contains("--yes"), "{refused:?}");
+    assert!(
+        text(&refused.stderr).contains(
+            "confirm with --yes, or a person runs tm init from their own terminal to be asked"
+        ),
+        "{refused:?}"
+    );
     assert!(!repo.join(".config/tm.toml").exists());
 
     fs::remove_file(repo.join("AGENTS.md")).unwrap();
