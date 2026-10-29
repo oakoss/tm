@@ -399,8 +399,8 @@ pub(crate) fn report(output: &mut Output, offer: Offer) {
     if hook {
         let _ = writeln!(
             text,
-            "For Claude Code to start each session from tm prime, a person runs tm setup claude, \
-             which adds tm's hooks to {SETTINGS}"
+            "For Claude Code to start each session from tm prime, a person runs tm setup claude \
+             from their own terminal, which adds tm's hooks to {SETTINGS}"
         );
     }
     output.data["instructions"] = json!({

@@ -660,9 +660,14 @@ fn confirmed(text: &str, yes: bool, json: bool) -> Result<(), String> {
     }
     if !human() {
         print_now(&diff(text))?;
-        return Err(format!(
-            "{REPO_FILE} not written: confirm with --yes when not a person at a terminal"
-        ));
+        let why = if identity::agent_detected(identity::env) {
+            "confirm with --yes, or a person runs tm init from their own terminal to be \
+             asked, since a command run in the Agent's session, Claude Code's ! included, \
+             counts as the Agent"
+        } else {
+            "confirm with --yes when not a person at a terminal"
+        };
+        return Err(format!("{REPO_FILE} not written: {why}"));
     }
     if ask(&diff(text), &format!("Write {REPO_FILE}?"))? {
         Ok(())

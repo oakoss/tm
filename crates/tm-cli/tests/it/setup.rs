@@ -220,7 +220,10 @@ fn an_agent_is_only_shown_the_diff_even_with_yes() {
         "the diff is shown"
     );
     assert!(
-        text(&agent.stderr).contains("a person runs tm setup claude to write it"),
+        text(&agent.stderr).contains(
+            "a person runs tm setup claude from their own terminal to write it, since a \
+             command run in the Agent's session, Claude Code's ! included, counts as the Agent"
+        ),
         "{agent:?}"
     );
     assert!(!repo.join(".claude").exists());
@@ -258,7 +261,7 @@ fn an_agent_is_only_shown_the_diff_even_with_yes() {
     assert!(!unshown.status.success(), "{unshown:?}");
     let stderr = text(&unshown.stderr);
     assert!(
-        stderr.contains("a person runs tm setup claude to write it")
+        stderr.contains("a person runs tm setup claude from their own terminal to write it")
             && stderr.contains("the diff was not shown: cannot write output"),
         "{unshown:?}"
     );
@@ -274,7 +277,8 @@ fn an_agent_is_only_shown_the_diff_even_with_yes() {
         "{undo:?}"
     );
     assert!(
-        text(&undo.stderr).contains("a person runs tm setup claude --undo to write it"),
+        text(&undo.stderr)
+            .contains("a person runs tm setup claude --undo from their own terminal to write it"),
         "{undo:?}"
     );
     let json = as_agent(
@@ -289,7 +293,7 @@ fn an_agent_is_only_shown_the_diff_even_with_yes() {
         refusal["message"]
             .as_str()
             .unwrap()
-            .contains("a person runs tm setup claude --undo to write it"),
+            .contains("a person runs tm setup claude --undo from their own terminal to write it"),
         "{refusal}"
     );
     assert!(repo.join(SETTINGS).exists());
