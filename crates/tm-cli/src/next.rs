@@ -463,11 +463,16 @@ fn unbound(bound: &str, actor: &Actor, lists: &[Shortlist], matched: usize) -> C
         ("not_found", "none of this session's Short-lists".to_owned())
     };
     let message = format!("{BOUND} names {}, {what}; {theirs}", printable(bound));
-    CliError::new(code, message)
+    let err = CliError::new(code, message)
         .with("kind", "shortlist")
         .with("name", bound)
         .with("valid", names)
-        .fix(BOUND_FIX)
+        .fix(BOUND_FIX);
+    if matched > 1 {
+        err.with("count", matched)
+    } else {
+        err
+    }
 }
 
 /// Why nothing was taken: per list (or the ready queue) how many Issues
@@ -567,4 +572,24 @@ fn mine(here: &Here, actor: &Actor, member: &Member) -> Result<bool, StoreError>
 
 fn name(list: &Shortlist) -> String {
     printable(list.name.as_deref().unwrap_or("(unnamed)"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bound_name_two_lists_share_counts_them() {
+        let shared = unbound("docs", &Actor::human("jace"), &[], 2);
+        assert_eq!(shared.code, "shortlist_name_shared");
+        assert_eq!(
+            (&shared.details["kind"], &shared.details["name"]),
+            (&json!("shortlist"), &json!("docs"))
+        );
+        assert_eq!(shared.details["count"], 2);
+        assert_eq!(shared.fix.as_deref(), Some(BOUND_FIX));
+        let missing = unbound("docs", &Actor::human("jace"), &[], 0);
+        assert_eq!(missing.code, "not_found");
+        assert!(!missing.details.contains_key("count"));
+    }
 }

@@ -26,6 +26,10 @@ const RESERVED: [&str; 6] = [
 /// What an export a restore refuses can still bring in (ADR 0013).
 pub(crate) const RECORDS_FIX: &str = "tm import --records FILE";
 
+const SHARED_NAME_FIX: &str = "name a list by the id tm shortlist --all --json gives";
+const SHARED_NAME_IMPORT_FIX: &str =
+    "rename one with tm shortlist edit ID --name NAME, by the id tm shortlist --all --json gives";
+
 #[derive(Debug)]
 pub(crate) struct CliError {
     pub(crate) code: &'static str,
@@ -224,10 +228,15 @@ impl CliError {
                 written,
             } => {
                 let written: Vec<String> = written.iter().map(Uuid::to_string).collect();
+                let shared = matches!(*cause, StoreError::ShortlistNameShared { .. });
                 let mut refused = Self::from(*cause)
                     .with("line", line)
                     .with("record", record)
                     .with("written", written);
+                // An id in a record's list name makes a new list.
+                if shared {
+                    refused.fix = Some(SHARED_NAME_IMPORT_FIX.into());
+                }
                 // The record's source and cause are the file's words.
                 refused.message = crate::output::printable(&message);
                 refused
@@ -255,8 +264,10 @@ impl CliError {
             }
             StoreError::ShortlistNameShared { name, count } => {
                 Self::new("shortlist_name_shared", message)
+                    .with("kind", "shortlist")
                     .with("name", name)
                     .with("count", count)
+                    .fix(SHARED_NAME_FIX)
             }
             StoreError::ShortlistFull { name, size } => Self::new("shortlist_full", message)
                 .with("name", name.clone())
@@ -489,12 +500,16 @@ impl From<FilterError> for CliError {
             Ok(Value::Object(details)) => details,
             _ => Map::new(),
         };
-        match err {
+        match &err {
             FilterError::NoIssue { .. } => {
                 details.insert("kind".into(), "issue".into());
             }
-            FilterError::NoShortlist { .. } | FilterError::ShortlistNameShared { .. } => {
+            FilterError::NoShortlist { .. } => {
                 details.insert("kind".into(), "shortlist".into());
+            }
+            FilterError::ShortlistNameShared { value, .. } => {
+                details.insert("kind".into(), "shortlist".into());
+                details.insert("name".into(), value.clone().into());
             }
             _ => {}
         }
@@ -512,9 +527,7 @@ impl From<FilterError> for CliError {
         details.retain(|key, _| !RESERVED.contains(&key.as_str()));
         let fix = match err {
             FilterError::NoShortlist { .. } => Some("tm shortlist --all".into()),
-            FilterError::ShortlistNameShared { .. } => {
-                Some("name a list by the id tm shortlist --all --json gives".into())
-            }
+            FilterError::ShortlistNameShared { .. } => Some(SHARED_NAME_FIX.into()),
             _ => None,
         };
         Self {
@@ -617,6 +630,60 @@ mod tests {
         });
         assert_eq!(err.code, "upgrade_required");
         assert!(err.message.starts_with("/s/store.db"), "{}", err.message);
+    }
+
+    #[test]
+    fn a_shared_shortlist_name_reads_alike_from_a_filter_and_a_command() {
+        let filter = CliError::from(FilterError::ShortlistNameShared {
+            value: "docs".into(),
+            span: tm_core::filter::Span(10, 14),
+            count: 2,
+        });
+        let command = CliError::from(StoreError::ShortlistNameShared {
+            name: "docs".into(),
+            count: 2,
+        });
+        assert_eq!(
+            SHARED_NAME_FIX,
+            "name a list by the id tm shortlist --all --json gives"
+        );
+        for err in [&filter, &command] {
+            assert_eq!(err.code, "shortlist_name_shared");
+            assert_eq!(err.details["kind"], "shortlist");
+            assert_eq!(err.details["name"], "docs");
+            assert_eq!(err.details["count"], 2);
+            assert_eq!(err.fix.as_deref(), Some(SHARED_NAME_FIX));
+        }
+        let import = CliError::from(StoreError::RecordRefused {
+            line: 3,
+            record: "src-1".into(),
+            cause: Box::new(StoreError::ShortlistNameShared {
+                name: "docs".into(),
+                count: 2,
+            }),
+            written: Vec::new(),
+        });
+        assert_eq!(
+            (import.code, &import.details["name"]),
+            ("shortlist_name_shared", &json!("docs"))
+        );
+        assert_eq!(import.fix.as_deref(), Some(SHARED_NAME_IMPORT_FIX));
+        let full = CliError::from(StoreError::RecordRefused {
+            line: 3,
+            record: "src-1".into(),
+            cause: Box::new(StoreError::ShortlistFull {
+                name: "docs".into(),
+                size: 2,
+            }),
+            written: Vec::new(),
+        });
+        assert!(
+            full.fix
+                .as_deref()
+                .is_some_and(|fix| fix.starts_with("raise its size")),
+            "{:?}",
+            full.fix
+        );
     }
 
     #[test]
