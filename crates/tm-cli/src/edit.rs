@@ -66,7 +66,7 @@ pub(crate) fn unset_field(field: &str) -> Result<String, String> {
     own_flag(field).map(|()| field.to_owned())
 }
 
-fn own_flag(field: &str) -> Result<(), String> {
+pub(crate) fn own_flag(field: &str) -> Result<(), String> {
     match field {
         "labels" => Err("change labels with --label and --remove-label".into()),
         "parent" => Err("change the parent with --parent or --no-parent".into()),
@@ -86,8 +86,8 @@ pub(crate) fn run(edit: &Edit) -> Result<Output, CliError> {
 }
 
 fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<String>), CliError> {
-    refuse_status(reference, edit)?;
     fields::given_once(edit.set.iter().map(|(field, _)| field).chain(&edit.unset))?;
+    refuse_status(reference, edit)?;
     let id = here.issue(reference)?;
     let (view, read) = here.store.issue_with_version(id)?.ok_or_else(|| {
         CliError::new("not_found", format!("no Issue is {reference}"))
