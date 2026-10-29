@@ -158,7 +158,8 @@ fn filter_words_join_into_one_filter_and_limit_cuts_the_list() {
     assert_eq!(doc["span"], json!([5, 10]), "the span is in what was typed");
     let (_, doc) = list(&scratch, &repo, &["parent:TM-9"]);
     assert_eq!(doc["error"], "not_found", "{doc}");
-    assert_eq!(doc["message"], "no Issue is TM-9", "{doc}");
+    assert_eq!(doc["message"], "parent: no Issue is TM-9", "{doc}");
+    assert_eq!(doc["field"], "parent", "{doc}");
     assert_eq!(doc["kind"], "issue", "{doc}");
     assert_eq!(doc["span"], json!([7, 11]), "{doc}");
 }
@@ -297,4 +298,47 @@ fn a_filter_without_at_me_needs_no_identity() {
     assert!(out.status.success(), "{out:?}");
     let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(keys(&doc), ["TM-1"]);
+}
+
+#[test]
+fn each_listed_issue_names_its_open_blockers() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let first = new(&mut store, project, "first");
+    let second = new(&mut store, project, "second");
+    let held = new(&mut store, project, "held");
+    let finished = new(&mut store, project, "finished");
+    let free = new(&mut store, project, "free");
+    set(&mut store, project, finished, "status", "done");
+    let jace = Actor::human("jace");
+    for (from, to) in [(first, held), (second, held), (finished, free)] {
+        store.link(&jace, "blocks", from, to).unwrap();
+    }
+
+    let out = tm(&scratch, &repo, &["list", "is:blocked"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        text(&out.stdout),
+        "TM-3  todo  none  held  [blocked by TM-1, TM-2]\n"
+    );
+    let out = tm(&scratch, &repo, &["list", "is:blocking"]);
+    assert!(!text(&out.stdout).contains("blocked by"), "{out:?}");
+
+    let (ok, doc) = list(&scratch, &repo, &["blocking:TM-3"]);
+    assert!(ok, "{doc}");
+    assert_eq!(keys(&doc), ["TM-1", "TM-2"]);
+    let (_, doc) = list(&scratch, &repo, &[]);
+    let blocked_by: Vec<(&str, &Value)> = doc["data"]["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|issue| (issue["key"].as_str().unwrap(), &issue["blocked_by"]))
+        .collect();
+    let named = |key: &str| blocked_by.iter().find(|(k, _)| *k == key).unwrap().1;
+    let blocker = |id: Uuid, key: &str| json!({ "id": id, "key": key });
+    assert_eq!(
+        named("TM-3"),
+        &json!([blocker(first, "TM-1"), blocker(second, "TM-2")])
+    );
+    assert_eq!(named("TM-5"), &Value::Null, "a done blocker holds nothing");
 }

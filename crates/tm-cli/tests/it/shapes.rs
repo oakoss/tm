@@ -322,6 +322,7 @@ fn list_answers_in_a_fixed_shape() {
     let doc = run(&scratch, &repo, &["list", "sort:created-asc"]);
     insta::assert_json_snapshot!(doc, {
         ".data.issues[].id" => "[id]",
+        ".data.issues[].blocked_by[].id" => "[id]",
         ".data.issues[].fields.created" => "[ms]",
         ".data.issues[].fields.updated" => "[ms]",
     }, @r#"
@@ -346,6 +347,12 @@ fn list_answers_in_a_fixed_shape() {
             "sets": {}
           },
           {
+            "blocked_by": [
+              {
+                "id": "[id]",
+                "key": "TM-1"
+              }
+            ],
             "category": "todo",
             "fields": {
               "archived": false,

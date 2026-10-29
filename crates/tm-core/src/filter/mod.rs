@@ -1,5 +1,5 @@
 //! The filter language: `key:value` qualifiers, lists, negation, `no:`,
-//! `has:`, `@me` and `sort:`. [`parse`] turns text into a [`Query`] without
+//! `has:`, `is:`, `@me` and `sort:`. [`parse`] turns text into a [`Query`] without
 //! the Scheme; [`resolve`] checks it against the Scheme and returns typed
 //! conditions a store can compile.
 
@@ -10,7 +10,29 @@ mod suggest;
 use serde::Serialize;
 
 pub use parse::parse;
-pub use resolve::{Condition, Context, Literal, Resolved, Sort, SortTarget, Target, resolve};
+pub use resolve::{
+    Condition, Context, Literal, Resolved, Sort, SortTarget, State, Target, resolve, takes_issue,
+};
+
+/// The open Issues: not done or cancelled.
+pub const OPEN: &str = "-category:done,cancelled";
+
+/// Whether two field names are the same, ignoring case and reading `-` as
+/// `_`, since Scheme field names never hold `-`.
+#[must_use]
+pub fn same_field(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes().zip(b.bytes()).all(|(a, b)| {
+            let fold = |c: u8| {
+                if c == b'-' {
+                    b'_'
+                } else {
+                    c.to_ascii_lowercase()
+                }
+            };
+            fold(a) == fold(b)
+        })
+}
 
 /// A byte range in the filter text, serialized as `[start, end]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -93,8 +115,12 @@ pub enum FilterError {
     },
     #[error("@me needs to know who is asking")]
     NoIdentity { span: Span },
-    #[error("no Issue is {value}")]
-    NoIssue { value: String, span: Span },
+    #[error("{field}: no Issue is {value}")]
+    NoIssue {
+        field: String,
+        value: String,
+        span: Span,
+    },
     #[error("no Short-list is named {value}")]
     NoShortlist { value: String, span: Span },
     /// A merge left the name on several lists in one Project (ADR 0016).

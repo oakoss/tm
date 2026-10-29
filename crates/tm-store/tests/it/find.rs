@@ -396,6 +396,28 @@ fn parent_finds_the_children_of_a_parent_missing_from_the_log() {
 }
 
 #[test]
+fn blocked_by_finds_the_issues_a_blocker_missing_from_the_log_blocks() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let held = issue(&mut store, &clock, &[], &[]);
+    let gone = Uuid::now_v7();
+    store
+        .connection()
+        .execute(
+            "INSERT INTO links (type, src, dst) VALUES ('blocks', ?1, ?2)",
+            [gone.as_bytes(), held.as_bytes()],
+        )
+        .unwrap();
+    assert_eq!(find(&store, &format!("blocked_by:{gone}")), [held]);
+    let err = store
+        .find(&format!("parent:{gone}"), ME)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(err, format!("parent: no Issue is {gone}"));
+}
+
+#[test]
 fn a_parent_that_does_not_exist_is_named() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
@@ -403,7 +425,7 @@ fn a_parent_that_does_not_exist_is_named() {
     let key = store.issue(first).unwrap().unwrap().key.unwrap();
     let missing = Uuid::now_v7().to_string();
     let named = |filter: &str| match store.find(filter, ME).unwrap_err() {
-        StoreError::Filter(FilterError::NoIssue { value, span }) => (value, span),
+        StoreError::Filter(FilterError::NoIssue { value, span, .. }) => (value, span),
         err => panic!("{filter}: {err}"),
     };
     assert_eq!(named("parent:CPL-9"), ("CPL-9".into(), Span(7, 12)));
@@ -426,6 +448,101 @@ fn a_parent_that_does_not_exist_is_named() {
     assert!(
         matches!(err, StoreError::Filter(FilterError::InvalidValue { .. })),
         "{err}"
+    );
+    let field = |filter: &str| match store.find(filter, ME).unwrap_err() {
+        StoreError::Filter(FilterError::NoIssue { field, .. }) => field,
+        err => panic!("{filter}: {err}"),
+    };
+    assert_eq!(named("blocked-by:CPL-9"), ("CPL-9".into(), Span(11, 16)));
+    assert_eq!(field("blocked-by:CPL-9"), "blocked_by");
+    assert_eq!(named("BLOCKING:CPL-9"), ("CPL-9".into(), Span(9, 14)));
+    assert_eq!(field("BLOCKING:CPL-9"), "blocking");
+    assert_eq!(field("Parent:CPL-9"), "parent");
+}
+
+#[test]
+fn is_counts_blocks_links_between_open_issues_as_the_ready_queue_does() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let status = |status: &str| [("status", json!(status))];
+    let holder = issue(&mut store, &clock, &[], &[]);
+    let held = issue(&mut store, &clock, &[], &[]);
+    let finished = issue(&mut store, &clock, &status("done"), &[]);
+    let done = issue(&mut store, &clock, &status("done"), &[]);
+    let after_done = issue(&mut store, &clock, &[], &[]);
+    let archived = issue(&mut store, &clock, &[("archived", json!(true))], &[]);
+    let after_archived = issue(&mut store, &clock, &[], &[]);
+    let free = issue(&mut store, &clock, &[], &[]);
+    for (from, to) in [
+        (holder, held),
+        (holder, finished),
+        (done, after_done),
+        (archived, after_archived),
+    ] {
+        store.link(&jace(), "blocks", from, to).unwrap();
+    }
+    let unarchived = [
+        holder,
+        held,
+        finished,
+        done,
+        after_done,
+        after_archived,
+        free,
+    ];
+    let except = |left: &[Uuid]| {
+        sorted(
+            unarchived
+                .iter()
+                .filter(|id| !left.contains(id))
+                .copied()
+                .collect(),
+        )
+    };
+    assert_eq!(find(&store, "is:blocked"), [held]);
+    assert_eq!(find(&store, "IS:Blocking"), [holder]);
+    assert_eq!(
+        sorted(find(&store, "is:blocked,blocking")),
+        sorted(vec![holder, held])
+    );
+    assert_eq!(sorted(find(&store, "-is:blocked")), except(&[held]));
+    assert_eq!(
+        sorted(find(&store, "-is:blocked -is:blocking")),
+        except(&[held, holder])
+    );
+    assert_eq!(
+        store.open_blockers(&unarchived).unwrap(),
+        [(held, vec![holder])].into_iter().collect()
+    );
+}
+
+#[test]
+fn blocked_by_and_blocking_follow_links_whatever_the_statuses() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let done = issue(&mut store, &clock, &[("status", json!("done"))], &[]);
+    let open_one = issue(&mut store, &clock, &[], &[]);
+    let held = issue(&mut store, &clock, &[], &[]);
+    let free = issue(&mut store, &clock, &[], &[]);
+    store.link(&jace(), "blocks", done, held).unwrap();
+    store.link(&jace(), "blocks", open_one, held).unwrap();
+    let key = |id: Uuid| store.issue(id).unwrap().unwrap().key.unwrap();
+    assert_eq!(find(&store, &format!("blocked-by:{}", key(done))), [held]);
+    assert_eq!(find(&store, &format!("blocked_by:{done}")), [held]);
+    assert_eq!(
+        sorted(find(&store, &format!("blocking:{}", key(held)))),
+        sorted(vec![done, open_one])
+    );
+    assert_eq!(
+        sorted(find(&store, &format!("-blocked-by:{}", key(open_one)))),
+        sorted(vec![done, open_one, free])
+    );
+    assert_eq!(find(&store, "has:blocked_by"), [held]);
+    assert_eq!(
+        sorted(find(&store, "no:blocking")),
+        sorted(vec![held, free])
     );
 }
 
