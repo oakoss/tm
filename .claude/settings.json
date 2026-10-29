@@ -29,7 +29,29 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm release --mine",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm hook session-end claude",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tm hook pre-bash claude || exit 1"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm hook subagent-stop claude || exit 1",
             "timeout": 10
           }
         ]
