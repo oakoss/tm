@@ -74,6 +74,175 @@ fn own_flag(field: &str) -> Result<(), String> {
     }
 }
 
+/// A word of the refused command line after its subcommand.
+enum Word<'a> {
+    Other(&'a str),
+    /// One use of the field's flag, with its value when one was given.
+    Field(Option<&'a str>),
+}
+
+/// Flags of edit, create and move that take the next word as their value.
+const VALUED: [&str; 8] = [
+    "--set",
+    "--unset",
+    "--label",
+    "--remove-label",
+    "--parent",
+    "--if-version",
+    "--title",
+    "--type",
+];
+
+/// Flags an edit may carry and still be rewritten as a tm move.
+const MOVE_FLAGS: [&str; 4] = ["--set", "--force", "--if-version", "--json"];
+
+/// The positional words: those neither a flag nor a flag's value.
+fn positionals<'a>(words: &[Word<'a>]) -> Vec<&'a str> {
+    words
+        .iter()
+        .enumerate()
+        .filter_map(|(n, word)| match word {
+            Word::Other(arg)
+                if !arg.starts_with('-')
+                    && !matches!(n.checked_sub(1).map(|p| &words[p]), Some(Word::Other(prev)) if VALUED.contains(prev)) =>
+            {
+                Some(*arg)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn names_issue(text: &str) -> bool {
+    tm_core::project::parse_issue_key(&text.to_ascii_uppercase()).is_some()
+        || Uuid::parse_str(text).is_ok()
+}
+
+/// The words after the subcommand at `at`, each use of `flag` before any `--`
+/// taken with its value. When the command takes an Issue and no positional
+/// word names one, the first value that does is given back as the Issue.
+fn words<'a>(args: &'a [String], at: usize, flag: &str, needs_issue: bool) -> Vec<Word<'a>> {
+    let end = args
+        .iter()
+        .skip(at)
+        .position(|arg| arg == "--")
+        .map_or(args.len(), |p| at + p);
+    let mut words = Vec::new();
+    let mut i = at + 1;
+    while i < args.len() {
+        let rest = args[i].strip_prefix(flag).filter(|_| i < end);
+        match rest {
+            Some("") => match args.get(i + 1) {
+                Some(value) if i + 1 < end && !value.starts_with("--") => {
+                    words.push(Word::Field(Some(value.as_str()).filter(|v| !v.is_empty())));
+                    i += 2;
+                }
+                _ => {
+                    words.push(Word::Field(None));
+                    i += 1;
+                }
+            },
+            Some(rest) if rest.starts_with('=') => {
+                words.push(Word::Field(Some(&rest[1..]).filter(|v| !v.is_empty())));
+                i += 1;
+            }
+            _ => {
+                words.push(Word::Other(args[i].as_str()));
+                i += 1;
+            }
+        }
+    }
+    if needs_issue
+        && !positionals(&words).into_iter().any(names_issue)
+        && let Some(n) = words
+            .iter()
+            .position(|word| matches!(word, Word::Field(Some(value)) if names_issue(value)))
+        && let Word::Field(Some(issue)) = words[n]
+    {
+        words.splice(n..=n, [Word::Field(None), Word::Other(issue)]);
+    }
+    words
+}
+
+/// A field `--set` writes, given to edit, create or move as its own flag,
+/// such as `--priority low`: a usage error whose fix is the command line again
+/// with each use of the flag as `--set`, or for the Status the move when every
+/// other flag is one move takes. `None` leaves clap's error.
+pub(crate) fn field_flag(args: &[String], flag: &str) -> Option<CliError> {
+    let field = flag.strip_prefix("--")?.replace('-', "_");
+    let at = args.iter().skip(1).position(|arg| !arg.starts_with('-'))? + 1;
+    let command = args[at].as_str();
+    let settable = Scheme::built_in()
+        .fields
+        .iter()
+        .any(|f| f.name == field && !f.derived);
+    if !["edit", "create", "move"].contains(&command) || !settable || own_flag(&field).is_err() {
+        return None;
+    }
+    let words = words(args, at, flag, command != "create");
+    let given: Vec<Option<&str>> = words
+        .iter()
+        .filter_map(|word| match word {
+            Word::Field(value) => Some(*value),
+            Word::Other(_) => None,
+        })
+        .collect();
+    if given.is_empty() {
+        return None;
+    }
+    let globals = args[1..at].iter().map(|arg| quoted(arg));
+    // A repeated --status takes the --set rewrite, which refuses the repeat.
+    let moves = command != "create"
+        && field == "status"
+        && given.len() == 1
+        && words.iter().all(|word| match word {
+            Word::Other(arg) if arg.starts_with('-') => {
+                MOVE_FLAGS.contains(&arg.split_once('=').map_or(*arg, |(name, _)| name))
+            }
+            _ => true,
+        });
+    let (how, line): (_, Vec<String>) = if moves {
+        // tm move given its own Status needs none from the flag.
+        let status = match given[0] {
+            Some(value) => Some(quoted(value)),
+            None if positionals(&words).len() < 2 => Some("<status>".to_owned()),
+            None => None,
+        };
+        let others = words.iter().filter_map(|word| match word {
+            Word::Other(arg) => Some(quoted(arg)),
+            Word::Field(_) => None,
+        });
+        (
+            "the Status changes with tm move ISSUE STATUS",
+            globals
+                .chain(["move".to_owned()])
+                .chain(others)
+                .chain(status)
+                .collect(),
+        )
+    } else {
+        let sets = words.iter().flat_map(|word| match word {
+            Word::Other(arg) => vec![quoted(arg)],
+            Word::Field(value) => vec![
+                "--set".to_owned(),
+                value.map_or_else(
+                    || format!("{field}=<value>"),
+                    |v| quoted(&format!("{field}={v}")),
+                ),
+            ],
+        });
+        (
+            "a field is set with --set FIELD=VALUE",
+            globals.chain([command.to_owned()]).chain(sets).collect(),
+        )
+    };
+    Some(
+        CliError::new("usage", format!("tm {command} has no {flag} flag; {how}"))
+            .with("field", field)
+            .fix(format!("tm {}", line.join(" "))),
+    )
+}
+
 /// A field's value before and after the edit, as `--json` reports it.
 pub(crate) struct Changed {
     pub(crate) field: String,
@@ -86,8 +255,8 @@ pub(crate) fn run(edit: &Edit) -> Result<Output, CliError> {
 }
 
 fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<String>), CliError> {
-    refuse_status(reference, edit)?;
     fields::given_once(edit.set.iter().map(|(field, _)| field).chain(&edit.unset))?;
+    refuse_status(reference, edit)?;
     let id = here.issue(reference)?;
     let (view, read) = here.store.issue_with_version(id)?.ok_or_else(|| {
         CliError::new("not_found", format!("no Issue is {reference}"))

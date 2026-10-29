@@ -38,7 +38,7 @@ mod undo;
 use std::fmt::Write as _;
 use std::process::ExitCode;
 
-use clap::error::ErrorKind;
+use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
 use serde_json::json;
 use tm_core::Scheme;
@@ -373,10 +373,16 @@ fn main() -> ExitCode {
     if json {
         output::install_panic_hook();
     }
-    let args = list::filter_last(&mut Cli::command(), std::env::args_os().collect());
-    let cli = match Cli::try_parse_from(args) {
+    let parsed = list::filter_last(&mut Cli::command(), std::env::args_os().collect());
+    let cli = match Cli::try_parse_from(parsed) {
         Ok(cli) => cli,
-        Err(err) => return parse_failed(json, &err),
+        Err(err) => {
+            // A fix built from lossy arguments would write what clap refuses.
+            let exact: Option<Vec<String>> = std::env::args_os()
+                .map(|arg| arg.into_string().ok())
+                .collect();
+            return parse_failed(json, &err, exact.as_deref());
+        }
     };
     if matches!(cli.command, Some(Command::Export { dated: false })) {
         return match export::export() {
@@ -495,7 +501,14 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
 
 /// Help and the version asked for are output, not errors; anything else clap
 /// refuses, a missing subcommand included, is a usage error, exit 2.
-fn parse_failed(json: bool, err: &clap::Error) -> ExitCode {
+fn parse_failed(json: bool, err: &clap::Error, args: Option<&[String]>) -> ExitCode {
+    if err.kind() == ErrorKind::UnknownArgument
+        && let Some(args) = args
+        && let Some(ContextValue::String(flag)) = err.get(ContextKind::InvalidArg)
+        && let Some(refused) = edit::field_flag(args, flag)
+    {
+        return output::finish(json, Err(refused), &[]);
+    }
     let shown = matches!(
         err.kind(),
         ErrorKind::DisplayHelp | ErrorKind::DisplayVersion

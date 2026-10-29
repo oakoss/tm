@@ -6,7 +6,7 @@ use tm_core::scheme::{Field, FieldType, Scheme};
 use tm_core::{Actor, Change};
 use tm_store::{Draft, Store};
 
-use crate::support::{Scratch, initialized, text, tm, tm_piped};
+use crate::support::{Scratch, initialized, jace, text, tm, tm_piped};
 
 fn run(scratch: &Scratch, repo: &Path, args: &[&str]) -> (Option<i32>, Value) {
     let out = tm(scratch, repo, &[&["--json", "edit"], args].concat());
@@ -189,6 +189,12 @@ fn an_edit_refuses_what_another_command_or_the_store_owns() {
         assert_eq!(doc["error"], "invalid_value", "{doc}");
         assert_eq!(doc["message"], "assignee is given more than once");
     }
+    let (_, doc) = run(
+        &scratch,
+        &repo,
+        &["TM-2", "--set", "status=todo", "--set", "status=done"],
+    );
+    assert_eq!(doc["message"], "status is given more than once", "{doc}");
 
     for usage in [
         &["TM-2"][..],
@@ -200,6 +206,151 @@ fn an_edit_refuses_what_another_command_or_the_store_owns() {
         assert_eq!(out.status.code(), Some(2), "{usage:?}: {out:?}");
     }
     assert_eq!(ops(&store), before + 1, "only the one parent edit wrote");
+}
+
+#[test]
+fn a_field_given_as_a_flag_is_pointed_at_set() {
+    let scratch = Scratch::new();
+    let (repo, store) = two_issues(&scratch);
+    let before = ops(&store);
+
+    for (args, fix) in [
+        (
+            &["edit", "TM-2", "--priority", "low", "--label", "x"][..],
+            "tm --json edit TM-2 --set priority=low --label x",
+        ),
+        (
+            &["edit", "TM-2", "--description=two words"],
+            "tm --json edit TM-2 --set 'description=two words'",
+        ),
+        (
+            &["edit", "TM-2", "--description", "-text"],
+            "tm --json edit TM-2 --set description=-text",
+        ),
+        (
+            &["edit", "TM-2", "--priority", "low", "--priority", "high"],
+            "tm --json edit TM-2 --set priority=low --set priority=high",
+        ),
+        (
+            &["edit", "TM-2", "--assignee", "--label", "x"],
+            "tm --json edit TM-2 --set assignee=<value> --label x",
+        ),
+        (
+            &["edit", "--assignee", "TM-2"],
+            "tm --json edit --set assignee=<value> TM-2",
+        ),
+        (
+            &["create", "--title", "x", "--status", "done"],
+            "tm --json create --title x --set status=done",
+        ),
+        (
+            &["move", "TM-2", "done", "--assignee", "jace"],
+            "tm --json move TM-2 done --set assignee=jace",
+        ),
+        (
+            &["edit", "TM-2", "--status", "done", "--if-version", "3"],
+            "tm --json move TM-2 --if-version 3 done",
+        ),
+        (
+            &["move", "--status", "done", "TM-2"],
+            "tm --json move TM-2 done",
+        ),
+        (
+            &["move", "--status", "TM-2", "done"],
+            "tm --json move TM-2 done",
+        ),
+        (&["edit", "--status=TM-2"], "tm --json move TM-2 <status>"),
+        (
+            &["edit", "--assignee", "TM-2", "--label", "x"],
+            "tm --json edit --set assignee=<value> TM-2 --label x",
+        ),
+        (
+            &["edit", "TM-2", "--status", "done", "--if-version=3"],
+            "tm --json move TM-2 --if-version=3 done",
+        ),
+        (
+            &["edit", "TM-2", "--priority="],
+            "tm --json edit TM-2 --set priority=<value>",
+        ),
+        (
+            &["edit", "TM-2", "--priority", ""],
+            "tm --json edit TM-2 --set priority=<value>",
+        ),
+        (
+            &["edit", "TM-2", "--status", "todo", "--status", "done"],
+            "tm --json edit TM-2 --set status=todo --set status=done",
+        ),
+        (
+            &["edit", "TM-2", "--status", "done", "--label", "x"],
+            "tm --json edit TM-2 --set status=done --label x",
+        ),
+    ] {
+        let out = tm(&scratch, &repo, &[&["--json"], args].concat());
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {out:?}");
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(doc["error"], "usage", "{doc}");
+        assert_eq!(doc["fix"], fix, "{args:?}");
+        let flag = args
+            .iter()
+            .find(|a| a.starts_with("--") && !["--title", "--label"].contains(a))
+            .unwrap();
+        let field = flag.trim_start_matches("--").split('=').next().unwrap();
+        assert_eq!(doc["field"], field, "{args:?}");
+    }
+
+    let out = tm(&scratch, &repo, &["edit", "TM-2", "--priority", "low"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(
+        text(&out.stderr),
+        "tm: tm edit has no --priority flag; a field is set with --set FIELD=VALUE\n  \
+         fix: tm edit TM-2 --set priority=low\n"
+    );
+    assert_eq!(ops(&store), before, "nothing wrote");
+}
+
+#[test]
+fn a_flag_tm_cannot_point_at_set_keeps_clap_error() {
+    let scratch = Scratch::new();
+    let (repo, _store) = two_issues(&scratch);
+
+    // A field --set cannot write, a near miss, another command, a flag after --.
+    for (args, tip) in [
+        (
+            &["edit", "TM-2", "--reporter", "x"][..],
+            "to pass '--reporter' as a value",
+        ),
+        (
+            &["edit", "TM-2", "--shortlist", "x"],
+            "to pass '--shortlist' as a value",
+        ),
+        (
+            &["edit", "TM-2", "--labels", "x"],
+            "a similar argument exists: '--label'",
+        ),
+        (
+            &["list", "--priority", "low"],
+            "to pass '--priority' as a value",
+        ),
+        (
+            &["create", "--title", "x", "--", "--priority"],
+            "unexpected argument '--priority'",
+        ),
+    ] {
+        let out = tm(&scratch, &repo, args);
+        assert_eq!(out.status.code(), Some(2));
+        assert!(text(&out.stderr).contains(tip), "{args:?}: {out:?}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let out = jace(&scratch, &repo, &["--json", "edit", "TM-2", "--title"])
+            .arg(std::ffi::OsStr::from_bytes(b"caf\xe9"))
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2));
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(doc["fix"], Value::Null, "{doc}");
+    }
 }
 
 #[test]

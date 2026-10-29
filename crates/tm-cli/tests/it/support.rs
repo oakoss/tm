@@ -159,7 +159,7 @@ pub(crate) fn tm_pty(scratch: &Scratch, dir: &Path, args: &[&str]) -> rexpect::s
     rexpect::session::spawn_command(jace(scratch, dir, args), Some(TIMEOUT_MS)).unwrap()
 }
 
-fn jace(scratch: &Scratch, dir: &Path, args: &[&str]) -> Command {
+pub(crate) fn jace(scratch: &Scratch, dir: &Path, args: &[&str]) -> Command {
     let mut command = tm_command();
     command
         .args(args)
