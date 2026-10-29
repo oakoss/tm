@@ -217,72 +217,75 @@ fn a_field_given_as_a_flag_is_pointed_at_set() {
     for (args, fix) in [
         (
             &["edit", "TM-2", "--priority", "low", "--label", "x"][..],
-            "tm --json edit TM-2 --set priority=low --label x",
+            "tm edit TM-2 --set priority=low --label x --json",
         ),
         (
             &["edit", "TM-2", "--description=two words"],
-            "tm --json edit TM-2 --set 'description=two words'",
-        ),
-        (
-            &["edit", "TM-2", "--description", "-text"],
-            "tm --json edit TM-2 --set description=-text",
+            "tm edit TM-2 --set 'description=two words' --json",
         ),
         (
             &["edit", "TM-2", "--priority", "low", "--priority", "high"],
-            "tm --json edit TM-2 --set priority=low --set priority=high",
+            "tm edit TM-2 --set priority=low --set priority=high --json",
         ),
         (
             &["edit", "TM-2", "--assignee", "--label", "x"],
-            "tm --json edit TM-2 --set assignee=<value> --label x",
-        ),
-        (
-            &["edit", "--assignee", "TM-2"],
-            "tm --json edit --set assignee=<value> TM-2",
-        ),
-        (
-            &["create", "--title", "x", "--status", "done"],
-            "tm --json create --title x --set status=done",
-        ),
-        (
-            &["move", "TM-2", "done", "--assignee", "jace"],
-            "tm --json move TM-2 done --set assignee=jace",
-        ),
-        (
-            &["edit", "TM-2", "--status", "done", "--if-version", "3"],
-            "tm --json move TM-2 --if-version 3 done",
-        ),
-        (
-            &["move", "--status", "done", "TM-2"],
-            "tm --json move TM-2 done",
-        ),
-        (
-            &["move", "--status", "TM-2", "done"],
-            "tm --json move TM-2 done",
-        ),
-        (&["edit", "--status=TM-2"], "tm --json move TM-2 <status>"),
-        (
-            &["edit", "--assignee", "TM-2", "--label", "x"],
-            "tm --json edit --set assignee=<value> TM-2 --label x",
-        ),
-        (
-            &["edit", "TM-2", "--status", "done", "--if-version=3"],
-            "tm --json move TM-2 --if-version=3 done",
+            "tm edit TM-2 --set assignee=<value> --label x --json",
         ),
         (
             &["edit", "TM-2", "--priority="],
-            "tm --json edit TM-2 --set priority=<value>",
+            "tm edit TM-2 --set priority=<value> --json",
         ),
         (
             &["edit", "TM-2", "--priority", ""],
-            "tm --json edit TM-2 --set priority=<value>",
+            "tm edit TM-2 --set priority=<value> --json",
+        ),
+        (
+            &["create", "--title", "x", "--status", "done"],
+            "tm create --set status=done --title x --json",
+        ),
+        (
+            &["move", "TM-2", "done", "--assignee", "jace"],
+            "tm move TM-2 done --set assignee=jace --json",
+        ),
+        (
+            &["edit", "TM-2", "--status", "done", "--if-version", "3"],
+            "tm move TM-2 --if-version 3 --json done",
+        ),
+        (
+            &["edit", "TM-2", "--status", "done", "--if-version=3"],
+            "tm move TM-2 --if-version 3 --json done",
+        ),
+        (
+            &["move", "--status", "done", "TM-2"],
+            "tm move TM-2 --json done",
+        ),
+        (
+            &["move", "TM-2", "todo", "--status"],
+            "tm move TM-2 todo --json",
+        ),
+        (
+            &["edit", "TM-2", "--status"],
+            "tm move TM-2 --json <status>",
         ),
         (
             &["edit", "TM-2", "--status", "todo", "--status", "done"],
-            "tm --json edit TM-2 --set status=todo --set status=done",
+            "tm edit TM-2 --set status=todo --set status=done --json",
         ),
         (
             &["edit", "TM-2", "--status", "done", "--label", "x"],
-            "tm --json edit TM-2 --set status=done --label x",
+            "tm edit TM-2 --set status=done --label x --json",
+        ),
+        (
+            &["edit", "TM-2", "--status", "done", "--priority", "high"],
+            "tm move TM-2 --set priority=high --json done",
+        ),
+        (
+            &["edit", "TM-2", "--priority", "low", "--label=-x"],
+            "tm edit TM-2 --set priority=low --label=-x --json",
+        ),
+        (
+            &["edit", "TM-2", "--priority", "-"],
+            "tm edit TM-2 --set priority=<value> --json",
         ),
     ] {
         let out = tm(&scratch, &repo, &[&["--json"], args].concat());
@@ -292,7 +295,7 @@ fn a_field_given_as_a_flag_is_pointed_at_set() {
         assert_eq!(doc["fix"], fix, "{args:?}");
         let flag = args
             .iter()
-            .find(|a| a.starts_with("--") && !["--title", "--label"].contains(a))
+            .find(|a| a.starts_with("--") && !["--title", "--label", "--"].contains(a))
             .unwrap();
         let field = flag.trim_start_matches("--").split('=').next().unwrap();
         assert_eq!(doc["field"], field, "{args:?}");
@@ -306,6 +309,26 @@ fn a_field_given_as_a_flag_is_pointed_at_set() {
          fix: tm edit TM-2 --set priority=low\n"
     );
     assert_eq!(ops(&store), before, "nothing wrote");
+}
+
+#[test]
+fn a_line_clap_cannot_parse_with_the_field_gets_set_alone() {
+    let scratch = Scratch::new();
+    let (repo, _store) = two_issues(&scratch);
+
+    for (args, fix) in [
+        (
+            &["edit", "TM-2", "--description", "-text"][..],
+            "--set description=<value>",
+        ),
+        (&["edit", "--assignee", "TM-2"], "--set assignee=<value>"),
+    ] {
+        let out = tm(&scratch, &repo, &[&["--json"], args].concat());
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {out:?}");
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(doc["error"], "usage", "{doc}");
+        assert_eq!(doc["fix"], fix, "{args:?}");
+    }
 }
 
 #[test]

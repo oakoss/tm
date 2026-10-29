@@ -9,6 +9,7 @@ mod doctor;
 mod edit;
 mod error;
 mod export;
+mod field_flag;
 mod fields;
 mod follow;
 mod guide;
@@ -505,7 +506,7 @@ fn parse_failed(json: bool, err: &clap::Error, args: Option<&[String]>) -> ExitC
     if err.kind() == ErrorKind::UnknownArgument
         && let Some(args) = args
         && let Some(ContextValue::String(flag)) = err.get(ContextKind::InvalidArg)
-        && let Some(refused) = edit::field_flag(args, flag)
+        && let Some(refused) = field_flag::refused(Cli::command(), args, flag)
     {
         return output::finish(json, Err(refused), &[]);
     }
