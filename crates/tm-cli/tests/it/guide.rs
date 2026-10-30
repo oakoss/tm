@@ -47,6 +47,16 @@ fn the_guide_prints_anywhere_in_text_and_json() {
 }
 
 #[test]
+fn move_help_points_at_the_statuses_tm_show_lists() {
+    let scratch = Scratch::new();
+    let help = elsewhere(&scratch, &["move", "--help"]);
+    assert!(
+        help.contains("`tm show ISSUE` lists those it can move to"),
+        "{help}"
+    );
+}
+
+#[test]
 fn comment_and_edit_help_carry_their_habit() {
     let scratch = Scratch::new();
     let comment = elsewhere(&scratch, &["comment", "--help"]);

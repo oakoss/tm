@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 use serde_json::{Value, json};
 use tm_core::Scheme;
-use tm_core::scheme::{Category, FieldType};
+use tm_core::scheme::{Category, FieldType, Status};
 use tm_store::{ClaimState, CommentView, IssueView, LinkView, Store};
 use uuid::Uuid;
 
@@ -71,6 +71,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         ))
     })?;
     let (comments, children, membership, version) = below;
+    let moves = moves_to(store.scheme(), &view);
     let mut fields = view.fields.clone();
     fields.remove("shortlist");
     fields.remove("shortlist_rank");
@@ -92,6 +93,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         "links": links.iter().map(|(link, other)| link_json(link, other.as_ref())).collect::<Vec<_>>(),
         "comments": comments.iter().map(comment_json).collect::<Vec<_>>(),
         "children": children.json(),
+        "moves_to": moves.iter().map(|status| status_json(status)).collect::<Vec<_>>(),
     });
 
     let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
@@ -103,6 +105,9 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
     let mut text = format!("{name}  {}\n", printable(title));
     for (field, value) in fields.iter().filter(|(field, _)| *field != "title") {
         write_field(&mut text, store, field, value, parent.as_ref());
+        if field == "status" && !moves.is_empty() {
+            let _ = writeln!(text, "moves to: {}", moves_line(&moves));
+        }
     }
     let _ = writeln!(text, "version: {version}");
     text.extend(membership.as_ref().map(Membership::line));
@@ -282,6 +287,44 @@ fn write_field(
     }
 }
 
+/// The Statuses `view` can move to, as its Workflow allows; none when its
+/// type has no Workflow or its Status is one the Workflow does not define.
+fn moves_to<'a>(scheme: &'a Scheme, view: &IssueView) -> Vec<&'a Status> {
+    let field = |name: &str| view.fields.get(name).and_then(Value::as_str);
+    let Some(workflow) = field("type").and_then(|issue_type| scheme.workflow(issue_type)) else {
+        return Vec::new();
+    };
+    let from = field("status");
+    if from.is_some_and(|from| workflow.status(from).is_none()) {
+        return Vec::new();
+    }
+    workflow
+        .statuses
+        .iter()
+        .filter(|status| Some(status.id.as_str()) != from && workflow.allows(from, &status.id))
+        .collect()
+}
+
+fn status_json(status: &Status) -> Value {
+    json!({ "id": status.id, "label": status.label, "category": status.category })
+}
+
+/// Each Status by id, with its category where the id does not name it.
+fn moves_line(moves: &[&Status]) -> String {
+    moves
+        .iter()
+        .map(|status| {
+            let category = status.category.id();
+            if status.id == category {
+                status.id.clone()
+            } else {
+                format!("{} ({category})", status.id)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// A retracted comment keeps its place and author, not its words.
 fn comment_json(comment: &CommentView) -> Value {
     json!({
@@ -444,6 +487,31 @@ mod tests {
             fields,
             sets: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn an_issue_moves_to_its_workflows_other_statuses_or_none_tm_cannot_place() {
+        let scheme = Scheme::built_in();
+        let ids = |view: &IssueView| -> Vec<String> {
+            moves_to(&scheme, view)
+                .iter()
+                .map(|status| status.id.clone())
+                .collect()
+        };
+        let done = child("task", Some("done"), Some(Category::Done));
+        assert_eq!(
+            ids(&done),
+            ["triage", "todo", "in_progress", "in_review", "cancelled"]
+        );
+        assert_eq!(ids(&child("task", None, None)).len(), 6);
+        let none: Vec<String> = Vec::new();
+        assert_eq!(ids(&child("gone", Some("todo"), None)), none);
+        let unknown = child("task", Some("blocked"), Some(Category::Triage));
+        assert_eq!(ids(&unknown), none);
+        assert_eq!(
+            moves_line(&moves_to(&scheme, &done)),
+            "triage, todo, in_progress (active), in_review (active), cancelled"
+        );
     }
 
     #[test]
