@@ -188,7 +188,8 @@ enum Command {
     },
     /// List the Issues a filter matches; with none, the open work.
     List {
-        /// A filter such as `status:todo priority:high -labels:bug`.
+        /// A filter such as `status:todo priority:high -labels:bug` or
+        /// `is:blocked`.
         filter: Vec<String>,
         /// Show at most this many.
         #[arg(long)]

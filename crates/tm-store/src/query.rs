@@ -4,6 +4,7 @@
 
 use rusqlite::types::Value as Sql;
 use tm_core::filter::{Condition, Literal, Resolved, Sort, SortTarget, Target};
+use tm_core::link::BLOCKS;
 
 /// The collation every store connection registers for comparing people.
 pub(crate) const FOLD: &str = "tm_fold";
@@ -110,7 +111,7 @@ pub(crate) fn ready(
     b.push(" AND id NOT IN (SELECT dst FROM links WHERE type = ");
     b.param(Sql::Text(blocks.to_owned()));
     b.push(" AND src IN ");
-    open_ids(&mut b, open);
+    open_ids(&mut b, &open.conditions);
     b.push(") ORDER BY priority DESC, created_ms, id");
     (b.sql, b.params)
 }
@@ -122,11 +123,15 @@ pub(crate) fn open_blocks(open: &Resolved, blocks: &str) -> (String, Vec<Sql>) {
     let mut b = Builder::default();
     b.push("SELECT src, dst FROM links WHERE type = ");
     b.param(Sql::Text(blocks.to_owned()));
-    b.push(" AND +src IN ");
-    open_ids(&mut b, open);
-    b.push(" AND +dst IN ");
-    open_ids(&mut b, open);
+    between_open(&mut b, &open.conditions);
     (b.sql, b.params)
+}
+
+fn between_open(b: &mut Builder, open: &[Condition]) {
+    b.push(" AND +src IN ");
+    open_ids(b, open);
+    b.push(" AND +dst IN ");
+    open_ids(b, open);
 }
 
 /// `blocks` Links whose blocker is open, whatever the Issue it blocks.
@@ -135,15 +140,15 @@ pub(crate) fn blocks_from_open(open: &Resolved, blocks: &str) -> (String, Vec<Sq
     b.push("SELECT src, dst FROM links WHERE type = ");
     b.param(Sql::Text(blocks.to_owned()));
     b.push(" AND +src IN ");
-    open_ids(&mut b, open);
+    open_ids(&mut b, &open.conditions);
     (b.sql, b.params)
 }
 
 /// `(SELECT id FROM issues WHERE …)`: unarchived Issues matching `open`. Its
 /// own scope, so the conditions' bare column names read this `issues`.
-fn open_ids(b: &mut Builder, open: &Resolved) {
+fn open_ids(b: &mut Builder, open: &[Condition]) {
     b.push("(SELECT id FROM issues WHERE archived = 0");
-    for condition in &open.conditions {
+    for condition in open {
         b.push(" AND ");
         condition_sql(b, condition);
     }
@@ -195,6 +200,14 @@ fn condition_sql(b: &mut Builder, condition: &Condition) {
                     b.push(" AND m.shortlist IN ");
                     b.list(values);
                 }),
+                Target::Blockers => linked(b, "dst", *negated, |b| {
+                    b.push(" AND src IN ");
+                    b.list(values);
+                }),
+                Target::Blocked => linked(b, "src", *negated, |b| {
+                    b.push(" AND dst IN ");
+                    b.list(values);
+                }),
             }
         }
         Condition::Present { target, present } => match target {
@@ -211,36 +224,52 @@ fn condition_sql(b: &mut Builder, condition: &Condition) {
             Target::SchemeValue(field) => member_of(b, "field_values", field, !present, |_| {}),
             Target::Set(field) => member_of(b, "set_members", field, !present, |_| {}),
             Target::Shortlist => on_shortlist(b, !present, |_| {}),
+            Target::Blockers => linked(b, "dst", !present, |_| {}),
+            Target::Blocked => linked(b, "src", !present, |_| {}),
         },
+        Condition::Is {
+            blocked,
+            blocking,
+            open,
+            negated,
+        } => is_sql(b, (*blocked, *blocking), open, *negated),
         Condition::Category {
             pairs,
             known,
             include_unknown,
             negated,
-        } => {
-            // coalesce: an Issue with no Status has no category, so it is
-            // outside every category rather than unknown to the comparison.
-            b.push(if *negated {
-                "NOT coalesce("
-            } else {
-                "coalesce("
-            });
-            if pairs.is_empty() {
-                b.push("0");
-            } else {
-                b.push("(type, status) IN ");
-                b.pairs(pairs);
-            }
-            if *include_unknown && known.is_empty() {
-                b.push(" OR status IS NOT NULL");
-            } else if *include_unknown {
-                b.push(" OR (status IS NOT NULL AND (type IS NULL OR (type, status) NOT IN ");
-                b.pairs(known);
-                b.push("))");
-            }
-            b.push(", 0)");
-        }
+        } => category_sql(b, pairs, known, *include_unknown, *negated),
     }
+}
+
+fn category_sql(
+    b: &mut Builder,
+    pairs: &[(String, String)],
+    known: &[(String, String)],
+    include_unknown: bool,
+    negated: bool,
+) {
+    // coalesce: an Issue with no Status has no category, so it is
+    // outside every category rather than unknown to the comparison.
+    b.push(if negated {
+        "NOT coalesce("
+    } else {
+        "coalesce("
+    });
+    if pairs.is_empty() {
+        b.push("0");
+    } else {
+        b.push("(type, status) IN ");
+        b.pairs(pairs);
+    }
+    if include_unknown && known.is_empty() {
+        b.push(" OR status IS NOT NULL");
+    } else if include_unknown {
+        b.push(" OR (status IS NOT NULL AND (type IS NULL OR (type, status) NOT IN ");
+        b.pairs(known);
+        b.push("))");
+    }
+    b.push(", 0)");
 }
 
 /// `id [NOT] IN (SELECT issue_id FROM table WHERE field = ? …)`. Both tables
@@ -257,6 +286,30 @@ fn member_of(
         if negated { "NOT " } else { "" }
     ));
     b.param(Sql::Text(field.to_owned()));
+    rest(b);
+    b.push(")");
+}
+
+/// `[NOT] (0 OR …)`.
+fn is_sql(b: &mut Builder, (blocked, blocking): (bool, bool), open: &[Condition], negated: bool) {
+    b.push(if negated { "NOT (0" } else { "(0" });
+    for (asked, end) in [(blocked, "dst"), (blocking, "src")] {
+        if asked {
+            b.push(" OR ");
+            linked(b, end, false, |b| between_open(b, open));
+        }
+    }
+    b.push(")");
+}
+
+/// `id [NOT] IN (SELECT end FROM links WHERE type = 'blocks' …)`. Both ends
+/// are `NOT NULL`, which `NOT IN` needs to be correct.
+fn linked(b: &mut Builder, end: &str, negated: bool, rest: impl FnOnce(&mut Builder)) {
+    b.push(&format!(
+        "id {}IN (SELECT {end} FROM links WHERE type = ",
+        if negated { "NOT " } else { "" }
+    ));
+    b.param(Sql::Text(BLOCKS.to_owned()));
     rest(b);
     b.push(")");
 }

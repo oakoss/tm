@@ -1,14 +1,14 @@
 //! `tm list`: the Issues a filter matches.
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::Write as _;
 
 use serde::{Serialize, Serializer};
 use serde_json::{Value, json};
 use tm_core::ProjectId;
-use tm_core::filter::{Context, FilterError, parse};
+use tm_core::filter::{Context, FilterError, OPEN, parse};
 use tm_core::scheme::Category;
 use tm_store::{IssueView, Store, StoreError};
 use uuid::Uuid;
@@ -17,9 +17,6 @@ use crate::error::CliError;
 use crate::here::{self, Here};
 use crate::identity;
 use crate::output::{Output, printable};
-
-/// With no filter, the open work: triage, todo and active.
-const OPEN: &str = "-category:done,cancelled";
 
 pub(crate) fn run(
     filter: &[String],
@@ -51,18 +48,26 @@ fn list(
         Ok(query) if query.terms.is_empty() && !all => format!("{filter} {OPEN}"),
         _ => filter,
     };
-    let (total, views, projects) = here.store.read(|store| {
+    let (total, views, projects, blockers) = here.store.read(|store| {
         let ids = find(here, &filter)?;
         let shown = &ids[..limit.map_or(ids.len(), |limit| limit.min(ids.len()))];
         let views = store.issues(shown)?;
         let projects = project_keys(store, &views)?;
-        Ok::<_, CliError>((ids.len(), views, projects))
+        let blockers = named(store, store.open_blockers(shown)?)?;
+        Ok::<_, CliError>((ids.len(), views, projects, blockers))
     })?;
 
     // Only the form printed is built: at thousands of rows, the other costs
     // as much as reading them.
     if json {
-        let issues = views.iter().map(|view| Item::of(view, &projects)).collect();
+        let issues = views
+            .iter()
+            .map(|view| {
+                let mut item = Item::of(view, &projects);
+                item.blocked_by = blockers.get(&view.id).map(Vec::as_slice);
+                item
+            })
+            .collect();
         let shortlists = None;
         return Listed {
             issues,
@@ -73,7 +78,11 @@ fn list(
     }
     let mut text = String::new();
     for view in &views {
-        let _ = writeln!(text, "{}", line(view));
+        let _ = write!(text, "{}", line(view));
+        if let Some(found) = blockers.get(&view.id) {
+            let _ = write!(text, "  [blocked by {}]", joined(found));
+        }
+        text.push('\n');
     }
     if total == 0 {
         text.push_str("no Issues match\n");
@@ -159,6 +168,53 @@ fn find(here: &Here, filter: &str) -> Result<Vec<Uuid>, CliError> {
     }
 }
 
+/// An Issue a listed one names, such as what it unblocks or is blocked by.
+#[derive(Serialize)]
+pub(crate) struct Named {
+    id: Uuid,
+    key: Option<String>,
+}
+
+/// Each Issue's related Issues, by id and Key, reading each Issue once.
+pub(crate) fn named(
+    store: &Store,
+    related: HashMap<Uuid, Vec<Uuid>>,
+) -> Result<HashMap<Uuid, Vec<Named>>, CliError> {
+    let ids: Vec<Uuid> = related
+        .values()
+        .flatten()
+        .copied()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let keys: HashMap<Uuid, Option<String>> = store
+        .issues(&ids)?
+        .into_iter()
+        .map(|view| (view.id, view.key))
+        .collect();
+    Ok(related
+        .into_iter()
+        .map(|(issue, ids)| {
+            let named = ids
+                .into_iter()
+                .map(|id| Named {
+                    id,
+                    key: keys.get(&id).cloned().flatten(),
+                })
+                .collect();
+            (issue, named)
+        })
+        .collect())
+}
+
+pub(crate) fn joined(named: &[Named]) -> String {
+    named
+        .iter()
+        .map(|named| named.key.clone().unwrap_or_else(|| named.id.to_string()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The key of each Project `views` belong to.
 pub(crate) fn project_keys(
     store: &Store,
@@ -221,6 +277,9 @@ const RANK: &str = "shortlist_rank";
 /// are in the order a JSON value sorts its keys, so the bytes are the same.
 #[derive(Serialize)]
 pub(crate) struct Item<'a> {
+    /// Only `tm list` gives the open Issues blocking each.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) blocked_by: Option<&'a [Named]>,
     category: &'a Option<Category>,
     #[serde(serialize_with = "without_rank")]
     fields: &'a BTreeMap<String, Value>,
@@ -230,7 +289,7 @@ pub(crate) struct Item<'a> {
     sets: &'a BTreeMap<String, BTreeMap<String, String>>,
     /// Only `tm ready` gives what each Issue would unblock.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) unblocks: Option<Vec<Value>>,
+    pub(crate) unblocks: Option<&'a [Named]>,
 }
 
 impl<'a> Item<'a> {
@@ -239,6 +298,7 @@ impl<'a> Item<'a> {
         projects: &'a HashMap<ProjectId, Option<String>>,
     ) -> Self {
         Self {
+            blocked_by: None,
             category: &view.category,
             fields: &view.fields,
             id: view.id,

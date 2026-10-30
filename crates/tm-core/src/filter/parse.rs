@@ -54,9 +54,10 @@ fn term(input: &str, start: usize) -> Result<(Parsed, usize), FilterError> {
     if matches!(first, Some('(' | ')')) {
         return Err(unsupported("parentheses", pos, pos + 1));
     }
+    // A `-` past the first character is part of the name, as in `blocked-by`.
     let name_end = input[pos..]
         .char_indices()
-        .find(|(_, c)| !(c.is_ascii_alphanumeric() || *c == '_'))
+        .find(|(at, c)| !(c.is_ascii_alphanumeric() || *c == '_' || (*c == '-' && *at > 0)))
         .map_or(input.len(), |(offset, _)| pos + offset);
     let name = &input[pos..name_end];
     if name.is_empty() || !input[name_end..].starts_with(':') {
@@ -417,5 +418,17 @@ mod tests {
     fn field_names_may_hold_underscores_and_digits() {
         let query = parse("story_points2:3").unwrap();
         assert_eq!(matches(&query)[0].0, "story_points2");
+    }
+
+    #[test]
+    fn a_dash_inside_a_field_name_is_part_of_it_and_a_leading_one_negates() {
+        let query = parse("-blocked-by:TM-1 story-points:3").unwrap();
+        let found = matches(&query);
+        assert_eq!((found[0].0.as_str(), found[0].1), ("blocked-by", true));
+        assert_eq!((found[1].0.as_str(), found[1].1), ("story-points", false));
+        assert!(matches!(
+            parse("--x:y").unwrap_err(),
+            FilterError::BareWord { .. }
+        ));
     }
 }

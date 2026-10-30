@@ -378,6 +378,9 @@ impl Scheme {
             "no",
             "has",
             "category",
+            "is",
+            "blocked_by",
+            "blocking",
             crate::link::FIELD,
             crate::op::COMMENTS_FIELD,
         ]
@@ -489,7 +492,16 @@ mod tests {
             scheme.add_field(area()),
             Err(SchemeError::DuplicateField("area".into()))
         );
-        for reserved in ["status", "sort", "category", "links", "comments"] {
+        for reserved in [
+            "status",
+            "sort",
+            "category",
+            "is",
+            "blocked_by",
+            "blocking",
+            "links",
+            "comments",
+        ] {
             assert_eq!(
                 scheme.add_field(Field::custom(reserved, "S", FieldType::Text, Vec::new())),
                 Err(SchemeError::ReservedField(reserved.into()))

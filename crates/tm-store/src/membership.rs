@@ -5,7 +5,7 @@
 use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::{Value, json};
-use tm_core::filter::{Context, parse, resolve};
+use tm_core::filter::{Context, OPEN, parse, resolve};
 use tm_core::link::BLOCKS;
 use tm_core::scheme::{Category, Scheme};
 use tm_core::{Actor, Change, Op, ProjectId, rank};
@@ -435,11 +435,7 @@ pub(crate) fn open_blocks(
     conn: &Connection,
     scheme: &Scheme,
 ) -> Result<Vec<(Uuid, Uuid)>, StoreError> {
-    let open = resolve(
-        &parse("-category:done,cancelled")?,
-        scheme,
-        Context { me: None },
-    )?;
+    let open = resolve(&parse(OPEN)?, scheme, Context { me: None })?;
     let (sql, params) = query::blocks_from_open(&open, BLOCKS);
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {

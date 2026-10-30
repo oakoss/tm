@@ -36,8 +36,12 @@ use rusqlite::{
     Connection, ErrorCode, MAIN_DB, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
     params,
 };
-use tm_core::filter::{Context, FilterError, Query, Term, Value as FilterValue, parse, resolve};
+use tm_core::filter::{
+    Context, FilterError, IssueField, Query, Term, Value as FilterValue, parse, resolve,
+    same_field, takes_issue,
+};
 use tm_core::hlc::MAX_MS;
+use tm_core::link::BLOCKS;
 use tm_core::op::CURRENT_VERSION;
 use tm_core::{Actor, Change, Hlc, Op, OpError, ProjectId, Scheme};
 use uuid::Uuid;
@@ -1375,7 +1379,8 @@ impl Store {
     /// # Errors
     ///
     /// [`StoreError::Filter`] when the filter does not parse, does not fit
-    /// the Scheme or names a parent no Issue is, or any SQLite failure.
+    /// the Scheme or names an Issue that does not exist, or any SQLite
+    /// failure.
     pub fn find(&self, filter: &str, context: Context<'_>) -> Result<Vec<Uuid>, StoreError> {
         let mut query = parse(filter)?;
         let issues = self.issues_by_id(&mut query)?;
@@ -1400,25 +1405,30 @@ impl Store {
         ids.map(|id| uuid_from(&id?)).collect()
     }
 
-    /// Rewrites each Issue a `parent:` term names as its id, returning the
-    /// first that names none. An id children point at counts, since `tm show`
-    /// prints it even when a merge left the parent out.
+    /// Rewrites each Issue named in a term whose field takes one as its id,
+    /// returning the first name that matches none. An id that children or a
+    /// `blocks` Link point at counts, since `tm show` prints it even when a
+    /// merge left its Issue out.
     fn issues_by_id(&self, query: &mut Query) -> Result<Option<FilterError>, StoreError> {
         let mut missing = None;
         for term in &mut query.terms {
             let Term::Match { field, values, .. } = term else {
                 continue;
             };
-            if !field.0.eq_ignore_ascii_case("parent") {
+            let Some(issue_field) = takes_issue(&field.0) else {
                 continue;
-            }
+            };
             for (value, span) in values {
                 let FilterValue::Text(text) = value else {
                     continue;
                 };
                 let reference = text.trim();
                 let found = if let Ok(id) = Uuid::parse_str(reference) {
-                    let known = self.issue(id)?.is_some() || !self.children(id)?.is_empty();
+                    let known = self.issue(id)?.is_some()
+                        || match issue_field {
+                            IssueField::Parent => !self.children(id)?.is_empty(),
+                            IssueField::BlockedBy | IssueField::Blocking => self.blocks_at(id)?,
+                        };
                     known.then_some(id)
                 } else if tm_core::project::parse_issue_key(&reference.to_ascii_uppercase())
                     .is_some()
@@ -1429,6 +1439,7 @@ impl Store {
                 };
                 if found.is_none() {
                     missing.get_or_insert(FilterError::NoIssue {
+                        field: issue_field.name().to_owned(),
                         value: reference.to_owned(),
                         span: *span,
                     });
@@ -1437,6 +1448,13 @@ impl Store {
             }
         }
         Ok(missing)
+    }
+
+    fn blocks_at(&self, id: Uuid) -> Result<bool, StoreError> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT EXISTS (SELECT 1 FROM links WHERE type = ?1 AND (src = ?2 OR dst = ?2))",
+        )?;
+        Ok(stmt.query_row((BLOCKS, id.as_bytes().to_vec()), |row| row.get(0))?)
     }
 
     /// Rewrites each list a `shortlist:` term names as the ids of the live
@@ -1450,7 +1468,7 @@ impl Store {
             let Term::Match { field, values, .. } = term else {
                 continue;
             };
-            if !field.0.eq_ignore_ascii_case("shortlist") {
+            if !same_field(&field.0, "shortlist") {
                 continue;
             }
             let mut ids = Vec::with_capacity(values.len());

@@ -1,10 +1,9 @@
 //! `tm ready`: the work an Agent can start now, and what each would unblock,
 //! after the session's Short-lists (ADR 0016).
 
-use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use serde_json::{Value, json};
+use serde_json::Value;
 use tm_core::ProjectId;
 use tm_store::{Member, Shortlist};
 use uuid::Uuid;
@@ -12,7 +11,7 @@ use uuid::Uuid;
 use crate::error::CliError;
 use crate::here::{self, Here};
 use crate::identity;
-use crate::list::{Item, Listed, line, project_keys, shortlists_of};
+use crate::list::{Item, Listed, joined, line, named, project_keys, shortlists_of};
 use crate::next;
 use crate::output::Output;
 
@@ -25,17 +24,16 @@ pub(crate) fn run(limit: Option<usize>, json: bool) -> Result<Output, CliError> 
         ready.truncate(limit.unwrap_or(total));
         let ids: Vec<Uuid> = ready.iter().map(|ready| ready.issue).collect();
         let views = store.issues(&ids)?;
-        let unblocked: Vec<Uuid> = ready.iter().flat_map(|r| r.unblocks.clone()).collect();
-        let keys: HashMap<Uuid, Option<String>> = store
-            .issues(&unblocked)?
-            .into_iter()
-            .map(|view| (view.id, view.key))
+        let unblocks = ready
+            .iter()
+            .map(|ready| (ready.issue, ready.unblocks.clone()))
             .collect();
+        let unblocks = named(store, unblocks)?;
         let projects = project_keys(store, &views)?;
         let on = shortlists_of(store, &views)?;
-        Ok::<_, CliError>((total, ready, views, keys, projects, on))
+        Ok::<_, CliError>((total, views, unblocks, projects, on))
     });
-    let (total, ready, views, keys, projects, on) = match read {
+    let (total, views, unblocks, projects, on) = match read {
         Ok(read) => read,
         Err(err) => return Err(err.warned(here.warnings)),
     };
@@ -45,17 +43,11 @@ pub(crate) fn run(limit: Option<usize>, json: bool) -> Result<Output, CliError> 
 
     // Only the form printed is built, as for `tm list`.
     if json {
-        let issues = ready
+        let issues = views
             .iter()
-            .zip(&views)
-            .map(|(entry, view)| {
-                let unblocks = entry
-                    .unblocks
-                    .iter()
-                    .map(|id| json!({ "id": id, "key": keys.get(id).cloned().flatten() }))
-                    .collect();
+            .map(|view| {
                 let mut item = Item::of(view, &projects);
-                item.unblocks = Some(unblocks);
+                item.unblocks = Some(unblocks.get(&view.id).map_or(&[], Vec::as_slice));
                 item
             })
             .collect();
@@ -75,20 +67,10 @@ pub(crate) fn run(limit: Option<usize>, json: bool) -> Result<Output, CliError> 
     if shortlists.is_some() {
         let _ = writeln!(text, "Ready ({total}):");
     }
-    for (entry, view) in ready.iter().zip(&views) {
+    for view in &views {
         let _ = write!(text, "{}", line(view));
-        if !entry.unblocks.is_empty() {
-            let named: Vec<String> = entry
-                .unblocks
-                .iter()
-                .map(|id| {
-                    keys.get(id)
-                        .cloned()
-                        .flatten()
-                        .unwrap_or_else(|| id.to_string())
-                })
-                .collect();
-            let _ = write!(text, "  (unblocks {})", named.join(", "));
+        if let Some(found) = unblocks.get(&view.id).filter(|found| !found.is_empty()) {
+            let _ = write!(text, "  (unblocks {})", joined(found));
         }
         if let Some(list) = on.get(&view.id) {
             let _ = write!(text, "  [on {list}]");
