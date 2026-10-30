@@ -57,6 +57,17 @@ fn scheme_show_json_lists_the_default_types_fields_and_statuses() {
 }
 
 #[test]
+fn a_bare_scheme_prints_what_scheme_show_prints() {
+    for format in [&[][..], &["--json"]] {
+        let bare = tm(&[&["scheme"], format].concat());
+        let show = tm(&[&["scheme", "show"], format].concat());
+        assert!(bare.status.success(), "{bare:?}");
+        assert!(show.status.success(), "{show:?}");
+        assert_eq!(bare.stdout, show.stdout, "{format:?}");
+    }
+}
+
+#[test]
 fn an_unknown_command_prints_usage_and_fails() {
     let output = tm(&["scheme", "edit"]);
     assert_eq!(output.status.code(), Some(2));
