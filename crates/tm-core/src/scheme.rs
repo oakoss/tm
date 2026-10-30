@@ -38,6 +38,10 @@ impl Category {
     }
 }
 
+/// The person an Issue waits on to answer its question; `tm ask` sets it and
+/// `tm answer` clears it.
+pub const WAITING_ON: &str = "waiting_on";
+
 /// The five priority levels, highest rank first. Levels are fixed in code so
 /// the projection can store a sortable rank without reading the Scheme; only
 /// their labels are configurable.
@@ -285,6 +289,8 @@ impl Scheme {
             Field::builtin("shortlist_rank", "Short-list rank", T::Rank),
             Field::builtin("created", "Created", T::Datetime).derived(),
             Field::builtin("updated", "Updated", T::Datetime).derived(),
+            // A Scheme field, not a column, so export carries it in `fields`.
+            Field::custom(WAITING_ON, "Waiting on", T::Person, Vec::new()),
         ];
         let status = |id: &str, label: &str, category| Status {
             id: id.into(),

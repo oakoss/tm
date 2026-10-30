@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use serde_json::{Value, json};
 use tm_core::op::ClaimAction;
-use tm_core::scheme::{Category, Workflow};
+use tm_core::scheme::{Category, WAITING_ON, Workflow};
 use tm_core::{Actor, Change, Op, ProjectId};
 use tm_store::{ClaimState, Draft, IssueView, Named, StoreError};
 use uuid::Uuid;
@@ -29,7 +29,7 @@ pub(crate) fn field_value(pair: &str) -> Result<(String, String), String> {
         "status" => Err("give the Status as the move's target, not --set".into()),
         "labels" => Err("labels holds several values; tm move cannot set it".into()),
         "parent" => Err("tm move cannot set parent".into()),
-        _ => crate::fields::not_membership(&field).map(|()| (field, value)),
+        _ => crate::fields::not_owned(&field).map(|()| (field, value)),
     }
 }
 
@@ -122,6 +122,10 @@ fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>), CliError
     let mut changes = vec![set("status", json!(status))];
     for (field, value) in &fields {
         changes.push(set(field, typed(&scheme, field, value)));
+    }
+    // Finished work waits on no one, so its question leaves the lists.
+    if finished && view.fields.contains_key(WAITING_ON) {
+        changes.push(set(WAITING_ON, Value::Null));
     }
     changes.retain(|change| match change {
         Change::SetField { field, value, .. } => !view

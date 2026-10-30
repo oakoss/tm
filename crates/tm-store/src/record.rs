@@ -8,6 +8,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tm_core::Scheme;
+use tm_core::scheme::WAITING_ON;
 use uuid::Uuid;
 
 use crate::StoreError;
@@ -263,6 +264,8 @@ fn issue_record(
     // Membership is `shortlist`, its place by position rather than rank.
     fields.remove("shortlist");
     fields.remove("shortlist_rank");
+    // A record carries no question, so it carries no wait on one either.
+    fields.remove(WAITING_ON);
     // What is left are the Scheme fields.
     let labels = sets
         .remove("labels")

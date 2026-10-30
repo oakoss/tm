@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tm_core::filter::{Context, OPEN, parse, resolve};
 use tm_core::link::BLOCKS;
-use tm_core::scheme::{Category, Scheme};
+use tm_core::scheme::{Category, Scheme, WAITING_ON};
 use tm_core::{Actor, Change, Op, ProjectId, rank};
 use uuid::Uuid;
 
@@ -35,6 +35,8 @@ pub enum PassedOver {
     Archived,
     Epic,
     Triage,
+    /// Its question waits on an answer (`tm ask`).
+    Waiting,
 }
 
 /// A batch that placed Issues or took them off, with the list each was on as
@@ -425,6 +427,9 @@ pub(crate) fn passed_over(
     }
     if view.fields.get("type").and_then(Value::as_str) == Some("epic") {
         passed_over.push(PassedOver::Epic);
+    }
+    if view.fields.contains_key(WAITING_ON) {
+        passed_over.push(PassedOver::Waiting);
     }
     Ok(passed_over)
 }

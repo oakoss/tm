@@ -196,6 +196,7 @@ pub(crate) const fn reason(passed: PassedOver) -> &'static str {
         PassedOver::Archived => "archived",
         PassedOver::Epic => "epic",
         PassedOver::Triage => "in triage",
+        PassedOver::Waiting => "waiting",
     }
 }
 

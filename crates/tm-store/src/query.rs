@@ -5,6 +5,7 @@
 use rusqlite::types::Value as Sql;
 use tm_core::filter::{Condition, Literal, Resolved, Sort, SortTarget, Target};
 use tm_core::link::BLOCKS;
+use tm_core::scheme::WAITING_ON;
 
 /// The collation every store connection registers for comparing people.
 pub(crate) const FOLD: &str = "tm_fold";
@@ -90,9 +91,9 @@ pub(crate) fn compile(resolved: &Resolved) -> (String, Vec<Sql>) {
     (b.sql, b.params)
 }
 
-/// The ready queue's ids: `todo`'s Issues, unarchived and held by no Claim
-/// unlapsed at `now_ms`, that no Issue matching `open` blocks, most urgent
-/// first and then oldest.
+/// The ready queue's ids: `todo`'s Issues, unarchived, held by no Claim
+/// unlapsed at `now_ms` and waiting on no one, that no Issue matching `open`
+/// blocks, most urgent first and then oldest.
 pub(crate) fn ready(
     todo: &Resolved,
     open: &Resolved,
@@ -107,6 +108,9 @@ pub(crate) fn ready(
     }
     b.push(" AND id NOT IN (SELECT issue_id FROM claims WHERE expires_ms IS NULL OR expires_ms > ");
     b.param(Sql::Integer(now_ms));
+    b.push(")");
+    b.push(" AND id NOT IN (SELECT issue_id FROM field_values WHERE field = ");
+    b.param(Sql::Text(WAITING_ON.to_owned()));
     b.push(")");
     b.push(" AND id NOT IN (SELECT dst FROM links WHERE type = ");
     b.param(Sql::Text(blocks.to_owned()));

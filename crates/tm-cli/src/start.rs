@@ -4,7 +4,7 @@
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
-use tm_core::scheme::Category;
+use tm_core::scheme::{Category, WAITING_ON};
 use tm_core::{Actor, Change, Op, Scheme};
 use tm_store::{Claim, Draft, IssueView, Lineage};
 use uuid::Uuid;
@@ -49,6 +49,18 @@ fn write(
     lasts: &Lasts,
 ) -> Result<(Output, Vec<String>), CliError> {
     let id = here.issue(reference)?;
+    if let Some(waiting) = here.store.issue(id)?.and_then(|view| {
+        view.fields
+            .get(WAITING_ON)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    }) {
+        return Err(CliError::new(
+            "waiting",
+            format!("{reference} waits on {waiting}'s answer; tm next takes other work"),
+        )
+        .with("waiting_on", waiting));
+    }
     let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
         .map_err(|message| CliError::new("no_identity", message))?;
     let actor = identity.actor.clone();

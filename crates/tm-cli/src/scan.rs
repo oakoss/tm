@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::Command;
 
 use serde_json::{Value, json};
-use tm_core::scheme::Category;
+use tm_core::scheme::{Category, WAITING_ON};
 use tm_core::{Actor, Change};
 use tm_store::Draft;
 use uuid::Uuid;
@@ -240,7 +240,10 @@ fn close(
         let commit = closing.with_commit(&closing.commit);
         let _ = write!(record, "; also closed by {commit}");
     }
-    let changes = [set("status", json!(done)), Change::Comment { body: record }];
+    let mut changes = vec![set("status", json!(done)), Change::Comment { body: record }];
+    if view.fields.contains_key(WAITING_ON) {
+        changes.push(set(WAITING_ON, Value::Null));
+    }
     let drafts = || {
         changes
             .iter()

@@ -731,7 +731,11 @@ fn prime_answers_in_a_fixed_shape() {
             }
           ]
         },
-        "shortlists": []
+        "shortlists": [],
+        "waiting": {
+          "issues": [],
+          "on": "jace"
+        }
       },
       "schema_version": 1,
       "warnings": [

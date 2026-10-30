@@ -666,7 +666,7 @@ fn exact_number(text: &str) -> Option<f64> {
 mod tests {
     use super::*;
     use crate::filter::parse;
-    use crate::scheme::Choice;
+    use crate::scheme::{Choice, SchemeError};
 
     fn scheme() -> Scheme {
         let mut scheme = Scheme::built_in();
@@ -804,11 +804,16 @@ mod tests {
 
     #[test]
     fn no_scheme_field_can_take_a_built_in_qualifiers_name() {
-        for def in filterable(&Scheme::built_in()) {
+        let scheme = Scheme::built_in();
+        for def in filterable(&scheme) {
             let field = Field::custom(&def.name, "X", FieldType::Text, Vec::new());
+            let refused = match scheme.field(&def.name) {
+                Some(existing) if !existing.builtin => SchemeError::DuplicateField,
+                _ => SchemeError::ReservedField,
+            };
             assert_eq!(
                 Scheme::built_in().add_field(field),
-                Err(crate::scheme::SchemeError::ReservedField(def.name.clone())),
+                Err(refused(def.name.clone())),
                 "{}",
                 def.name
             );

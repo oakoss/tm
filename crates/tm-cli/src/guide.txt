@@ -72,6 +72,16 @@ Keep it current
   When you rewrite text you read earlier, pass the version tm show
   printed, --if-version N, so a change made since is refused, not lost.
 
+A decision only your human can make
+  When they are in the session, ask them there. When they are not, or it
+  can wait:
+    tm ask KEY "question"                parks the Issue on their answer and
+                                         keeps your Claim for you; take
+                                         other work with tm next
+  What waits on your human shows in tm prime; bring those questions to
+  them and record each reply with tm answer KEY "reply". Once it is
+  answered, your next tm start KEY resumes it.
+
 New work found along the way
   tm create --type task --title TEXT --parent KEY
   tm link KEY blocks OTHER               to order it

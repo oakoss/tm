@@ -22,6 +22,10 @@ _Avoid_: Relation, dependency
 A blocker that waits on an outside event, such as a pull request merging, rather than on another Issue.
 _Avoid_: Check, condition
 
+**Question**:
+A decision only a person can make that an Issue waits on, asked with `tm ask` and settled with `tm answer`; the Issue is waiting on that person until then.
+_Avoid_: Blocker, request, prompt
+
 **Issue type**:
 A configurable category of Issue, such as Epic or Bug, that sets which fields and parents the Issue may have.
 _Avoid_: Kind, category

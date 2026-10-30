@@ -17,7 +17,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tm_core::op::COMMENTS_FIELD;
-use tm_core::scheme::FieldType;
+use tm_core::scheme::{FieldType, WAITING_ON};
 use tm_core::{Actor, Change, Op, ProjectId, Scheme, link};
 use uuid::Uuid;
 
@@ -532,6 +532,11 @@ fn check_record(scheme: &Scheme, record: &IssueRecord) -> Result<(), StoreError>
         };
         if scheme.field(name).is_some_and(|def| def.builtin) {
             return Err(invalid("is a built-in field, written outside `fields`"));
+        }
+        if name == WAITING_ON {
+            return Err(invalid(
+                "is set with its question by tm ask, not by an import",
+            ));
         }
         let strings = value
             .as_array()

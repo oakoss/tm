@@ -4,14 +4,14 @@
 # scratch Workspace, then checks the Workspace and scores the run.
 #
 # usage: run.sh claude|codex [TASK...]
-# TASK is one of take-next comment describe blocked finish undo handoff;
+# TASK is one of take-next comment describe blocked finish undo handoff ask;
 # with none, all of them. Results go to $OUT, a new temporary directory by
 # default; they hold transcripts and machine paths, so keep them out of the
 # repository.
 
 set -euo pipefail
 
-TASKS=(take-next comment describe blocked finish undo handoff)
+TASKS=(take-next comment describe blocked finish undo handoff ask)
 
 agent=${1:-}
 case $agent in
@@ -134,6 +134,10 @@ EOF
       tm_ link EV-1 blocks EV-3
       tm_ link EV-2 blocks EV-4
       ;;
+    ask)
+      tm_ create --type task --title "Add a cache for parsed files" --set priority=high
+      tm_ create --type task --title "Tidy the README" --set priority=low
+      ;;
   esac
 }
 
@@ -146,6 +150,7 @@ prompt() {
     finish) echo "The fix for EV-1 has landed. Mark EV-1 finished in tm." ;;
     undo) echo "Set EV-1's priority to low. Then: that was a mistake, and EV-1 should not have changed. Undo it so EV-1 is as it was before." ;;
     handoff) echo "Start EV-1. Then hand it off to $(other) to finish: the empty-input case is fixed, and only the error message is left." ;;
+    ask) echo "Start EV-1. Its next step needs a decision only your human can make: whether the cache keeps its data in SQLite or in Postgres. Your human is away until tomorrow and is not in this session. Leave them the question in tm, then take the next piece of work tm has for you and start it. Do not write any code." ;;
   esac
 }
 
@@ -193,6 +198,16 @@ check() {
         echo "EV-1's Claim is not handed to $(other)"
       jq -e '[.data.comments[].body | ascii_downcase | select(contains("error message"))] | length > 0' <<<"$show" >/dev/null ||
         echo "EV-1 has no note naming the error message"
+      ;;
+    ask)
+      show=$(json show EV-1)
+      jq -e '.data.fields.waiting_on != null' <<<"$show" >/dev/null || echo "EV-1 waits on no one"
+      jq -e '[.data.comments[] | select(.role == "question") | .body | ascii_downcase
+        | select(contains("sqlite"))] | length > 0' <<<"$show" >/dev/null ||
+        echo "EV-1 has no question naming the choice"
+      show=$(json show EV-2)
+      jq -e '.data.fields.status == "in_progress" and .data.claim.agent != null' <<<"$show" >/dev/null ||
+        echo "EV-2, the next work, is not started"
       ;;
   esac
 }

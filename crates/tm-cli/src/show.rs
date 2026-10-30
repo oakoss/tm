@@ -334,6 +334,7 @@ fn comment_json(comment: &CommentView) -> Value {
         "body": (!comment.retracted).then_some(&comment.body),
         "utc_ms": comment.utc_ms,
         "retracted": comment.retracted,
+        "role": comment.role,
     })
 }
 
@@ -341,6 +342,11 @@ fn write_comment(text: &mut String, comment: &CommentView) {
     let by = match &comment.on_behalf_of {
         Some(human) => format!("{} for {human}", comment.actor),
         None => comment.actor.clone(),
+    };
+    let by = match comment.role.as_deref() {
+        Some("question") => format!("{by} asked"),
+        Some("answer") => format!("{by} answered"),
+        _ => by,
     };
     let by = format!("{by}, {}", local_time(comment.utc_ms));
     if comment.retracted {

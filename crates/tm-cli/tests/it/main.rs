@@ -1,5 +1,6 @@
 //! Integration tests, compiled as one binary so cargo links once.
 
+mod ask;
 mod backup;
 mod claim;
 mod codex;
