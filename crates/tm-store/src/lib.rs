@@ -37,8 +37,8 @@ use rusqlite::{
     params,
 };
 use tm_core::filter::{
-    Context, FilterError, Query, Term, Value as FilterValue, parse, resolve, same_field,
-    takes_issue,
+    Context, FilterError, IssueField, Query, Term, Value as FilterValue, parse, resolve,
+    same_field, takes_issue,
 };
 use tm_core::hlc::MAX_MS;
 use tm_core::link::BLOCKS;
@@ -1415,10 +1415,9 @@ impl Store {
             let Term::Match { field, values, .. } = term else {
                 continue;
             };
-            if !takes_issue(&field.0) {
+            let Some(issue_field) = takes_issue(&field.0) else {
                 continue;
-            }
-            let name = field.0.to_ascii_lowercase().replace('-', "_");
+            };
             for (value, span) in values {
                 let FilterValue::Text(text) = value else {
                     continue;
@@ -1426,10 +1425,9 @@ impl Store {
                 let reference = text.trim();
                 let found = if let Ok(id) = Uuid::parse_str(reference) {
                     let known = self.issue(id)?.is_some()
-                        || if name == "parent" {
-                            !self.children(id)?.is_empty()
-                        } else {
-                            self.blocks_at(id)?
+                        || match issue_field {
+                            IssueField::Parent => !self.children(id)?.is_empty(),
+                            IssueField::BlockedBy | IssueField::Blocking => self.blocks_at(id)?,
                         };
                     known.then_some(id)
                 } else if tm_core::project::parse_issue_key(&reference.to_ascii_uppercase())
@@ -1441,7 +1439,7 @@ impl Store {
                 };
                 if found.is_none() {
                     missing.get_or_insert(FilterError::NoIssue {
-                        field: name.clone(),
+                        field: issue_field.name().to_owned(),
                         value: reference.to_owned(),
                         span: *span,
                     });

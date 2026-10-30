@@ -34,20 +34,29 @@ pub enum Target {
     Blocked,
 }
 
-/// What `is:` asks of an Issue.
+/// A filter field that takes an Issue by Key or id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum State {
-    Blocked,
+pub enum IssueField {
+    Parent,
+    BlockedBy,
     Blocking,
 }
 
-impl State {
-    const ALL: [Self; 2] = [Self::Blocked, Self::Blocking];
-
-    fn id(self) -> &'static str {
+impl IssueField {
+    #[must_use]
+    pub fn name(self) -> &'static str {
         match self {
-            Self::Blocked => "blocked",
+            Self::Parent => "parent",
+            Self::BlockedBy => "blocked_by",
             Self::Blocking => "blocking",
+        }
+    }
+
+    fn target(self) -> Target {
+        match self {
+            Self::Parent => Target::Column("parent_id"),
+            Self::BlockedBy => Target::Blockers,
+            Self::Blocking => Target::Blocked,
         }
     }
 }
@@ -87,10 +96,11 @@ pub enum Condition {
         include_unknown: bool,
         negated: bool,
     },
-    /// The Issue is in one of `states`; negated, in none. `open` is what an
-    /// open Issue meets, applied to both ends of a Link.
-    State {
-        states: Vec<State>,
+    /// `is:`: the Issue is blocked or blocking, as asked; negated, neither.
+    /// `open` is what an open Issue meets, applied to both ends of a Link.
+    Is {
+        blocked: bool,
+        blocking: bool,
         open: Vec<Condition>,
         negated: bool,
     },
@@ -144,10 +154,10 @@ enum Kind {
     MultiSelect(String, Vec<String>),
     Labels,
     Category,
-    /// `is:`, a [`State`].
-    State,
+    /// `is:`, a [`Condition::Is`].
+    Is,
     /// An Issue, named by id; a store turns Keys into ids before resolving.
-    Issue(Target),
+    Issue(IssueField),
     /// A Short-list, named by id; a store turns names into ids before
     /// resolving.
     Shortlist,
@@ -231,10 +241,10 @@ fn filterable(scheme: &Scheme) -> Vec<Filterable> {
             Kind::Person(Target::Column("reporter")),
             Some((SortTarget::Name("reporter"), false)),
         ),
-        field("parent", Kind::Issue(Target::Column("parent_id")), None),
-        field("blocked_by", Kind::Issue(Target::Blockers), None),
-        field("blocking", Kind::Issue(Target::Blocked), None),
-        field("is", Kind::State, None),
+        field("parent", Kind::Issue(IssueField::Parent), None),
+        field("blocked_by", Kind::Issue(IssueField::BlockedBy), None),
+        field("blocking", Kind::Issue(IssueField::Blocking), None),
+        field("is", Kind::Is, None),
         field("shortlist", Kind::Shortlist, None),
         field("key", Kind::Later("filtering by Key", None), None),
         field("agent", Kind::Later("filtering by Agent", None), None),
@@ -390,15 +400,15 @@ fn present_target(def: &Filterable, span: Span) -> Result<Target, FilterError> {
                 span,
             })
         }
-        Kind::State => Err(FilterError::Syntax {
+        Kind::Is => Err(FilterError::Syntax {
             message: "is is no field; write is:blocked or -is:blocked".into(),
             span,
         }),
         Kind::Enumerated { target, .. }
         | Kind::Person(target)
         | Kind::Boolean(target)
-        | Kind::Issue(target)
         | Kind::Later(_, Some(target)) => Ok(target.clone()),
+        Kind::Issue(field) => Ok(field.target()),
         Kind::Number(field) | Kind::Date(field) | Kind::Select(field, _) => {
             Ok(Target::SchemeValue(field.clone()))
         }
@@ -416,10 +426,10 @@ fn match_condition(
     context: Context<'_>,
 ) -> Result<Condition, FilterError> {
     let target = match &def.kind {
-        Kind::Enumerated { target, .. }
-        | Kind::Person(target)
-        | Kind::Boolean(target)
-        | Kind::Issue(target) => target.clone(),
+        Kind::Enumerated { target, .. } | Kind::Person(target) | Kind::Boolean(target) => {
+            target.clone()
+        }
+        Kind::Issue(field) => field.target(),
         Kind::Number(field) | Kind::Date(field) | Kind::Select(field, _) => {
             Target::SchemeValue(field.clone())
         }
@@ -427,7 +437,7 @@ fn match_condition(
         Kind::Labels => Target::Set("labels".into()),
         Kind::Shortlist => Target::Shortlist,
         Kind::Category => return category(def, values, negated, scheme),
-        Kind::State => return state(def, values, negated, scheme),
+        Kind::Is => return is(def, values, negated, scheme),
         Kind::Later(construct, _) => {
             return Err(FilterError::Unsupported {
                 construct: (*construct).to_owned(),
@@ -508,7 +518,7 @@ fn literal(
         Kind::Shortlist => Uuid::parse_str(text.trim())
             .map(Literal::Shortlist)
             .map_err(|_| invalid(def, text, span, SHORTLIST_VALUE)),
-        Kind::Category | Kind::State | Kind::Later(..) => {
+        Kind::Category | Kind::Is | Kind::Later(..) => {
             Err(invalid(def, text, span, "a supported field"))
         }
     }
@@ -590,37 +600,46 @@ fn category(
     })
 }
 
-fn state(
+fn is(
     def: &Filterable,
     values: &[(Value, Span)],
     negated: bool,
     scheme: &Scheme,
 ) -> Result<Condition, FilterError> {
-    let ids: Vec<String> = State::ALL.iter().map(|s| s.id().to_owned()).collect();
-    let mut states = Vec::new();
+    let ids = ["blocked".to_owned(), "blocking".to_owned()];
+    let mut asked = ids.clone().map(|_| false);
     for (value, span) in values {
         let text = match value {
             Value::Text(text) => text,
             Value::Me => return Err(invalid(def, "@me", *span, "blocked or blocking")),
         };
         let id = choose(def, text, *span, &ids)?;
-        states.extend(State::ALL.into_iter().filter(|s| s.id() == id));
+        if let Some(at) = ids.iter().position(|known| *known == id) {
+            asked[at] = true;
+        }
     }
+    // A value added to `ids` fails to compile here until it has a meaning.
+    let [blocked, blocking] = asked;
     let open = resolve(&parse(OPEN)?, scheme, Context::default())?.conditions;
-    Ok(Condition::State {
-        states,
+    Ok(Condition::Is {
+        blocked,
+        blocking,
         open,
         negated,
     })
 }
 
-/// Whether a filter field takes an Issue, by Key or id, so a store turns its
-/// Keys into ids before resolving.
+/// The [`IssueField`] `name` is, if any; a store turns its Keys into ids
+/// before resolving.
 #[must_use]
-pub fn takes_issue(name: &str) -> bool {
+pub fn takes_issue(name: &str) -> Option<IssueField> {
     filterable(&Scheme::built_in())
-        .iter()
-        .any(|def| same_field(&def.name, name) && matches!(def.kind, Kind::Issue(_)))
+        .into_iter()
+        .find(|def| same_field(&def.name, name))
+        .and_then(|def| match def.kind {
+            Kind::Issue(field) => Some(field),
+            _ => None,
+        })
 }
 
 /// A real calendar date in the one spelling the store keeps.
@@ -770,11 +789,29 @@ mod tests {
                 "{filter}"
             );
         }
-        for name in ["parent", "blocked-by", "BLOCKED_BY", "blocking"] {
-            assert!(takes_issue(name), "{name}");
+        for (name, field) in [
+            ("Parent", IssueField::Parent),
+            ("blocked-by", IssueField::BlockedBy),
+            ("BLOCKING", IssueField::Blocking),
+        ] {
+            assert_eq!(takes_issue(name), Some(field), "{name}");
         }
+        assert_eq!(IssueField::BlockedBy.name(), "blocked_by");
         for name in ["shortlist", "is", "blocked"] {
-            assert!(!takes_issue(name), "{name}");
+            assert_eq!(takes_issue(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn no_scheme_field_can_take_a_built_in_qualifiers_name() {
+        for def in filterable(&Scheme::built_in()) {
+            let field = Field::custom(&def.name, "X", FieldType::Text, Vec::new());
+            assert_eq!(
+                Scheme::built_in().add_field(field),
+                Err(crate::scheme::SchemeError::ReservedField(def.name.clone())),
+                "{}",
+                def.name
+            );
         }
     }
 
@@ -783,10 +820,20 @@ mod tests {
         let open = run(OPEN).unwrap().conditions;
         assert_eq!(
             run("-is:BLOCKED,blocking").unwrap().conditions,
-            [Condition::State {
-                states: vec![State::Blocked, State::Blocking],
-                open,
+            [Condition::Is {
+                blocked: true,
+                blocking: true,
+                open: open.clone(),
                 negated: true,
+            }]
+        );
+        assert_eq!(
+            run("is:blocking").unwrap().conditions,
+            [Condition::Is {
+                blocked: false,
+                blocking: true,
+                open,
+                negated: false,
             }]
         );
         let err = run("is:stuck").unwrap_err();

@@ -341,4 +341,15 @@ fn each_listed_issue_names_its_open_blockers() {
         &json!([blocker(first, "TM-1"), blocker(second, "TM-2")])
     );
     assert_eq!(named("TM-5"), &Value::Null, "a done blocker holds nothing");
+
+    // A blocker a Key collision left with no Key is named by its id.
+    store
+        .connection()
+        .execute("DELETE FROM keys WHERE issue_id = ?1", [second.as_bytes()])
+        .unwrap();
+    let out = tm(&scratch, &repo, &["list", "is:blocked"]);
+    assert_eq!(
+        text(&out.stdout),
+        format!("TM-3  todo  none  held  [blocked by TM-1, {second}]\n")
+    );
 }

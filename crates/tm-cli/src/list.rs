@@ -53,7 +53,7 @@ fn list(
         let shown = &ids[..limit.map_or(ids.len(), |limit| limit.min(ids.len()))];
         let views = store.issues(shown)?;
         let projects = project_keys(store, &views)?;
-        let blockers = blockers_of(store, shown)?;
+        let blockers = named(store, store.open_blockers(shown)?)?;
         Ok::<_, CliError>((ids.len(), views, projects, blockers))
     })?;
 
@@ -64,12 +64,7 @@ fn list(
             .iter()
             .map(|view| {
                 let mut item = Item::of(view, &projects);
-                item.blocked_by = blockers.get(&view.id).map(|found| {
-                    found
-                        .iter()
-                        .map(|(id, key)| json!({ "id": id, "key": key }))
-                        .collect()
-                });
+                item.blocked_by = blockers.get(&view.id).map(Vec::as_slice);
                 item
             })
             .collect();
@@ -85,11 +80,7 @@ fn list(
     for view in &views {
         let _ = write!(text, "{}", line(view));
         if let Some(found) = blockers.get(&view.id) {
-            let named: Vec<String> = found
-                .iter()
-                .map(|(id, key)| key.clone().unwrap_or_else(|| id.to_string()))
-                .collect();
-            let _ = write!(text, "  [blocked by {}]", named.join(", "));
+            let _ = write!(text, "  [blocked by {}]", joined(found));
         }
         text.push('\n');
     }
@@ -177,13 +168,19 @@ fn find(here: &Here, filter: &str) -> Result<Vec<Uuid>, CliError> {
     }
 }
 
-/// An Issue by id and Key.
-type Named = (Uuid, Option<String>);
+/// An Issue a listed one names, such as what it unblocks or is blocked by.
+#[derive(Serialize)]
+pub(crate) struct Named {
+    id: Uuid,
+    key: Option<String>,
+}
 
-/// The open Issues blocking each of `issues` that an open Issue blocks.
-fn blockers_of(store: &Store, issues: &[Uuid]) -> Result<HashMap<Uuid, Vec<Named>>, CliError> {
-    let blockers = store.open_blockers(issues)?;
-    let ids: Vec<Uuid> = blockers
+/// Each Issue's related Issues, by id and Key, reading each Issue once.
+pub(crate) fn named(
+    store: &Store,
+    related: HashMap<Uuid, Vec<Uuid>>,
+) -> Result<HashMap<Uuid, Vec<Named>>, CliError> {
+    let ids: Vec<Uuid> = related
         .values()
         .flatten()
         .copied()
@@ -195,16 +192,27 @@ fn blockers_of(store: &Store, issues: &[Uuid]) -> Result<HashMap<Uuid, Vec<Named
         .into_iter()
         .map(|view| (view.id, view.key))
         .collect();
-    Ok(blockers
+    Ok(related
         .into_iter()
-        .map(|(blocked, found)| {
-            let named = found
+        .map(|(issue, ids)| {
+            let named = ids
                 .into_iter()
-                .map(|id| (id, keys.get(&id).cloned().flatten()))
+                .map(|id| Named {
+                    id,
+                    key: keys.get(&id).cloned().flatten(),
+                })
                 .collect();
-            (blocked, named)
+            (issue, named)
         })
         .collect())
+}
+
+pub(crate) fn joined(named: &[Named]) -> String {
+    named
+        .iter()
+        .map(|named| named.key.clone().unwrap_or_else(|| named.id.to_string()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The key of each Project `views` belong to.
@@ -271,7 +279,7 @@ const RANK: &str = "shortlist_rank";
 pub(crate) struct Item<'a> {
     /// Only `tm list` gives the open Issues blocking each.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) blocked_by: Option<Vec<Value>>,
+    pub(crate) blocked_by: Option<&'a [Named]>,
     category: &'a Option<Category>,
     #[serde(serialize_with = "without_rank")]
     fields: &'a BTreeMap<String, Value>,
@@ -281,7 +289,7 @@ pub(crate) struct Item<'a> {
     sets: &'a BTreeMap<String, BTreeMap<String, String>>,
     /// Only `tm ready` gives what each Issue would unblock.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) unblocks: Option<Vec<Value>>,
+    pub(crate) unblocks: Option<&'a [Named]>,
 }
 
 impl<'a> Item<'a> {

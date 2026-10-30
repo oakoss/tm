@@ -11,7 +11,8 @@ use serde::Serialize;
 
 pub use parse::parse;
 pub use resolve::{
-    Condition, Context, Literal, Resolved, Sort, SortTarget, State, Target, resolve, takes_issue,
+    Condition, Context, IssueField, Literal, Resolved, Sort, SortTarget, Target, resolve,
+    takes_issue,
 };
 
 /// The open Issues: not done or cancelled.

@@ -3,7 +3,7 @@
 //! stays correct for negation and will compose under `OR`.
 
 use rusqlite::types::Value as Sql;
-use tm_core::filter::{Condition, Literal, Resolved, Sort, SortTarget, State, Target};
+use tm_core::filter::{Condition, Literal, Resolved, Sort, SortTarget, Target};
 use tm_core::link::BLOCKS;
 
 /// The collation every store connection registers for comparing people.
@@ -227,40 +227,49 @@ fn condition_sql(b: &mut Builder, condition: &Condition) {
             Target::Blockers => linked(b, "dst", !present, |_| {}),
             Target::Blocked => linked(b, "src", !present, |_| {}),
         },
-        Condition::State {
-            states,
+        Condition::Is {
+            blocked,
+            blocking,
             open,
             negated,
-        } => state_sql(b, states, open, *negated),
+        } => is_sql(b, (*blocked, *blocking), open, *negated),
         Condition::Category {
             pairs,
             known,
             include_unknown,
             negated,
-        } => {
-            // coalesce: an Issue with no Status has no category, so it is
-            // outside every category rather than unknown to the comparison.
-            b.push(if *negated {
-                "NOT coalesce("
-            } else {
-                "coalesce("
-            });
-            if pairs.is_empty() {
-                b.push("0");
-            } else {
-                b.push("(type, status) IN ");
-                b.pairs(pairs);
-            }
-            if *include_unknown && known.is_empty() {
-                b.push(" OR status IS NOT NULL");
-            } else if *include_unknown {
-                b.push(" OR (status IS NOT NULL AND (type IS NULL OR (type, status) NOT IN ");
-                b.pairs(known);
-                b.push("))");
-            }
-            b.push(", 0)");
-        }
+        } => category_sql(b, pairs, known, *include_unknown, *negated),
     }
+}
+
+fn category_sql(
+    b: &mut Builder,
+    pairs: &[(String, String)],
+    known: &[(String, String)],
+    include_unknown: bool,
+    negated: bool,
+) {
+    // coalesce: an Issue with no Status has no category, so it is
+    // outside every category rather than unknown to the comparison.
+    b.push(if negated {
+        "NOT coalesce("
+    } else {
+        "coalesce("
+    });
+    if pairs.is_empty() {
+        b.push("0");
+    } else {
+        b.push("(type, status) IN ");
+        b.pairs(pairs);
+    }
+    if include_unknown && known.is_empty() {
+        b.push(" OR status IS NOT NULL");
+    } else if include_unknown {
+        b.push(" OR (status IS NOT NULL AND (type IS NULL OR (type, status) NOT IN ");
+        b.pairs(known);
+        b.push("))");
+    }
+    b.push(", 0)");
 }
 
 /// `id [NOT] IN (SELECT issue_id FROM table WHERE field = ? …)`. Both tables
@@ -281,22 +290,14 @@ fn member_of(
     b.push(")");
 }
 
-fn state_sql(b: &mut Builder, states: &[State], open: &[Condition], negated: bool) {
-    // `()` is a syntax error; in no state, as `IN ()` reads.
-    if states.is_empty() {
-        b.push(if negated { "1" } else { "0" });
-        return;
-    }
-    b.push(if negated { "NOT (" } else { "(" });
-    for (i, state) in states.iter().enumerate() {
-        if i > 0 {
+/// `[NOT] (0 OR …)`.
+fn is_sql(b: &mut Builder, (blocked, blocking): (bool, bool), open: &[Condition], negated: bool) {
+    b.push(if negated { "NOT (0" } else { "(0" });
+    for (asked, end) in [(blocked, "dst"), (blocking, "src")] {
+        if asked {
             b.push(" OR ");
+            linked(b, end, false, |b| between_open(b, open));
         }
-        let end = match state {
-            State::Blocked => "dst",
-            State::Blocking => "src",
-        };
-        linked(b, end, false, |b| between_open(b, open));
     }
     b.push(")");
 }
