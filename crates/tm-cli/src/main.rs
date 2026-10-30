@@ -288,10 +288,11 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Inspect the Scheme.
+    /// Inspect the Scheme; with no subcommand, print it as `tm scheme show`
+    /// does.
     Scheme {
         #[command(subcommand)]
-        action: SchemeAction,
+        action: Option<SchemeAction>,
     },
     /// Write tm's hooks into an agent harness's settings for this repo: tm
     /// prime when a session starts, a heartbeat after each tool use, and
@@ -421,15 +422,16 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             Ok(Output::new(help.clone(), json!({ "help": help })))
         }
         Some(Command::Scheme {
-            action: SchemeAction::Show { issue_type: None },
+            action: None | Some(SchemeAction::Show { issue_type: None }),
         }) => {
             let scheme = Scheme::built_in();
             Ok(Output::new(scheme_text(&scheme), scheme_json(&scheme)))
         }
         Some(Command::Scheme {
-            action: SchemeAction::Show {
-                issue_type: Some(issue_type),
-            },
+            action:
+                Some(SchemeAction::Show {
+                    issue_type: Some(issue_type),
+                }),
         }) => scheme_type(&Scheme::built_in(), &issue_type),
         Some(Command::Init { key, name, yes }) => init::run(&init::Init { key, name, yes }, json),
         Some(Command::Start { issue, lasts }) => start::run(&issue, &lasts),

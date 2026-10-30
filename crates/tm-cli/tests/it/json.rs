@@ -85,9 +85,9 @@ fn a_refusal_is_a_document_on_stdout_and_exits_1() {
 
 #[test]
 fn a_missing_subcommand_is_a_usage_error() {
-    let text = tm(&["scheme"], &[]);
+    let text = tm(&["git"], &[]);
     assert_eq!(text.status.code(), Some(2));
-    let json = tm(&["scheme"], &[("TM_JSON", "1")]);
+    let json = tm(&["git"], &[("TM_JSON", "1")]);
     assert_eq!(json.status.code(), Some(2));
     assert_eq!(document(&json)["error"], "usage");
 }
