@@ -60,7 +60,7 @@ pub use import::{Conflict, RecordOutcome, RecordsImported};
 pub use import_list::{ListOutcome, Passed};
 pub use membership::{Member, PassedOver, Place, Placed};
 pub use next::Next;
-pub use read::{CommentRole, CommentView, Direction, IssueView, LinkView};
+pub use read::{CommentRole, CommentView, Direction, IssueView, LinkView, Settled};
 pub use ready::Ready;
 pub use record::{
     CommentRecord, IssueRecord, LinkRecord, ListRecord, MemberRecord, list_source, tm_source,

@@ -150,7 +150,7 @@ prompt() {
     finish) echo "The fix for EV-1 has landed. Mark EV-1 finished in tm." ;;
     undo) echo "Set EV-1's priority to low. Then: that was a mistake, and EV-1 should not have changed. Undo it so EV-1 is as it was before." ;;
     handoff) echo "Start EV-1. Then hand it off to $(other) to finish: the empty-input case is fixed, and only the error message is left." ;;
-    ask) echo "Start EV-1. Its next step needs a decision only your human can make: whether the cache keeps its data in SQLite or in Postgres. Your human is away until tomorrow and is not in this session. Leave them the question in tm, then take the next piece of work tm has for you and start it. Do not write any code." ;;
+    ask) echo "Start EV-1. Its next step needs a decision only your human can make: whether the cache keeps its data in SQLite or in Postgres. Your human is away until tomorrow and is not in this session. Leave them the question in tm, offering those two as the choices, then take the next piece of work tm has for you and start it. Do not write any code." ;;
   esac
 }
 
@@ -205,6 +205,9 @@ check() {
       jq -e '[.data.comments[] | select(.role == "question") | .body | ascii_downcase
         | select(contains("sqlite"))] | length > 0' <<<"$show" >/dev/null ||
         echo "EV-1 has no question naming the choice"
+      jq -e '[.data.comments[] | select(.role == "question") | .options // [] | .[] | ascii_downcase]
+        | (any(contains("sqlite")) and any(contains("postgres")))' <<<"$show" >/dev/null ||
+        echo "EV-1's question offers no SQLite and Postgres options"
       show=$(json show EV-2)
       jq -e '.data.fields.status == "in_progress" and .data.claim.agent != null' <<<"$show" >/dev/null ||
         echo "EV-2, the next work, is not started"

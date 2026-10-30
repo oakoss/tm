@@ -286,8 +286,9 @@ fn describe(
             printable(&format!("{}: - {shown}", shown_name(field, label)))
         }
         Change::Comment { body } => format!("commented: {}", first_line(body)),
-        Change::Ask { body } => format!("asked: {}", first_line(body)),
+        Change::Ask { body, .. } => format!("asked: {}", first_line(body)),
         Change::Answer { body } => format!("answered: {}", first_line(body)),
+        Change::Withdraw { body } => format!("withdrew the question: {}", first_line(body)),
         Change::Retract { retracted, .. } => {
             let line = if *retracted {
                 "retracted a comment"

@@ -9,7 +9,9 @@ use std::io::IsTerminal as _;
 use serde_json::{Value, json};
 use tm_core::filter::Context;
 use tm_core::{Actor, ProjectId, Scheme};
-use tm_store::{AgentClaims, Claim, CommentView, IssueView, Member, Shortlist, Store};
+use tm_store::{
+    AgentClaims, Claim, CommentRole, CommentView, IssueView, Member, Settled, Shortlist, Store,
+};
 use uuid::Uuid;
 
 use crate::claim;
@@ -137,7 +139,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
 /// What prime reads, in one read transaction.
 struct Read {
     claims: AgentClaims,
-    notes: HashMap<Uuid, (String, String)>,
+    notes: HashMap<Uuid, Handoff>,
     waiting: Vec<(IssueView, Option<CommentView>)>,
     claimed: Vec<IssueView>,
     active: (Vec<IssueView>, usize),
@@ -192,7 +194,7 @@ fn gather(
 
 /// The Issues whose question waits on the session's human, each with its
 /// open question, oldest question first.
-fn waiting(
+pub(crate) fn waiting(
     store: &Store,
     actor: Option<&Actor>,
     warnings: &mut Vec<String>,
@@ -253,6 +255,14 @@ fn waiting_section(
                     crate::output::span(now_ms - question.utc_ms),
                     crate::list::cut(&printable(first), TITLE_BYTES * 2)
                 );
+                if !question.options.is_empty() {
+                    let options = crate::show::numbered(&question.options);
+                    let _ = writeln!(
+                        text,
+                        "      options: {}",
+                        crate::list::cut(&options, TITLE_BYTES * 2)
+                    );
+                }
             }
         }
         let mut entry = item(view, projects);
@@ -261,6 +271,7 @@ fn waiting_section(
                 "id": question.id,
                 "actor": question.actor,
                 "body": question.body,
+                "options": question.options,
                 "utc_ms": question.utc_ms,
             })
         });
@@ -387,7 +398,7 @@ fn by_session(claims: AgentClaims, session: Option<&str>) -> SessionClaims {
 fn handed_section(
     text: &mut String,
     shown: &[(&Claim, &IssueView)],
-    notes: &HashMap<Uuid, (String, String)>,
+    notes: &HashMap<Uuid, Handoff>,
     projects: &HashMap<ProjectId, Option<String>>,
     now_ms: i64,
 ) -> Vec<Value> {
@@ -398,7 +409,7 @@ fn handed_section(
     let mut items = Vec::with_capacity(shown.len());
     for &(handed, view) in shown {
         let found = notes.get(&handed.id);
-        let (by, note) = found.map_or(("", ""), |(by, note)| (by.as_str(), note.as_str()));
+        let (by, note) = found.map_or(("", ""), |(by, note, _)| (by.as_str(), note.as_str()));
         if items.len() < CLAIMS_SHOWN {
             let from = if by.is_empty() {
                 String::new()
@@ -418,8 +429,9 @@ fn handed_section(
         let mut entry = item(view, projects);
         entry["claim"] = claim::claim_json(handed, now_ms);
         // Null, not blank, when the note could not be read: a note is never blank.
-        entry["from"] = json!(found.map(|(by, _)| by));
-        entry["note"] = json!(found.map(|(_, note)| note));
+        entry["from"] = json!(found.map(|(by, _, _)| by));
+        entry["note"] = json!(found.map(|(_, note, _)| note));
+        entry["answer"] = found.map_or(Value::Null, |(_, _, answer)| answer.clone());
         items.push(entry);
     }
     if items.len() > CLAIMS_SHOWN {
@@ -432,27 +444,45 @@ fn handed_section(
     items
 }
 
-/// Who handed each of `held` handed on, and their note, by Claim id, and a
-/// warning for each that cannot be read: prime never fails a session start.
-fn handed_notes(store: &Store, held: &[Claim]) -> (HashMap<Uuid, (String, String)>, Vec<String>) {
+/// A handed Claim's handoff: who handed it on, their note, and how the
+/// question that kept it was settled, as JSON.
+type Handoff = (String, String, Value);
+
+/// Each of `held`'s handoff, by Claim id, and a warning for each that cannot
+/// be read: prime never fails a session start.
+fn handed_notes(store: &Store, held: &[Claim]) -> (HashMap<Uuid, Handoff>, Vec<String>) {
     let mut notes = HashMap::new();
     let mut unread = Vec::new();
     for handed in held.iter().filter(|held| held.handed) {
         match store.handed_by(handed.id) {
             Ok(Some((by, note))) => {
-                // A Claim a question kept reads as the question's answer once given.
-                let note = match store.answer_for(handed.id) {
-                    Ok(Some((who, reply))) => format!("{who} answered: {reply}"),
-                    Ok(None) => note,
+                // A Claim a question kept reads as how the question was settled.
+                let (note, answer) = match store.answer_for(handed.id) {
+                    Ok(Some(Settled { comment, choice })) => {
+                        let withdrew = comment.role == Some(CommentRole::Withdrawn);
+                        let how = if withdrew {
+                            "withdrew the question"
+                        } else {
+                            "answered"
+                        };
+                        let answer = json!({
+                            "by": comment.actor,
+                            "role": comment.role,
+                            "reply": comment.body,
+                            "choice": choice,
+                        });
+                        (format!("{} {how}: {}", comment.actor, comment.body), answer)
+                    }
+                    Ok(None) => (note, Value::Null),
                     Err(err) => {
                         unread.push(format!(
                             "the answer to Claim {}'s question: {err}",
                             handed.id
                         ));
-                        note
+                        (note, Value::Null)
                     }
                 };
-                notes.insert(handed.id, (by, note));
+                notes.insert(handed.id, (by, note, answer));
             }
             Ok(None) => {}
             Err(err) => unread.push(format!("the note handed with Claim {}: {err}", handed.id)),
@@ -477,7 +507,7 @@ fn clip(text: &str, bytes: usize) -> String {
 /// sessions hold, each as `--json` gives it.
 fn claims_sections(
     text: &mut String,
-    (claims, notes): (&SessionClaims, &HashMap<Uuid, (String, String)>),
+    (claims, notes): (&SessionClaims, &HashMap<Uuid, Handoff>),
     claimed: &[IssueView],
     projects: &HashMap<ProjectId, Option<String>>,
     now_ms: i64,

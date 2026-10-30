@@ -299,6 +299,30 @@ struct BatchOp {
     change: Change,
 }
 
+/// The field and element `op` wrote, which undo restores; a comment's element
+/// is the operation that added it.
+fn target(op: &BatchOp) -> (Subject, Uuid, String, String) {
+    match &op.change {
+        Change::Comment { .. }
+        | Change::Ask { .. }
+        | Change::Answer { .. }
+        | Change::Withdraw { .. } => (
+            Subject::Issue,
+            op.issue,
+            COMMENTS_FIELD.into(),
+            op.op_id.to_string(),
+        ),
+        other => {
+            let field = other.field().expect("every other kind names a field");
+            let elem = other
+                .elem()
+                .map(std::borrow::Cow::into_owned)
+                .unwrap_or_default();
+            (other.subject(), op.issue, field.to_owned(), elem)
+        }
+    }
+}
+
 fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, StoreError> {
     let ops = batch_ops(conn, batch)?;
     let first_seq = ops.first().ok_or(StoreError::UnknownBatch(batch))?.seq;
@@ -355,21 +379,8 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
                 action: ClaimAction::Renew { .. },
             }
             | Change::ShortlistSource => {}
-            Change::Comment { .. } | Change::Ask { .. } | Change::Answer { .. } => {
-                targets.insert((
-                    Subject::Issue,
-                    op.issue,
-                    COMMENTS_FIELD.into(),
-                    op.op_id.to_string(),
-                ));
-            }
-            other => {
-                let field = other.field().expect("every other kind names a field");
-                let elem = other
-                    .elem()
-                    .map(std::borrow::Cow::into_owned)
-                    .unwrap_or_default();
-                targets.insert((other.subject(), op.issue, field.to_owned(), elem));
+            _ => {
+                targets.insert(target(op));
             }
         }
     }

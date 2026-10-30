@@ -287,7 +287,9 @@ fn an_issue_record_carries_no_wait_on_a_question() {
     let dir = TempDir::new();
     let mut store = source(&dir, &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    store.ask(&jace(), issue, "Which?", "kim", None).unwrap();
+    store
+        .ask(&jace(), issue, "Which?", &[], "kim", None)
+        .unwrap();
     let records = lines(&export(&store));
     let record = records
         .iter()

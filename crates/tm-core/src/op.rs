@@ -97,9 +97,16 @@ pub enum Change {
     /// A question the Issue waits on, written into its comments.
     Ask {
         body: String,
+        /// Replies the asker offers; any other reply is taken too.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        options: Vec<String>,
     },
     /// The reply to the Issue's question, written into its comments.
     Answer {
+        body: String,
+    },
+    /// Why the asker settled its own question, written into its comments.
+    Withdraw {
         body: String,
     },
     /// Hides a comment, or shows it again; the comment stays in the log.
@@ -213,6 +220,7 @@ impl Change {
             Self::Comment { .. } => "comment",
             Self::Ask { .. } => "ask",
             Self::Answer { .. } => "answer",
+            Self::Withdraw { .. } => "withdraw",
             Self::Retract { .. } => "retract",
             Self::Link { .. } => "link",
             Self::Claim { .. } => "claim",
@@ -241,6 +249,7 @@ impl Change {
             | Self::Comment { .. }
             | Self::Ask { .. }
             | Self::Answer { .. }
+            | Self::Withdraw { .. }
             | Self::Retract { .. }
             | Self::Link { .. }
             | Self::Claim { .. } => Subject::Issue,
@@ -263,6 +272,7 @@ impl Change {
             | Self::Comment { .. }
             | Self::Ask { .. }
             | Self::Answer { .. }
+            | Self::Withdraw { .. }
             | Self::CreateProject { .. }
             | Self::RenameProject { .. }
             | Self::CreateShortlist
@@ -285,6 +295,7 @@ impl Change {
             | Self::Comment { .. }
             | Self::Ask { .. }
             | Self::Answer { .. }
+            | Self::Withdraw { .. }
             | Self::Claim { .. }
             | Self::CreateProject { .. }
             | Self::RenameProject { .. }
@@ -348,6 +359,60 @@ impl Change {
             _ => Ok(()),
         }
     }
+}
+
+/// The replies a question may offer, trimmed: none, or two or more distinct
+/// ones in words. A number would read as another option's position, so a
+/// reply could pick either. Checked where this Replica writes, not on replay.
+///
+/// # Errors
+///
+/// Why the options cannot be offered.
+pub fn question_options(options: &[String]) -> Result<Vec<String>, String> {
+    let options: Vec<String> = options
+        .iter()
+        .map(|option| option.trim().to_owned())
+        .collect();
+    if options.iter().any(String::is_empty) {
+        return Err("an option is blank".into());
+    }
+    if options.len() == 1 {
+        return Err("offer two or more replies, or none".into());
+    }
+    for (i, option) in options.iter().enumerate() {
+        if is_number(option) {
+            return Err(format!(
+                "the option {option} reads as a number, which picks an option by position; word it, as \"{option} points\""
+            ));
+        }
+        if options[..i].iter().any(|seen| same_reply(seen, option)) {
+            return Err(format!("the option {option} is offered twice"));
+        }
+    }
+    Ok(options)
+}
+
+/// The number of the option `reply` is, as an answer records an option it
+/// picks: in the option's own words.
+#[must_use]
+pub fn choice(options: &[String], reply: &str) -> Option<usize> {
+    options
+        .iter()
+        .position(|option| option == reply)
+        .map(|at| at + 1)
+}
+
+/// Whether two replies match, ignoring case in any script.
+#[must_use]
+pub fn same_reply(a: &str, b: &str) -> bool {
+    a.trim().to_lowercase() == b.trim().to_lowercase()
+}
+
+/// Whether `text` is a whole number, signed or not, of any size.
+#[must_use]
+pub fn is_number(text: &str) -> bool {
+    let digits = text.trim().trim_start_matches(['-', '+']);
+    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
 }
 
 /// Held to on replay too, so a value another Replica wrote is read the same way.
@@ -603,9 +668,13 @@ mod tests {
             },
             Change::Ask {
                 body: "which?".into(),
+                options: vec!["this".into(), "that".into()],
             },
             Change::Answer {
                 body: "this".into(),
+            },
+            Change::Withdraw {
+                body: "settled".into(),
             },
             Change::Link {
                 link_type: "blocks".into(),
@@ -806,6 +875,17 @@ mod tests {
         let json = serde_json::to_string(&labelled).unwrap();
         assert_eq!(serde_json::from_str::<Change>(&json).unwrap(), labelled);
         assert!(!sample().payload.contains("value_label"));
+    }
+
+    #[test]
+    fn a_question_without_options_reads_as_before() {
+        let plain = r#"{"kind":"ask","body":"which?"}"#;
+        let ask = Change::Ask {
+            body: "which?".into(),
+            options: Vec::new(),
+        };
+        assert_eq!(serde_json::from_str::<Change>(plain).unwrap(), ask);
+        assert_eq!(serde_json::to_string(&ask).unwrap(), plain);
     }
 
     #[test]

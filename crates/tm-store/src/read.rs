@@ -210,8 +210,11 @@ pub struct CommentView {
     pub body: String,
     pub utc_ms: i64,
     pub retracted: bool,
-    /// What `tm ask` and `tm answer` wrote; `None` for a plain comment.
+    /// What `tm ask`, `tm answer` and `tm withdraw` wrote; `None` for a plain
+    /// comment.
     pub role: Option<CommentRole>,
+    /// The replies a question offers.
+    pub options: Vec<String>,
 }
 
 /// The part a comment plays in a question, stored as its name.
@@ -220,6 +223,7 @@ pub struct CommentView {
 pub enum CommentRole {
     Question,
     Answer,
+    Withdrawn,
 }
 
 impl CommentRole {
@@ -228,6 +232,7 @@ impl CommentRole {
         match self {
             Self::Question => "question",
             Self::Answer => "answer",
+            Self::Withdrawn => "withdrawn",
         }
     }
 
@@ -235,6 +240,7 @@ impl CommentRole {
         match name {
             "question" => Ok(Self::Question),
             "answer" => Ok(Self::Answer),
+            "withdrawn" => Ok(Self::Withdrawn),
             other => Err(StoreError::Corrupt(format!(
                 "a comment's role {other:?} is none tm writes"
             ))),
@@ -248,11 +254,11 @@ const LINKS: &str = "SELECT type, dst, 0 FROM links WHERE src = ?1
      ORDER BY 1, 3, 2";
 
 const COMMENTS: &str = "SELECT c.op_id, c.actor, o.on_behalf_of, c.body, c.utc_ms, c.retracted,
-     c.role FROM comments c LEFT JOIN ops o ON o.op_id = c.op_id
+     c.role, c.options FROM comments c LEFT JOIN ops o ON o.op_id = c.op_id
      WHERE c.issue_id = ?1 ORDER BY c.hlc, o.replica_id, c.op_id";
 
 const OPEN_QUESTION: &str = "SELECT c.op_id, c.actor, o.on_behalf_of, c.body, c.utc_ms,
-     c.retracted, c.role FROM comments c LEFT JOIN ops o ON o.op_id = c.op_id
+     c.retracted, c.role, c.options FROM comments c LEFT JOIN ops o ON o.op_id = c.op_id
      WHERE c.issue_id = ?1 AND c.role = 'question' AND c.retracted = 0
      ORDER BY c.hlc DESC, o.replica_id DESC, c.op_id DESC LIMIT 1";
 
@@ -305,6 +311,39 @@ pub(crate) fn open_question(
     rows.next()?.map(comment).transpose()
 }
 
+/// The latest answer or withdrawal after the question asked in the batch
+/// that handed `claim` on.
+pub(crate) fn settled(conn: &Connection, claim: Uuid) -> Result<Option<Settled>, StoreError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT c.op_id, c.actor, o.on_behalf_of, c.body, c.utc_ms, c.retracted, c.role,
+           c.options, asked.options FROM op_batches h
+         JOIN op_batches q ON q.batch = h.batch
+         JOIN comments asked ON asked.op_id = q.op_id AND asked.role = 'question'
+         JOIN comments c ON c.issue_id = asked.issue_id
+           AND c.role IN ('answer', 'withdrawn') AND c.retracted = 0 AND c.hlc > asked.hlc
+         LEFT JOIN ops o ON o.op_id = c.op_id
+         WHERE h.op_id = ?1
+         ORDER BY c.hlc DESC LIMIT 1",
+    )?;
+    let mut rows = stmt.query([claim.as_bytes()])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let comment = comment(row)?;
+    let choice = tm_core::op::choice(&options(row, 8)?, &comment.body)
+        .filter(|_| comment.role == Some(CommentRole::Answer));
+    Ok(Some(Settled { comment, choice }))
+}
+
+/// How a question was settled: the answer or withdrawal, and the option an
+/// answer picked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settled {
+    pub comment: CommentView,
+    /// The 1-based number of the option the answer is, if any.
+    pub choice: Option<usize>,
+}
+
 fn comment(row: &Row<'_>) -> Result<CommentView, StoreError> {
     Ok(CommentView {
         id: uuid_from(&row.get::<_, Vec<u8>>(0)?)?,
@@ -318,7 +357,17 @@ fn comment(row: &Row<'_>) -> Result<CommentView, StoreError> {
             .as_deref()
             .map(CommentRole::parse)
             .transpose()?,
+        options: options(row, 7)?,
     })
+}
+
+fn options(row: &Row<'_>, column: usize) -> Result<Vec<String>, StoreError> {
+    match row.get::<_, Option<String>>(column)? {
+        Some(options) => serde_json::from_str(&options).map_err(|err| {
+            StoreError::Corrupt(format!("a question's options are malformed: {err}"))
+        }),
+        None => Ok(Vec::new()),
+    }
 }
 
 /// Whole numbers read back as the integers they were written as.

@@ -60,7 +60,7 @@ fn closes_lines_on_the_default_branch_move_their_issues_to_done() {
     let mut new = |title: &str| store.create_issue(&jace, project, "task", title).unwrap().0;
     let titles = ["one", "two", "x", "side", "colon", "low", "shelf", "hand"];
     let [_, two, cancelled, _, _, low, shelved, by_hand] = titles.map(&mut new);
-    store.ask(&jace, low, "Which?", "kim", None).unwrap();
+    store.ask(&jace, low, "Which?", &[], "kim", None).unwrap();
     set(&mut store, project, two, "status", json!("in_review"));
     set(&mut store, project, cancelled, "status", json!("cancelled"));
     set(&mut store, project, shelved, "archived", json!(true));
