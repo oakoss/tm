@@ -53,7 +53,7 @@ fn a_question_waits_on_the_human_and_keeps_the_work_for_the_asking_agent() {
         "a question can wait past any expiry"
     );
 
-    let question = store.open_question(issue).unwrap().unwrap();
+    let question = store.open_question(issue).unwrap().unwrap().id;
     store.answer(&jace(), issue, question, "SQLite").unwrap();
     assert_eq!(field(&store, issue, "waiting_on"), None);
     let comments = store.comments(issue).unwrap();
@@ -79,7 +79,7 @@ fn a_question_on_unclaimed_work_keeps_it_out_of_the_ready_queue() {
         .unwrap();
     assert_eq!(held(&store, issue), None);
     assert_eq!(ready(&store), Vec::<Uuid>::new());
-    let question = store.open_question(issue).unwrap().unwrap();
+    let question = store.open_question(issue).unwrap().unwrap().id;
     store
         .answer(&Actor::human("kim"), issue, question, "yes")
         .unwrap();
@@ -92,7 +92,7 @@ fn a_question_is_guarded_inside_the_write() {
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
     store.ask(&jace(), issue, "First?", "kim", None).unwrap();
-    let first = store.open_question(issue).unwrap().unwrap();
+    let first = store.open_question(issue).unwrap().unwrap().id;
     let again = store.ask(&jace(), issue, "Second?", "kim", None);
     assert!(again.is_err(), "already waiting: {again:?}");
     let kim = Actor::human("kim");
@@ -104,7 +104,7 @@ fn a_question_is_guarded_inside_the_write() {
         "answers a question no longer open: {stale:?}"
     );
     assert_eq!(field(&store, issue, "waiting_on"), Some(json!("kim")));
-    let second = store.open_question(issue).unwrap().unwrap();
+    let second = store.open_question(issue).unwrap().unwrap().id;
     store.answer(&kim, issue, second, "no").unwrap();
     let twice = store.answer(&kim, issue, second, "no again");
     assert!(
@@ -140,7 +140,7 @@ fn a_lapsed_claim_of_the_askers_is_kept_for_its_next_session() {
     store
         .ask(&claude("s1"), issue, "Which?", "jace", Some(&lapsed))
         .unwrap();
-    let question = store.open_question(issue).unwrap().unwrap();
+    let question = store.open_question(issue).unwrap().unwrap().id;
     store.answer(&jace(), issue, question, "this").unwrap();
     let resumed = store.take(&claude("s2"), issue, Some(HOUR_MS)).unwrap();
     assert_eq!(resumed.session.as_deref(), Some("s2"));
@@ -157,7 +157,7 @@ fn a_kept_claim_reads_as_its_questions_answer_and_no_other() {
         .unwrap();
     let kept = held(&store, issue).unwrap();
     assert_eq!(store.answer_for(kept.id).unwrap(), None, "not yet answered");
-    let question = store.open_question(issue).unwrap().unwrap();
+    let question = store.open_question(issue).unwrap().unwrap().id;
     store.answer(&jace(), issue, question, "SQLite").unwrap();
     assert_eq!(
         store.answer_for(kept.id).unwrap(),
@@ -173,7 +173,7 @@ fn a_kept_claim_reads_as_its_questions_answer_and_no_other() {
         None,
         "an earlier answer is not this question's"
     );
-    let question = store.open_question(issue).unwrap().unwrap();
+    let question = store.open_question(issue).unwrap().unwrap().id;
     store.answer(&jace(), issue, question, "Postgres").unwrap();
     let resumed = store.take(&claude("s2"), issue, Some(HOUR_MS)).unwrap();
     let (_, handed) = store

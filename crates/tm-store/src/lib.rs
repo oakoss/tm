@@ -5,6 +5,7 @@
 //! transaction; `rebuild` regenerates the projections from the log.
 
 mod apply;
+mod ask;
 mod beads;
 mod claim;
 mod export;

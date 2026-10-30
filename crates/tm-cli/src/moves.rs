@@ -123,9 +123,8 @@ fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>), CliError
     for (field, value) in &fields {
         changes.push(set(field, typed(&scheme, field, value)));
     }
-    // Finished work waits on no one, so its question leaves the lists.
-    if finished && view.fields.contains_key(WAITING_ON) {
-        changes.push(set(WAITING_ON, Value::Null));
+    if finished {
+        changes.extend(unwait(&view));
     }
     changes.retain(|change| match change {
         Change::SetField { field, value, .. } => !view
@@ -171,6 +170,14 @@ fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>), CliError
     let shown = follow::report(&here.store, shown, starts, id)?;
     let output = here.undoable(shown, ops[0].op_id, &identity.actor)?;
     Ok((output, identity.warnings))
+}
+
+/// The change a move that finishes `view` adds: finished work waits on no
+/// one, so its question leaves the lists.
+pub(crate) fn unwait(view: &IssueView) -> Option<Change> {
+    view.fields
+        .contains_key(WAITING_ON)
+        .then(|| set(WAITING_ON, Value::Null))
 }
 
 fn unchanged(here: &Here, view: &IssueView) -> Result<Output, CliError> {

@@ -204,10 +204,8 @@ fn waiting(
     let ids = store.find("waiting_on:@me", Context { me: Some(human) })?;
     let mut waiting = Vec::with_capacity(ids.len());
     for view in store.issues(&ids)? {
-        let question = match store.comments(view.id) {
-            Ok(comments) => comments
-                .into_iter()
-                .rfind(|comment| !comment.retracted && comment.role.as_deref() == Some("question")),
+        let question = match store.open_question(view.id) {
+            Ok(question) => question,
             Err(err) => {
                 let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
                 warnings.push(format!("the question {name} waits on: {err}"));

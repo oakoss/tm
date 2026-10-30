@@ -3,8 +3,7 @@
 
 use std::fmt::Write as _;
 
-use serde_json::{Value, json};
-use tm_core::scheme::WAITING_ON;
+use serde_json::json;
 use tm_store::Claim;
 use uuid::Uuid;
 
@@ -156,7 +155,7 @@ fn write_answer(here: &mut Here, args: &Answer) -> Result<(Output, Vec<String>),
         )
     })?;
     let reply = read("reply", &args.reply)?;
-    let ops = here.store.answer(actor, id, question, &reply)?;
+    let ops = here.store.answer(actor, id, question.id, &reply)?;
     let kept_for = here
         .store
         .claim_state(id)?
@@ -185,11 +184,7 @@ fn issue(here: &Here, reference: &str) -> Result<(Uuid, Option<String>, Option<S
         .store
         .issue(id)?
         .ok_or_else(|| CliError::new("not_found", format!("no Issue is {reference}")))?;
-    let waiting = view
-        .fields
-        .get(WAITING_ON)
-        .and_then(Value::as_str)
-        .map(str::to_owned);
+    let waiting = view.waiting_on().map(str::to_owned);
     Ok((id, view.key, waiting))
 }
 
