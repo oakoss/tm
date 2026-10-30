@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 use tm_core::Scheme;
 use tm_core::scheme::{Category, FieldType, Status};
-use tm_store::{ClaimState, CommentView, IssueView, LinkView, Store};
+use tm_store::{ClaimState, CommentRole, CommentView, IssueView, LinkView, Store};
 use uuid::Uuid;
 
 use crate::claim::{self, claim_json};
@@ -343,10 +343,10 @@ fn write_comment(text: &mut String, comment: &CommentView) {
         Some(human) => format!("{} for {human}", comment.actor),
         None => comment.actor.clone(),
     };
-    let by = match comment.role.as_deref() {
-        Some("question") => format!("{by} asked"),
-        Some("answer") => format!("{by} answered"),
-        _ => by,
+    let by = match comment.role {
+        Some(CommentRole::Question) => format!("{by} asked"),
+        Some(CommentRole::Answer) => format!("{by} answered"),
+        None => by,
     };
     let by = format!("{by}, {}", local_time(comment.utc_ms));
     if comment.retracted {

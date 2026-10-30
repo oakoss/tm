@@ -14,6 +14,7 @@ use tm_core::scheme::priority_rank;
 use tm_core::{Change, Hlc, Op, ProjectId, Subject, link};
 use uuid::Uuid;
 
+use crate::read::CommentRole;
 use crate::{StoreError, project, shortlist};
 
 /// What decides a field: the winning operation's position and clock.
@@ -181,8 +182,8 @@ pub(crate) fn apply(
             retract(tx, op.subject, comment, retracted, &version)?;
         }
         Change::Comment { body } => comment(tx, op, &body, None)?,
-        Change::Ask { body } => comment(tx, op, &body, Some("question"))?,
-        Change::Answer { body } => comment(tx, op, &body, Some("answer"))?,
+        Change::Ask { body } => comment(tx, op, &body, Some(CommentRole::Question))?,
+        Change::Answer { body } => comment(tx, op, &body, Some(CommentRole::Answer))?,
     }
     // Every operation counts as activity, comments included.
     tx.execute(
@@ -196,7 +197,7 @@ fn comment(
     tx: &Transaction<'_>,
     op: &Op,
     body: &str,
-    role: Option<&str>,
+    role: Option<CommentRole>,
 ) -> Result<(), StoreError> {
     tx.execute(
         "INSERT INTO comments
@@ -214,7 +215,7 @@ fn comment(
             op.offset_min,
             COMMENTS_FIELD,
             op.op_id.to_string(),
-            role,
+            role.map(CommentRole::as_str),
         ],
     )?;
     Ok(())

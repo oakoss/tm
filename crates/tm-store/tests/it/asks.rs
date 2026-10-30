@@ -3,6 +3,7 @@
 use serde_json::json;
 use tm_core::Actor;
 use tm_core::actor::SessionId;
+use tm_store::CommentRole;
 use uuid::Uuid;
 
 use crate::support::{ManualClock, TempDir, draft, field, held, jace, new_issue, open, set_field};
@@ -41,7 +42,7 @@ fn a_question_waits_on_the_human_and_keeps_the_work_for_the_asking_agent() {
     assert_eq!(field(&store, issue, "waiting_on"), Some(json!("jace")));
     let comments = store.comments(issue).unwrap();
     assert_eq!(comments[0].body, "SQLite or Postgres?");
-    assert_eq!(comments[0].role.as_deref(), Some("question"));
+    assert_eq!(comments[0].role, Some(CommentRole::Question));
     let claim = held(&store, issue).unwrap();
     assert!(claim.handed, "held for the Agent in no session");
     assert_eq!(
@@ -58,7 +59,7 @@ fn a_question_waits_on_the_human_and_keeps_the_work_for_the_asking_agent() {
     assert_eq!(field(&store, issue, "waiting_on"), None);
     let comments = store.comments(issue).unwrap();
     assert_eq!(comments[1].body, "SQLite");
-    assert_eq!(comments[1].role.as_deref(), Some("answer"));
+    assert_eq!(comments[1].role, Some(CommentRole::Answer));
     assert_eq!(
         held(&store, issue),
         Some(claim.clone()),

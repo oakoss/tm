@@ -210,8 +210,36 @@ pub struct CommentView {
     pub body: String,
     pub utc_ms: i64,
     pub retracted: bool,
-    /// `question` or `answer` for what `tm ask` and `tm answer` wrote.
-    pub role: Option<String>,
+    /// What `tm ask` and `tm answer` wrote; `None` for a plain comment.
+    pub role: Option<CommentRole>,
+}
+
+/// The part a comment plays in a question, stored as its name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommentRole {
+    Question,
+    Answer,
+}
+
+impl CommentRole {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Question => "question",
+            Self::Answer => "answer",
+        }
+    }
+
+    fn parse(name: &str) -> Result<Self, StoreError> {
+        match name {
+            "question" => Ok(Self::Question),
+            "answer" => Ok(Self::Answer),
+            other => Err(StoreError::Corrupt(format!(
+                "a comment's role {other:?} is none tm writes"
+            ))),
+        }
+    }
 }
 
 const LINKS: &str = "SELECT type, dst, 0 FROM links WHERE src = ?1
@@ -285,7 +313,11 @@ fn comment(row: &Row<'_>) -> Result<CommentView, StoreError> {
         body: row.get(3)?,
         utc_ms: row.get(4)?,
         retracted: row.get(5)?,
-        role: row.get(6)?,
+        role: row
+            .get::<_, Option<String>>(6)?
+            .as_deref()
+            .map(CommentRole::parse)
+            .transpose()?,
     })
 }
 
