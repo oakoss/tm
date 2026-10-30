@@ -184,6 +184,29 @@ fn show_prints_times_in_local_time_and_text_across_lines() {
 }
 
 #[test]
+fn show_names_no_moves_for_a_status_its_workflow_does_not_define() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let (issue, _) = store
+        .create_issue(&Actor::human("jace"), project, "task", "Held")
+        .unwrap();
+    store
+        .connection()
+        .execute(
+            "UPDATE issues SET status = 'blocked' WHERE id = ?1",
+            [issue.as_bytes()],
+        )
+        .unwrap();
+    drop(store);
+    let out = tm(&scratch, &repo, &["show", "TM-1"]);
+    let shown = text(&out.stdout);
+    assert!(shown.contains("status: blocked\n"), "{shown}");
+    assert!(!shown.contains("moves to:"), "{shown}");
+    let (_, doc) = show(&scratch, &repo, "TM-1");
+    assert_eq!(doc["data"]["moves_to"], json!([]), "{doc}");
+}
+
+#[test]
 fn show_gives_an_issues_fields_parent_labels_and_claim() {
     let scratch = Scratch::new();
     let (repo, mut store, project) = initialized(&scratch);
@@ -219,6 +242,7 @@ fn show_gives_an_issues_fields_parent_labels_and_claim() {
         ".data.parent.id" => "[id]",
         ".data.fields.parent" => "[id]",
         ".data.claim.id" => "[id]",
+        ".data.moves_to" => "[statuses]",
         ".data.fields.created" => "[ms]",
         ".data.fields.updated" => "[ms]",
     }, @r#"
@@ -254,6 +278,7 @@ fn show_gives_an_issues_fields_parent_labels_and_claim() {
         "key": "TM-2",
         "lapsed_claim": null,
         "links": [],
+        "moves_to": "[statuses]",
         "parent": {
           "id": "[id]",
           "key": "TM-1"
@@ -279,7 +304,7 @@ fn show_gives_an_issues_fields_parent_labels_and_claim() {
     for line in [
         "parent: TM-1\n",
         "labels: docs\n",
-        "status: todo\n",
+        "status: todo\nmoves to: triage, in_progress (active), in_review (active), done, cancelled\n",
         &format!("no expiry (Claim {})\n", claim.id),
     ] {
         assert!(shown.contains(line), "{line:?} in {shown}");

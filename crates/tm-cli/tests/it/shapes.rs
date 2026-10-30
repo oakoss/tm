@@ -74,6 +74,33 @@ fn create_answers_in_a_fixed_shape() {
         "key": "TM-3",
         "lapsed_claim": null,
         "links": [],
+        "moves_to": [
+          {
+            "category": "triage",
+            "id": "triage",
+            "label": "Triage"
+          },
+          {
+            "category": "active",
+            "id": "in_progress",
+            "label": "In Progress"
+          },
+          {
+            "category": "active",
+            "id": "in_review",
+            "label": "In Review"
+          },
+          {
+            "category": "done",
+            "id": "done",
+            "label": "Done"
+          },
+          {
+            "category": "cancelled",
+            "id": "cancelled",
+            "label": "Cancelled"
+          }
+        ],
         "next": [],
         "parent": {
           "id": "[id]",
@@ -146,6 +173,33 @@ fn move_answers_in_a_fixed_shape() {
               "status": "todo"
             },
             "type": "blocks"
+          }
+        ],
+        "moves_to": [
+          {
+            "category": "triage",
+            "id": "triage",
+            "label": "Triage"
+          },
+          {
+            "category": "todo",
+            "id": "todo",
+            "label": "Todo"
+          },
+          {
+            "category": "active",
+            "id": "in_review",
+            "label": "In Review"
+          },
+          {
+            "category": "done",
+            "id": "done",
+            "label": "Done"
+          },
+          {
+            "category": "cancelled",
+            "id": "cancelled",
+            "label": "Cancelled"
           }
         ],
         "next": [],
@@ -392,6 +446,7 @@ fn undo_answers_in_a_fixed_shape() {
         ".data.issues[].links[].other.id" => "[id]",
         ".data.issues[].fields.created" => "[ms]",
         ".data.issues[].fields.updated" => "[ms]",
+        ".data.issues[].moves_to" => "[statuses]",
     }, @r#"
     {
       "data": {
@@ -433,6 +488,7 @@ fn undo_answers_in_a_fixed_shape() {
                 "type": "blocks"
               }
             ],
+            "moves_to": "[statuses]",
             "parent": null,
             "project": "TM",
             "sets": {},

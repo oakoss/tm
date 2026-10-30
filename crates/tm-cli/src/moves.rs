@@ -37,7 +37,8 @@ pub(crate) fn field_value(pair: &str) -> Result<(String, String), String> {
 pub(crate) struct Move {
     /// The Issue's Key or full id.
     issue: String,
-    /// The Status, by id or label, such as `in_progress` or "In Review".
+    /// The Status, by id or label, such as `in_progress`, `done` or "In
+    /// Review"; `tm show ISSUE` lists those it can move to.
     status: String,
     /// Set a field in the same write, such as assignee=jace; FIELD=- reads
     /// the value from stdin.

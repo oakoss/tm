@@ -64,7 +64,7 @@ Key, type, title, description, status, Assignee, reporter, Agent and Claim, pare
 
 ### Workflows
 
-- Each type has a **Workflow**: statuses, allowed transitions and a configurable starting status.
+- Each type has a **Workflow**: statuses, allowed transitions and a configurable starting status. `tm show` names the Statuses an Issue can move to, with each one's category where its name does not give it.
 - Every status belongs to one **Status category**: triage, todo, active, done or cancelled. Cross-type features (Triage, ready queue, release notes) read categories, never status names, so cancelled work never counts as shipped. Categories come from the Scheme when read; a status the Scheme does not define reads as triage ([ADR 0007](../decisions/0007-the-projection-does-not-depend-on-the-scheme.md)).
 - Workflow rules and required fields are checked when this Replica writes, never on replay: a merge can produce a state no single write allowed, and it is kept rather than refused.
 - **Requirements attach to statuses**: "required to enter X", with creation counting as entering the starting status. Agents can file quickly into Triage while work cannot start until fields are complete.
