@@ -1,5 +1,6 @@
 //! The `tm` command.
 
+mod ask;
 mod backup;
 mod claim;
 mod comment;
@@ -123,6 +124,17 @@ enum Command {
     /// Hand an Issue's Claim to another Agent with a note; its next session
     /// takes it with `tm start`.
     Handoff(handoff::Handoff),
+    /// Ask a person a question the Issue waits on, then take other work.
+    ///
+    /// The question joins its comments and the Issue leaves the ready queue;
+    /// a Claim your session holds is kept for your Agent, which resumes it
+    /// with `tm start` once answered. Use it when your human is not in the
+    /// session or the decision can wait; when they are present, ask them
+    /// there.
+    Ask(ask::Ask),
+    /// Answer the question an Issue waits on; the Agent that asked resumes it
+    /// with `tm start`.
+    Answer(ask::Answer),
     /// Release a Claim. The session holding it, and the human it is held
     /// for, may leave out the id `tm claim` printed.
     #[command(group = ArgGroup::new("what").required(true).args(["issue", "mine"]))]
@@ -445,6 +457,8 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         }) => claim::release(&issue, claim),
         Some(Command::Release { issue: None, .. }) => claim::release_mine(),
         Some(Command::Handoff(args)) => handoff::run(&args),
+        Some(Command::Ask(args)) => ask::ask(&args),
+        Some(Command::Answer(args)) => ask::answer(&args),
         Some(Command::Setup { harness, undo, yes }) => {
             setup::run(&setup::Setup { harness, undo, yes }, json)
         }

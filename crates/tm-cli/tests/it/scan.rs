@@ -59,7 +59,8 @@ fn closes_lines_on_the_default_branch_move_their_issues_to_done() {
     let jace = Actor::human("jace");
     let mut new = |title: &str| store.create_issue(&jace, project, "task", title).unwrap().0;
     let titles = ["one", "two", "x", "side", "colon", "low", "shelf", "hand"];
-    let [_, two, cancelled, _, _, _, shelved, by_hand] = titles.map(&mut new);
+    let [_, two, cancelled, _, _, low, shelved, by_hand] = titles.map(&mut new);
+    store.ask(&jace, low, "Which?", "kim", None).unwrap();
     set(&mut store, project, two, "status", json!("in_review"));
     set(&mut store, project, cancelled, "status", json!("cancelled"));
     set(&mut store, project, shelved, "archived", json!(true));
@@ -116,6 +117,12 @@ fn closes_lines_on_the_default_branch_move_their_issues_to_done() {
     assert_eq!(status(&scratch, &repo, "TM-4"), "todo", "not on main");
     assert_eq!(status(&scratch, &repo, "TM-5"), "done", "with a colon");
     assert_eq!(status(&scratch, &repo, "TM-6"), "done", "in lowercase");
+    let six = show(&scratch, &repo, "TM-6");
+    assert_eq!(
+        six["fields"].get("waiting_on"),
+        None,
+        "finished waits on no one"
+    );
     assert_eq!(status(&scratch, &repo, "TM-7"), "todo", "archived");
 
     let reopen = tm(&scratch, &repo, &["move", "TM-1", "todo"]);

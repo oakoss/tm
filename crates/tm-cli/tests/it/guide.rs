@@ -150,6 +150,12 @@ fn every_command_in_the_guide_runs_as_printed() {
             let taken = as_claude(&scratch, &repo, &["start", "TM-1"], "");
             assert!(taken.status.success(), "{taken:?}");
         }
+        if words.first() == Some(&"ask") {
+            let answered = tm(&scratch, &repo, &["--json", "answer", "TM-1", "yes"]);
+            assert!(answered.status.success(), "{answered:?}");
+            let resumed = as_claude(&scratch, &repo, &["start", "TM-1"], "");
+            assert!(resumed.status.success(), "{resumed:?}");
+        }
         let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
         if let Some(written) = doc["data"]["batch"].as_str() {
             batch = written.to_owned();

@@ -5,18 +5,20 @@ use std::io::{self, IsTerminal as _, Read as _};
 
 use serde_json::{Value, json};
 use tm_core::Change;
-use tm_core::scheme::{FieldType, Scheme};
+use tm_core::scheme::{FieldType, Scheme, WAITING_ON};
 use tm_store::{IssueView, StoreError};
 
 use crate::error::CliError;
 
-/// Refuses the Short-list membership fields, whose ranks only `tm shortlist`
-/// chooses.
-pub(crate) fn not_membership(field: &str) -> Result<(), String> {
+/// Refuses the fields only their own commands write: Short-list membership,
+/// whose ranks only `tm shortlist` chooses, and who an Issue waits on, which
+/// comes with its question.
+pub(crate) fn not_owned(field: &str) -> Result<(), String> {
     match field {
         "shortlist" | "shortlist_rank" => {
             Err("put an Issue on a Short-list with tm shortlist add, move or remove".into())
         }
+        WAITING_ON => Err("tm ask and tm answer change who an Issue waits on".into()),
         _ => Ok(()),
     }
 }

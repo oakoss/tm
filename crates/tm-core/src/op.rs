@@ -94,6 +94,14 @@ pub enum Change {
     Comment {
         body: String,
     },
+    /// A question the Issue waits on, written into its comments.
+    Ask {
+        body: String,
+    },
+    /// The reply to the Issue's question, written into its comments.
+    Answer {
+        body: String,
+    },
     /// Hides a comment, or shows it again; the comment stays in the log.
     Retract {
         /// The id of the operation that added the comment.
@@ -203,6 +211,8 @@ impl Change {
             Self::Add { .. } => "add",
             Self::Remove { .. } => "remove",
             Self::Comment { .. } => "comment",
+            Self::Ask { .. } => "ask",
+            Self::Answer { .. } => "answer",
             Self::Retract { .. } => "retract",
             Self::Link { .. } => "link",
             Self::Claim { .. } => "claim",
@@ -229,6 +239,8 @@ impl Change {
             | Self::Add { .. }
             | Self::Remove { .. }
             | Self::Comment { .. }
+            | Self::Ask { .. }
+            | Self::Answer { .. }
             | Self::Retract { .. }
             | Self::Link { .. }
             | Self::Claim { .. } => Subject::Issue,
@@ -249,6 +261,8 @@ impl Change {
             Self::ShortlistActor { .. } => Some(shortlist::ACTORS),
             Self::Create
             | Self::Comment { .. }
+            | Self::Ask { .. }
+            | Self::Answer { .. }
             | Self::CreateProject { .. }
             | Self::RenameProject { .. }
             | Self::CreateShortlist
@@ -269,6 +283,8 @@ impl Change {
             Self::Create
             | Self::SetField { .. }
             | Self::Comment { .. }
+            | Self::Ask { .. }
+            | Self::Answer { .. }
             | Self::Claim { .. }
             | Self::CreateProject { .. }
             | Self::RenameProject { .. }
@@ -584,6 +600,12 @@ mod tests {
             },
             Change::Comment {
                 body: String::new(),
+            },
+            Change::Ask {
+                body: "which?".into(),
+            },
+            Change::Answer {
+                body: "this".into(),
             },
             Change::Link {
                 link_type: "blocks".into(),

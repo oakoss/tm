@@ -355,7 +355,7 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
                 action: ClaimAction::Renew { .. },
             }
             | Change::ShortlistSource => {}
-            Change::Comment { .. } => {
+            Change::Comment { .. } | Change::Ask { .. } | Change::Answer { .. } => {
                 targets.insert((
                     Subject::Issue,
                     op.issue,

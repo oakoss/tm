@@ -6,7 +6,7 @@ use rusqlite::{Connection, Row};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tm_core::ProjectId;
-use tm_core::scheme::{Category, FieldType, PRIORITY_RANKS, Scheme};
+use tm_core::scheme::{Category, FieldType, PRIORITY_RANKS, Scheme, WAITING_ON};
 use uuid::Uuid;
 
 use crate::StoreError;
@@ -27,6 +27,14 @@ pub struct IssueView {
     pub fields: BTreeMap<String, Value>,
     /// Each element mapped to its display form.
     pub sets: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl IssueView {
+    /// Whom the Issue's open question waits on, set by `tm ask`.
+    #[must_use]
+    pub fn waiting_on(&self) -> Option<&str> {
+        self.fields.get(WAITING_ON).and_then(Value::as_str)
+    }
 }
 
 /// The ids, bound as one JSON array of hex strings, read back as blobs.
@@ -202,6 +210,8 @@ pub struct CommentView {
     pub body: String,
     pub utc_ms: i64,
     pub retracted: bool,
+    /// `question` or `answer` for what `tm ask` and `tm answer` wrote.
+    pub role: Option<String>,
 }
 
 const LINKS: &str = "SELECT type, dst, 0 FROM links WHERE src = ?1
@@ -209,9 +219,14 @@ const LINKS: &str = "SELECT type, dst, 0 FROM links WHERE src = ?1
      SELECT type, src, 1 FROM links WHERE dst = ?1
      ORDER BY 1, 3, 2";
 
-const COMMENTS: &str = "SELECT c.op_id, c.actor, o.on_behalf_of, c.body, c.utc_ms, c.retracted
-     FROM comments c LEFT JOIN ops o ON o.op_id = c.op_id
+const COMMENTS: &str = "SELECT c.op_id, c.actor, o.on_behalf_of, c.body, c.utc_ms, c.retracted,
+     c.role FROM comments c LEFT JOIN ops o ON o.op_id = c.op_id
      WHERE c.issue_id = ?1 ORDER BY c.hlc, o.replica_id, c.op_id";
+
+const OPEN_QUESTION: &str = "SELECT c.op_id, c.actor, o.on_behalf_of, c.body, c.utc_ms,
+     c.retracted, c.role FROM comments c LEFT JOIN ops o ON o.op_id = c.op_id
+     WHERE c.issue_id = ?1 AND c.role = 'question' AND c.retracted = 0
+     ORDER BY c.hlc DESC, o.replica_id DESC, c.op_id DESC LIMIT 1";
 
 pub(crate) fn links(conn: &Connection, issue: Uuid) -> Result<Vec<LinkView>, StoreError> {
     let mut stmt = conn.prepare_cached(LINKS)?;
@@ -246,16 +261,32 @@ pub(crate) fn comments(conn: &Connection, issue: Uuid) -> Result<Vec<CommentView
     let mut rows = stmt.query([issue.as_bytes()])?;
     let mut comments = Vec::new();
     while let Some(row) = rows.next()? {
-        comments.push(CommentView {
-            id: uuid_from(&row.get::<_, Vec<u8>>(0)?)?,
-            actor: row.get(1)?,
-            on_behalf_of: row.get(2)?,
-            body: row.get(3)?,
-            utc_ms: row.get(4)?,
-            retracted: row.get(5)?,
-        });
+        comments.push(comment(row)?);
     }
     Ok(comments)
+}
+
+/// `issue`'s open question: its latest question not retracted, ordered as
+/// [`comments`] orders them.
+pub(crate) fn open_question(
+    conn: &Connection,
+    issue: Uuid,
+) -> Result<Option<CommentView>, StoreError> {
+    let mut stmt = conn.prepare_cached(OPEN_QUESTION)?;
+    let mut rows = stmt.query([issue.as_bytes()])?;
+    rows.next()?.map(comment).transpose()
+}
+
+fn comment(row: &Row<'_>) -> Result<CommentView, StoreError> {
+    Ok(CommentView {
+        id: uuid_from(&row.get::<_, Vec<u8>>(0)?)?,
+        actor: row.get(1)?,
+        on_behalf_of: row.get(2)?,
+        body: row.get(3)?,
+        utc_ms: row.get(4)?,
+        retracted: row.get(5)?,
+        role: row.get(6)?,
+    })
 }
 
 /// Whole numbers read back as the integers they were written as.

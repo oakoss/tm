@@ -141,6 +141,22 @@ fn with_nothing_eligible_it_says_why_and_takes_nothing() {
 }
 
 #[test]
+fn a_question_waiting_on_an_answer_is_passed_over() {
+    let scratch = Scratch::new();
+    let repo = repo(&scratch);
+    shortlist(&scratch, &repo, "shortlist create docs --actor claude");
+    shortlist(&scratch, &repo, "shortlist add docs TM-1 TM-2");
+    shortlist(&scratch, &repo, "ask TM-1 --of jace Which?");
+    let doc = json_of(&claude(&scratch, &repo, &[], "--json next --peek"));
+    assert_eq!(doc["data"]["key"], "TM-2", "{doc}");
+    shortlist(&scratch, &repo, "ask TM-2 --of jace And?");
+    let doc = json_of(&claude(&scratch, &repo, &[], "--json next"));
+    assert_eq!(doc["data"]["taken"], false, "{doc}");
+    let first = &doc["data"]["passed_over"][0]["passed_over"];
+    assert_eq!(first, &json!(["waiting"]));
+}
+
+#[test]
 fn a_session_holding_its_lists_last_issue_is_told_so() {
     let scratch = Scratch::new();
     let repo = repo(&scratch);

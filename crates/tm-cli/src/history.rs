@@ -285,12 +285,9 @@ fn describe(
             let shown = elem_label.as_ref().unwrap_or(elem);
             printable(&format!("{}: - {shown}", shown_name(field, label)))
         }
-        Change::Comment { body } => {
-            let first = body.trim().lines().next().unwrap_or_default();
-            let cut: String = first.chars().take(60).collect();
-            let more = if cut == body.trim() { "" } else { "…" };
-            format!("commented: {}{more}", printable(&cut))
-        }
+        Change::Comment { body } => format!("commented: {}", first_line(body)),
+        Change::Ask { body } => format!("asked: {}", first_line(body)),
+        Change::Answer { body } => format!("answered: {}", first_line(body)),
         Change::Retract { retracted, .. } => {
             let line = if *retracted {
                 "retracted a comment"
@@ -342,6 +339,13 @@ struct Before {
 /// the Scheme renames it (ADR 0007), or by its id when none was recorded.
 fn shown_name<'a>(field: &'a str, label: &'a str) -> &'a str {
     if label.is_empty() { field } else { label }
+}
+
+fn first_line(body: &str) -> String {
+    let first = body.trim().lines().next().unwrap_or_default();
+    let cut: String = first.chars().take(60).collect();
+    let more = if cut == body.trim() { "" } else { "…" };
+    format!("{}{more}", printable(&cut))
 }
 
 /// A field's value as the Issue was created with it.

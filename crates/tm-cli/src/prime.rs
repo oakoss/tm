@@ -9,7 +9,7 @@ use std::io::IsTerminal as _;
 use serde_json::{Value, json};
 use tm_core::filter::Context;
 use tm_core::{Actor, ProjectId, Scheme};
-use tm_store::{AgentClaims, Claim, IssueView, Member, Shortlist, Store};
+use tm_store::{AgentClaims, Claim, CommentView, IssueView, Member, Shortlist, Store};
 use uuid::Uuid;
 
 use crate::claim;
@@ -58,40 +58,18 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
     } else {
         READY_SHOWN_WITH_LISTS
     };
-    let read = here.store.read(|store| {
-        let claims = match actor.as_ref().filter(|actor| actor.is_agent()) {
-            Some(actor) => store.claims_by(actor.name(), holder(actor))?,
-            None => AgentClaims::default(),
-        };
-        let mut active = store.find("category:active", Context { me: None })?;
-        let active_total = active.len();
-        active.truncate(ACTIVE_SHOWN);
-        let (ready, total, passed) = ready_queue(store, ready_shown)?;
-        let ids: Vec<Uuid> = claims
-            .held
-            .iter()
-            .chain(&claims.lapsed)
-            .map(|claim| claim.issue)
-            .collect();
-        let claimed = store.issues(&ids)?;
-        let (notes, unread) = handed_notes(store, &claims.held);
-        warnings.extend(unread);
-        let active = store.issues(&active)?;
-        let ready = store.issues(&ready)?;
-        let projects = project_keys(
-            store,
-            &[claimed.clone(), active.clone(), ready.clone()].concat(),
-        )?;
-        Ok::<_, CliError>((
-            (claims, notes),
-            claimed,
-            (active, active_total),
-            (ready, total, passed),
-            projects,
-        ))
-    });
-    let ((claims, notes), claimed, (active, active_total), (ready, total, passed), projects) =
-        read.map_err(|err| err.warned(warnings.clone()))?;
+    let read = here
+        .store
+        .read(|store| gather(store, actor.as_ref(), ready_shown, &mut warnings));
+    let Read {
+        claims,
+        notes,
+        waiting,
+        claimed,
+        active: (active, active_total),
+        ready: (ready, total, passed),
+        projects,
+    } = read.map_err(|err| err.warned(warnings.clone()))?;
     let scheme = here.store.scheme();
 
     let mut text = String::new();
@@ -107,6 +85,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
 
     let session = actor.as_ref().and_then(Actor::session);
     let now_ms = claims.at_ms;
+    let waiting_items = waiting_section(&mut text, actor.as_ref(), &waiting, &projects, now_ms);
     let sessions = by_session(claims, session);
     let claim_items = claims_sections(&mut text, (&sessions, &notes), &claimed, &projects, now_ms);
     let shortlists = next::lists_section(&mut text, &lists, LISTS_ROOM);
@@ -131,6 +110,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
         "project": project,
         "scheme": scheme,
         "actor": actor.as_ref().map(actor_json),
+        "waiting": waiting_items,
         "handed_claims": claim_items.handed,
         "claims": claim_items.held,
         "other_session_claims": claim_items.others,
@@ -152,6 +132,148 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
         output.warnings = warnings;
     }
     Ok(output)
+}
+
+/// What prime reads, in one read transaction.
+struct Read {
+    claims: AgentClaims,
+    notes: HashMap<Uuid, (String, String)>,
+    waiting: Vec<(IssueView, Option<CommentView>)>,
+    claimed: Vec<IssueView>,
+    active: (Vec<IssueView>, usize),
+    ready: (Vec<IssueView>, usize, usize),
+    projects: HashMap<ProjectId, Option<String>>,
+}
+
+fn gather(
+    store: &Store,
+    actor: Option<&Actor>,
+    ready_shown: usize,
+    warnings: &mut Vec<String>,
+) -> Result<Read, CliError> {
+    let waiting = waiting(store, actor, warnings)?;
+    let mut claims = match actor.filter(|actor| actor.is_agent()) {
+        Some(actor) => store.claims_by(actor.name(), holder(actor))?,
+        None => AgentClaims::default(),
+    };
+    // A question's Claim waits with it, and is shown there.
+    let asked: HashSet<Uuid> = waiting.iter().map(|(view, _)| view.id).collect();
+    claims.held.retain(|claim| !asked.contains(&claim.issue));
+    let mut active = store.find("category:active", Context { me: None })?;
+    let active_total = active.len();
+    active.truncate(ACTIVE_SHOWN);
+    let (ready, total, passed) = ready_queue(store, ready_shown)?;
+    let ids: Vec<Uuid> = claims
+        .held
+        .iter()
+        .chain(&claims.lapsed)
+        .map(|claim| claim.issue)
+        .collect();
+    let claimed = store.issues(&ids)?;
+    let (notes, unread) = handed_notes(store, &claims.held);
+    warnings.extend(unread);
+    let active = store.issues(&active)?;
+    let ready = store.issues(&ready)?;
+    let asked: Vec<IssueView> = waiting.iter().map(|(view, _)| view.clone()).collect();
+    let projects = project_keys(
+        store,
+        &[claimed.clone(), active.clone(), ready.clone(), asked].concat(),
+    )?;
+    Ok(Read {
+        claims,
+        notes,
+        waiting,
+        claimed,
+        active: (active, active_total),
+        ready: (ready, total, passed),
+        projects,
+    })
+}
+
+/// The Issues whose question waits on the session's human, each with its
+/// open question, oldest question first.
+fn waiting(
+    store: &Store,
+    actor: Option<&Actor>,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<(IssueView, Option<CommentView>)>, CliError> {
+    let Some(actor) = actor else {
+        return Ok(Vec::new());
+    };
+    let human = actor.on_behalf_of().unwrap_or_else(|| actor.name());
+    let ids = store.find("waiting_on:@me", Context { me: Some(human) })?;
+    let mut waiting = Vec::with_capacity(ids.len());
+    for view in store.issues(&ids)? {
+        let question = match store.open_question(view.id) {
+            Ok(question) => question,
+            Err(err) => {
+                let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
+                warnings.push(format!("the question {name} waits on: {err}"));
+                None
+            }
+        };
+        waiting.push((view, question));
+    }
+    waiting.sort_by_key(|(_, question)| question.as_ref().map_or(i64::MAX, |q| q.utc_ms));
+    Ok(waiting)
+}
+
+/// What waits on the session's human. An Agent's session is told to bring the
+/// questions to its human, who is often there; a person's lists them.
+fn waiting_section(
+    text: &mut String,
+    actor: Option<&Actor>,
+    waiting: &[(IssueView, Option<CommentView>)],
+    projects: &HashMap<ProjectId, Option<String>>,
+    now_ms: i64,
+) -> Value {
+    let human = actor.map(|actor| actor.on_behalf_of().unwrap_or_else(|| actor.name()));
+    if waiting.is_empty() {
+        return json!({ "on": human, "issues": [] });
+    }
+    let count = waiting.len();
+    let heading = match actor.filter(|actor| actor.is_agent()) {
+        Some(_) => format!(
+            "Waiting on {} ({count}): ask them, then tm answer KEY \"...\" records each reply:",
+            printable(human.unwrap_or_default())
+        ),
+        None => format!("Waiting on you ({count}): tm answer KEY \"...\" replies:"),
+    };
+    let _ = writeln!(text, "{heading}");
+    let mut issues = Vec::with_capacity(count);
+    for (i, (view, question)) in waiting.iter().enumerate() {
+        if i < CLAIMS_SHOWN {
+            let _ = writeln!(text, "  {}", line_within(view, TITLE_BYTES));
+            if let Some(question) = question {
+                let first = question.body.lines().next().unwrap_or_default();
+                let _ = writeln!(
+                    text,
+                    "    {} asked {} ago: {}",
+                    printable(&question.actor),
+                    crate::output::span(now_ms - question.utc_ms),
+                    crate::list::cut(&printable(first), TITLE_BYTES * 2)
+                );
+            }
+        }
+        let mut entry = item(view, projects);
+        entry["question"] = question.as_ref().map_or(Value::Null, |question| {
+            json!({
+                "id": question.id,
+                "actor": question.actor,
+                "body": question.body,
+                "utc_ms": question.utc_ms,
+            })
+        });
+        issues.push(entry);
+    }
+    if count > CLAIMS_SHOWN {
+        let _ = writeln!(
+            text,
+            "  and {} more: tm list waiting_on:@me",
+            count - CLAIMS_SHOWN
+        );
+    }
+    json!({ "on": human, "issues": issues })
 }
 
 /// The first `shown` ready Issues, how many are ready and how many of those
@@ -317,8 +439,20 @@ fn handed_notes(store: &Store, held: &[Claim]) -> (HashMap<Uuid, (String, String
     let mut unread = Vec::new();
     for handed in held.iter().filter(|held| held.handed) {
         match store.handed_by(handed.id) {
-            Ok(Some(note)) => {
-                notes.insert(handed.id, note);
+            Ok(Some((by, note))) => {
+                // A Claim a question kept reads as the question's answer once given.
+                let note = match store.answer_for(handed.id) {
+                    Ok(Some((who, reply))) => format!("{who} answered: {reply}"),
+                    Ok(None) => note,
+                    Err(err) => {
+                        unread.push(format!(
+                            "the answer to Claim {}'s question: {err}",
+                            handed.id
+                        ));
+                        note
+                    }
+                };
+                notes.insert(handed.id, (by, note));
             }
             Ok(None) => {}
             Err(err) => unread.push(format!("the note handed with Claim {}: {err}", handed.id)),

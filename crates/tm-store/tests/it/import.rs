@@ -358,6 +358,7 @@ fn a_record_that_cannot_say_what_it_means_is_refused() {
         (json!({"fields": {"tags": "x"}}), "tags"),
         (json!({"fields": {"tags": [1]}}), "tags"),
         (json!({"fields": {"title": "shadow"}}), "title"),
+        (json!({"fields": {"waiting_on": "kim"}}), "waiting_on"),
         (json!({"labels": ["Backend", "backend"]}), "labels"),
         (
             json!({"links": [{"type": "a/b", "target": "beads:z"}]}),

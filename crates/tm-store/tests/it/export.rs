@@ -283,6 +283,20 @@ fn a_record_carries_its_place_and_a_project_line_its_lists() {
 }
 
 #[test]
+fn an_issue_record_carries_no_wait_on_a_question() {
+    let dir = TempDir::new();
+    let mut store = source(&dir, &ManualClock::at(1_000));
+    let issue = new_issue(&mut store);
+    store.ask(&jace(), issue, "Which?", "kim", None).unwrap();
+    let records = lines(&export(&store));
+    let record = records
+        .iter()
+        .find(|record| record["_type"] == "issue")
+        .unwrap();
+    assert_eq!(record["fields"].get("waiting_on"), None, "{record}");
+}
+
+#[test]
 fn a_copy_of_a_store_in_use_holds_what_its_wal_holds() {
     let (dir, other) = (TempDir::new(), TempDir::new());
     let clock = ManualClock::at(1_000);

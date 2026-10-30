@@ -49,6 +49,17 @@ fn write(
     lasts: &Lasts,
 ) -> Result<(Output, Vec<String>), CliError> {
     let id = here.issue(reference)?;
+    if let Some(waiting) = here
+        .store
+        .issue(id)?
+        .and_then(|view| view.waiting_on().map(str::to_owned))
+    {
+        return Err(CliError::new(
+            "waiting",
+            format!("{reference} waits on {waiting}'s answer; tm next takes other work"),
+        )
+        .with("waiting_on", waiting));
+    }
     let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
         .map_err(|message| CliError::new("no_identity", message))?;
     let actor = identity.actor.clone();

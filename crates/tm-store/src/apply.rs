@@ -180,26 +180,9 @@ pub(crate) fn apply(
         Change::Retract { comment, retracted } => {
             retract(tx, op.subject, comment, retracted, &version)?;
         }
-        Change::Comment { body } => {
-            tx.execute(
-                "INSERT INTO comments
-                 (op_id, issue_id, actor, body, hlc, utc_ms, offset_min, retracted)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, coalesce(
-                   (SELECT present FROM field_versions
-                    WHERE issue_id = ?2 AND field = ?8 AND elem = ?9), 0))",
-                params![
-                    op.op_id.as_bytes(),
-                    op.subject.as_bytes(),
-                    op.actor,
-                    body,
-                    sql_int(op.hlc.raw())?,
-                    op.utc_ms,
-                    op.offset_min,
-                    COMMENTS_FIELD,
-                    op.op_id.to_string(),
-                ],
-            )?;
-        }
+        Change::Comment { body } => comment(tx, op, &body, None)?,
+        Change::Ask { body } => comment(tx, op, &body, Some("question"))?,
+        Change::Answer { body } => comment(tx, op, &body, Some("answer"))?,
     }
     // Every operation counts as activity, comments included.
     tx.execute(
@@ -207,6 +190,34 @@ pub(crate) fn apply(
         params![op.utc_ms, op.subject.as_bytes()],
     )?;
     Ok(None)
+}
+
+fn comment(
+    tx: &Transaction<'_>,
+    op: &Op,
+    body: &str,
+    role: Option<&str>,
+) -> Result<(), StoreError> {
+    tx.execute(
+        "INSERT INTO comments
+         (op_id, issue_id, actor, body, hlc, utc_ms, offset_min, retracted, role)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, coalesce(
+           (SELECT present FROM field_versions
+            WHERE issue_id = ?2 AND field = ?8 AND elem = ?9), 0), ?10)",
+        params![
+            op.op_id.as_bytes(),
+            op.subject.as_bytes(),
+            op.actor,
+            body,
+            sql_int(op.hlc.raw())?,
+            op.utc_ms,
+            op.offset_min,
+            COMMENTS_FIELD,
+            op.op_id.to_string(),
+            role,
+        ],
+    )?;
+    Ok(())
 }
 
 /// `base_seq` and `server_seq` are per Project, so an Issue operation filed

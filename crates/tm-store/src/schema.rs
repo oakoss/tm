@@ -3,7 +3,7 @@
 
 /// Stamped into `PRAGMA user_version`; a store with a different value is
 /// rebuilt on open.
-pub(crate) const PROJECTION_VERSION: i64 = 13;
+pub(crate) const PROJECTION_VERSION: i64 = 14;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
 /// Until tm v1 is released the log changes in place (ADR 0010).
@@ -260,7 +260,9 @@ CREATE TABLE comments (
   hlc INTEGER NOT NULL,
   utc_ms INTEGER NOT NULL,
   offset_min INTEGER NOT NULL,
-  retracted INTEGER NOT NULL DEFAULT 0
+  retracted INTEGER NOT NULL DEFAULT 0,
+  -- 'question' or 'answer' for the comments tm ask and tm answer write.
+  role TEXT
 ) STRICT;
 
 CREATE INDEX comments_by_issue ON comments (issue_id, hlc);

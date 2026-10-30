@@ -57,7 +57,9 @@ pub(crate) fn check(
         return Err(StoreError::UnknownIssue(issue_id));
     }
     match change {
-        Change::Create | Change::Comment { .. } => Ok(change),
+        Change::Create | Change::Comment { .. } | Change::Ask { .. } | Change::Answer { .. } => {
+            Ok(change)
+        }
         Change::CreateProject { .. }
         | Change::RenameProject { .. }
         | Change::CreateShortlist

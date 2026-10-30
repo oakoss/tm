@@ -240,7 +240,8 @@ fn close(
         let commit = closing.with_commit(&closing.commit);
         let _ = write!(record, "; also closed by {commit}");
     }
-    let changes = [set("status", json!(done)), Change::Comment { body: record }];
+    let mut changes = vec![set("status", json!(done)), Change::Comment { body: record }];
+    changes.extend(moves::unwait(&view));
     let drafts = || {
         changes
             .iter()
