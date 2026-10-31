@@ -330,6 +330,15 @@ impl Change {
         }
     }
 
+    /// The value a Short-list or memory field is set to.
+    #[must_use]
+    pub const fn set_value(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::SetShortlist { value, .. } | Self::SetMemory { value, .. } => Some(value),
+            _ => None,
+        }
+    }
+
     /// Rejects field names that cannot be used safely as JSON object keys and
     /// filter qualifiers, and Project keys not in their stored form.
     ///
@@ -474,11 +483,9 @@ fn check_memory(field: memory::Field, value: &serde_json::Value) -> Result<(), O
         })
     };
     match field {
-        memory::Field::Key => match value.as_str() {
-            Some(key) if memory::is_key(key) => Ok(()),
-            _ => invalid(
-                "must be 1 to 64 lowercase letters, digits or '-', starting with a letter or digit",
-            ),
+        memory::Field::Key => match value.as_str().map(memory::check_key) {
+            Some(Ok(())) => Ok(()),
+            _ => invalid(memory::KEY_RULE),
         },
         memory::Field::Body if value.is_string() => Ok(()),
         memory::Field::Body => invalid("must be text"),

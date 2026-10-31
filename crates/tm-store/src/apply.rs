@@ -535,6 +535,74 @@ impl Versions {
             Self::Memory => ("memory_versions", "memory_id"),
         }
     }
+
+    const fn records(self) -> &'static str {
+        match self {
+            Self::Issue => "issues",
+            Self::Shortlist => "shortlists",
+            Self::Memory => "memories",
+        }
+    }
+
+    /// The Project a record of this kind belongs to, if it exists.
+    pub(crate) fn project_of(
+        self,
+        conn: &Connection,
+        id: Uuid,
+    ) -> Result<Option<ProjectId>, StoreError> {
+        let text: Option<String> = conn
+            .query_row(
+                &format!("SELECT project FROM {} WHERE id = ?1", self.records()),
+                [id.as_bytes()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        text.map(|text| project_from(&text)).transpose()
+    }
+
+    /// Inserts the record `op` creates, refused as `duplicate` when one holds
+    /// its id.
+    pub(crate) fn insert(
+        self,
+        tx: &Transaction<'_>,
+        op: &Op,
+        duplicate: StoreError,
+    ) -> Result<(), StoreError> {
+        if !project::exists(tx, op.project)? {
+            return Err(StoreError::UnknownProject(op.project));
+        }
+        if self.project_of(tx, op.subject)?.is_some() {
+            return Err(duplicate);
+        }
+        tx.execute(
+            &format!(
+                "INSERT INTO {} (id, project, created_hlc) VALUES (?1, ?2, ?3)",
+                self.records()
+            ),
+            params![
+                op.subject.as_bytes(),
+                op.project.to_string(),
+                sql_int(op.hlc.raw())?
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Refuses `op` unless the record it writes exists in its Project:
+    /// `unknown` when none does, `mismatch` given the Project it is in.
+    pub(crate) fn owned(
+        self,
+        tx: &Transaction<'_>,
+        op: &Op,
+        unknown: StoreError,
+        mismatch: impl FnOnce(ProjectId) -> StoreError,
+    ) -> Result<(), StoreError> {
+        let expected = self.project_of(tx, op.subject)?.ok_or(unknown)?;
+        if expected != op.project {
+            return Err(mismatch(expected));
+        }
+        Ok(())
+    }
 }
 
 fn wins(

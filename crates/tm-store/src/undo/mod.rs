@@ -13,6 +13,10 @@ use uuid::Uuid;
 use crate::apply::{Version, issue_project, uuid_from};
 use crate::{Draft, Provenance, Store, StoreError, WallTime};
 
+mod record;
+
+use record::Record;
+
 /// One field or set element as undo finds it and would leave it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Restore {
@@ -486,11 +490,8 @@ fn remove_created(
     for op in ops {
         match op.change {
             Change::Create if created.insert(op.issue) => archive(conn, op.issue, plan)?,
-            Change::CreateShortlist if created.insert(op.issue) => {
-                tombstone(conn, op.issue, plan)?;
-            }
-            Change::CreateMemory if created.insert(op.issue) => {
-                forget_created(conn, op.issue, plan)?;
+            Change::CreateShortlist | Change::CreateMemory if created.insert(op.issue) => {
+                Record::read(conn, op.change.subject(), op.issue)?.retire(op.issue, plan);
             }
             _ => {}
         }
@@ -518,60 +519,6 @@ fn archive(conn: &Connection, issue: Uuid, plan: &mut UndoPlan) -> Result<(), St
     });
     plan.changes
         .push((project, issue, set_field("archived", json!(true))));
-    Ok(())
-}
-
-/// A created Short-list is deleted, which keeps its record and everything since.
-fn tombstone(conn: &Connection, list: Uuid, plan: &mut UndoPlan) -> Result<(), StoreError> {
-    let read = crate::shortlist::read(conn, list)?.ok_or(StoreError::UnknownShortlist(list))?;
-    if read.deleted {
-        return Ok(());
-    }
-    plan.restores.push(Restore {
-        target: Target::Shortlist {
-            shortlist: list,
-            name: read.name,
-        },
-        field: shortlist::Field::Deleted.as_str().into(),
-        elem: None,
-        from: json!(false),
-        to: json!(true),
-    });
-    plan.changes.push((
-        read.project,
-        list,
-        Change::SetShortlist {
-            field: shortlist::Field::Deleted,
-            value: json!(true),
-        },
-    ));
-    Ok(())
-}
-
-/// A created memory is forgotten, which keeps its record and everything since.
-fn forget_created(conn: &Connection, id: Uuid, plan: &mut UndoPlan) -> Result<(), StoreError> {
-    let read = crate::memory::read(conn, id)?.ok_or(StoreError::UnknownMemory(id))?;
-    if read.forgotten {
-        return Ok(());
-    }
-    plan.restores.push(Restore {
-        target: Target::Memory {
-            memory: id,
-            key: read.key,
-        },
-        field: memory::Field::Forgotten.as_str().into(),
-        elem: None,
-        from: json!(false),
-        to: json!(true),
-    });
-    plan.changes.push((
-        read.project,
-        id,
-        Change::SetMemory {
-            field: memory::Field::Forgotten,
-            value: json!(true),
-        },
-    ));
     Ok(())
 }
 
@@ -649,11 +596,7 @@ fn restore(
             reason,
         });
     }
-    let current = match &record {
-        Record::List(_) => list_state(conn, issue, field, elem)?,
-        Record::Memory(memory) => memory_state(memory, field)?,
-        Record::Issue => current_state(conn, batch.scheme, issue, field, elem)?,
-    };
+    let current = record.state(conn, batch.scheme, (issue, field, elem))?;
     let mut prior: Option<TargetOp> = None;
     let mut written_since = false;
     for target_op in target_ops(conn, issue, field, elem)? {
@@ -684,32 +627,23 @@ fn restore(
         return Ok(());
     }
     let prior = prior.map(|op| op.change);
-    let no_value = |kind: &str| StoreError::CannotUndo {
-        batch: batch.batch,
-        reason: format!("{kind} field {field} held no value before it to restore"),
-    };
-    let (to, change) = match &record {
-        Record::List(_) => {
-            list_inverse(field, elem, prior).ok_or_else(|| no_value("Short-list"))?
-        }
-        Record::Memory(_) => memory_inverse(field, prior).ok_or_else(|| no_value("memory"))?,
-        Record::Issue => {
-            // A comment the batch wrote has no earlier state; the batch's own
-            // comment is undone by retracting it, a retraction by showing the
-            // comment again.
-            let wrote_comment = field == COMMENTS_FIELD
-                && Uuid::parse_str(elem).is_ok_and(|comment| batch.in_batch.contains(&comment));
-            inverse(field, elem, prior, wrote_comment)?
-        }
-    };
+    // A comment the batch wrote has no earlier state; the batch's own comment
+    // is undone by retracting it, a retraction by showing the comment again.
+    let wrote_comment = field == COMMENTS_FIELD
+        && Uuid::parse_str(elem).is_ok_and(|comment| batch.in_batch.contains(&comment));
+    let (to, change) = record
+        .inverse((field, elem), prior, wrote_comment)?
+        .ok_or_else(|| StoreError::CannotUndo {
+            batch: batch.batch,
+            reason: format!(
+                "{} field {field} held no value before it to restore",
+                record.kind()
+            ),
+        })?;
     if to == current {
         return Ok(());
     }
-    let project = match &record {
-        Record::List(list) => list.project,
-        Record::Memory(memory) => memory.project,
-        Record::Issue => issue_project(conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?,
-    };
+    let project = record.project(conn, issue)?;
     plan.restores.push(Restore {
         target,
         field: field.to_owned(),
@@ -782,134 +716,6 @@ fn current_state(
         .first()
         .and_then(|view| view.fields.get(field).cloned())
         .unwrap_or(Value::Null))
-}
-
-/// What a Short-list field holds now, or whether an Actor is on it.
-fn list_state(conn: &Connection, list: Uuid, field: &str, elem: &str) -> Result<Value, StoreError> {
-    if !elem.is_empty() {
-        let present: Option<bool> = conn
-            .query_row(
-                "SELECT present FROM shortlist_versions
-                 WHERE shortlist_id = ?1 AND field = ?2 AND elem = ?3",
-                params![list.as_bytes(), field, elem],
-                |row| row.get(0),
-            )
-            .optional()?;
-        return Ok(json!(present.unwrap_or(false)));
-    }
-    let read = crate::shortlist::read(conn, list)?.ok_or(StoreError::UnknownShortlist(list))?;
-    Ok(match field {
-        "name" => json!(read.name),
-        "size" => json!(read.size),
-        "deleted" => json!(read.deleted),
-        other => return Err(StoreError::Corrupt(format!("Short-list field {other:?}"))),
-    })
-}
-
-/// The record a restore writes to, as read before it.
-enum Record {
-    Issue,
-    List(crate::shortlist::Shortlist),
-    Memory(crate::memory::Memory),
-}
-
-impl Record {
-    fn read(conn: &Connection, subject: Subject, id: Uuid) -> Result<Self, StoreError> {
-        Ok(match subject {
-            Subject::Shortlist => Self::List(
-                crate::shortlist::read(conn, id)?.ok_or(StoreError::UnknownShortlist(id))?,
-            ),
-            Subject::Memory => {
-                Self::Memory(crate::memory::read(conn, id)?.ok_or(StoreError::UnknownMemory(id))?)
-            }
-            Subject::Issue | Subject::Project => Self::Issue,
-        })
-    }
-
-    /// Why a write to `field` waits: a list deleted, or a memory forgotten,
-    /// since takes no writes until that is undone.
-    fn gone(&self, field: &str) -> Option<String> {
-        match self {
-            Self::List(list) if list.deleted && field != shortlist::Field::Deleted.as_str() => {
-                Some(format!(
-                    "Short-list {} has been deleted since; undo its delete first",
-                    list.name.as_deref().unwrap_or("without a name")
-                ))
-            }
-            Self::Memory(memory)
-                if memory.forgotten && field != memory::Field::Forgotten.as_str() =>
-            {
-                Some(format!(
-                    "memory {} has been forgotten since; undo its forget first",
-                    memory.key.as_deref().unwrap_or("without a key")
-                ))
-            }
-            _ => None,
-        }
-    }
-
-    fn target(&self, id: Uuid) -> Target {
-        match self {
-            Self::List(list) => Target::Shortlist {
-                shortlist: id,
-                name: list.name.clone(),
-            },
-            Self::Memory(memory) => Target::Memory {
-                memory: id,
-                key: memory.key.clone(),
-            },
-            Self::Issue => Target::Issue { issue: id },
-        }
-    }
-}
-
-fn memory_state(memory: &crate::memory::Memory, field: &str) -> Result<Value, StoreError> {
-    Ok(match field {
-        "key" => json!(memory.key),
-        "body" => json!(memory.body),
-        "forgotten" => json!(memory.forgotten),
-        other => return Err(StoreError::Corrupt(format!("memory field {other:?}"))),
-    })
-}
-
-/// [`inverse`] for a memory. With no prior winner it is not forgotten; a key
-/// or body has no value to restore, as a create's own are undone by
-/// forgetting it.
-fn memory_inverse(field: &str, prior: Option<Change>) -> Option<(Value, Change)> {
-    let unset = |field, value: Value| Some((value.clone(), Change::SetMemory { field, value }));
-    match prior {
-        Some(Change::SetMemory { field, value }) => unset(field, value),
-        None if field == memory::Field::Forgotten.as_str() => {
-            unset(memory::Field::Forgotten, json!(false))
-        }
-        _ => None,
-    }
-}
-
-/// [`inverse`] for a Short-list. With no prior winner, the list is not
-/// deleted, an Actor is absent and the size is the default; a name has no
-/// value to restore, which a merge that brought the list without one leaves,
-/// so none is returned and the batch cannot be undone.
-fn list_inverse(field: &str, elem: &str, prior: Option<Change>) -> Option<(Value, Change)> {
-    let unset = |field, value: Value| Some((value.clone(), Change::SetShortlist { field, value }));
-    match prior {
-        Some(Change::SetShortlist { field, value }) => unset(field, value),
-        Some(change @ Change::ShortlistActor { present, .. }) => Some((json!(present), change)),
-        None if field == shortlist::ACTORS => Some((
-            json!(false),
-            Change::ShortlistActor {
-                actor: elem.to_owned(),
-                present: false,
-            },
-        )),
-        None if field == shortlist::Field::Deleted.as_str() => {
-            unset(shortlist::Field::Deleted, json!(false))
-        }
-        None if field == shortlist::Field::Size.as_str() => {
-            unset(shortlist::Field::Size, json!(shortlist::DEFAULT_SIZE))
-        }
-        _ => None,
-    }
 }
 
 /// The state the prior winner left and the change that writes it back; with

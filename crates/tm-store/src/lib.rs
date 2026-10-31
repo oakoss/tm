@@ -14,6 +14,7 @@ mod history;
 mod import;
 mod import_list;
 mod import_memory;
+mod import_record;
 mod membership;
 mod memory;
 mod next;
@@ -496,6 +497,24 @@ pub struct Draft {
     pub project: ProjectId,
     pub subject: Uuid,
     pub change: Change,
+}
+
+/// One draft for each of `changes` to the record `subject`.
+pub(crate) fn drafts(
+    actor: &Actor,
+    project: ProjectId,
+    subject: Uuid,
+    changes: Vec<Change>,
+) -> Vec<Draft> {
+    changes
+        .into_iter()
+        .map(|change| Draft {
+            actor: actor.clone(),
+            project,
+            subject,
+            change,
+        })
+        .collect()
 }
 
 /// Where an imported change came from, and when it happened there (ADR 0013).
