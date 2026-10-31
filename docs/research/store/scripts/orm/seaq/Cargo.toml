@@ -1,0 +1,19 @@
+[package]
+name = "seaq"
+version = "0.1.0"
+edition = "2024"
+
+# Built on its own, outside tm's workspace.
+[workspace]
+
+[dependencies]
+rusqlite = { version = "0.38", features = ["bundled"] }
+sea-query = "1.0.2"
+sea-query-rusqlite = "0.8.0"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+opt-level = 3
