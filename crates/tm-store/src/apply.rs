@@ -9,11 +9,12 @@
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value as Json;
-use tm_core::op::{COMMENTS_FIELD, ClaimAction};
+use tm_core::op::{COMMENTS_FIELD, ClaimAction, OpError};
 use tm_core::scheme::priority_rank;
 use tm_core::{Change, Hlc, Op, ProjectId, Subject, link};
 use uuid::Uuid;
 
+use crate::read::CommentRole;
 use crate::{StoreError, project, shortlist};
 
 /// What decides a field: the winning operation's position and clock.
@@ -180,9 +181,14 @@ pub(crate) fn apply(
         Change::Retract { comment, retracted } => {
             retract(tx, op.subject, comment, retracted, &version)?;
         }
-        Change::Comment { body } => comment(tx, op, &body, None)?,
-        Change::Ask { body } => comment(tx, op, &body, Some("question"))?,
-        Change::Answer { body } => comment(tx, op, &body, Some("answer"))?,
+        Change::Comment { body } => comment(tx, op, &body, None, &[])?,
+        Change::Ask { body, options } => {
+            comment(tx, op, &body, Some(CommentRole::Question), &options)?;
+        }
+        Change::Answer { body } => comment(tx, op, &body, Some(CommentRole::Answer), &[])?,
+        Change::Withdraw { body } => {
+            comment(tx, op, &body, Some(CommentRole::Withdrawn), &[])?;
+        }
     }
     // Every operation counts as activity, comments included.
     tx.execute(
@@ -196,14 +202,19 @@ fn comment(
     tx: &Transaction<'_>,
     op: &Op,
     body: &str,
-    role: Option<&str>,
+    role: Option<CommentRole>,
+    options: &[String],
 ) -> Result<(), StoreError> {
+    let options = (!options.is_empty())
+        .then(|| serde_json::to_string(options))
+        .transpose()
+        .map_err(OpError::from)?;
     tx.execute(
         "INSERT INTO comments
-         (op_id, issue_id, actor, body, hlc, utc_ms, offset_min, retracted, role)
+         (op_id, issue_id, actor, body, hlc, utc_ms, offset_min, retracted, role, options)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, coalesce(
            (SELECT present FROM field_versions
-            WHERE issue_id = ?2 AND field = ?8 AND elem = ?9), 0), ?10)",
+            WHERE issue_id = ?2 AND field = ?8 AND elem = ?9), 0), ?10, ?11)",
         params![
             op.op_id.as_bytes(),
             op.subject.as_bytes(),
@@ -214,7 +225,8 @@ fn comment(
             op.offset_min,
             COMMENTS_FIELD,
             op.op_id.to_string(),
-            role,
+            role.map(CommentRole::as_str),
+            options,
         ],
     )?;
     Ok(())

@@ -23,7 +23,7 @@ A blocker that waits on an outside event, such as a pull request merging, rather
 _Avoid_: Check, condition
 
 **Question**:
-A decision only a person can make that an Issue waits on, asked with `tm ask` and settled with `tm answer`; the Issue is waiting on that person until then.
+A decision only a person can make that an Issue waits on, asked with `tm ask`, which may offer options, and settled with `tm answer` or, by its asker, `tm withdraw`; the Issue is waiting on that person until then.
 _Avoid_: Blocker, request, prompt
 
 **Issue type**:

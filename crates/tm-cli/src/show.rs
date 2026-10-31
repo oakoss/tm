@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 use tm_core::Scheme;
 use tm_core::scheme::{Category, FieldType, Status};
-use tm_store::{ClaimState, CommentView, IssueView, LinkView, Store};
+use tm_store::{ClaimState, CommentRole, CommentView, IssueView, LinkView, Store};
 use uuid::Uuid;
 
 use crate::claim::{self, claim_json};
@@ -91,7 +91,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
             .and_then(ClaimState::lapsed)
             .map(|lapsed| claim_json(lapsed, now_ms)),
         "links": links.iter().map(|(link, other)| link_json(link, other.as_ref())).collect::<Vec<_>>(),
-        "comments": comments.iter().map(comment_json).collect::<Vec<_>>(),
+        "comments": comments_json(&comments),
         "children": children.json(),
         "moves_to": moves.iter().map(|status| status_json(status)).collect::<Vec<_>>(),
     });
@@ -327,7 +327,7 @@ fn moves_line(moves: &[&Status]) -> String {
 
 /// A retracted comment keeps its place and author, not its words.
 fn comment_json(comment: &CommentView) -> Value {
-    json!({
+    let mut json = json!({
         "id": comment.id,
         "actor": comment.actor,
         "on_behalf_of": comment.on_behalf_of,
@@ -335,7 +335,40 @@ fn comment_json(comment: &CommentView) -> Value {
         "utc_ms": comment.utc_ms,
         "retracted": comment.retracted,
         "role": comment.role,
-    })
+    });
+    if !comment.options.is_empty() && !comment.retracted {
+        json["options"] = json!(comment.options);
+    }
+    json
+}
+
+/// Each comment as JSON; an answer that is one of its question's options
+/// carries that option's number as `choice`.
+fn comments_json(comments: &[CommentView]) -> Vec<Value> {
+    let mut options: &[String] = &[];
+    let mut all = Vec::with_capacity(comments.len());
+    for comment in comments {
+        let mut json = comment_json(comment);
+        match comment.role {
+            Some(CommentRole::Question) if !comment.retracted => options = &comment.options,
+            Some(CommentRole::Answer) if !comment.retracted => {
+                json["choice"] = json!(tm_core::op::choice(options, &comment.body));
+            }
+            _ => {}
+        }
+        all.push(json);
+    }
+    all
+}
+
+/// A question's options as numbered choices, `1. SQLite  2. Postgres`.
+pub(crate) fn numbered(options: &[String]) -> String {
+    options
+        .iter()
+        .enumerate()
+        .map(|(i, option)| format!("{}. {}", i + 1, printable(option)))
+        .collect::<Vec<_>>()
+        .join("  ")
 }
 
 fn write_comment(text: &mut String, comment: &CommentView) {
@@ -343,10 +376,11 @@ fn write_comment(text: &mut String, comment: &CommentView) {
         Some(human) => format!("{} for {human}", comment.actor),
         None => comment.actor.clone(),
     };
-    let by = match comment.role.as_deref() {
-        Some("question") => format!("{by} asked"),
-        Some("answer") => format!("{by} answered"),
-        _ => by,
+    let by = match comment.role {
+        Some(CommentRole::Question) => format!("{by} asked"),
+        Some(CommentRole::Answer) => format!("{by} answered"),
+        Some(CommentRole::Withdrawn) => format!("{by} withdrew the question"),
+        None => by,
     };
     let by = format!("{by}, {}", local_time(comment.utc_ms));
     if comment.retracted {
@@ -356,6 +390,9 @@ fn write_comment(text: &mut String, comment: &CommentView) {
     let _ = writeln!(text, "\n{by}:");
     for line in comment.body.lines() {
         let _ = writeln!(text, "  {}", printable(line));
+    }
+    if !comment.options.is_empty() {
+        let _ = writeln!(text, "  options: {}", numbered(&comment.options));
     }
 }
 

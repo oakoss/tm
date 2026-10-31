@@ -78,9 +78,12 @@ A decision only your human can make
     tm ask KEY "question"                parks the Issue on their answer and
                                          keeps your Claim for you; take
                                          other work with tm next
-  What waits on your human shows in tm prime; bring those questions to
-  them and record each reply with tm answer KEY "reply". Once it is
-  answered, your next tm start KEY resumes it.
+  Offer the likely replies with --option A --option B; they pick one by
+  number or answer in their own words. What waits on your human shows in
+  your tm prime; bring those questions to them and record each reply
+  with tm answer KEY "reply". Once it is answered, tm start KEY in your
+  next session resumes it. If you settle a question yourself first,
+  withdraw it with tm withdraw KEY "why".
 
 New work found along the way
   tm create --type task --title TEXT --parent KEY

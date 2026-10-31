@@ -7,8 +7,8 @@ use std::collections::{HashMap, VecDeque};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
-use tm_core::op::{CLAIM_FIELD, COMMENTS_FIELD};
-use tm_core::scheme::{Field, FieldType, Scheme, is_date, priority_rank};
+use tm_core::op::{CLAIM_FIELD, COMMENTS_FIELD, question_options};
+use tm_core::scheme::{Field, FieldType, Scheme, WAITING_ON, is_date, priority_rank};
 use tm_core::{Actor, Change, Subject, link};
 use uuid::Uuid;
 
@@ -38,6 +38,73 @@ pub(crate) fn check_importable(change: &Change) -> Result<(), StoreError> {
     }
 }
 
+fn check_set(
+    tx: &Transaction<'_>,
+    scheme: &Scheme,
+    writing: &Writing<'_>,
+    issue_id: Uuid,
+    (field, value): (String, Value),
+) -> Result<Change, StoreError> {
+    // A stored value can be cleared even when the Scheme lacks its field.
+    if value.is_null() && scheme.field(&field).is_none() && has_value(tx, issue_id, &field)? {
+        return Ok(Change::SetField {
+            label: field.clone(),
+            field,
+            value,
+            value_label: None,
+        });
+    }
+    let def = settable(scheme, &field)?;
+    if def.field_type.is_multi() {
+        return Err(invalid(def, "holds several values; add or remove them", []));
+    }
+    let value_label = match (def.field_type, &value) {
+        (FieldType::Shortlist, Value::String(list)) => {
+            member_of(tx, scheme, (issue_id, def, list), writing.undoing)?
+        }
+        _ => check_value(tx, scheme, issue_id, def, &value)?,
+    };
+    Ok(Change::SetField {
+        label: def.label.clone(),
+        field,
+        value,
+        value_label,
+    })
+}
+
+/// A question's options as offered, and an answer or withdrawal only of an
+/// open question, a withdrawal only by its asker.
+fn check_question(
+    tx: &Transaction<'_>,
+    actor: &Actor,
+    issue_id: Uuid,
+    change: Change,
+) -> Result<Change, StoreError> {
+    let invalid = |field: &str, reason: String| StoreError::Invalid {
+        field: field.to_owned(),
+        reason,
+        valid: Vec::new(),
+    };
+    if let Change::Ask { body, options } = change {
+        let options = question_options(&options).map_err(|reason| invalid("options", reason))?;
+        return Ok(Change::Ask { body, options });
+    }
+    // An answered question stays the latest, so only the wait says it is open.
+    let open = if has_value(tx, issue_id, WAITING_ON)? {
+        crate::read::open_question(tx, issue_id)?
+    } else {
+        None
+    }
+    .ok_or_else(|| invalid(WAITING_ON, "has no open question to settle".into()))?;
+    if matches!(change, Change::Withdraw { .. }) && !crate::ask::asked_by(&open, actor) {
+        return Err(invalid(
+            WAITING_ON,
+            "is withdrawn only by whoever asked".into(),
+        ));
+    }
+    Ok(change)
+}
+
 /// Checks `change` against its writer, the Scheme and the Issue's current
 /// state, and fills in the display labels the operation records.
 pub(crate) fn check(
@@ -57,8 +124,9 @@ pub(crate) fn check(
         return Err(StoreError::UnknownIssue(issue_id));
     }
     match change {
-        Change::Create | Change::Comment { .. } | Change::Ask { .. } | Change::Answer { .. } => {
-            Ok(change)
+        Change::Create | Change::Comment { .. } => Ok(change),
+        Change::Ask { .. } | Change::Answer { .. } | Change::Withdraw { .. } => {
+            check_question(tx, writing.actor, issue_id, change)
         }
         Change::CreateProject { .. }
         | Change::RenameProject { .. }
@@ -69,32 +137,7 @@ pub(crate) fn check(
             unreachable!("Project and Short-list operations return above")
         }
         Change::SetField { field, value, .. } => {
-            // A stored value can be cleared even when the Scheme lacks its field.
-            if value.is_null() && scheme.field(&field).is_none() && has_value(tx, issue_id, &field)?
-            {
-                return Ok(Change::SetField {
-                    label: field.clone(),
-                    field,
-                    value,
-                    value_label: None,
-                });
-            }
-            let def = settable(scheme, &field)?;
-            if def.field_type.is_multi() {
-                return Err(invalid(def, "holds several values; add or remove them", []));
-            }
-            let value_label = match (def.field_type, &value) {
-                (FieldType::Shortlist, Value::String(list)) => {
-                    member_of(tx, scheme, (issue_id, def, list), writing.undoing)?
-                }
-                _ => check_value(tx, scheme, issue_id, def, &value)?,
-            };
-            Ok(Change::SetField {
-                label: def.label.clone(),
-                field,
-                value,
-                value_label,
-            })
+            check_set(tx, scheme, writing, issue_id, (field, value))
         }
         Change::Add { field, elem, .. } => {
             let (def, elem, elem_label) = member(scheme, &field, &elem)?;

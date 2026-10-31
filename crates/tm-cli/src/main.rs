@@ -134,7 +134,15 @@ enum Command {
     Ask(ask::Ask),
     /// Answer the question an Issue waits on; the Agent that asked resumes it
     /// with `tm start`.
+    ///
+    /// A number or an option's words picks one of the question's options;
+    /// any other reply is taken as written. At a terminal, `tm answer KEY`
+    /// asks for the reply, and a bare `tm answer` walks each question
+    /// waiting on you.
     Answer(ask::Answer),
+    /// Withdraw a question you asked and settled yourself, saying why; the
+    /// Issue waits on no one and your Agent resumes it with `tm start`.
+    Withdraw(ask::Withdraw),
     /// Release a Claim. The session holding it, and the human it is held
     /// for, may leave out the id `tm claim` printed.
     #[command(group = ArgGroup::new("what").required(true).args(["issue", "mine"]))]
@@ -458,7 +466,8 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Release { issue: None, .. }) => claim::release_mine(),
         Some(Command::Handoff(args)) => handoff::run(&args),
         Some(Command::Ask(args)) => ask::ask(&args),
-        Some(Command::Answer(args)) => ask::answer(&args),
+        Some(Command::Answer(args)) => ask::answer(&args, json),
+        Some(Command::Withdraw(args)) => ask::withdraw(&args),
         Some(Command::Setup { harness, undo, yes }) => {
             setup::run(&setup::Setup { harness, undo, yes }, json)
         }

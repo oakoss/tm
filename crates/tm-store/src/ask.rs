@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::apply::issue_project;
 use crate::claim::{Claim, current};
-use crate::read::{self, CommentView};
+use crate::read::{self, CommentView, Settled};
 use crate::{Draft, Store, StoreError};
 
 impl Store {
@@ -29,6 +29,7 @@ impl Store {
         actor: &Actor,
         issue: Uuid,
         question: &str,
+        options: &[String],
         of: &str,
         held: Option<&Claim>,
     ) -> Result<Vec<Op>, StoreError> {
@@ -42,6 +43,7 @@ impl Store {
         let mut drafts = vec![
             draft(Change::Ask {
                 body: question.to_owned(),
+                options: options.to_vec(),
             }),
             draft(self.waiting_on(Some(of))),
         ];
@@ -97,6 +99,35 @@ impl Store {
         question: Uuid,
         reply: &str,
     ) -> Result<Vec<Op>, StoreError> {
+        let body = reply.to_owned();
+        self.settle_question(actor, issue, question, Change::Answer { body })
+    }
+
+    /// Withdraws `issue`'s open question `question` with `reason`, as
+    /// [`Store::answer`] answers it; only its asker may.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Invalid`] when the Issue no longer waits on `question`
+    /// or `actor` did not ask it, or as [`Store::append_all`].
+    pub fn withdraw(
+        &mut self,
+        actor: &Actor,
+        issue: Uuid,
+        question: Uuid,
+        reason: &str,
+    ) -> Result<Vec<Op>, StoreError> {
+        let body = reason.to_owned();
+        self.settle_question(actor, issue, question, Change::Withdraw { body })
+    }
+
+    fn settle_question(
+        &mut self,
+        actor: &Actor,
+        issue: Uuid,
+        question: Uuid,
+        change: Change,
+    ) -> Result<Vec<Op>, StoreError> {
         let project = issue_project(&self.conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?;
         let draft = |change| Draft {
             actor: actor.clone(),
@@ -104,15 +135,11 @@ impl Store {
             subject: issue,
             change,
         };
-        let drafts = vec![
-            draft(Change::Answer {
-                body: reply.to_owned(),
-            }),
-            draft(self.waiting_on(None)),
-        ];
+        let drafts = vec![draft(change), draft(self.waiting_on(None))];
         self.append_guarded(drafts, |tx| {
+            // That it still waits at all is the write's own check.
             let open = read::open_question(tx, issue)?.map(|asked| asked.id);
-            if waiting_on_now(tx, issue)?.is_none() || open != Some(question) {
+            if open != Some(question) {
                 return Err(invalid_wait(
                     "changed since the question was read; read it again",
                 ));
@@ -130,29 +157,14 @@ impl Store {
         read::open_question(&self.conn, issue)
     }
 
-    /// The answer given to the question that handed `claim` to its Agent, as
-    /// (who answered, the reply), when the Claim came from `tm ask` and the
-    /// question has been answered since.
+    /// The answer or withdrawal settling the question that handed `claim` to
+    /// its Agent, once settled.
     ///
     /// # Errors
     ///
     /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
-    pub fn answer_for(&self, claim: Uuid) -> Result<Option<(String, String)>, StoreError> {
-        let row: Option<(String, String)> = self
-            .conn
-            .query_row(
-                "SELECT c.actor, c.body FROM op_batches h
-                 JOIN op_batches q ON q.batch = h.batch
-                 JOIN comments asked ON asked.op_id = q.op_id AND asked.role = 'question'
-                 JOIN comments c ON c.issue_id = asked.issue_id AND c.role = 'answer'
-                   AND c.retracted = 0 AND c.hlc > asked.hlc
-                 WHERE h.op_id = ?1
-                 ORDER BY c.hlc DESC LIMIT 1",
-                [claim.as_bytes()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        Ok(row)
+    pub fn answer_for(&self, claim: Uuid) -> Result<Option<Settled>, StoreError> {
+        read::settled(&self.conn, claim)
     }
 
     fn waiting_on(&self, who: Option<&str>) -> Change {
@@ -167,6 +179,10 @@ impl Store {
             value_label: None,
         }
     }
+}
+
+pub(crate) fn asked_by(question: &CommentView, actor: &Actor) -> bool {
+    question.actor == actor.name() && question.on_behalf_of.as_deref() == actor.on_behalf_of()
 }
 
 fn invalid_wait(reason: &str) -> StoreError {
