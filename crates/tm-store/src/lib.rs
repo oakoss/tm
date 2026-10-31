@@ -13,7 +13,9 @@ mod family;
 mod history;
 mod import;
 mod import_list;
+mod import_memory;
 mod membership;
+mod memory;
 mod next;
 mod project;
 mod query;
@@ -58,12 +60,15 @@ pub use family::Lineage;
 pub use history::HistoryEntry;
 pub use import::{Conflict, RecordOutcome, RecordsImported};
 pub use import_list::{ListOutcome, Passed};
+pub use import_memory::MemoryOutcome;
 pub use membership::{Member, PassedOver, Place, Placed};
+pub use memory::{Memory, Remembered};
 pub use next::Next;
 pub use read::{CommentRole, CommentView, Direction, IssueView, LinkView, Settled};
 pub use ready::Ready;
 pub use record::{
-    CommentRecord, IssueRecord, LinkRecord, ListRecord, MemberRecord, list_source, tm_source,
+    CommentRecord, IssueRecord, LinkRecord, ListRecord, MemberRecord, MemoryRecord, list_source,
+    tm_source,
 };
 pub use shortlist::{Shortlist, ShortlistEdit};
 pub use undo::{Restore, Target, UndoPlan};
@@ -100,6 +105,20 @@ pub enum StoreError {
     },
     #[error("no Short-list in this Project is named {0}")]
     ShortlistNotFound(String),
+    #[error("memory {0} does not exist")]
+    UnknownMemory(Uuid),
+    #[error("memory {0} already exists")]
+    DuplicateMemory(Uuid),
+    #[error("memory {memory} belongs to Project {expected}, not {found}")]
+    MemoryMismatch {
+        memory: Uuid,
+        expected: ProjectId,
+        found: ProjectId,
+    },
+    #[error("no memory in this Project holds the key {0}")]
+    MemoryNotFound(String),
+    #[error("{} memories in this Project hold the key {key}; name one by its id", ids.len())]
+    MemoryKeyShared { key: String, ids: Vec<Uuid> },
     #[error("{count} Short-lists in this Project are named {name}; rename one first")]
     ShortlistNameShared { name: String, count: usize },
     #[error("Short-list {name} already holds its size of {size}")]
@@ -1726,10 +1745,12 @@ fn write_drafts(
             }
         }
         let (source, at) = provenance.map_or((None, now), |p| (Some(p.source), p.at));
-        if matches!(draft.change, Change::ShortlistSource) && source.is_none() {
+        if matches!(draft.change, Change::ShortlistSource | Change::MemorySource)
+            && source.is_none()
+        {
             return Err(StoreError::Invalid {
                 field: "source".into(),
-                reason: "a Short-list's source is written only by an import".into(),
+                reason: "a source operation is written only by an import".into(),
                 valid: Vec::new(),
             });
         }
@@ -1789,6 +1810,7 @@ fn write_drafts(
     }
     no_worse(tx, scheme, before)?;
     shortlist::check_batch(tx, &ops, &half_held)?;
+    memory::check_batch(tx, &ops)?;
     Ok((ops, hlc))
 }
 
@@ -1931,6 +1953,9 @@ fn replay(tx: &Transaction<'_>, row: &StoredOp) -> Result<bool, StoreError> {
             | StoreError::UnknownShortlist(_)
             | StoreError::DuplicateShortlist(_)
             | StoreError::ShortlistMismatch { .. }
+            | StoreError::UnknownMemory(_)
+            | StoreError::DuplicateMemory(_)
+            | StoreError::MemoryMismatch { .. }
             | StoreError::Invalid { .. }),
         ) => {
             sql(tx.execute("ROLLBACK TO replay_op", []))?;

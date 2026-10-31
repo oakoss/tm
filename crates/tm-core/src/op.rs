@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::project::ProjectId;
-use crate::{Hlc, shortlist};
+use crate::{Hlc, memory, shortlist};
 
 /// The operation format this binary writes and fully understands. Until tm
 /// v1 is released the format changes in place (ADR 0010).
@@ -58,6 +58,11 @@ pub enum OpError {
     InvalidProjectKey(String),
     #[error("Short-list {field} {reason}")]
     InvalidShortlist {
+        field: &'static str,
+        reason: &'static str,
+    },
+    #[error("memory {field} {reason}")]
+    InvalidMemory {
         field: &'static str,
         reason: &'static str,
     },
@@ -151,6 +156,15 @@ pub enum Change {
     /// Carries a source an import matched a Short-list to by name, so a later
     /// import from it finds the list (ADR 0016).
     ShortlistSource,
+    /// A memory; its key and body are written beside it (ADR 0017).
+    CreateMemory,
+    SetMemory {
+        field: memory::Field,
+        value: serde_json::Value,
+    },
+    /// Carries a source an import matched a memory to by key, so a later
+    /// import from it finds the memory (ADR 0017).
+    MemorySource,
 }
 
 /// The kind of record an operation's subject id names.
@@ -159,6 +173,7 @@ pub enum Subject {
     Issue,
     Project,
     Shortlist,
+    Memory,
 }
 
 /// The field a Claim is filed under; no other kind may write it.
@@ -230,6 +245,9 @@ impl Change {
             Self::SetShortlist { .. } => "set_shortlist",
             Self::ShortlistActor { .. } => "shortlist_actor",
             Self::ShortlistSource => "shortlist_source",
+            Self::CreateMemory => "create_memory",
+            Self::SetMemory { .. } => "set_memory",
+            Self::MemorySource => "memory_source",
         }
     }
 
@@ -242,6 +260,7 @@ impl Change {
             | Self::SetShortlist { .. }
             | Self::ShortlistActor { .. }
             | Self::ShortlistSource => Subject::Shortlist,
+            Self::CreateMemory | Self::SetMemory { .. } | Self::MemorySource => Subject::Memory,
             Self::Create
             | Self::SetField { .. }
             | Self::Add { .. }
@@ -267,6 +286,7 @@ impl Change {
             Self::Claim { .. } => Some(CLAIM_FIELD),
             Self::Retract { .. } => Some(COMMENTS_FIELD),
             Self::SetShortlist { field, .. } => Some(field.as_str()),
+            Self::SetMemory { field, .. } => Some(field.as_str()),
             Self::ShortlistActor { .. } => Some(shortlist::ACTORS),
             Self::Create
             | Self::Comment { .. }
@@ -276,7 +296,9 @@ impl Change {
             | Self::CreateProject { .. }
             | Self::RenameProject { .. }
             | Self::CreateShortlist
-            | Self::ShortlistSource => None,
+            | Self::ShortlistSource
+            | Self::CreateMemory
+            | Self::MemorySource => None,
         }
     }
 
@@ -301,7 +323,10 @@ impl Change {
             | Self::RenameProject { .. }
             | Self::CreateShortlist
             | Self::SetShortlist { .. }
-            | Self::ShortlistSource => None,
+            | Self::ShortlistSource
+            | Self::CreateMemory
+            | Self::SetMemory { .. }
+            | Self::MemorySource => None,
         }
     }
 
@@ -345,6 +370,7 @@ impl Change {
         }
         match self {
             Self::SetShortlist { field, value } => check_shortlist(*field, value),
+            Self::SetMemory { field, value } => check_memory(*field, value),
             Self::ShortlistActor { actor, .. } => {
                 check_name("actor", actor)?;
                 // One spelling per Actor, so adds and removes meet as one element.
@@ -439,6 +465,28 @@ fn check_shortlist(field: shortlist::Field, value: &serde_json::Value) -> Result
     }
 }
 
+/// Held to on replay too; a body's length is a write-time rule.
+fn check_memory(field: memory::Field, value: &serde_json::Value) -> Result<(), OpError> {
+    let invalid = |reason| {
+        Err(OpError::InvalidMemory {
+            field: field.as_str(),
+            reason,
+        })
+    };
+    match field {
+        memory::Field::Key => match value.as_str() {
+            Some(key) if memory::is_key(key) => Ok(()),
+            _ => invalid(
+                "must be 1 to 64 lowercase letters, digits or '-', starting with a letter or digit",
+            ),
+        },
+        memory::Field::Body if value.is_string() => Ok(()),
+        memory::Field::Body => invalid("must be text"),
+        memory::Field::Forgotten if value.is_boolean() => Ok(()),
+        memory::Field::Forgotten => invalid("must be true or false"),
+    }
+}
+
 /// An operation as stored. `payload` holds the JSON written at creation and is
 /// never re-serialized, so `op_hash` stays reproducible.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -497,6 +545,12 @@ impl Op {
             return Err(OpError::InvalidName {
                 field: "source",
                 reason: "is needed by a Short-list source operation",
+            });
+        }
+        if matches!(change, Change::MemorySource) && self.source.is_none() {
+            return Err(OpError::InvalidName {
+                field: "source",
+                reason: "is needed by a memory source operation",
             });
         }
         Ok(change)
@@ -718,6 +772,12 @@ mod tests {
                 present: true,
             },
             Change::ShortlistSource,
+            Change::CreateMemory,
+            Change::MemorySource,
+            Change::SetMemory {
+                field: memory::Field::Key,
+                value: serde_json::json!("tests-need-race"),
+            },
         ]
     }
 

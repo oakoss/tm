@@ -537,6 +537,7 @@ fn import_records_answers_in_a_fixed_shape() {
       "data": {
         "created": 1,
         "dry_run": false,
+        "memories": [],
         "projects": [],
         "records": [
           {
@@ -596,6 +597,7 @@ fn import_from_beads_answers_in_a_fixed_shape() {
           "started_at": 1
         },
         "dry_run": false,
+        "memories": [],
         "projects": [],
         "records": [
           {
@@ -658,6 +660,10 @@ fn prime_answers_in_a_fixed_shape() {
           "total": 0
         },
         "lapsed_claims": [],
+        "memories": {
+          "memories": [],
+          "total": 0
+        },
         "other_session_claims": [],
         "project": "TM",
         "ready": {

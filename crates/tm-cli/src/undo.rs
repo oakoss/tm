@@ -153,7 +153,7 @@ fn last(here: &Here, actor: &Actor) -> Result<(Uuid, Option<Uuid>), CliError> {
 const fn issue_of(restore: &Restore) -> Option<Uuid> {
     match restore.target {
         Target::Issue { issue } => Some(issue),
-        Target::Shortlist { .. } => None,
+        Target::Shortlist { .. } | Target::Memory { .. } => None,
     }
 }
 
@@ -221,6 +221,8 @@ fn describe(
             name: Some(list), ..
         } => format!("Short-list {}", printable(list)),
         Target::Shortlist { shortlist, .. } => format!("Short-list {shortlist}"),
+        Target::Memory { key: Some(key), .. } => format!("memory {}", printable(key)),
+        Target::Memory { memory, .. } => format!("memory {memory}"),
     };
     let present = restore.to == json!(true);
     match (restore.field.as_str(), restore.elem.as_deref()) {

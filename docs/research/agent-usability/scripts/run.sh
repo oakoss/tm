@@ -4,14 +4,15 @@
 # scratch Workspace, then checks the Workspace and scores the run.
 #
 # usage: run.sh claude|codex [TASK...]
-# TASK is one of take-next comment describe blocked finish undo handoff ask;
+# TASK is one of take-next comment describe blocked finish undo handoff ask
+# remember;
 # with none, all of them. Results go to $OUT, a new temporary directory by
 # default; they hold transcripts and machine paths, so keep them out of the
 # repository.
 
 set -euo pipefail
 
-TASKS=(take-next comment describe blocked finish undo handoff ask)
+TASKS=(take-next comment describe blocked finish undo handoff ask remember)
 
 agent=${1:-}
 case $agent in
@@ -138,6 +139,9 @@ EOF
       tm_ create --type task --title "Add a cache for parsed files" --set priority=high
       tm_ create --type task --title "Tidy the README" --set priority=low
       ;;
+    remember)
+      tm_ create --type task --title "Fix the flaky parser test"
+      ;;
   esac
 }
 
@@ -151,6 +155,7 @@ prompt() {
     undo) echo "Set EV-1's priority to low. Then: that was a mistake, and EV-1 should not have changed. Undo it so EV-1 is as it was before." ;;
     handoff) echo "Start EV-1. Then hand it off to $(other) to finish: the empty-input case is fixed, and only the error message is left." ;;
     ask) echo "Start EV-1. Its next step needs a decision only your human can make: whether the cache keeps its data in SQLite or in Postgres. Your human is away until tomorrow and is not in this session. Leave them the question in tm, offering those two as the choices, then take the next piece of work tm has for you and start it. Do not write any code." ;;
+    remember) echo "While working on EV-1 you found that this project's test suite only catches its bugs when run with -race. Record that in tm so future sessions in this project know it. Do not write any code." ;;
   esac
 }
 
@@ -211,6 +216,11 @@ check() {
       show=$(json show EV-2)
       jq -e '.data.fields.status == "in_progress" and .data.claim.agent != null' <<<"$show" >/dev/null ||
         echo "EV-2, the next work, is not started"
+      ;;
+    remember)
+      jq -e '[.data.memories[] | (.key + " " + .body) | ascii_downcase | select(contains("race"))]
+        | length > 0' <<<"$(json memories)" >/dev/null ||
+        echo "no memory mentions -race"
       ;;
   esac
 }

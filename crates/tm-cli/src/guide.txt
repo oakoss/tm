@@ -85,6 +85,18 @@ A decision only your human can make
   next session resumes it. If you settle a question yourself first,
   withdraw it with tm withdraw KEY "why".
 
+What the next session should know
+  tm remember "fact"                     a durable fact about this Project,
+                                         shown in every session's tm prime
+  A memory is what a future session needs and cannot see in the code,
+  such as how the tests must run or a trap in the build. Progress on an
+  Issue goes in tm comment, and what AGENTS.md says needs no memory.
+  Memories stay in this machine's tm, not in git, so a fact the whole
+  repository needs belongs in AGENTS.md.
+  Look in tm memories first; when one already says it, update it rather
+  than write another, with tm remember --key KEY "fact", and when one is
+  wrong, drop it with tm forget KEY.
+
 New work found along the way
   tm create --type task --title TEXT --parent KEY
   tm link KEY blocks OTHER               to order it

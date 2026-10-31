@@ -118,6 +118,7 @@ pub(crate) fn check(
     match change.subject() {
         Subject::Project => return check_project(change),
         Subject::Shortlist => return crate::shortlist::check(tx, issue_id, change),
+        Subject::Memory => return crate::memory::check(tx, issue_id, change),
         Subject::Issue => {}
     }
     if !matches!(change, Change::Create) && !exists(tx, issue_id)? {
@@ -133,8 +134,11 @@ pub(crate) fn check(
         | Change::CreateShortlist
         | Change::SetShortlist { .. }
         | Change::ShortlistActor { .. }
-        | Change::ShortlistSource => {
-            unreachable!("Project and Short-list operations return above")
+        | Change::ShortlistSource
+        | Change::CreateMemory
+        | Change::SetMemory { .. }
+        | Change::MemorySource => {
+            unreachable!("Project, Short-list and memory operations return above")
         }
         Change::SetField { field, value, .. } => {
             check_set(tx, scheme, writing, issue_id, (field, value))

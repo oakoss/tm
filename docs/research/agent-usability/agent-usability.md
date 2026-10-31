@@ -31,6 +31,7 @@ Each task runs in a fresh headless session over a freshly seeded scratch Workspa
 | `undo` | EV-1 at high priority | set EV-1 to low, then undo that mistake | the Agent set EV-1 to low, and it is high again |
 | `handoff` | EV-1 | start it, then hand it to the other Agent with what is left | EV-1's Claim is handed to the other Agent, with a note naming the error message |
 | `ask` | EV-1 at high priority, EV-2 at low | start EV-1, leave the absent human a decision it needs with its two choices, then take the next work | EV-1 waits on someone with a question naming the choice and offering both options, and EV-2 is in progress under the Agent's Claim |
+| `remember` | EV-1 | record, for future sessions, that the test suite must run with `-race` | a live memory mentions race |
 
 ### Scoring
 
@@ -68,7 +69,7 @@ docs/research/agent-usability/scripts/run.sh claude
 docs/research/agent-usability/scripts/run.sh codex take-next undo
 ```
 
-Each run writes to `$OUT`, a new temporary directory unless set: `<agent>-scores.txt`, which each run appends to under a dated heading, the tool versions with the tm binary's path and build time, and for each task its Workspace, `transcript.jsonl`, `commands.txt` and the final answer. The results hold transcripts and machine paths, so they stay out of the repository. Sixteen sessions, eight tasks for each Agent, count against the Claude and Codex plans.
+Each run writes to `$OUT`, a new temporary directory unless set: `<agent>-scores.txt`, which each run appends to under a dated heading, the tool versions with the tm binary's path and build time, and for each task its Workspace, `transcript.jsonl`, `commands.txt` and the final answer. The results hold transcripts and machine paths, so they stay out of the repository. Eighteen sessions, nine tasks for each Agent, count against the Claude and Codex plans.
 
 ## Conclusions
 

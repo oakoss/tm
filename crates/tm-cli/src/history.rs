@@ -319,7 +319,10 @@ fn describe(
         | Change::CreateShortlist
         | Change::SetShortlist { .. }
         | Change::ShortlistActor { .. }
-        | Change::ShortlistSource => entry.change.kind().to_owned(),
+        | Change::ShortlistSource
+        | Change::CreateMemory
+        | Change::SetMemory { .. }
+        | Change::MemorySource => entry.change.kind().to_owned(),
     };
     let line = match &entry.unapplied {
         Some(reason) => format!("{line}  (not applied: {})", printable(reason)),

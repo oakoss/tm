@@ -252,6 +252,38 @@ impl CliError {
         Self::new(code, message).issue(issue).fix("retry")
     }
 
+    fn cycle(message: String, relation: &'static str, path: Vec<Named>) -> Self {
+        let (path, (keys, sources)): (Vec<_>, (Vec<_>, Vec<_>)) = path
+            .into_iter()
+            .map(|issue| (issue.id.to_string(), (issue.key, issue.source)))
+            .unzip();
+        Self::new("cycle", message)
+            .with("relation", relation)
+            .with("path", path)
+            .with("keys", keys)
+            .with("sources", sources)
+    }
+
+    /// A memory no live one in the Project answers to.
+    fn memory(err: StoreError, message: String) -> Self {
+        match err {
+            StoreError::MemoryNotFound(key) => Self::new("not_found", message)
+                .with("kind", "memory")
+                .with("key", key),
+            StoreError::UnknownMemory(id) => Self::not_found("memory", &id, message),
+            StoreError::MemoryKeyShared { key, ids } => {
+                let ids: Vec<String> = ids.iter().map(Uuid::to_string).collect();
+                return Self::new("ambiguous_key", message)
+                    .with("kind", "memory")
+                    .with("key", key)
+                    .with("ids", ids)
+                    .fix("tm memories --json");
+            }
+            other => Self::internal(variant(&other), message),
+        }
+        .fix("tm memories")
+    }
+
     /// A Short-list refusal, with the fix where one command gives it.
     fn membership(err: StoreError, message: String) -> Self {
         match err {
@@ -372,6 +404,9 @@ impl From<StoreError> for CliError {
             | StoreError::ShortlistFull { .. }
             | StoreError::CannotJoin { .. }
             | StoreError::NotOnShortlist(_)) => Self::membership(err, message),
+            err @ (StoreError::MemoryNotFound(_)
+            | StoreError::UnknownMemory(_)
+            | StoreError::MemoryKeyShared { .. }) => Self::memory(err, message),
             StoreError::DuplicateProject(id) => {
                 Self::new("duplicate_project", message).with("id", id.to_string())
             }
@@ -403,17 +438,7 @@ impl From<StoreError> for CliError {
                 .with("field", field)
                 .with("reason", reason)
                 .with("allowed", valid),
-            StoreError::Cycle { relation, path } => {
-                let (path, (keys, sources)): (Vec<_>, (Vec<_>, Vec<_>)) = path
-                    .into_iter()
-                    .map(|issue| (issue.id.to_string(), (issue.key, issue.source)))
-                    .unzip();
-                Self::new("cycle", message)
-                    .with("relation", relation)
-                    .with("path", path)
-                    .with("keys", keys)
-                    .with("sources", sources)
-            }
+            StoreError::Cycle { relation, path } => Self::cycle(message, relation, path),
             StoreError::NoAgent { actor } => Self::new("no_agent", message).with("actor", actor),
             StoreError::UnknownBatch(batch) => Self::new("not_found", message)
                 .with("kind", "batch")
@@ -455,6 +480,8 @@ impl From<StoreError> for CliError {
             StoreError::DuplicateIssue(_)
             | StoreError::DuplicateShortlist(_)
             | StoreError::ShortlistMismatch { .. }
+            | StoreError::DuplicateMemory(_)
+            | StoreError::MemoryMismatch { .. }
             | StoreError::SubjectNotProject { .. }
             | StoreError::ProjectMismatch { .. }
             | StoreError::Clock(_)
@@ -477,7 +504,8 @@ impl From<OpError> for CliError {
                 .with("limit", MAX_PAYLOAD_BYTES),
             OpError::InvalidName { field, .. }
             | OpError::ReservedField(field)
-            | OpError::InvalidShortlist { field, .. } => {
+            | OpError::InvalidShortlist { field, .. }
+            | OpError::InvalidMemory { field, .. } => {
                 Self::new("invalid_value", message).with("field", field)
             }
             OpError::InvalidField(field) => {
@@ -583,6 +611,8 @@ fn variant(err: &StoreError) -> &'static str {
         StoreError::ProjectMismatch { .. } => "project_mismatch",
         StoreError::DuplicateShortlist(_) => "duplicate_shortlist",
         StoreError::ShortlistMismatch { .. } => "shortlist_mismatch",
+        StoreError::DuplicateMemory(_) => "duplicate_memory",
+        StoreError::MemoryMismatch { .. } => "memory_mismatch",
         StoreError::Clock(_) => "clock",
         StoreError::Corrupt(_) => "corrupt",
         StoreError::Sqlite(_) => "sqlite",

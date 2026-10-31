@@ -254,6 +254,9 @@ pub(crate) fn import_records(
         for list in &mut imported.shortlists {
             list.batches.clear();
         }
+        for memory in &mut imported.memories {
+            memory.batches.clear();
+        }
         ((imported, dropped), BTreeMap::new())
     } else {
         let mut here = here::open()?;
@@ -288,7 +291,8 @@ pub(crate) fn undo_states(
     let mut undo = BTreeMap::new();
     let records = imported.records.iter().flat_map(|record| &record.batches);
     let lists = imported.shortlists.iter().flat_map(|list| &list.batches);
-    for batch in records.chain(lists) {
+    let memories = imported.memories.iter().flat_map(|memory| &memory.batches);
+    for batch in records.chain(lists).chain(memories) {
         if undo.contains_key(batch) {
             continue;
         }
@@ -365,11 +369,17 @@ pub(crate) fn records_output(
             }
         }
     }
+    for memory in &imported.memories {
+        for batch in &memory.batches {
+            batch_line(&mut text, &memory.source, *batch, undo, runner);
+        }
+    }
     let create = if dry_run { "would create" } else { "created" };
     for key in &imported.projects {
         let _ = writeln!(text, "{create} Project {}", output::printable(key));
     }
     lists_text(&mut text, imported, dry_run);
+    memories_text(&mut text, imported, dry_run);
     for record in &imported.records {
         let source = output::printable(&record.source);
         for conflict in &record.conflicts {
@@ -386,6 +396,7 @@ pub(crate) fn records_output(
     let data = json!({
         "projects": imported.projects,
         "shortlists": imported.shortlists,
+        "memories": imported.memories,
         "records": imported.records,
         "created": created,
         "updated": updated,
@@ -467,6 +478,35 @@ fn batch_line(
         ),
         None => writeln!(text, "{source}: batch {batch}"),
     };
+}
+
+/// Each memory a project line holds that the import created or changed, or
+/// left as tm holds it.
+fn memories_text(text: &mut String, imported: &RecordsImported, dry_run: bool) {
+    for memory in &imported.memories {
+        let source = output::printable(&memory.source);
+        let key = output::printable(memory.key.as_deref().unwrap_or("(no key)"));
+        if memory.forgotten {
+            let _ = writeln!(
+                text,
+                "memory {key} ({source}) is forgotten here; left as it is"
+            );
+            continue;
+        }
+        let how = match (memory.created, memory.written.is_empty(), dry_run) {
+            (true, _, true) => "would create",
+            (true, _, false) => "created",
+            (false, false, true) => "would update",
+            (false, false, false) => "updated",
+            (false, true, _) => "",
+        };
+        if !how.is_empty() {
+            let _ = writeln!(text, "{how} memory {key} ({source})");
+        }
+        for conflict in &memory.conflicts {
+            conflict_line(text, &source, conflict, dry_run);
+        }
+    }
 }
 
 /// Each Short-list the file names: how it was found, what it gained and
@@ -710,6 +750,7 @@ mod tests {
         let imported = RecordsImported {
             projects: Vec::new(),
             shortlists: Vec::new(),
+            memories: Vec::new(),
             records: vec![RecordOutcome {
                 line: 1,
                 source: "beads:a".into(),
@@ -784,6 +825,7 @@ mod tests {
                 list("x:named", true, false),
                 list("x:gone", false, true),
             ],
+            memories: Vec::new(),
             records: Vec::new(),
         };
         let text = records_output(&imported, None, false, &BTreeMap::new(), "jace").text;
