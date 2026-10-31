@@ -119,6 +119,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+    env:
+      HAS_BOT: ${{ secrets.BOT_CLIENT_ID != '' }}
     steps:
       - name: Harden and checkout
         uses: $/.github/actions/harden-checkout
@@ -127,6 +129,20 @@ jobs:
         uses: $/.github/actions/setup
         with:
           tools: github:oakoss/oakum
+
+      # Posts the release plan as the oakoss App; a pull request without the
+      # App's secrets, such as a fork's, posts as github-actions instead.
+      - name: Oakoss App token
+        id: app-token
+        if: env.HAS_BOT == 'true'
+        continue-on-error: true
+        uses: $/.github/actions/app-token
+        with:
+          client-id: ${{ secrets.BOT_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          repositories: tm
+          permission-contents: read
+          permission-pull-requests: write
 
       # The version pull request consumes the bump files and holds a version
       # with no tag yet, which `check --strict` always fails, whoever pushed.
@@ -159,7 +175,7 @@ jobs:
         if: success() || failure()
         continue-on-error: true
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: oakum ci pr-status
 
       - name: pr-status failed
