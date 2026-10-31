@@ -15,6 +15,7 @@ mod fields;
 mod follow;
 mod guide;
 mod handoff;
+mod harness;
 mod here;
 mod history;
 mod hook;

@@ -168,9 +168,11 @@ fn history_prime_and_the_filter_name_the_session() {
 fn a_question_waiting_on_you_names_the_session_that_asked() {
     let scratch = Scratch::new();
     let (repo, mut store, project) = initialized(&scratch);
-    store
-        .create_issue(&Actor::human("jace"), project, "task", "Pick a cache")
-        .unwrap();
+    for title in ["Pick a cache", "Pick a queue"] {
+        store
+            .create_issue(&Actor::human("jace"), project, "task", title)
+            .unwrap();
+    }
     drop(store);
     ok(&claude(&scratch, &repo, &["start", "TM-1"]));
     ok(&claude(
@@ -178,11 +180,19 @@ fn a_question_waiting_on_you_names_the_session_that_asked() {
         &repo,
         &["ask", "TM-1", "SQLite or Postgres?"],
     ));
+    ok(&claude(&scratch, &repo, &["ask", "TM-2", "NATS or Kafka?"]));
     let prime = ok(&tm(&scratch, &repo, &["prime"]));
     assert!(
-        prime.contains("      the asking session resumes with: cd ")
-            && prime.contains(&format!(" && claude -r {CLAUDE}\n")),
-        "{prime}"
+        prime
+            .matches("      the asking session resumes with: cd ")
+            .count()
+            == 2
+            && prime.contains(&format!(" && claude -r {CLAUDE}\n"))
+            && prime
+                .matches("Claude deletes a session unused for 30 days")
+                .count()
+                == 1,
+        "the expiry note follows the section once: {prime}"
     );
     let shown = data(&tm(&scratch, &repo, &["--json", "show", "TM-1"]));
     let asker = &shown["sessions"][0];
