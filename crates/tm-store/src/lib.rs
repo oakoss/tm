@@ -24,6 +24,7 @@ mod read;
 mod ready;
 mod record;
 mod schema;
+mod session;
 mod shortlist;
 mod snapshot;
 mod undo;
@@ -71,6 +72,7 @@ pub use record::{
     CommentRecord, IssueRecord, LinkRecord, ListRecord, MemberRecord, MemoryRecord, list_source,
     tm_source,
 };
+pub use session::{SessionPlace, SessionWork};
 pub use shortlist::{Shortlist, ShortlistEdit};
 pub use undo::{Restore, Target, UndoPlan};
 
@@ -534,6 +536,17 @@ pub struct Store {
     /// Claims a human's or a forced write went past, for the caller to warn of.
     passed: Vec<Claim>,
     based_on: Option<(Uuid, i64)>,
+    place: Workplace,
+}
+
+/// Where the writer works: the directory a session's resume command names,
+/// and the git branch a Claim it takes records.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Workplace {
+    pub dir: Option<String>,
+    pub branch: Option<String>,
+    /// Each harness and the session its variables name here.
+    pub harnesses: Vec<(String, String)>,
 }
 
 /// Whether undoing the last batch this Store wrote would succeed, as tried
@@ -737,6 +750,7 @@ impl Store {
             forcing: false,
             passed: Vec::new(),
             based_on: None,
+            place: Workplace::default(),
         };
         store.init()?;
         store.opened = true;
@@ -766,6 +780,19 @@ impl Store {
     #[must_use]
     pub const fn scheme(&self) -> &Scheme {
         &self.scheme
+    }
+
+    /// Where later writes are made from: a write in a session records `dir`
+    /// for it, and a Claim taken records `branch`.
+    #[must_use]
+    pub fn working_in(mut self, place: Workplace) -> Self {
+        self.place = place;
+        self
+    }
+
+    /// Set only by commands that take a Claim, so others never run git.
+    pub fn set_branch(&mut self, branch: Option<String>) {
+        self.place.branch = branch;
     }
 
     fn init(&mut self) -> Result<(), StoreError> {
@@ -1298,6 +1325,7 @@ impl Store {
             });
         let undoing = undid.is_some();
         let (ops, hlc) = write_drafts(&tx, &self.scheme, drafts, (now, undoing), last_hlc(&tx)?)?;
+        session::record_places(&tx, &self.place, &ops, now.0.utc_ms)?;
         if let (Some(undid), Some(first)) = (undid, ops.first()) {
             tx.execute(
                 "INSERT INTO undo_batches (batch, undid) VALUES (?1, ?2)",
@@ -1356,19 +1384,26 @@ impl Store {
     }
 
     /// Refuses a log another build wrote with other columns: until v1 the
-    /// format changes in place, and such a store is recreated (ADR 0010).
-    fn check_log_columns(&self) -> Result<(), StoreError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT name FROM pragma_table_info('ops') ORDER BY cid")?;
-        let columns = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
+    /// format changes in place, and such a store is recreated (ADR 0010). A
+    /// log from before sessions were recorded gains its `session` column.
+    fn check_log_columns(&mut self) -> Result<(), StoreError> {
+        let columns = log_columns(&self.conn)?;
         if columns.is_empty() || columns == schema::OPS_COLUMNS {
-            Ok(())
-        } else {
-            Err(StoreError::FormatChanged)
+            return Ok(());
         }
+        if columns[..] != schema::OPS_COLUMNS[..schema::OPS_COLUMNS_BEFORE_SESSION] {
+            return Err(StoreError::FormatChanged);
+        }
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // Another process may have upgraded it while this one waited.
+        if log_columns(&tx)?.len() == schema::OPS_COLUMNS_BEFORE_SESSION {
+            tx.execute_batch(schema::ADD_SESSION)?;
+            tx.execute_batch(schema::LOG)?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Whether the store is already set up for this binary. Read without the
@@ -1672,6 +1707,32 @@ impl Store {
     }
 }
 
+/// The session `draft`'s operation records: none for an import, which records
+/// where it came from rather than who ran it. A source operation is refused
+/// without a source.
+fn written_in(draft: &Draft, source: Option<&str>) -> Result<Option<String>, StoreError> {
+    if source.is_none() && matches!(draft.change, Change::ShortlistSource | Change::MemorySource) {
+        return Err(StoreError::Invalid {
+            field: "source".into(),
+            reason: "a source operation is written only by an import".into(),
+            valid: Vec::new(),
+        });
+    }
+    Ok(source
+        .is_none()
+        .then(|| draft.actor.session().map(str::to_owned))
+        .flatten())
+}
+
+/// The `ops` columns in order; none before the log is created.
+fn log_columns(conn: &Connection) -> Result<Vec<String>, StoreError> {
+    let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('ops') ORDER BY cid")?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(columns)
+}
+
 /// [`Store::rebuild`] inside a transaction the caller commits.
 fn rebuild_in(tx: &Transaction<'_>) -> Result<usize, StoreError> {
     tx.execute_batch(schema::DROP_PROJECTIONS)?;
@@ -1680,7 +1741,7 @@ fn rebuild_in(tx: &Transaction<'_>) -> Result<usize, StoreError> {
         let mut stmt = tx.prepare(
             "SELECT seq, op_id, op_hash, v, replica_id, actor, project, issue_id, kind, hlc,
                     base_seq, utc_ms, offset_min, payload, server_seq, server_received_ms,
-                    assigned_key, on_behalf_of, source
+                    assigned_key, on_behalf_of, source, session
              FROM ops
              ORDER BY server_seq IS NULL, server_seq, hlc, replica_id, op_id",
         )?;
@@ -1764,15 +1825,7 @@ fn write_drafts(
             }
         }
         let (source, at) = provenance.map_or((None, now), |p| (Some(p.source), p.at));
-        if matches!(draft.change, Change::ShortlistSource | Change::MemorySource)
-            && source.is_none()
-        {
-            return Err(StoreError::Invalid {
-                field: "source".into(),
-                reason: "a source operation is written only by an import".into(),
-                valid: Vec::new(),
-            });
-        }
+        let session = written_in(&draft, source.as_deref())?;
         let writing = validate::Writing {
             actor: &draft.actor,
             at_ms: at.utc_ms,
@@ -1800,6 +1853,7 @@ fn write_drafts(
             utc_ms: at.utc_ms,
             offset_min: at.offset_min,
             payload: serde_json::to_string(&change).map_err(OpError::from)?,
+            session,
         };
         op.change()?;
         // Inside the write transaction, so concurrent creates never share a Key.
@@ -2002,9 +2056,9 @@ fn insert_op(
     tx.execute(
         "INSERT INTO ops (op_id, op_hash, v, kind, replica_id, actor, on_behalf_of, source,
                           project, issue_id, field, elem, hlc, base_seq, utc_ms, offset_min,
-                          payload, assigned_key)
+                          payload, assigned_key, session)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                 ?18)",
+                 ?18, ?19)",
         params![
             op.op_id.as_bytes(),
             op.op_hash(),
@@ -2024,6 +2078,7 @@ fn insert_op(
             op.offset_min,
             op.payload,
             assigned_key,
+            op.session,
         ],
     )?;
     Ok(())
@@ -2050,6 +2105,7 @@ struct StoredOp {
     assigned_key: Option<String>,
     on_behalf_of: Option<String>,
     source: Option<String>,
+    session: Option<String>,
 }
 
 impl StoredOp {
@@ -2074,6 +2130,7 @@ impl StoredOp {
             assigned_key: row.get(16)?,
             on_behalf_of: row.get(17)?,
             source: row.get(18)?,
+            session: row.get(19)?,
         })
     }
 
@@ -2096,6 +2153,7 @@ impl StoredOp {
             offset_min: i16::try_from(self.offset_min)
                 .map_err(|_| narrow("UTC offset", self.offset_min))?,
             payload: self.payload.clone(),
+            session: self.session.clone(),
         };
         let server_seq = self.server_seq.map(rust_int).transpose()?;
         let received = self.server_received_ms.map(rust_int).transpose()?;

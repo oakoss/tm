@@ -27,10 +27,10 @@ design.md records an Agent's writes as "agent, on behalf of human", and `tm undo
 
 **The format until v1.**
 
-- `Op` gains `on_behalf_of`, hashed after `actor` behind a presence byte, and is a nullable `ops` column covered by the `ops_immutable` trigger. Nothing else joins the envelope except an imported operation's `source` ([ADR 0013](0013-export-carries-the-log-and-issue-records.md)).
+- `Op` gains `on_behalf_of`, hashed after `actor` behind a presence byte, and is a nullable `ops` column covered by the `ops_immutable` trigger. Nothing else joins the envelope except an imported operation's `source` ([ADR 0013](0013-export-carries-the-log-and-issue-records.md)) and the writing Agent's `session` (amended for TM-116), hashed after the payload only when present so operations without one hash as before; a store whose log lacks the column gains it when opened.
 - An `actor` or `on_behalf_of` that is blank or holds a control character is refused, on write and on replay.
 - Operations keep their format version `v`, and stores their `STORE_FORMAT`; a binary still refuses a newer one with "upgrade tm".
-- Until tm v1 is released, the format changes in place: `CURRENT_VERSION` and `STORE_FORMAT` stay 1, nothing translates old operations or migrates old stores, and a development store an older build wrote is recreated. This defers ADR 0006's read-time translations to v1. Data that must outlive a format change before then, such as this project's backlog after the switch milestone, moves through `tm export` and `tm import`, as its Issue records ([ADR 0013](0013-export-carries-the-log-and-issue-records.md)).
+- Until tm v1 is released, the format changes in place: `CURRENT_VERSION` and `STORE_FORMAT` stay 1, nothing translates old operations or migrates old stores apart from adding the `session` column, and a development store an older build wrote is recreated. This defers ADR 0006's read-time translations to v1. Data that must outlive a format change before then, such as this project's backlog after the switch milestone, moves through `tm export` and `tm import`, as its Issue records ([ADR 0013](0013-export-carries-the-log-and-issue-records.md)).
 - From v1, every format change bumps `CURRENT_VERSION` (every new `Change` kind included, so an older binary refuses it by number), old operations are translated when read, and old stores are migrated when opened.
 
 **Identity.**

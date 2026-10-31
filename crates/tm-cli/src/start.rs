@@ -65,9 +65,11 @@ fn write(
     let actor = identity.actor.clone();
     let scheme = here.store.scheme().clone();
     let drafts = |lineage: &Lineage| begin(&scheme, &actor, lineage);
+    let mut branch_warning = None;
     // A human starts the work without a Claim, which only an Agent holds.
     let (claim, held, ops, begun) = if actor.is_agent() {
         let ttl_ms = lasts.ttl_ms(here);
+        branch_warning = here.record_branch();
         let started = here.store.take_with(&actor, id, ttl_ms, drafts)?;
         let (taken, kept) = if started.kept {
             (None, Some(started.claim))
@@ -87,7 +89,9 @@ fn write(
         begun,
     };
     let output = report(here, &actor, reference, started)?;
-    Ok((output, identity.warnings))
+    let mut warnings = identity.warnings;
+    warnings.extend(branch_warning);
+    Ok((output, warnings))
 }
 
 /// What a start wrote, as `tm start` and `tm next` print it: the Claim, the

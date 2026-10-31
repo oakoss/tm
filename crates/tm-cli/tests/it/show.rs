@@ -284,6 +284,7 @@ fn show_gives_an_issues_fields_parent_labels_and_claim() {
           "key": "TM-1"
         },
         "project": "TM",
+        "sessions": [],
         "sets": {
           "labels": {
             "docs": "docs"

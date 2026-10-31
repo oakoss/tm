@@ -125,6 +125,7 @@ pub(crate) fn remote_op(
         utc_ms: i64::try_from(hlc.ms()).unwrap(),
         offset_min: 0,
         payload: serde_json::to_string(change).unwrap(),
+        session: None,
     }
 }
 

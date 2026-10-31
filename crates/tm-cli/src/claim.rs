@@ -35,6 +35,7 @@ pub(crate) fn take(reference: &str, lasts: &Lasts) -> Result<Output, CliError> {
         let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
             .map_err(|message| CliError::new("no_identity", message))?;
         let ttl_ms = lasts.ttl_ms(here);
+        let branch_warning = here.record_branch();
         let claim = here
             .store
             .take(&identity.actor, issue, ttl_ms)
@@ -55,7 +56,9 @@ pub(crate) fn take(reference: &str, lasts: &Lasts) -> Result<Output, CliError> {
             "claim": claim_json(&claim, here.store.utc_ms()?),
         });
         let output = here.undoable(Output::new(text, data), claim.id, &identity.actor)?;
-        Ok((output, identity.warnings))
+        let mut warnings = identity.warnings;
+        warnings.extend(branch_warning);
+        Ok((output, warnings))
     })
 }
 

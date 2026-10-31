@@ -152,6 +152,10 @@ _Avoid_: Sprint, cycle (as canonical terms)
 A durable fact about a Project that every session's `tm prime` shows, named by a key, written with `tm remember` and dropped with `tm forget`; not progress on an Issue, which is a comment.
 _Avoid_: Note, insight, knowledge base
 
+**Session**:
+One run of an Agent's harness, such as a Claude Code or Codex conversation, named by the harness's id; every operation an Agent writes records its session, and `tm show` gives the command that resumes it.
+_Avoid_: Conversation, thread, run
+
 **Short-list**:
 A named, ordered list of Issues in a Project that says what to do next and in what order, apart from priority, with the Actors who work through it; an Issue sits on at most one.
 _Avoid_: Queue, inbox, to-do list

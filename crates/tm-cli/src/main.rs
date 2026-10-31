@@ -32,6 +32,7 @@ mod prompt;
 mod ready;
 mod recover;
 mod scan;
+mod session;
 mod setup;
 mod shortlist;
 mod show;

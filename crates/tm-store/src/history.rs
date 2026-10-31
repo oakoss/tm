@@ -26,6 +26,8 @@ pub struct HistoryEntry {
     pub on_behalf_of: Option<String>,
     /// The record an import wrote it from.
     pub source: Option<String>,
+    /// The Agent's harness session that wrote it.
+    pub session: Option<String>,
     pub utc_ms: i64,
     /// The UTC offset where it was written, in minutes.
     pub offset_min: i64,
@@ -57,7 +59,7 @@ impl Store {
                         (SELECT reason FROM unapplied WHERE op_id = o.op_id LIMIT 1),
                         o.field, o.elem,
                         o.hlc, o.replica_id, o.op_id, o.base_seq, o.server_seq,
-                        o.server_received_ms
+                        o.server_received_ms, o.session
                  FROM ops o LEFT JOIN op_batches b ON b.op_id = o.op_id
                  WHERE (o.issue_id = ?1 OR (o.field = ?2 AND o.elem LIKE ?3))
                    AND o.kind NOT IN ('create_project', 'rename_project',
@@ -118,6 +120,7 @@ impl Store {
                     actor: row.get(4)?,
                     on_behalf_of: row.get(5)?,
                     source: row.get(6)?,
+                    session: row.get(19)?,
                     utc_ms: row.get(7)?,
                     offset_min: row.get(3)?,
                     subject,

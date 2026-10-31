@@ -454,6 +454,7 @@ fn take(agent: &str, ttl_ms: Option<u64>, prev: Option<Uuid>) -> Change {
             ttl_ms,
             prev,
             session: None,
+            branch: None,
         },
     }
 }

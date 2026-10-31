@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use tm_core::{Actor, ProjectId};
-use tm_store::Store;
 use tm_store::workspace::{self, Found, Workspace, WorkspaceError};
+use tm_store::{Store, Workplace};
 use uuid::Uuid;
 
 use crate::backup;
@@ -155,6 +155,11 @@ fn opened(
     };
     let cwd = canonical(cwd)?;
     let log_end = store.log_end()?;
+    let store = store.working_in(Workplace {
+        dir: Some(found.dir.display().to_string()),
+        branch: None,
+        harnesses: crate::identity::harness_sessions(crate::identity::env),
+    });
     Ok(Here {
         home,
         found,
@@ -332,6 +337,21 @@ impl Here {
     /// As [`mapped_project`], for the working directory.
     pub(crate) fn project(&self) -> Result<ProjectId, CliError> {
         mapped_project(&self.store, &self.found, &self.cwd).map(|(project, _)| project)
+    }
+
+    /// Records the checked-out branch with the Claim this write takes; a
+    /// warning when git cannot say, as the Claim lands without one.
+    pub(crate) fn record_branch(&mut self) -> Option<String> {
+        match crate::identity::git_branch(&self.found.dir) {
+            Ok(branch) => {
+                self.store.set_branch(branch);
+                None
+            }
+            Err(err) => {
+                self.store.set_branch(None);
+                Some(format!("the Claim records no branch: {err}"))
+            }
+        }
     }
 
     /// The Issue a Key, matched without case and through retired Project

@@ -25,6 +25,7 @@ mod protected;
 mod ready;
 mod rebuild;
 mod renewals;
+mod sessions;
 mod shortlists;
 mod snapshot;
 mod support;

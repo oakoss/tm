@@ -50,7 +50,7 @@ Within a Replica, a write is checked against the version it was based on, apart 
 
 Synced operations form a linear hash chain in `server_seq` order, one chain per Project starting from a fixed genesis value:
 
-- `op_hash` is the operation's identity, computed when it is created over a versioned, fixed binary envelope of every field the Replica writes: `v`, `op_id`, `replica_id`, Actor, Project, Issue UUID, `kind`, `hlc`, `base_seq`, `utc_ms`, `offset_min` and the payload bytes stored as written.
+- `op_hash` is the operation's identity, computed when it is created over a versioned, fixed binary envelope of every field the Replica writes: `v`, `op_id`, `replica_id`, Actor, Project, Issue UUID, `kind`, `hlc`, `base_seq`, `utc_ms`, `offset_min` and the payload bytes stored as written, then the writing Agent's session when it has one ([ADR 0010](0010-operations-record-who-an-agent-acts-for-and-undo-names-a-batch.md)).
 - `chain_hash[n] = H(prefix ‖ chain_hash[n−1] ‖ server_seq ‖ op_hash ‖ server_effects)`, computed by the server, where `server_effects` holds `server_received_ms` and any Key it assigned. Between the two hashes, every input to a merge is covered.
 - SHA-256 with distinct one-byte prefixes for the two hash kinds.
 - `tm sync status` reports **synced** (nothing pending; same cursor and head), **pending**, **behind** (for example a server restored from backup) or **forked** (histories differ at a named `server_seq`).

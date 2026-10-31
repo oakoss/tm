@@ -32,6 +32,8 @@ pub enum Target {
     Blockers,
     /// The Issues this one blocks, whatever their Status.
     Blocked,
+    /// The Agent sessions whose operations wrote it.
+    Sessions,
 }
 
 /// A filter field that takes an Issue by Key or id.
@@ -72,6 +74,8 @@ pub enum Literal {
     Issue(Uuid),
     /// A Short-list, compared by id.
     Shortlist(Uuid),
+    /// A session's full id, or the end of one as `…6417eead` shortens it.
+    Session(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -161,6 +165,7 @@ enum Kind {
     /// A Short-list, named by id; a store turns names into ids before
     /// resolving.
     Shortlist,
+    Session,
     /// Known, but filtering by value arrives later; `has:`/`no:` still work
     /// when there is a target.
     Later(&'static str, Option<Target>),
@@ -249,6 +254,7 @@ fn filterable(scheme: &Scheme) -> Vec<Filterable> {
         field("key", Kind::Later("filtering by Key", None), None),
         field("agent", Kind::Later("filtering by Agent", None), None),
         field("claim", Kind::Later("filtering by Claim", None), None),
+        field("session", Kind::Session, None),
         field("labels", Kind::Labels, None),
         field(
             "archived",
@@ -415,6 +421,7 @@ fn present_target(def: &Filterable, span: Span) -> Result<Target, FilterError> {
         Kind::MultiSelect(field, _) => Ok(Target::Set(field.clone())),
         Kind::Labels => Ok(Target::Set("labels".into())),
         Kind::Shortlist => Ok(Target::Shortlist),
+        Kind::Session => Ok(Target::Sessions),
     }
 }
 
@@ -436,6 +443,7 @@ fn match_condition(
         Kind::MultiSelect(field, _) => Target::Set(field.clone()),
         Kind::Labels => Target::Set("labels".into()),
         Kind::Shortlist => Target::Shortlist,
+        Kind::Session => Target::Sessions,
         Kind::Category => return category(def, values, negated, scheme),
         Kind::Is => return is(def, values, negated, scheme),
         Kind::Later(construct, _) => {
@@ -475,6 +483,9 @@ fn literal(
         }
         (Kind::Shortlist, Value::Me) => {
             return Err(invalid(def, "@me", span, SHORTLIST_VALUE));
+        }
+        (Kind::Session, Value::Me) => {
+            return Err(invalid(def, "@me", span, SESSION_VALUE));
         }
         (_, Value::Me) => return Err(invalid(def, "@me", span, "a value, not a person")),
         (_, Value::Text(text)) if text.trim().is_empty() => {
@@ -518,6 +529,15 @@ fn literal(
         Kind::Shortlist => Uuid::parse_str(text.trim())
             .map(Literal::Shortlist)
             .map_err(|_| invalid(def, text, span, SHORTLIST_VALUE)),
+        Kind::Session => {
+            let text = text.trim();
+            let id = text.strip_prefix('…').unwrap_or(text);
+            if crate::actor::is_session_id(id) {
+                Ok(Literal::Session(text.to_owned()))
+            } else {
+                Err(invalid(def, text, span, SESSION_VALUE))
+            }
+        }
         Kind::Category | Kind::Is | Kind::Later(..) => {
             Err(invalid(def, text, span, "a supported field"))
         }
@@ -525,6 +545,8 @@ fn literal(
 }
 
 const SHORTLIST_VALUE: &str = "a Short-list's name or id";
+
+const SESSION_VALUE: &str = "a session's id, or its end as tm history shows it";
 
 /// The id in `ids` that `text` names, ignoring case.
 fn choose(def: &Filterable, text: &str, span: Span, ids: &[String]) -> Result<String, FilterError> {

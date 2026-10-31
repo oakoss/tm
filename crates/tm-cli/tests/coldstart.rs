@@ -242,7 +242,7 @@ fn run(size: usize, budget: impl Fn(u64, u64) -> u64) -> Vec<String> {
     assert_eq!(primed["warnings"], json!([]), "{primed}");
     assert_eq!(
         primed["data"]["actor"],
-        json!({"name": "claude", "agent": true, "on_behalf_of": "jace@example.com"})
+        json!({"name": "claude", "agent": true, "on_behalf_of": "jace@example.com", "session": null})
     );
 
     let listed: serde_json::Value =
