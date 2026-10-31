@@ -9,44 +9,6 @@ pub(crate) const PROJECTION_VERSION: i64 = 17;
 /// Until tm v1 is released the log changes in place (ADR 0010).
 pub(crate) const STORE_FORMAT: i64 = 1;
 
-/// The `ops` columns in order; a store whose log has others is refused, since
-/// `CREATE TABLE IF NOT EXISTS` never adds a column.
-pub(crate) const OPS_COLUMNS: [&str; 22] = [
-    "seq",
-    "op_id",
-    "op_hash",
-    "v",
-    "kind",
-    "replica_id",
-    "actor",
-    "on_behalf_of",
-    "source",
-    "project",
-    "issue_id",
-    "field",
-    "elem",
-    "hlc",
-    "base_seq",
-    "utc_ms",
-    "offset_min",
-    "payload",
-    "server_seq",
-    "server_received_ms",
-    "assigned_key",
-    "session",
-];
-
-/// The `ops` table's one older shape, without `session`, which opening a
-/// store upgrades in place by adding it.
-pub(crate) const OPS_COLUMNS_BEFORE_SESSION: usize = 21;
-
-/// Adds `session` to a log from before sessions were recorded; the
-/// immutability trigger is dropped so [`LOG`] recreates it covering `session`.
-pub(crate) const ADD_SESSION: &str = "
-ALTER TABLE ops ADD COLUMN session TEXT;
-DROP TRIGGER IF EXISTS ops_immutable;
-";
-
 pub(crate) const LOG: &str = "
 CREATE TABLE IF NOT EXISTS meta (
   k TEXT PRIMARY KEY,

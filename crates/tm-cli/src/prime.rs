@@ -251,6 +251,9 @@ pub(crate) fn waiting(
     Ok(waiting)
 }
 
+/// A command that resumes a session, and why it may no longer work.
+type Resume = (String, Option<&'static str>);
+
 /// The command resuming the session that asked each waiting question, by the
 /// question's id, when that session ran here; a warning for each that cannot
 /// be read, as prime never fails a session start.
@@ -258,14 +261,15 @@ fn resumes(
     store: &Store,
     waiting: &[(IssueView, Option<CommentView>)],
     warnings: &mut Vec<String>,
-) -> HashMap<Uuid, String> {
+) -> HashMap<Uuid, Resume> {
     let mut resumes = HashMap::new();
     for (view, question) in waiting {
         let Some(question) = question else { continue };
         match store.written_by_session(question.id) {
             Ok(Some((session, Some(place)))) => {
-                if let Some(command) = crate::session::resume_command(&session, &place) {
-                    resumes.insert(question.id, command);
+                if let Some(harness) = crate::session::harness(&place) {
+                    let command = harness.resume(&crate::fields::quoted(&place.dir), &session);
+                    resumes.insert(question.id, (command, harness.expiry()));
                 }
             }
             Ok(_) => {}
@@ -282,7 +286,7 @@ fn resumes(
 /// questions to its human, who is often there; a person's lists them.
 fn waiting_section(
     text: &mut String,
-    (actor, resumes): (Option<&Actor>, &HashMap<Uuid, String>),
+    (actor, resumes): (Option<&Actor>, &HashMap<Uuid, Resume>),
     waiting: &[(IssueView, Option<CommentView>)],
     projects: &HashMap<ProjectId, Option<String>>,
     now_ms: i64,
@@ -301,6 +305,8 @@ fn waiting_section(
     };
     let _ = writeln!(text, "{heading}");
     let mut issues = Vec::with_capacity(count);
+    // Once each after the section, not under every question.
+    let mut expiries = std::collections::BTreeSet::new();
     for (i, (view, question)) in waiting.iter().enumerate() {
         if i < CLAIMS_SHOWN {
             let _ = writeln!(text, "  {}", line_within(view, TITLE_BYTES));
@@ -321,8 +327,9 @@ fn waiting_section(
                         crate::list::cut(&options, TITLE_BYTES * 2)
                     );
                 }
-                if let Some(command) = resumes.get(&question.id) {
+                if let Some((command, expiry)) = resumes.get(&question.id) {
                     let _ = writeln!(text, "      the asking session resumes with: {command}");
+                    expiries.extend(*expiry);
                 }
             }
         }
@@ -334,7 +341,7 @@ fn waiting_section(
                 "body": question.body,
                 "options": question.options,
                 "utc_ms": question.utc_ms,
-                "resume": resumes.get(&question.id),
+                "resume": resumes.get(&question.id).map(|(command, _)| command),
             })
         });
         issues.push(entry);
@@ -345,6 +352,9 @@ fn waiting_section(
             "  and {} more: tm list waiting_on:@me",
             count - CLAIMS_SHOWN
         );
+    }
+    for expiry in expiries {
+        let _ = writeln!(text, "  {expiry}");
     }
     json!({ "on": human, "issues": issues })
 }

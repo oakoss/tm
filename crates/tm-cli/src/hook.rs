@@ -14,23 +14,7 @@ use crate::error::CliError;
 use crate::output::Output;
 use crate::{claim, identity, prime};
 
-#[derive(Clone, Copy, clap::ValueEnum)]
-pub(crate) enum Harness {
-    /// Claude Code.
-    Claude,
-    /// Codex.
-    Codex,
-}
-
-impl Harness {
-    /// The name the commands take.
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-        }
-    }
-}
+pub(crate) use crate::harness::Harness;
 
 /// Makes this process write as the hook's Agent and session. Codex gives its
 /// hooks no `CODEX_SESSION_ID`, only the same id as `session_id` on stdin.

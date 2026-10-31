@@ -5,17 +5,18 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 use tm_store::{SessionPlace, SessionWork, short_session};
 
+use crate::harness::Harness;
 use crate::output::{printable, span};
+
+/// The harness that named `place`'s session, when tm knows how to resume it.
+pub(crate) fn harness(place: &SessionPlace) -> Option<Harness> {
+    Harness::named(place.harness.as_deref()?)
+}
 
 /// The command that resumes `session` from where it last wrote here, for the
 /// harnesses whose resume tm knows.
 pub(crate) fn resume_command(session: &str, place: &SessionPlace) -> Option<String> {
-    let dir = crate::fields::quoted(&place.dir);
-    match place.harness.as_deref()? {
-        "claude" => Some(format!("cd {dir} && claude -r {session}")),
-        "codex" => Some(format!("cd {dir} && codex resume {session}")),
-        _ => None,
-    }
+    Some(harness(place)?.resume(&crate::fields::quoted(&place.dir), session))
 }
 
 fn resume(work: &SessionWork) -> Option<String> {
@@ -87,15 +88,13 @@ pub(crate) fn write_section(text: &mut String, sessions: &[SessionWork], now_ms:
         };
         let _ = writeln!(text, "    {how}");
     }
-    let in_claude = |work: &SessionWork| {
-        work.place
-            .as_ref()
-            .is_some_and(|place| place.harness.as_deref() == Some("claude"))
-    };
-    if sessions.iter().any(in_claude) {
-        text.push_str(
-            "  Claude deletes a session unused for 30 days by default, so an old one may not resume.\n",
-        );
+    // Once per harness, not per session.
+    for harness in Harness::ALL {
+        let named =
+            |work: &SessionWork| work.place.as_ref().and_then(self::harness) == Some(harness);
+        if let Some(expiry) = harness.expiry().filter(|_| sessions.iter().any(named)) {
+            let _ = writeln!(text, "  {expiry}");
+        }
     }
 }
 

@@ -61,7 +61,7 @@ impl Store {
         };
         // A Snapshot is read-only, so an older log is refused, not upgraded;
         // the `PROJECTION_VERSION` check refuses one from before.
-        if crate::log_columns(&store.conn)? != schema::OPS_COLUMNS {
+        if crate::log::columns(&store.conn)? != crate::log::COLUMNS {
             return Err(StoreError::FormatChanged);
         }
         Ok(store)

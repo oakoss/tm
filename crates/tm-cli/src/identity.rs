@@ -8,6 +8,8 @@ use std::sync::OnceLock;
 use tm_core::Actor;
 use tm_core::actor::SessionId;
 
+use crate::harness::Harness;
+
 /// Each harness's variables, in the order they are checked, and the name its
 /// Agent writes under. Codex comes first: it is the one launched from Claude
 /// Code, and only the inner Agent sees both sets.
@@ -20,13 +22,6 @@ const HARNESSES: [(&str, &[&str]); 5] = [
     ("gemini", &["GEMINI_CLI"]),
     ("opencode", &["OPENCODE"]),
     ("cursor", &["CURSOR_AGENT"]),
-];
-
-/// The variables holding each harness's session id, in the order they are
-/// read; the other harnesses set only flags, so name none.
-const SESSIONS: [(&str, &[&str]); 2] = [
-    ("codex", &["CODEX_SESSION_ID", "CODEX_THREAD_ID"]),
-    ("claude", &["CLAUDE_CODE_SESSION_ID"]),
 ];
 
 /// The writer, and what a write should warn about.
@@ -133,9 +128,10 @@ fn session_id(
     harness: &str,
     warnings: &mut Vec<String>,
 ) -> Option<SessionId> {
-    let (_, names) = SESSIONS.iter().find(|(name, _)| *name == harness)?;
+    // The other harnesses set only flags, so name no session.
+    let names = Harness::named(harness)?.session_vars();
     let mut unusable = Vec::new();
-    for name in *names {
+    for name in names {
         let Some(value) = var(name) else {
             continue;
         };
@@ -160,11 +156,11 @@ fn session_id(
 
 /// Each harness whose variables name a usable session here, with that id.
 pub(crate) fn harness_sessions(var: impl Fn(&str) -> Option<Var>) -> Vec<(String, String)> {
-    SESSIONS
-        .iter()
-        .filter_map(|(harness, _)| {
-            let session = session_id(&var, harness, &mut Vec::new())?;
-            Some(((*harness).to_owned(), session.as_str().to_owned()))
+    Harness::ALL
+        .into_iter()
+        .filter_map(|harness| {
+            let session = session_id(&var, harness.name(), &mut Vec::new())?;
+            Some((harness.name().to_owned(), session.as_str().to_owned()))
         })
         .collect()
 }

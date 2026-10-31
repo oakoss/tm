@@ -15,6 +15,7 @@ mod import;
 mod import_list;
 mod import_memory;
 mod import_record;
+mod log;
 mod membership;
 mod memory;
 mod next;
@@ -51,7 +52,7 @@ use tm_core::op::CURRENT_VERSION;
 use tm_core::{Actor, Change, Hlc, Op, OpError, ProjectId, Scheme};
 use uuid::Uuid;
 
-use apply::{apply, project_from, rust_int, sql_int, uuid_from};
+use apply::{apply, rust_int, sql_int, uuid_from};
 
 pub use beads::{BeadsExport, BeadsImported, read_beads};
 pub use claim::{
@@ -796,7 +797,7 @@ impl Store {
     }
 
     fn init(&mut self) -> Result<(), StoreError> {
-        self.check_log_columns()?;
+        log::upgrade(&mut self.conn)?;
         if self.is_set_up()? {
             // Creates tables and indexes an older build lacked, never columns;
             // with nothing to create it takes no lock.
@@ -1383,29 +1384,6 @@ impl Store {
             })?)
     }
 
-    /// Refuses a log another build wrote with other columns: until v1 the
-    /// format changes in place, and such a store is recreated (ADR 0010). A
-    /// log from before sessions were recorded gains its `session` column.
-    fn check_log_columns(&mut self) -> Result<(), StoreError> {
-        let columns = log_columns(&self.conn)?;
-        if columns.is_empty() || columns == schema::OPS_COLUMNS {
-            return Ok(());
-        }
-        if columns[..] != schema::OPS_COLUMNS[..schema::OPS_COLUMNS_BEFORE_SESSION] {
-            return Err(StoreError::FormatChanged);
-        }
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        // Another process may have upgraded it while this one waited.
-        if log_columns(&tx)?.len() == schema::OPS_COLUMNS_BEFORE_SESSION {
-            tx.execute_batch(schema::ADD_SESSION)?;
-            tx.execute_batch(schema::LOG)?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
     /// Whether the store is already set up for this binary. Read without the
     /// write lock, so opening such a store never waits on a writer.
     fn is_set_up(&self) -> Result<bool, StoreError> {
@@ -1724,30 +1702,11 @@ fn written_in(draft: &Draft, source: Option<&str>) -> Result<Option<String>, Sto
         .flatten())
 }
 
-/// The `ops` columns in order; none before the log is created.
-fn log_columns(conn: &Connection) -> Result<Vec<String>, StoreError> {
-    let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('ops') ORDER BY cid")?;
-    let columns = stmt
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(columns)
-}
-
 /// [`Store::rebuild`] inside a transaction the caller commits.
 fn rebuild_in(tx: &Transaction<'_>) -> Result<usize, StoreError> {
     tx.execute_batch(schema::DROP_PROJECTIONS)?;
     tx.execute_batch(schema::PROJECTIONS)?;
-    let rows = {
-        let mut stmt = tx.prepare(
-            "SELECT seq, op_id, op_hash, v, replica_id, actor, project, issue_id, kind, hlc,
-                    base_seq, utc_ms, offset_min, payload, server_seq, server_received_ms,
-                    assigned_key, on_behalf_of, source, session
-             FROM ops
-             ORDER BY server_seq IS NULL, server_seq, hlc, replica_id, op_id",
-        )?;
-        let rows = stmt.query_map([], StoredOp::read)?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
+    let rows = log::in_replay_order(tx)?;
     let mut unapplied = 0;
     for row in &rows {
         if !replay(tx, row)? {
@@ -1861,7 +1820,7 @@ fn write_drafts(
             Change::Create => Some(project::next_key(tx, op.project)?),
             _ => None,
         };
-        insert_op(tx, &op, &change, assigned_key.as_deref())?;
+        log::insert(tx, &op, &change, assigned_key.as_deref())?;
         let batch = ops.first().map_or(op.op_id, |first| first.op_id);
         tx.execute(
             "INSERT INTO op_batches (op_id, batch) VALUES (?1, ?2)",
@@ -1983,7 +1942,7 @@ fn set(field: &str, value: serde_json::Value) -> Change {
 
 /// Applies one logged operation, returning whether it fit; one that does not
 /// is recorded in `unapplied` rather than stopping the rebuild.
-fn replay(tx: &Transaction<'_>, row: &StoredOp) -> Result<bool, StoreError> {
+fn replay(tx: &Transaction<'_>, row: &log::StoredOp) -> Result<bool, StoreError> {
     let wrap = |source: StoreError| StoreError::Replay {
         seq: row.seq,
         op_id: Uuid::from_slice(&row.op_id).ok(),
@@ -2045,118 +2004,4 @@ fn replay(tx: &Transaction<'_>, row: &StoredOp) -> Result<bool, StoreError> {
         project::count_key(tx, key, op.project, op.op_id).map_err(wrap)?;
     }
     Ok(applied)
-}
-
-fn insert_op(
-    tx: &Transaction<'_>,
-    op: &Op,
-    change: &Change,
-    assigned_key: Option<&str>,
-) -> Result<(), StoreError> {
-    tx.execute(
-        "INSERT INTO ops (op_id, op_hash, v, kind, replica_id, actor, on_behalf_of, source,
-                          project, issue_id, field, elem, hlc, base_seq, utc_ms, offset_min,
-                          payload, assigned_key, session)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                 ?18, ?19)",
-        params![
-            op.op_id.as_bytes(),
-            op.op_hash(),
-            op.v,
-            op.kind,
-            op.replica_id.as_bytes(),
-            op.actor,
-            op.on_behalf_of,
-            op.source,
-            op.project.to_string(),
-            op.subject.as_bytes(),
-            change.field(),
-            change.elem(),
-            sql_int(op.hlc.raw())?,
-            sql_int(op.base_seq)?,
-            op.utc_ms,
-            op.offset_min,
-            op.payload,
-            assigned_key,
-            op.session,
-        ],
-    )?;
-    Ok(())
-}
-
-/// One row of the log as SQLite returns it, before conversion can fail.
-struct StoredOp {
-    seq: i64,
-    op_id: Vec<u8>,
-    op_hash: Vec<u8>,
-    v: i64,
-    replica_id: Vec<u8>,
-    actor: String,
-    project: String,
-    issue_id: Vec<u8>,
-    kind: String,
-    hlc: i64,
-    base_seq: i64,
-    utc_ms: i64,
-    offset_min: i64,
-    payload: String,
-    server_seq: Option<i64>,
-    server_received_ms: Option<i64>,
-    assigned_key: Option<String>,
-    on_behalf_of: Option<String>,
-    source: Option<String>,
-    session: Option<String>,
-}
-
-impl StoredOp {
-    fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
-        Ok(Self {
-            seq: row.get(0)?,
-            op_id: row.get(1)?,
-            op_hash: row.get(2)?,
-            v: row.get(3)?,
-            replica_id: row.get(4)?,
-            actor: row.get(5)?,
-            project: row.get(6)?,
-            issue_id: row.get(7)?,
-            kind: row.get(8)?,
-            hlc: row.get(9)?,
-            base_seq: row.get(10)?,
-            utc_ms: row.get(11)?,
-            offset_min: row.get(12)?,
-            payload: row.get(13)?,
-            server_seq: row.get(14)?,
-            server_received_ms: row.get(15)?,
-            assigned_key: row.get(16)?,
-            on_behalf_of: row.get(17)?,
-            source: row.get(18)?,
-            session: row.get(19)?,
-        })
-    }
-
-    fn decode(&self) -> Result<(Op, Option<u64>, Option<u64>), StoreError> {
-        let narrow =
-            |name: &str, value: i64| StoreError::Corrupt(format!("{name} {value} is out of range"));
-        let op = Op {
-            v: u16::try_from(self.v).map_err(|_| narrow("version", self.v))?,
-            op_id: uuid_from(&self.op_id)?,
-            replica_id: uuid_from(&self.replica_id)?,
-            actor: self.actor.clone(),
-            on_behalf_of: self.on_behalf_of.clone(),
-            source: self.source.clone(),
-            project: project_from(&self.project)?,
-            subject: uuid_from(&self.issue_id)?,
-            kind: self.kind.clone(),
-            hlc: Hlc::from_raw(rust_int(self.hlc)?),
-            base_seq: rust_int(self.base_seq)?,
-            utc_ms: self.utc_ms,
-            offset_min: i16::try_from(self.offset_min)
-                .map_err(|_| narrow("UTC offset", self.offset_min))?,
-            payload: self.payload.clone(),
-            session: self.session.clone(),
-        };
-        let server_seq = self.server_seq.map(rust_int).transpose()?;
-        let received = self.server_received_ms.map(rust_int).transpose()?;
-        Ok((op, server_seq, received))
-    }
 }
