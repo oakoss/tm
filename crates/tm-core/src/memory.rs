@@ -30,6 +30,49 @@ impl Field {
     }
 }
 
+pub const KEY_RULE: &str =
+    "must be 1 to 64 lowercase letters, digits or '-', starting with a letter or digit";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyError {
+    Blank,
+    /// Its length in characters.
+    Long(usize),
+}
+
+impl std::fmt::Display for BodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Blank => f.write_str("is blank"),
+            Self::Long(count) => write!(
+                f,
+                "is {count} characters; the limit is {MAX_BODY}, so a longer note belongs in a comment (tm comment KEY) or a doc"
+            ),
+        }
+    }
+}
+
+/// # Errors
+///
+/// [`KEY_RULE`] for a key [`is_key`] refuses.
+pub fn check_key(key: &str) -> Result<(), &'static str> {
+    if is_key(key) { Ok(()) } else { Err(KEY_RULE) }
+}
+
+/// # Errors
+///
+/// The [`BodyError`] the body breaks.
+pub fn check_body(body: &str) -> Result<(), BodyError> {
+    if body.trim().is_empty() {
+        return Err(BodyError::Blank);
+    }
+    let count = body.chars().count();
+    if count > MAX_BODY {
+        return Err(BodyError::Long(count));
+    }
+    Ok(())
+}
+
 /// Whether `key` can name a memory: 1 to 64 lowercase letters, digits or
 /// `-`, starting with a letter or digit.
 #[must_use]

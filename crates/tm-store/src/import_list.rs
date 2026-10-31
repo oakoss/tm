@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use crate::apply::{issue_project, uuid_from};
 use crate::import::{Conflict, Decision, Parsed, RecordOutcome, adopted, base, decide, refused};
+use crate::import_record::{BySource, Planned, by_source, drafter, sourced, three_way};
 use crate::membership::PassedOver;
 use crate::record::{ListRecord, TM_SOURCE};
 use crate::{Draft, Provenance, Store, StoreError, WallTime};
@@ -70,6 +71,12 @@ struct Wanted<'a> {
     project: &'a str,
     name: Option<&'a str>,
     record: Option<&'a ListRecord>,
+}
+
+impl Planned for ListPlan {
+    fn drafts(&self) -> &[(Draft, Provenance)] {
+        &self.drafts
+    }
 }
 
 /// One list's own writes as one batch, and what they do.
@@ -148,32 +155,12 @@ impl Store {
         runner: &Actor,
         now: WallTime,
     ) -> Result<ListOutcome, StoreError> {
-        let project = self
-            .project_by_key(wanted.project)?
-            .ok_or_else(|| StoreError::Invalid {
-                field: "project".into(),
-                reason: format!("{} is no Project here", wanted.project),
-                valid: Vec::new(),
-            })?;
+        let project = self.import_project(wanted.project)?;
         let new = Uuid::now_v7();
         let writer = (runner, now);
         let plan = |conn: &Connection| plan_list(conn, (project, source, wanted), new, writer);
         let planned = plan(&self.conn)?;
-        let mut batches = Vec::new();
-        if !planned.drafts.is_empty() {
-            let ops = self.append_imported_guarded(planned.drafts.clone(), |tx| {
-                if plan(tx)? == planned {
-                    Ok(())
-                } else {
-                    Err(StoreError::Invalid {
-                        field: "shortlist".into(),
-                        reason: format!("{source} changed while it was being imported"),
-                        valid: Vec::new(),
-                    })
-                }
-            })?;
-            batches.extend(ops.first().map(|op| op.op_id));
-        }
+        let batches = self.write_planned(&planned, plan, ("shortlist", source))?;
         Ok(ListOutcome {
             line: wanted.line,
             source: source.to_owned(),
@@ -715,7 +702,7 @@ fn plan_list(
     conn: &Connection,
     (project, source, wanted): (ProjectId, &str, &Wanted<'_>),
     new: Uuid,
-    (runner, now): (&Actor, WallTime),
+    writer: (&Actor, WallTime),
 ) -> Result<ListPlan, StoreError> {
     let found = found(conn, project, source, wanted.name)?;
     let deleted = matches!(found, Found::Deleted(_));
@@ -733,19 +720,7 @@ fn plan_list(
             valid: Vec::new(),
         });
     }
-    let draft = |change: Change| {
-        let draft = Draft {
-            actor: runner.clone(),
-            project,
-            subject: list,
-            change,
-        };
-        let provenance = Provenance {
-            source: source.to_owned(),
-            at: now,
-        };
-        (draft, provenance)
-    };
+    let draft = drafter(writer, project, list, source);
     let mut plan = ListPlan {
         list,
         created,
@@ -767,7 +742,7 @@ fn plan_list(
         })?;
         let (size, actors) = match wanted.record {
             Some(record) => (record.size, record.actors.clone()),
-            None => (core::DEFAULT_SIZE, vec![runner.name().to_owned()]),
+            None => (core::DEFAULT_SIZE, vec![writer.0.name().to_owned()]),
         };
         plan.drafts.push(draft(Change::CreateShortlist));
         plan.drafts.push(draft(set(Field::Name, json!(name))));
@@ -796,21 +771,13 @@ fn found(
     source: &str,
     name: Option<&str>,
 ) -> Result<Found, StoreError> {
-    let mut held = Vec::new();
-    if let Some(Ok(id)) = source.strip_prefix(TM_SOURCE).map(Uuid::parse_str) {
-        held.push(id);
-    }
-    let kinds = ["create_shortlist", "shortlist_source"];
-    held.extend(sourced(conn, source, &kinds)?);
-    let mut deleted = None;
-    for id in held {
-        match crate::shortlist::read(conn, id)? {
-            Some(list) if !list.deleted => return Ok(Found::Source(id)),
-            Some(_) => deleted = deleted.or(Some(id)),
-            None => {}
-        }
-    }
-    let unfound = deleted.map_or(Found::None, Found::Deleted);
+    let kinds = ("create_shortlist", Some("shortlist_source"));
+    let deleted = |conn: &Connection, id| Ok(crate::shortlist::read(conn, id)?.map(|l| l.deleted));
+    let unfound = match by_source(conn, source, kinds, deleted)? {
+        BySource::Live(id) => return Ok(Found::Source(id)),
+        BySource::Gone(id) => Found::Deleted(id),
+        BySource::None => Found::None,
+    };
     let Some(name) = name else {
         return Ok(unfound);
     };
@@ -830,17 +797,6 @@ fn found(
             count: shared.len(),
         }),
     }
-}
-
-/// The lists an import from `source` wrote one of `kinds` for, oldest first.
-fn sourced(conn: &Connection, source: &str, kinds: &[&str]) -> Result<Vec<Uuid>, StoreError> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT issue_id FROM ops WHERE source = ?1 AND kind IN (?2, ?3) ORDER BY seq",
-    )?;
-    let (first, second) = (kinds[0], kinds.get(1).copied().unwrap_or(kinds[0]));
-    stmt.query_map(params![source, first, second], |row| row.get(0))?
-        .map(|id: rusqlite::Result<Vec<u8>>| uuid_from(&id?))
-        .collect()
 }
 
 /// The writes that bring a found list's name, size and Actors to the
@@ -867,11 +823,7 @@ fn compare(
         changes.push(set(Field::Name, json!(name)));
     }
     let mut single = |field: Field, wanted: Value, tm: Value| -> Result<(), StoreError> {
-        let base = match imported(conn, list, source, field.as_str(), None)? {
-            Some(Change::SetShortlist { value, .. }) => Some(value),
-            _ => None,
-        };
-        match decide(&wanted, base.as_ref(), &tm) {
+        match three_way(conn, (list, source, field.as_str()), (&wanted, &tm))? {
             Decision::Keep => {}
             Decision::Write => {
                 plan.written.push(field.as_str().into());
@@ -896,7 +848,7 @@ fn compare(
     };
     single(Field::Size, json!(record.size), json!(held.size))?;
     // An Actor the source's own list never named was absent there.
-    let made_here = sourced(conn, source, &["create_shortlist"])?.contains(&list);
+    let made_here = sourced(conn, source, ("create_shortlist", None))?.contains(&list);
     let imported = base(conn, source, Some(list), core::ACTORS)?;
     let wanted: BTreeSet<String> = record.actors.iter().map(|a| core::actor_key(a)).collect();
     let mut all: BTreeSet<String> = wanted.iter().chain(&held.actors).cloned().collect();

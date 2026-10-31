@@ -5,15 +5,15 @@
 
 use std::collections::BTreeSet;
 
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::{Value, json};
 use tm_core::memory::{self as core, Field};
 use tm_core::{Actor, Change, ProjectId};
 use uuid::Uuid;
 
-use crate::apply::uuid_from;
-use crate::import::{Conflict, Decision, Parsed, base, decide, refused};
+use crate::import::{Conflict, Decision, Parsed, refused};
+use crate::import_record::{BySource, Planned, by_source, drafter, three_way};
 use crate::record::{MemoryRecord, TM_SOURCE};
 use crate::{Draft, Provenance, Store, StoreError, WallTime};
 
@@ -35,6 +35,12 @@ pub struct MemoryOutcome {
     pub written: Vec<String>,
     /// Fields both tm and the source changed; tm's value was kept.
     pub conflicts: Vec<Conflict>,
+}
+
+impl Planned for MemoryPlan {
+    fn drafts(&self) -> &[(Draft, Provenance)] {
+        &self.drafts
+    }
 }
 
 /// One memory's writes as one batch, and what they do.
@@ -87,31 +93,11 @@ impl Store {
         (project, record, unique): (&str, &MemoryRecord, bool),
         writer: (&Actor, WallTime),
     ) -> Result<MemoryOutcome, StoreError> {
-        let project = self
-            .project_by_key(project)?
-            .ok_or_else(|| StoreError::Invalid {
-                field: "project".into(),
-                reason: format!("{project} is no Project here"),
-                valid: Vec::new(),
-            })?;
+        let project = self.import_project(project)?;
         let new = Uuid::now_v7();
         let plan = |conn: &Connection| plan_memory(conn, (project, record, unique), new, writer);
         let planned = plan(&self.conn)?;
-        let mut batches = Vec::new();
-        if !planned.drafts.is_empty() {
-            let ops = self.append_imported_guarded(planned.drafts.clone(), |tx| {
-                if plan(tx)? == planned {
-                    Ok(())
-                } else {
-                    Err(StoreError::Invalid {
-                        field: "memory".into(),
-                        reason: format!("{} changed while it was being imported", record.source),
-                        valid: Vec::new(),
-                    })
-                }
-            })?;
-            batches.extend(ops.first().map(|op| op.op_id));
-        }
+        let batches = self.write_planned(&planned, plan, ("memory", &record.source))?;
         let key = crate::memory::read(&self.conn, planned.memory)?.and_then(|memory| memory.key);
         Ok(MemoryOutcome {
             line,
@@ -146,7 +132,7 @@ pub(crate) fn check_memories(parsed: &Parsed) -> Result<(), StoreError> {
                 ));
             }
             if let Some(key) = &record.key
-                && !core::is_key(key)
+                && core::check_key(key).is_err()
             {
                 return Err(invalid(
                     *line,
@@ -154,7 +140,7 @@ pub(crate) fn check_memories(parsed: &Parsed) -> Result<(), StoreError> {
                 ));
             }
             if let Some(body) = &record.body
-                && (body.trim().is_empty() || body.chars().count() > core::MAX_BODY)
+                && core::check_body(body).is_err()
             {
                 let reason = format!(
                     "memory {source}'s body is blank or over {} characters",
@@ -179,7 +165,7 @@ fn plan_memory(
     conn: &Connection,
     (project, record, unique): (ProjectId, &MemoryRecord, bool),
     new: Uuid,
-    (runner, now): (&Actor, WallTime),
+    writer: (&Actor, WallTime),
 ) -> Result<MemoryPlan, StoreError> {
     let found = found(conn, project, record, unique)?;
     let (memory, created, by_key, forgotten) = match found {
@@ -197,19 +183,7 @@ fn plan_memory(
             valid: Vec::new(),
         });
     }
-    let draft = |change: Change| {
-        let draft = Draft {
-            actor: runner.clone(),
-            project,
-            subject: memory,
-            change,
-        };
-        let provenance = Provenance {
-            source: record.source.clone(),
-            at: now,
-        };
-        (draft, provenance)
-    };
+    let draft = drafter(writer, project, memory, &record.source);
     let mut plan = MemoryPlan {
         memory,
         created,
@@ -258,13 +232,11 @@ fn plan_memory(
     ];
     for (field, wanted, tm) in fields {
         let Some(wanted) = wanted else { continue };
-        let base = match base(conn, &record.source, Some(memory), field.as_str())?
-            .remove(&(memory, String::new()))
-        {
-            Some(Change::SetMemory { value, .. }) => Some(value),
-            _ => None,
-        };
-        match decide(&wanted, base.as_ref(), &tm) {
+        match three_way(
+            conn,
+            (memory, &record.source, field.as_str()),
+            (&wanted, &tm),
+        )? {
             Decision::Keep => {}
             Decision::Write => {
                 if wanted != tm {
@@ -293,29 +265,13 @@ fn found(
     record: &MemoryRecord,
     unique: bool,
 ) -> Result<Found, StoreError> {
-    let mut held = Vec::new();
-    if let Some(Ok(id)) = record.source.strip_prefix(TM_SOURCE).map(Uuid::parse_str) {
-        held.push(id);
-    }
-    let mut stmt = conn.prepare_cached(
-        "SELECT issue_id FROM ops WHERE source = ?1 AND kind IN ('create_memory', 'memory_source')
-         ORDER BY seq",
-    )?;
-    let sourced = stmt
-        .query_map(params![record.source], |row| row.get(0))?
-        .map(|id: rusqlite::Result<Vec<u8>>| uuid_from(&id?))
-        .collect::<Result<Vec<_>, StoreError>>()?;
-    held.extend(sourced);
-    let mut forgotten = None;
-    for id in held {
-        match crate::memory::read(conn, id)? {
-            Some(memory) if !memory.forgotten => return Ok(Found::Source(id)),
-            Some(_) => forgotten = forgotten.or(Some(id)),
-            None => {}
-        }
-    }
-    if let Some(id) = forgotten {
-        return Ok(Found::Forgotten(id));
+    let kinds = ("create_memory", Some("memory_source"));
+    let forgotten =
+        |conn: &Connection, id| Ok(crate::memory::read(conn, id)?.map(|memory| memory.forgotten));
+    match by_source(conn, &record.source, kinds, forgotten)? {
+        BySource::Live(id) => return Ok(Found::Source(id)),
+        BySource::Gone(id) => return Ok(Found::Forgotten(id)),
+        BySource::None => {}
     }
     let (Some(key), true) = (&record.key, unique) else {
         return Ok(Found::None);

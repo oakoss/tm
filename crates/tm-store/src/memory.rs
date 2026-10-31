@@ -11,8 +11,8 @@ use tm_core::memory::{self as core, Field};
 use tm_core::{Actor, Change, Op, ProjectId, Subject};
 use uuid::Uuid;
 
-use crate::apply::{Version, Versions, project_from, record_in, sql_int, uuid_from, wins_in};
-use crate::{Draft, Store, StoreError};
+use crate::apply::{Version, Versions, project_from, record_in, uuid_from, wins_in};
+use crate::{Store, StoreError, drafts};
 
 /// How alike two bodies must read for [`Store::remember`] to name the older
 /// one as a likely duplicate.
@@ -76,14 +76,8 @@ impl Store {
         key: Option<&str>,
     ) -> Result<Remembered, StoreError> {
         check_body(body)?;
-        if let Some(key) = key
-            && !core::is_key(key)
-        {
-            return Err(invalid(
-                Field::Key,
-                "must be 1 to 64 lowercase letters, digits or '-', starting with a letter or digit"
-                    .into(),
-            ));
+        if let Some(Err(rule)) = key.map(core::check_key) {
+            return Err(invalid(Field::Key, rule.into()));
         }
         let writer = actor.clone();
         let mut planned = None;
@@ -336,20 +330,7 @@ fn alike(conn: &Connection, memory: &Memory) -> Result<Vec<String>, StoreError> 
 }
 
 fn check_body(body: &str) -> Result<(), StoreError> {
-    if body.trim().is_empty() {
-        return Err(invalid(Field::Body, "is blank".into()));
-    }
-    let count = body.chars().count();
-    if count > core::MAX_BODY {
-        return Err(invalid(
-            Field::Body,
-            format!(
-                "is {count} characters; the limit is {}, so a longer note belongs in a comment (tm comment KEY) or a doc",
-                core::MAX_BODY
-            ),
-        ));
-    }
-    Ok(())
+    core::check_body(body).map_err(|err| invalid(Field::Body, err.to_string()))
 }
 
 fn invalid(field: Field, reason: String) -> StoreError {
@@ -362,18 +343,6 @@ fn invalid(field: Field, reason: String) -> StoreError {
 
 fn set(field: Field, value: serde_json::Value) -> Change {
     Change::SetMemory { field, value }
-}
-
-fn drafts(actor: &Actor, project: ProjectId, id: Uuid, changes: Vec<Change>) -> Vec<Draft> {
-    changes
-        .into_iter()
-        .map(|change| Draft {
-            actor: actor.clone(),
-            project,
-            subject: id,
-            change,
-        })
-        .collect()
 }
 
 const COLUMNS: &str = "id, project, key, body, forgotten, written_by, written_for, written_ms";
@@ -467,17 +436,6 @@ fn forgotten_keyed(
     id.map(|id| uuid_from(&id)).transpose()
 }
 
-pub(crate) fn project_of(conn: &Connection, id: Uuid) -> Result<Option<ProjectId>, StoreError> {
-    let text: Option<String> = conn
-        .query_row(
-            "SELECT project FROM memories WHERE id = ?1",
-            [id.as_bytes()],
-            |row| row.get(0),
-        )
-        .optional()?;
-    text.map(|text| project_from(&text)).transpose()
-}
-
 /// Applies a memory operation. A merge may leave two live memories sharing a
 /// key; only a write refuses that.
 pub(crate) fn apply(
@@ -487,30 +445,15 @@ pub(crate) fn apply(
     version: &Version,
 ) -> Result<(), StoreError> {
     if matches!(change, Change::CreateMemory) {
-        if !crate::project::exists(tx, op.project)? {
-            return Err(StoreError::UnknownProject(op.project));
-        }
-        if project_of(tx, op.subject)?.is_some() {
-            return Err(StoreError::DuplicateMemory(op.subject));
-        }
-        tx.execute(
-            "INSERT INTO memories (id, project, created_hlc) VALUES (?1, ?2, ?3)",
-            params![
-                op.subject.as_bytes(),
-                op.project.to_string(),
-                sql_int(op.hlc.raw())?
-            ],
-        )?;
-        return Ok(());
+        return Versions::Memory.insert(tx, op, StoreError::DuplicateMemory(op.subject));
     }
-    let expected = project_of(tx, op.subject)?.ok_or(StoreError::UnknownMemory(op.subject))?;
-    if expected != op.project {
-        return Err(StoreError::MemoryMismatch {
+    Versions::Memory.owned(tx, op, StoreError::UnknownMemory(op.subject), |expected| {
+        StoreError::MemoryMismatch {
             memory: op.subject,
             expected,
             found: op.project,
-        });
-    }
+        }
+    })?;
     // Its source is on the operation, which every reader looks up there.
     if matches!(change, Change::MemorySource) {
         return Ok(());
@@ -574,7 +517,7 @@ pub(crate) fn check(tx: &Transaction<'_>, id: Uuid, change: Change) -> Result<Ch
         check_body(value.as_str().unwrap_or_default())?;
     }
     if matches!(change, Change::CreateMemory) {
-        if project_of(tx, id)?.is_some() {
+        if Versions::Memory.project_of(tx, id)?.is_some() {
             return Err(StoreError::DuplicateMemory(id));
         }
         return Ok(change);
@@ -598,6 +541,10 @@ pub(crate) fn check(tx: &Transaction<'_>, id: Uuid, change: Change) -> Result<Ch
 pub(crate) fn check_batch(tx: &Transaction<'_>, ops: &[Op]) -> Result<(), StoreError> {
     let mut written = BTreeSet::new();
     let mut keyed = BTreeSet::new();
+    let mut created = BTreeSet::new();
+    // An import may create a memory sharing a key, as a merge would bring
+    // one; changing an existing memory's key is checked whoever writes it.
+    let mut imported = BTreeSet::new();
     for op in ops {
         let Ok(change) = op.change() else { continue };
         if change.subject() != Subject::Memory {
@@ -605,8 +552,14 @@ pub(crate) fn check_batch(tx: &Transaction<'_>, ops: &[Op]) -> Result<(), StoreE
         }
         written.insert(op.subject);
         let keys = match &change {
-            Change::CreateMemory
-            | Change::SetMemory {
+            Change::CreateMemory => {
+                created.insert(op.subject);
+                if op.source.is_some() {
+                    imported.insert(op.subject);
+                }
+                true
+            }
+            Change::SetMemory {
                 field: Field::Key, ..
             } => true,
             Change::SetMemory {
@@ -619,25 +572,17 @@ pub(crate) fn check_batch(tx: &Transaction<'_>, ops: &[Op]) -> Result<(), StoreE
             keyed.insert(op.subject);
         }
     }
-    // An import may create a memory sharing a key, as a merge would bring
-    // one; changing an existing memory's key is checked whoever writes it.
-    for op in ops {
-        if op.kind == "create_memory" && op.source.is_some() {
-            keyed.remove(&op.subject);
-        }
-    }
     for id in written {
         let memory = read(tx, id)?.ok_or(StoreError::UnknownMemory(id))?;
-        let created = ops
-            .iter()
-            .any(|op| op.subject == id && op.kind == "create_memory");
+        let created = created.contains(&id);
+        let keyed = keyed.contains(&id) && !imported.contains(&id);
         if created && memory.key.is_none() {
             return Err(invalid(Field::Key, "is needed for a new memory".into()));
         }
         if created && memory.body.is_none() {
             return Err(invalid(Field::Body, "is needed for a new memory".into()));
         }
-        if let (false, Some(key), true) = (memory.forgotten, &memory.key, keyed.contains(&id)) {
+        if let (false, Some(key), true) = (memory.forgotten, &memory.key, keyed) {
             key_free(tx, memory.project, key, id)?;
         }
     }

@@ -12,8 +12,8 @@ use tm_core::shortlist::{self as core, Field};
 use tm_core::{Actor, Change, Op, ProjectId, Scheme, Subject};
 use uuid::Uuid;
 
-use crate::apply::{Version, Versions, project_from, record_in, sql_int, uuid_from, wins_in};
-use crate::{Draft, Provenance, Store, StoreError, WallTime};
+use crate::apply::{Version, Versions, project_from, record_in, uuid_from, wins_in};
+use crate::{Draft, Provenance, Store, StoreError, WallTime, drafts};
 
 /// A Short-list as read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -258,9 +258,12 @@ pub(crate) fn check_batch(
         .collect();
     for id in written {
         let list = read(tx, id)?.ok_or(StoreError::UnknownShortlist(id))?;
-        let created = ops
-            .iter()
-            .any(|op| op.subject == id && op.kind == "create_shortlist");
+        let created = ops.iter().any(|op| {
+            op.subject == id
+                && op
+                    .change()
+                    .is_ok_and(|c| matches!(c, Change::CreateShortlist))
+        });
         if created && list.name.is_none() {
             return Err(StoreError::Invalid {
                 field: Field::Name.as_str().into(),
@@ -427,18 +430,6 @@ fn set(field: Field, value: serde_json::Value) -> Change {
     Change::SetShortlist { field, value }
 }
 
-fn drafts(actor: &Actor, project: ProjectId, id: Uuid, changes: Vec<Change>) -> Vec<Draft> {
-    changes
-        .into_iter()
-        .map(|change| Draft {
-            actor: actor.clone(),
-            project,
-            subject: id,
-            change,
-        })
-        .collect()
-}
-
 fn no_actors() -> StoreError {
     StoreError::Invalid {
         field: core::ACTORS.into(),
@@ -516,17 +507,6 @@ pub(crate) fn live_named(
     Ok(Ok(lists.into_iter().map(|(id, _)| id).collect()))
 }
 
-pub(crate) fn project_of(conn: &Connection, id: Uuid) -> Result<Option<ProjectId>, StoreError> {
-    let text: Option<String> = conn
-        .query_row(
-            "SELECT project FROM shortlists WHERE id = ?1",
-            [id.as_bytes()],
-            |row| row.get(0),
-        )
-        .optional()?;
-    text.map(|text| project_from(&text)).transpose()
-}
-
 /// Applies a Short-list operation. A merge may leave two lists sharing a
 /// name or one with no Actors; only a write refuses those.
 pub(crate) fn apply(
@@ -536,30 +516,18 @@ pub(crate) fn apply(
     version: &Version,
 ) -> Result<(), StoreError> {
     if matches!(change, Change::CreateShortlist) {
-        if !crate::project::exists(tx, op.project)? {
-            return Err(StoreError::UnknownProject(op.project));
-        }
-        if project_of(tx, op.subject)?.is_some() {
-            return Err(StoreError::DuplicateShortlist(op.subject));
-        }
-        tx.execute(
-            "INSERT INTO shortlists (id, project, created_hlc) VALUES (?1, ?2, ?3)",
-            params![
-                op.subject.as_bytes(),
-                op.project.to_string(),
-                sql_int(op.hlc.raw())?
-            ],
-        )?;
-        return Ok(());
+        return Versions::Shortlist.insert(tx, op, StoreError::DuplicateShortlist(op.subject));
     }
-    let expected = project_of(tx, op.subject)?.ok_or(StoreError::UnknownShortlist(op.subject))?;
-    if expected != op.project {
-        return Err(StoreError::ShortlistMismatch {
+    Versions::Shortlist.owned(
+        tx,
+        op,
+        StoreError::UnknownShortlist(op.subject),
+        |expected| StoreError::ShortlistMismatch {
             list: op.subject,
             expected,
             found: op.project,
-        });
-    }
+        },
+    )?;
     // Its source is on the operation, which every reader looks up there.
     if matches!(change, Change::ShortlistSource) {
         return Ok(());
@@ -614,7 +582,7 @@ fn column_value(field: Field, value: &serde_json::Value) -> Result<SqlValue, Sto
 /// restores it, and keeps an Actor. Names are checked by [`check_batch`].
 pub(crate) fn check(tx: &Transaction<'_>, id: Uuid, change: Change) -> Result<Change, StoreError> {
     if matches!(change, Change::CreateShortlist) {
-        if project_of(tx, id)?.is_some() {
+        if Versions::Shortlist.project_of(tx, id)?.is_some() {
             return Err(StoreError::DuplicateShortlist(id));
         }
         return Ok(change);
