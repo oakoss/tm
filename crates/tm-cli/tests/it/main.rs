@@ -22,6 +22,7 @@ mod prime;
 mod prompts;
 mod protected;
 mod ready;
+mod remember;
 mod scan;
 mod scheme;
 mod setup;

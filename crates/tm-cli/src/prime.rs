@@ -54,6 +54,13 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
     let here = here::read()?;
     let (actor, mapped, mut warnings) = context(&here);
     let lists = lists(&here, actor.as_ref(), mapped.as_ref(), &mut warnings);
+    let memories = match &mapped {
+        Some((project, _)) => here.store.memories(*project).unwrap_or_else(|err| {
+            warnings.push(format!("this Project's memories: {err}"));
+            Vec::new()
+        }),
+        None => Vec::new(),
+    };
     let project = mapped.map(|(_, key)| key);
     let ready_shown = if lists.is_empty() {
         READY_SHOWN
@@ -87,6 +94,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
 
     let session = actor.as_ref().and_then(Actor::session);
     let now_ms = claims.at_ms;
+    let memories = memories_section(&mut text, &memories, crate::memory::now_ms());
     let waiting_items = waiting_section(&mut text, actor.as_ref(), &waiting, &projects, now_ms);
     let sessions = by_session(claims, session);
     let claim_items = claims_sections(&mut text, (&sessions, &notes), &claimed, &projects, now_ms);
@@ -112,6 +120,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
         "project": project,
         "scheme": scheme,
         "actor": actor.as_ref().map(actor_json),
+        "memories": memories,
         "waiting": waiting_items,
         "handed_claims": claim_items.handed,
         "claims": claim_items.held,
@@ -134,6 +143,24 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
         output.warnings = warnings;
     }
     Ok(output)
+}
+
+fn memories_section(text: &mut String, memories: &[tm_store::Memory], now_ms: i64) -> Value {
+    let shown = &memories[..memories.len().min(crate::memory::PRIME_SHOWN)];
+    if !shown.is_empty() {
+        let _ = writeln!(text, "Remember (tm remember \"...\" adds one):");
+        for memory in shown {
+            let _ = writeln!(text, "  {}", crate::memory::line(memory, now_ms));
+        }
+        if memories.len() > shown.len() {
+            let more = memories.len() - shown.len();
+            let _ = writeln!(text, "  and {more} more: tm memories");
+        }
+    }
+    json!({
+        "memories": shown.iter().map(crate::memory::memory_json).collect::<Vec<_>>(),
+        "total": memories.len(),
+    })
 }
 
 /// What prime reads, in one read transaction.

@@ -24,8 +24,9 @@ use uuid::Uuid;
 use crate::apply::{Version, issue_project, uuid_from};
 use crate::export::{FORMAT, VERSION, unreadable};
 use crate::import_list::{ListOutcome, place_of};
+use crate::import_memory::MemoryOutcome;
 use crate::read::{self, IssueView};
-use crate::record::{CommentRecord, IssueRecord, ListRecord, TM_SOURCE};
+use crate::record::{CommentRecord, IssueRecord, ListRecord, MemoryRecord, TM_SOURCE};
 use crate::{Draft, Provenance, Store, StoreError, WallTime};
 
 /// Fields a record holds one value of, read from the Issue's own columns.
@@ -56,6 +57,8 @@ pub struct RecordsImported {
     pub projects: Vec<String>,
     /// Each Short-list the file names, as the import found or created it.
     pub shortlists: Vec<ListOutcome>,
+    /// Each memory a project line holds, as the import found or created it.
+    pub memories: Vec<MemoryOutcome>,
     pub records: Vec<RecordOutcome>,
 }
 
@@ -99,6 +102,8 @@ pub(crate) struct ProjectLine {
     name: String,
     #[serde(default)]
     pub(crate) shortlists: Vec<ListRecord>,
+    #[serde(default)]
+    pub(crate) memories: Vec<MemoryRecord>,
 }
 
 /// A file's lines, each with its line number.
@@ -229,6 +234,7 @@ impl Store {
                 .map_err(|cause| refused(*line, &record.source, cause, (&[], &[])))?;
         }
         crate::import_list::check_lists(parsed)?;
+        crate::import_memory::check_memories(parsed)?;
         let (now, _) = self.now()?;
         let (mut projects, mut project_batches) = (Vec::new(), Vec::new());
         for (line, project) in &parsed.projects {
@@ -243,6 +249,7 @@ impl Store {
             }
         }
         let shortlists = self.import_lists(parsed, runner, now, &mut project_batches)?;
+        let memories = self.import_memories(parsed, runner, now, &mut project_batches)?;
         let mut records: Vec<RecordOutcome> = Vec::with_capacity(parsed.issues.len());
         let mut cleared = Vec::new();
         for (line, record) in &parsed.issues {
@@ -286,6 +293,7 @@ impl Store {
         Ok(RecordsImported {
             projects,
             shortlists,
+            memories,
             records,
         })
     }

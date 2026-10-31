@@ -123,6 +123,34 @@ pub struct ListRecord {
     pub size: u64,
 }
 
+/// A memory on a `project` line (ADR 0017).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryRecord {
+    /// Such as `tm:<memory id>`; an import matches by it first, then by key.
+    pub source: String,
+    /// Absent only for a memory a merge brought without it, as a list's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+}
+
+/// The live memories in `project`, ordered by id, as its project line names them.
+pub(crate) fn memories(conn: &Connection, project: &str) -> Result<Vec<MemoryRecord>, StoreError> {
+    let project = crate::apply::project_from(project)?;
+    let mut memories = crate::memory::live(conn, project)?;
+    memories.sort_by_key(|memory| memory.id);
+    Ok(memories
+        .into_iter()
+        .map(|memory| MemoryRecord {
+            source: list_source(memory.id),
+            key: memory.key,
+            body: memory.body,
+        })
+        .collect())
+}
+
 /// The source a tm export gives Short-list `id`, as it gives an Issue.
 #[must_use]
 pub fn list_source(id: Uuid) -> String {

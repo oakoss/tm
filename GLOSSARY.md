@@ -148,6 +148,10 @@ _Avoid_: Affects version, affected release
 An optional time-boxed period of work in a Project, shown under whatever name the team prefers, such as sprint or cycle.
 _Avoid_: Sprint, cycle (as canonical terms)
 
+**Memory**:
+A durable fact about a Project that every session's `tm prime` shows, named by a key, written with `tm remember` and dropped with `tm forget`; not progress on an Issue, which is a comment.
+_Avoid_: Note, insight, knowledge base
+
 **Short-list**:
 A named, ordered list of Issues in a Project that says what to do next and in what order, apart from priority, with the Actors who work through it; an Issue sits on at most one.
 _Avoid_: Queue, inbox, to-do list

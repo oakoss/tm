@@ -23,6 +23,7 @@ mod init;
 mod instructions;
 mod link;
 mod list;
+mod memory;
 mod moves;
 mod next;
 mod output;
@@ -143,6 +144,19 @@ enum Command {
     /// Withdraw a question you asked and settled yourself, saying why; the
     /// Issue waits on no one and your Agent resumes it with `tm start`.
     Withdraw(ask::Withdraw),
+    /// Remember a fact about this Project that every session's tm prime
+    /// shows.
+    ///
+    /// A memory is a durable fact a future session needs, such as how to run
+    /// the tests or a trap in the build. Progress on an Issue belongs in tm
+    /// comment, and what AGENTS.md already says needs no memory. Memories stay
+    /// in this machine's tm, not in git.
+    Remember(memory::Remember),
+    /// List this Project's memories, search them by words, or show one by
+    /// its key.
+    Memories(memory::Memories),
+    /// Forget a memory; tm undo brings it back.
+    Forget(memory::Forget),
     /// Release a Claim. The session holding it, and the human it is held
     /// for, may leave out the id `tm claim` printed.
     #[command(group = ArgGroup::new("what").required(true).args(["issue", "mine"]))]
@@ -468,6 +482,9 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Ask(args)) => ask::ask(&args),
         Some(Command::Answer(args)) => ask::answer(&args, json),
         Some(Command::Withdraw(args)) => ask::withdraw(&args),
+        Some(Command::Remember(args)) => memory::remember(&args),
+        Some(Command::Memories(args)) => memory::memories(&args),
+        Some(Command::Forget(args)) => memory::forget(&args),
         Some(Command::Setup { harness, undo, yes }) => {
             setup::run(&setup::Setup { harness, undo, yes }, json)
         }

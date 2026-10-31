@@ -120,6 +120,10 @@ pub(crate) fn apply(
             let version = Version::of(op, server_seq, server_received_ms);
             return shortlist::apply(tx, op, &change, &version).map(|()| None);
         }
+        Subject::Memory => {
+            let version = Version::of(op, server_seq, server_received_ms);
+            return crate::memory::apply(tx, op, &change, &version).map(|()| None);
+        }
         Subject::Issue => check_filed(tx, op, &change)?,
     }
     let version = Version::of(op, server_seq, server_received_ms);
@@ -130,8 +134,11 @@ pub(crate) fn apply(
         | Change::CreateShortlist
         | Change::SetShortlist { .. }
         | Change::ShortlistActor { .. }
-        | Change::ShortlistSource => {
-            unreachable!("Project and Short-list operations return above")
+        | Change::ShortlistSource
+        | Change::CreateMemory
+        | Change::SetMemory { .. }
+        | Change::MemorySource => {
+            unreachable!("Project, Short-list and memory operations return above")
         }
         Change::SetField { field, value, .. } => {
             // Checked before anything is written, so a value that does not fit
@@ -516,14 +523,16 @@ fn write_target(
 pub(crate) enum Versions {
     Issue,
     Shortlist,
+    Memory,
 }
 
 impl Versions {
     /// The table and its subject column.
-    const fn table(self) -> (&'static str, &'static str) {
+    pub(crate) const fn table(self) -> (&'static str, &'static str) {
         match self {
             Self::Issue => ("field_versions", "issue_id"),
             Self::Shortlist => ("shortlist_versions", "shortlist_id"),
+            Self::Memory => ("memory_versions", "memory_id"),
         }
     }
 }
