@@ -3,7 +3,7 @@
 
 /// Stamped into `PRAGMA user_version`; a store with a different value is
 /// rebuilt on open.
-pub(crate) const PROJECTION_VERSION: i64 = 16;
+pub(crate) const PROJECTION_VERSION: i64 = 17;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
 /// Until tm v1 is released the log changes in place (ADR 0010).
@@ -11,7 +11,7 @@ pub(crate) const STORE_FORMAT: i64 = 1;
 
 /// The `ops` columns in order; a store whose log has others is refused, since
 /// `CREATE TABLE IF NOT EXISTS` never adds a column.
-pub(crate) const OPS_COLUMNS: [&str; 21] = [
+pub(crate) const OPS_COLUMNS: [&str; 22] = [
     "seq",
     "op_id",
     "op_hash",
@@ -33,7 +33,19 @@ pub(crate) const OPS_COLUMNS: [&str; 21] = [
     "server_seq",
     "server_received_ms",
     "assigned_key",
+    "session",
 ];
+
+/// The `ops` table's one older shape, without `session`, which opening a
+/// store upgrades in place by adding it.
+pub(crate) const OPS_COLUMNS_BEFORE_SESSION: usize = 21;
+
+/// Adds `session` to a log from before sessions were recorded; the
+/// immutability trigger is dropped so [`LOG`] recreates it covering `session`.
+pub(crate) const ADD_SESSION: &str = "
+ALTER TABLE ops ADD COLUMN session TEXT;
+DROP TRIGGER IF EXISTS ops_immutable;
+";
 
 pub(crate) const LOG: &str = "
 CREATE TABLE IF NOT EXISTS meta (
@@ -62,10 +74,13 @@ CREATE TABLE IF NOT EXISTS ops (
   payload TEXT NOT NULL,
   server_seq INTEGER,
   server_received_ms INTEGER,
-  assigned_key TEXT
+  assigned_key TEXT,
+  session TEXT
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS ops_target ON ops (issue_id, field, elem);
+
+CREATE INDEX IF NOT EXISTS ops_by_session ON ops (session) WHERE session IS NOT NULL;
 
 -- A re-import finds what it wrote before by source (ADR 0013).
 CREATE INDEX IF NOT EXISTS ops_by_source ON ops (source) WHERE source IS NOT NULL;
@@ -80,7 +95,7 @@ CREATE INDEX IF NOT EXISTS ops_by_replica ON ops (replica_id, hlc);
 -- may change.
 CREATE TRIGGER IF NOT EXISTS ops_immutable
 BEFORE UPDATE OF op_id, op_hash, v, kind, replica_id, actor, on_behalf_of, source, project, issue_id,
-                 field, elem, hlc, base_seq, utc_ms, offset_min, payload ON ops
+                 field, elem, hlc, base_seq, utc_ms, offset_min, payload, session ON ops
 BEGIN
   SELECT RAISE(ABORT, 'stored operations are immutable');
 END;
@@ -140,6 +155,17 @@ CREATE INDEX IF NOT EXISTS op_batches_by_batch ON op_batches (batch);
 CREATE TABLE IF NOT EXISTS undo_batches (
   batch BLOB PRIMARY KEY,
   undid BLOB NOT NULL
+) STRICT, WITHOUT ROWID;
+
+-- Where each session last wrote from here. Local and never exported: a path
+-- holds only on the machine that wrote it.
+CREATE TABLE IF NOT EXISTS session_dirs (
+  session TEXT PRIMARY KEY,
+  dir TEXT NOT NULL,
+  written_ms INTEGER NOT NULL,
+  -- The harness whose variable named the session, which resumes it; a
+  -- sub-agent writes under its own name in its parent's session.
+  harness TEXT
 ) STRICT, WITHOUT ROWID;
 ";
 

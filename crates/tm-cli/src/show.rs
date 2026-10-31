@@ -61,16 +61,17 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         let children = count_children(store.scheme(), &store.children(id)?);
         let membership = membership(store, &view)?;
         let version = store.issue_version(id)?;
+        let sessions = store.sessions(id)?;
         Ok::<_, CliError>((
             view,
             project,
             parent,
             (claim, now_ms),
             links,
-            (comments, children, membership, version),
+            (comments, children, membership, version, sessions),
         ))
     })?;
-    let (comments, children, membership, version) = below;
+    let (comments, children, membership, version, sessions) = below;
     let moves = moves_to(store.scheme(), &view);
     let mut fields = view.fields.clone();
     fields.remove("shortlist");
@@ -94,6 +95,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         "comments": comments_json(&comments),
         "children": children.json(),
         "moves_to": moves.iter().map(|status| status_json(status)).collect::<Vec<_>>(),
+        "sessions": sessions.iter().map(crate::session::json).collect::<Vec<_>>(),
     });
 
     let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
@@ -122,6 +124,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
     if let Some(line) = children.line() {
         let _ = writeln!(text, "{line}");
     }
+    crate::session::write_section(&mut text, &sessions, now_ms);
     for comment in &comments {
         write_comment(&mut text, comment);
     }

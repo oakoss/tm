@@ -57,8 +57,13 @@ impl Store {
             forcing: false,
             passed: Vec::new(),
             based_on: None,
+            place: crate::Workplace::default(),
         };
-        store.check_log_columns()?;
+        // A Snapshot is read-only, so an older log is refused, not upgraded;
+        // the `PROJECTION_VERSION` check refuses one from before.
+        if crate::log_columns(&store.conn)? != schema::OPS_COLUMNS {
+            return Err(StoreError::FormatChanged);
+        }
         Ok(store)
     }
 

@@ -221,11 +221,13 @@ impl Store {
         issue: Uuid,
         ttl_ms: Option<u64>,
     ) -> Result<Claim, StoreError> {
+        let branch = self.place.branch.clone();
         let take = |prev| ClaimAction::Take {
             agent: actor.name().to_owned(),
             ttl_ms,
             prev,
             session: actor.session().map(str::to_owned),
+            branch: branch.clone(),
         };
         let draft = self.claim_draft(actor.clone(), issue, take(None))?;
         // `prev` is read inside the write, so no other take slips in between.
@@ -261,11 +263,13 @@ impl Store {
         ttl_ms: Option<u64>,
         extend: impl FnOnce(&Lineage) -> (Vec<Draft>, T),
     ) -> Result<TakenWith<T>, StoreError> {
+        let branch = self.place.branch.clone();
         let take = |prev| ClaimAction::Take {
             agent: actor.name().to_owned(),
             ttl_ms,
             prev,
             session: actor.session().map(str::to_owned),
+            branch: branch.clone(),
         };
         let draft = self.claim_draft(actor.clone(), issue, take(None))?;
         let scheme = self.scheme.clone();
@@ -1028,8 +1032,19 @@ pub(crate) fn apply(
             agent,
             ttl_ms,
             session,
+            branch,
             ..
-        } => Some(taken(op, agent, *ttl_ms, session.as_deref())?),
+        } => {
+            if branch
+                .as_deref()
+                .is_some_and(|branch| branch.trim().is_empty() || branch.contains(char::is_control))
+            {
+                return Err(invalid(
+                    "cannot record a blank branch or one with control characters",
+                ));
+            }
+            Some(taken(op, agent, *ttl_ms, session.as_deref())?)
+        }
         ClaimAction::Hand { agent, ttl_ms, .. } => Some(Claim {
             handed: true,
             ..taken(op, agent, *ttl_ms, None)?

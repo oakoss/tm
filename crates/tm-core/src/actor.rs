@@ -87,12 +87,12 @@ impl Actor {
     }
 }
 
-/// Whether `session` can name a session: ASCII letters, digits, `-`, `_` and
-/// `.` only, so invisible or look-alike characters cannot make two sessions
-/// look alike in text.
+/// Whether `session` can name a session: 1 to 256 ASCII letters, digits, `-`,
+/// `_` and `.`, so invisible or look-alike characters cannot make two sessions
+/// look alike in text, and every operation stays small.
 #[must_use]
 pub fn is_session_id(session: &str) -> bool {
-    !session.is_empty()
+    (1..=256).contains(&session.len())
         && session
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
@@ -101,6 +101,13 @@ pub fn is_session_id(session: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_id_is_at_most_256_characters() {
+        assert!(is_session_id(&"a".repeat(256)));
+        assert!(!is_session_id(&"a".repeat(257)));
+        assert!(!is_session_id(""));
+    }
 
     #[test]
     fn an_agent_records_the_human_it_writes_for() {

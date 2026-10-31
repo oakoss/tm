@@ -141,6 +141,7 @@ fn peek(here: &Here, actor: &Actor) -> Result<Output, CliError> {
 fn take(here: &mut Here, actor: &Actor, lasts: &Lasts) -> Result<Output, CliError> {
     let from = source(here, actor)?;
     let ttl_ms = lasts.ttl_ms(here);
+    let branch_warning = here.record_branch();
     let scheme = here.store.scheme().clone();
     let begin = |lineage: &_| start::begin(&scheme, actor, lineage);
     let Some(next) = here
@@ -163,6 +164,7 @@ fn take(here: &mut Here, actor: &Actor, lasts: &Lasts) -> Result<Output, CliErro
     output.text = format!("{key} is next {place}\n{}", output.text);
     output.data["from"] = json!(from.kind());
     output.data["taken"] = json!(true);
+    output.warnings.extend(branch_warning);
     Ok(output)
 }
 

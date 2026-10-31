@@ -31,6 +31,7 @@ fn take(agent: &str, prev: Option<Uuid>) -> Change {
             ttl_ms: None,
             prev,
             session: None,
+            branch: None,
         },
     }
 }
@@ -96,6 +97,7 @@ fn a_pulled_take_naming_a_session_outside_the_session_alphabet_does_not_fit() {
             ttl_ms: None,
             prev: None,
             session: Some(session.into()),
+            branch: None,
         },
     };
     let (blank, control, spaced, fine) = (
@@ -127,6 +129,43 @@ fn a_pulled_take_naming_a_session_outside_the_session_alphabet_does_not_fit() {
 }
 
 #[test]
+fn a_pulled_take_recording_a_blank_or_control_branch_does_not_fit() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let on_branch = |branch: &str| Change::Claim {
+        action: ClaimAction::Take {
+            agent: "claude".into(),
+            ttl_ms: None,
+            prev: None,
+            session: None,
+            branch: Some(branch.into()),
+        },
+    };
+    let issues = [(); 4].map(|()| Uuid::now_v7());
+    let [blank, newline, escape, fine] = issues;
+    let ids = insert_all(
+        &store,
+        &[
+            (blank, Change::Create),
+            (newline, Change::Create),
+            (escape, Change::Create),
+            (fine, Change::Create),
+            (blank, on_branch(" ")),
+            (newline, on_branch("main\nx")),
+            (escape, on_branch("\u{1b}[2J")),
+            (fine, on_branch("feat/x")),
+        ],
+    );
+    assert_eq!(store.rebuild().unwrap(), 3);
+    let set_aside = store.unapplied().unwrap();
+    assert_eq!(
+        set_aside.iter().map(|u| u.op_id).collect::<Vec<_>>(),
+        [ids[4], ids[5], ids[6]]
+    );
+    assert!(held(&store, fine).is_some());
+}
+
+#[test]
 fn a_take_must_name_the_session_writing_it() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
@@ -137,6 +176,7 @@ fn a_take_must_name_the_session_writing_it() {
             ttl_ms: None,
             prev: None,
             session: session.map(str::to_owned),
+            branch: None,
         },
     };
     for (writer, session) in [
@@ -491,6 +531,7 @@ fn a_pulled_take_is_held_to_the_rules_that_need_no_state_but_not_to_archiving() 
             ttl_ms: Some(0),
             prev: None,
             session: None,
+            branch: None,
         },
     };
     let ids = insert_all(
@@ -634,6 +675,7 @@ fn a_pulled_take_over_a_claim_wins_only_once_its_time_is_past_the_expiry() {
             ttl_ms: Some(8),
             prev: None,
             session: None,
+            branch: None,
         },
     };
     // claude's take is written at 1_002, so it lapses at 1_010.

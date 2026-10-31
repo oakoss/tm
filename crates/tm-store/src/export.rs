@@ -75,6 +75,8 @@ struct OpRecord {
     server_seq: Option<i64>,
     server_received_ms: Option<i64>,
     assigned_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session: Option<String>,
 }
 
 impl OpRecord {
@@ -94,6 +96,7 @@ impl OpRecord {
             utc_ms: self.utc_ms,
             offset_min: self.offset_min,
             payload: self.payload.clone(),
+            session: self.session.clone(),
         }
     }
 }
@@ -142,7 +145,7 @@ impl Store {
             let mut stmt = store.conn.prepare(
                 "SELECT op_id, op_hash, v, kind, replica_id, actor, on_behalf_of, source,
                         project, issue_id, field, elem, hlc, base_seq, utc_ms, offset_min,
-                        payload, server_seq, server_received_ms, assigned_key
+                        payload, server_seq, server_received_ms, assigned_key, session
                  FROM ops
                  ORDER BY server_seq IS NULL, server_seq, hlc, replica_id, op_id",
             )?;
@@ -324,6 +327,7 @@ fn op_record(row: &rusqlite::Row<'_>) -> Result<OpRecord, StoreError> {
         server_seq: row.get(17)?,
         server_received_ms: row.get(18)?,
         assigned_key: row.get(19)?,
+        session: row.get(20)?,
     })
 }
 
@@ -453,9 +457,9 @@ fn insert(tx: &Transaction<'_>, record: &OpRecord) -> Result<(), StoreError> {
     tx.execute(
         "INSERT INTO ops (op_id, op_hash, v, kind, replica_id, actor, on_behalf_of, source,
                           project, issue_id, field, elem, hlc, base_seq, utc_ms, offset_min,
-                          payload, server_seq, server_received_ms, assigned_key)
+                          payload, server_seq, server_received_ms, assigned_key, session)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                 ?18, ?19, ?20)",
+                 ?18, ?19, ?20, ?21)",
         params![
             record.op_id.as_bytes(),
             record.op().op_hash(),
@@ -477,6 +481,7 @@ fn insert(tx: &Transaction<'_>, record: &OpRecord) -> Result<(), StoreError> {
             record.server_seq,
             record.server_received_ms,
             record.assigned_key,
+            record.session,
         ],
     )?;
     Ok(())

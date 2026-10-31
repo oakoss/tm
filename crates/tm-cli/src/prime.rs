@@ -79,6 +79,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
         ready: (ready, total, passed),
         projects,
     } = read.map_err(|err| err.warned(warnings.clone()))?;
+    let resumes = resumes(&here.store, &waiting, &mut warnings);
     let scheme = here.store.scheme();
 
     let mut text = String::new();
@@ -89,13 +90,16 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
     }
     let who = printable(&actor.as_ref().map_or_else(|| "nobody".to_owned(), named));
     let key = project.as_deref().unwrap_or("-");
-    let _ = writeln!(text, "tm: Project {key}, writing as {who}");
+    let session = actor.as_ref().and_then(Actor::session);
+    let in_session =
+        session.map_or_else(String::new, |id| format!(" in session {}", printable(id)));
+    let _ = writeln!(text, "tm: Project {key}, writing as {who}{in_session}");
     let scheme = scheme_brief(&mut text, scheme);
 
-    let session = actor.as_ref().and_then(Actor::session);
     let now_ms = claims.at_ms;
     let memories = memories_section(&mut text, &memories, crate::memory::now_ms());
-    let waiting_items = waiting_section(&mut text, actor.as_ref(), &waiting, &projects, now_ms);
+    let asked = (actor.as_ref(), &resumes);
+    let waiting_items = waiting_section(&mut text, asked, &waiting, &projects, now_ms);
     let sessions = by_session(claims, session);
     let claim_items = claims_sections(&mut text, (&sessions, &notes), &claimed, &projects, now_ms);
     let shortlists = next::lists_section(&mut text, &lists, LISTS_ROOM);
@@ -247,11 +251,38 @@ pub(crate) fn waiting(
     Ok(waiting)
 }
 
+/// The command resuming the session that asked each waiting question, by the
+/// question's id, when that session ran here; a warning for each that cannot
+/// be read, as prime never fails a session start.
+fn resumes(
+    store: &Store,
+    waiting: &[(IssueView, Option<CommentView>)],
+    warnings: &mut Vec<String>,
+) -> HashMap<Uuid, String> {
+    let mut resumes = HashMap::new();
+    for (view, question) in waiting {
+        let Some(question) = question else { continue };
+        match store.written_by_session(question.id) {
+            Ok(Some((session, Some(place)))) => {
+                if let Some(command) = crate::session::resume_command(&session, &place) {
+                    resumes.insert(question.id, command);
+                }
+            }
+            Ok(_) => {}
+            Err(err) => {
+                let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
+                warnings.push(format!("the session that asked {name}: {err}"));
+            }
+        }
+    }
+    resumes
+}
+
 /// What waits on the session's human. An Agent's session is told to bring the
 /// questions to its human, who is often there; a person's lists them.
 fn waiting_section(
     text: &mut String,
-    actor: Option<&Actor>,
+    (actor, resumes): (Option<&Actor>, &HashMap<Uuid, String>),
     waiting: &[(IssueView, Option<CommentView>)],
     projects: &HashMap<ProjectId, Option<String>>,
     now_ms: i64,
@@ -290,6 +321,9 @@ fn waiting_section(
                         crate::list::cut(&options, TITLE_BYTES * 2)
                     );
                 }
+                if let Some(command) = resumes.get(&question.id) {
+                    let _ = writeln!(text, "      the asking session resumes with: {command}");
+                }
             }
         }
         let mut entry = item(view, projects);
@@ -300,6 +334,7 @@ fn waiting_section(
                 "body": question.body,
                 "options": question.options,
                 "utc_ms": question.utc_ms,
+                "resume": resumes.get(&question.id),
             })
         });
         issues.push(entry);
@@ -372,6 +407,7 @@ fn actor_json(actor: &Actor) -> Value {
         "name": actor.name(),
         "agent": actor.is_agent(),
         "on_behalf_of": actor.on_behalf_of(),
+        "session": actor.session(),
     })
 }
 

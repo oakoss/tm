@@ -158,6 +158,17 @@ fn session_id(
     None
 }
 
+/// Each harness whose variables name a usable session here, with that id.
+pub(crate) fn harness_sessions(var: impl Fn(&str) -> Option<Var>) -> Vec<(String, String)> {
+    SESSIONS
+        .iter()
+        .filter_map(|(harness, _)| {
+            let session = session_id(&var, harness, &mut Vec::new())?;
+            Some(((*harness).to_owned(), session.as_str().to_owned()))
+        })
+        .collect()
+}
+
 /// Whether an Agent is writing, by `TM_AGENT` or a harness's variables. A
 /// `TM_AGENT` set at all counts, even blank, so doubt never prompts an Agent.
 pub(crate) fn agent_detected(var: impl Fn(&str) -> Option<Var>) -> bool {
@@ -211,6 +222,33 @@ pub(crate) fn env(name: &str) -> Option<Var> {
     match HOOK_VAR.get() {
         Some((var, value)) if *var == name => Some(Ok(value.clone())),
         _ => std::env::var_os(name).map(OsString::into_string),
+    }
+}
+
+/// The branch checked out at `root`; none on a detached head.
+///
+/// # Errors
+///
+/// A message when git cannot run or cannot read `HEAD`.
+pub(crate) fn git_branch(root: &Path) -> Result<Option<String>, String> {
+    let output = Command::new("git")
+        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .current_dir(root)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .output()
+        .map_err(|err| format!("cannot run git to read the branch: {err}"))?;
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    // `git symbolic-ref --quiet` exits 1, silently, on a detached head.
+    match output.status.code() {
+        Some(0) if !branch.is_empty() => Ok(Some(branch)),
+        Some(0 | 1) => Ok(None),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            Err(format!(
+                "git symbolic-ref HEAD failed ({}): {stderr}",
+                output.status
+            ))
+        }
     }
 }
 

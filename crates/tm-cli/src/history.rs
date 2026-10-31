@@ -172,6 +172,7 @@ fn same_write(first: &HistoryEntry, entry: &HistoryEntry) -> bool {
         && first.actor == entry.actor
         && first.on_behalf_of == entry.on_behalf_of
         && first.source == entry.source
+        && first.session == entry.session
         && first.utc_ms == entry.utc_ms
 }
 
@@ -183,6 +184,7 @@ fn write_json(write: &Write<'_>) -> Value {
         "actor": write.first.actor,
         "on_behalf_of": write.first.on_behalf_of,
         "source": write.first.source,
+        "session": write.first.session,
         "utc_ms": write.first.utc_ms,
         "offset_min": write.first.offset_min,
         "changes": write.changes,
@@ -203,6 +205,9 @@ fn header(entry: &HistoryEntry, me: &dyn Fn() -> Option<String>) -> String {
     let mut line = format!("{when}  {}", printable(&entry.actor));
     if let Some(human) = &entry.on_behalf_of {
         let _ = write!(line, " for {}", printable(human));
+    }
+    if let Some(session) = &entry.session {
+        let _ = write!(line, " in session {}", printable(&short_session(session)));
     }
     let mut marks = Vec::new();
     if let Some(batch) = entry.batch {
@@ -313,7 +318,7 @@ fn describe(
             let verb = if *present { "linked" } else { "unlinked" };
             format!("{verb}: {name} {}", names.key(other)?)
         }
-        Change::Claim { action } => claim_line(action),
+        Change::Claim { action } => claim_line(action, entry.session.as_deref()),
         Change::CreateProject { .. }
         | Change::RenameProject { .. }
         | Change::CreateShortlist
@@ -365,7 +370,8 @@ fn first_value(field: &str, value: &Value) -> String {
     printable(&line)
 }
 
-fn claim_line(action: &ClaimAction) -> String {
+/// `written_in` is the write's own session, which its header names already.
+fn claim_line(action: &ClaimAction, written_in: Option<&str>) -> String {
     let lasts = |ttl_ms: Option<u64>| match ttl_ms.and_then(|ttl| i64::try_from(ttl).ok()) {
         Some(ttl) => format!(" for {}", span(ttl)),
         None => ", with no expiry".to_owned(),
@@ -376,11 +382,18 @@ fn claim_line(action: &ClaimAction) -> String {
             ttl_ms,
             prev,
             session,
+            branch,
         } => {
             let mut who = printable(agent);
-            if let Some(session) = session {
+            if let Some(session) = session
+                .as_deref()
+                .filter(|session| Some(*session) != written_in)
+            {
                 let session = printable(&short_session(session));
                 let _ = write!(who, " (session {session})");
+            }
+            if let Some(branch) = branch {
+                let _ = write!(who, " on {}", printable(branch));
             }
             let verb = match prev {
                 Some(_) => "took over the Claim",
@@ -443,6 +456,7 @@ mod tests {
             actor: "codex".into(),
             on_behalf_of: None,
             source: None,
+            session: None,
             utc_ms: 0,
             offset_min: 330,
             subject: Uuid::nil(),

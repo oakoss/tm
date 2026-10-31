@@ -107,6 +107,7 @@ fn create_answers_in_a_fixed_shape() {
           "key": "TM-1"
         },
         "project": "TM",
+        "sessions": [],
         "sets": {
           "labels": {
             "ui": "ui"
@@ -205,6 +206,7 @@ fn move_answers_in_a_fixed_shape() {
         "next": [],
         "parent": null,
         "project": "TM",
+        "sessions": [],
         "sets": {},
         "shortlist": null,
         "started": [],
@@ -294,6 +296,7 @@ fn history_answers_in_a_fixed_shape() {
             ],
             "offset_min": "[offset]",
             "on_behalf_of": null,
+            "session": null,
             "source": null,
             "undid": null,
             "undone_by": null,
@@ -491,6 +494,7 @@ fn undo_answers_in_a_fixed_shape() {
             "moves_to": "[statuses]",
             "parent": null,
             "project": "TM",
+            "sessions": [],
             "sets": {},
             "shortlist": null,
             "version": 12
@@ -650,7 +654,8 @@ fn prime_answers_in_a_fixed_shape() {
         "actor": {
           "agent": false,
           "name": "jace",
-          "on_behalf_of": null
+          "on_behalf_of": null,
+          "session": null
         },
         "claims": [],
         "habits": "[habits]",

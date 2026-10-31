@@ -25,6 +25,7 @@ mod ready;
 mod remember;
 mod scan;
 mod scheme;
+mod sessions;
 mod setup;
 mod shapes;
 mod shortlist;

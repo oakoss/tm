@@ -42,6 +42,7 @@ impl Store {
     ) -> Result<Option<Next<T>>, StoreError> {
         let scheme = self.scheme.clone();
         let writer = actor.clone();
+        let branch = self.place.branch.clone();
         let mut extend = Some(extend);
         let mut chosen = None;
         let mut made = T::default();
@@ -68,7 +69,7 @@ impl Store {
                             project: view.project,
                             subject: view.id,
                             change: Change::Claim {
-                                action: take(&writer, ttl_ms, prev),
+                                action: take(&writer, ttl_ms, prev, branch.clone()),
                             },
                         });
                     }
@@ -105,11 +106,17 @@ impl Store {
     }
 }
 
-fn take(actor: &Actor, ttl_ms: Option<u64>, prev: Option<Uuid>) -> ClaimAction {
+fn take(
+    actor: &Actor,
+    ttl_ms: Option<u64>,
+    prev: Option<Uuid>,
+    branch: Option<String>,
+) -> ClaimAction {
     ClaimAction::Take {
         agent: actor.name().to_owned(),
         ttl_ms,
         prev,
         session: actor.session().map(str::to_owned),
+        branch,
     }
 }

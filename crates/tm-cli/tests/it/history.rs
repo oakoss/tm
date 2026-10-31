@@ -193,7 +193,7 @@ fn history_names_takeovers_releases_links_and_long_text() {
     let expected = "TM-2  c\n\
         <time>  jace\n  created\n  Type: Task\n  Status: Todo\n  Title: c\n  Parent: TM-1\n  \
         Description: 2 lines\n\
-        <time>  claude for jace\n  claimed: claude (session s1) for under a minute\n\
+        <time>  claude for jace in session s1\n  claimed: claude for under a minute\n\
         <time>  codex for jace\n  took over the Claim: codex, with no expiry\n\
         <time>  jace\n  commented: ok\n\
         <time>  jace\n  retracted a comment\n\

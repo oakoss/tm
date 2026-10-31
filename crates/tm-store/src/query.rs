@@ -58,7 +58,9 @@ impl Builder {
 
 fn sql_value(value: &Literal) -> Sql {
     match value {
-        Literal::Text(text) | Literal::Name(text) => Sql::Text(text.clone()),
+        Literal::Text(text) | Literal::Name(text) | Literal::Session(text) => {
+            Sql::Text(text.clone())
+        }
         Literal::Number(number) => Sql::Real(*number),
         Literal::Integer(integer) => Sql::Integer(*integer),
         Literal::Issue(id) | Literal::Shortlist(id) => Sql::Blob(id.as_bytes().to_vec()),
@@ -212,6 +214,7 @@ fn condition_sql(b: &mut Builder, condition: &Condition) {
                     b.push(" AND dst IN ");
                     b.list(values);
                 }),
+                Target::Sessions => written_in(b, *negated, |b| any_session(b, values)),
             }
         }
         Condition::Present { target, present } => match target {
@@ -230,6 +233,7 @@ fn condition_sql(b: &mut Builder, condition: &Condition) {
             Target::Shortlist => on_shortlist(b, !present, |_| {}),
             Target::Blockers => linked(b, "dst", !present, |_| {}),
             Target::Blocked => linked(b, "src", !present, |_| {}),
+            Target::Sessions => written_in(b, !present, |_| {}),
         },
         Condition::Is {
             blocked,
@@ -291,6 +295,39 @@ fn member_of(
     ));
     b.param(Sql::Text(field.to_owned()));
     rest(b);
+    b.push(")");
+}
+
+/// `id [NOT] IN` the Issues an operation in a session wrote; `ops.issue_id`
+/// is `NOT NULL`, which `NOT IN` needs.
+fn written_in(b: &mut Builder, negated: bool, rest: impl FnOnce(&mut Builder)) {
+    b.push(&format!(
+        "id {}IN (SELECT issue_id FROM ops WHERE session IS NOT NULL",
+        if negated { "NOT " } else { "" }
+    ));
+    rest(b);
+    b.push(")");
+}
+
+/// ` AND (0 OR …)`: a session that is one of `values`, a value starting `…`
+/// matching the end of one.
+fn any_session(b: &mut Builder, values: &[Literal]) {
+    b.push(" AND (0");
+    for value in values {
+        let Literal::Session(session) = value else {
+            continue;
+        };
+        // Compared as text rather than LIKE, since a session id may hold `_`.
+        if let Some(end) = session.strip_prefix('…') {
+            b.push(" OR substr(session, -length(");
+            b.param(Sql::Text(end.to_owned()));
+            b.push(")) = ");
+            b.param(Sql::Text(end.to_owned()));
+        } else {
+            b.push(" OR session = ");
+            b.param(Sql::Text(session.clone()));
+        }
+    }
     b.push(")");
 }
 

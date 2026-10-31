@@ -200,6 +200,10 @@ pub enum ClaimAction {
         /// share an Agent name; none when the harness names no session.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session: Option<String>,
+        /// The git branch checked out where it was taken; none outside a
+        /// repository or on a detached head.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
     },
     /// Extends the Claim `claim`, lapsed or not, to `ttl_ms` from when it is
     /// written; it applies only while that Claim still holds the Issue's row.
@@ -516,6 +520,9 @@ pub struct Op {
     pub utc_ms: i64,
     pub offset_min: i16,
     pub payload: String,
+    /// The harness session of the Agent that wrote it; none for a human, an
+    /// import, or an Agent whose harness names no session.
+    pub session: Option<String>,
 }
 
 impl Op {
@@ -536,6 +543,16 @@ impl Op {
         }
         if let Some(source) = &self.source {
             check_name("source", source)?;
+        }
+        if self
+            .session
+            .as_deref()
+            .is_some_and(|session| !crate::actor::is_session_id(session))
+        {
+            return Err(OpError::InvalidName {
+                field: "session",
+                reason: "holds a character a session id may not",
+            });
         }
         if self.payload.len() > MAX_PAYLOAD_BYTES {
             return Err(OpError::TooLarge(self.payload.len()));
@@ -582,6 +599,11 @@ impl Op {
         buf.extend_from_slice(&self.utc_ms.to_be_bytes());
         buf.extend_from_slice(&self.offset_min.to_be_bytes());
         put_bytes(&mut buf, self.payload.as_bytes());
+        // Written only when present, after the length-prefixed payload, so an
+        // operation from before sessions were recorded hashes as it did.
+        if let Some(session) = &self.session {
+            put_bytes(&mut buf, session.as_bytes());
+        }
         buf
     }
 
@@ -661,6 +683,7 @@ mod tests {
             utc_ms: 1_000,
             offset_min: -300,
             payload: serde_json::to_string(&change).unwrap(),
+            session: None,
         }
     }
 
@@ -813,6 +836,7 @@ mod tests {
             Box::new(|o| o.utc_ms = 1_001),
             Box::new(|o| o.offset_min = 0),
             Box::new(|o| o.payload.push(' ')),
+            Box::new(|o| o.session = Some("s1".into())),
         ];
         for (i, change) in variants.iter().enumerate() {
             let mut op = sample_agent();
@@ -979,6 +1003,32 @@ mod tests {
         );
     }
 
+    /// The `PINNED_OP_HASH*` operations have no session, so they hash as
+    /// before sessions were recorded; one with a session differs.
+    #[test]
+    fn a_session_is_hashed_only_when_present() {
+        let mut op = sample_agent();
+        let without = op.op_hash();
+        op.session = Some("s1".into());
+        let with = op.op_hash();
+        assert_ne!(with, without);
+        assert_eq!(
+            hex(with),
+            "32e88ba2a630df90ffe607bfbe3b1d07893809019127c24a8db818e666c93b0a",
+            "the bytes a session adds to the hash are fixed"
+        );
+        op.session = Some("s2".into());
+        assert_ne!(op.op_hash(), with);
+        op.session = Some("a b".into());
+        assert!(matches!(
+            op.change(),
+            Err(OpError::InvalidName {
+                field: "session",
+                ..
+            })
+        ));
+    }
+
     #[test]
     fn version_zero_is_refused() {
         let mut op = sample();
@@ -1070,18 +1120,23 @@ mod tests {
                 ttl_ms: Some(7_200_000),
                 prev: None,
                 session: Some("s1".into()),
+                branch: Some("feat/x".into()),
             },
         };
         let json = serde_json::to_string(&take).unwrap();
         assert_eq!(
             json,
-            r#"{"kind":"claim","action":{"action":"take","agent":"claude","ttl_ms":7200000,"session":"s1"}}"#
+            r#"{"kind":"claim","action":{"action":"take","agent":"claude","ttl_ms":7200000,"session":"s1","branch":"feat/x"}}"#
         );
         let earlier = r#"{"kind":"claim","action":{"action":"take","agent":"claude"}}"#;
         assert!(matches!(
             serde_json::from_str::<Change>(earlier).unwrap(),
             Change::Claim {
-                action: ClaimAction::Take { session: None, .. }
+                action: ClaimAction::Take {
+                    session: None,
+                    branch: None,
+                    ..
+                }
             }
         ));
         assert_eq!(serde_json::from_str::<Change>(&json).unwrap(), take);
