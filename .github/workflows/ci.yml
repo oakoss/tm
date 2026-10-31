@@ -137,8 +137,8 @@ jobs:
           || github.event.pull_request.head.repo.full_name != github.repository
         run: oakum check --strict
 
-      # `oakum check` asks per package: a pending tm-cli bump file already on
-      # main covers this pull request, and internal crates are never asked.
+      # `oakum check` never asks about internal crates, which tm-cli ships, so
+      # a pull request changing only them would pass without a bump file.
       - name: This pull request's own bump file
         if: >-
           github.head_ref != 'oakum/version-packages'

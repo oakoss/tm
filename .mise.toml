@@ -25,7 +25,7 @@ gitleaks = "8.30.1"
 # commit-msg hook and CI.
 "aqua:cocogitto/cocogitto" = "7.0.0"
 # oakum refuses to write when its binary differs from this pin.
-"github:oakoss/oakum" = "0.7.0"
+"github:oakoss/oakum" = "0.8.0"
 # release.yml installs dist from this pin. Same number as `cargo-dist-version`
 # in dist-workspace.toml; `mise run check` fails when they differ. Run it as
 # `mise exec -- dist` where Homebrew's dist comes first on PATH.
