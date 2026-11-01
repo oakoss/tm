@@ -9,7 +9,7 @@ Find work
   tm ready                   the work that can start now, most urgent first
   tm show KEY                one Issue: its fields, Links, children by
                              Status and comments
-  tm list parent:KEY         an Issue's children
+  tm list parent:KEY         an Issue's open children; --all for every one
   tm list is:blocked         the open Issues an open Issue blocks, each with
                              its blockers; blocked-by:KEY, what KEY blocks
   tm history KEY             what happened to an Issue, who did it, and

@@ -91,6 +91,7 @@ fn with_no_filter_list_shows_the_open_work() {
         set(&mut store, project, issue, "status", status);
     }
     let archived = new(&mut store, project, "archived");
+    set(&mut store, project, archived, "status", "done");
     store
         .append(Draft {
             actor: Actor::human("jace"),
@@ -115,8 +116,24 @@ fn with_no_filter_list_shows_the_open_work() {
 
     let (_, doc) = list(&scratch, &repo, &["category:done,cancelled"]);
     assert_eq!(keys(&doc), ["TM-4", "TM-5"]);
+    let (_, doc) = list(&scratch, &repo, &["status:done"]);
+    assert_eq!(keys(&doc), ["TM-4"]);
+    let (_, doc) = list(&scratch, &repo, &["-Status:todo"]);
+    assert_eq!(keys(&doc), ["TM-2", "TM-3", "TM-4", "TM-5"]);
+    let (_, doc) = list(&scratch, &repo, &["archived:true"]);
+    assert_eq!(keys(&doc), ["TM-6"]);
+    let (_, doc) = list(&scratch, &repo, &["priority:none"]);
+    assert_eq!(
+        keys(&doc),
+        ["TM-1", "TM-2", "TM-3"],
+        "a filter naming no state narrows the open work"
+    );
 
-    for args in [&["--all"][..], &["--all", "sort:priority"]] {
+    for args in [
+        &["--all"][..],
+        &["--all", "sort:priority"],
+        &["--all", "priority:none"],
+    ] {
         let (ok, doc) = list(&scratch, &repo, args);
         assert!(ok, "{doc}");
         assert_eq!(
@@ -235,11 +252,11 @@ fn list_keeps_the_filters_order_negation_and_one_line_per_issue() {
         &["--limit", "5", "--", "-priority:low,none"],
     );
     assert!(ok, "{doc}");
-    assert_eq!(keys(&doc), ["TM-2", "TM-3", "TM-4"]);
-    let (ok, doc) = list(&scratch, &repo, &["-priority:low,none", "--limit", "2"]);
+    assert_eq!(keys(&doc), ["TM-2", "TM-3"], "the done TM-4 is left out");
+    let (ok, doc) = list(&scratch, &repo, &["-priority:low,none", "--limit", "1"]);
     assert!(ok, "a negated term needs no --: {doc}");
-    assert_eq!(doc["data"]["issues"].as_array().unwrap().len(), 2, "{doc}");
-    assert_eq!(doc["data"]["total"], 3);
+    assert_eq!(doc["data"]["issues"].as_array().unwrap().len(), 1, "{doc}");
+    assert_eq!(doc["data"]["total"], 2);
     let (ok, doc) = list(&scratch, &repo, &["-priority:low", "--limt", "2"]);
     assert!(!ok);
     assert_eq!(

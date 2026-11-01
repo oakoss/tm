@@ -222,7 +222,8 @@ enum Command {
         #[arg(value_name = "ISSUE NAME… ISSUE", num_args = 3.., required = true)]
         words: Vec<String>,
     },
-    /// List the Issues a filter matches; with none, the open work.
+    /// List the open Issues a filter matches; a filter naming status,
+    /// category or archived reaches finished ones too.
     List {
         /// A filter such as `status:todo priority:high -labels:bug` or
         /// `is:blocked`.
@@ -230,8 +231,8 @@ enum Command {
         /// Show at most this many.
         #[arg(long)]
         limit: Option<usize>,
-        /// With no filter, every Status, done and cancelled included, rather
-        /// than only the open work.
+        /// Every Status, done and cancelled included, rather than only the
+        /// open work.
         #[arg(long)]
         all: bool,
     },
