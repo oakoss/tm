@@ -126,6 +126,40 @@ fn scheme_values_match_by_type() {
 }
 
 #[test]
+fn has_and_no_on_a_set_follow_its_current_members() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let labeled = issue(&mut store, &clock, &[], &["ui"]);
+    let emptied = issue(&mut store, &clock, &[], &["bug"]);
+    let remove = Change::Remove {
+        field: "labels".into(),
+        label: String::new(),
+        elem: "bug".into(),
+        elem_label: None,
+    };
+    store.append(draft(emptied, remove)).unwrap();
+    let tagged = issue(&mut store, &clock, &[], &[]);
+    let add = Change::Add {
+        field: "tags".into(),
+        label: String::new(),
+        elem: "y".into(),
+        elem_label: None,
+    };
+    store.append(draft(tagged, add)).unwrap();
+    assert_eq!(find(&store, "has:labels"), [labeled]);
+    assert_eq!(
+        sorted(find(&store, "no:labels")),
+        sorted(vec![emptied, tagged])
+    );
+    assert_eq!(find(&store, "has:tags"), [tagged]);
+    assert_eq!(
+        sorted(find(&store, "no:tags")),
+        sorted(vec![labeled, emptied])
+    );
+}
+
+#[test]
 fn categories_follow_the_scheme_and_unknown_statuses_read_as_triage() {
     let dir = TempDir::new();
     let clock = ManualClock::at(1_000);
@@ -315,6 +349,44 @@ fn dates_sort_newest_first() {
     let late = issue(&mut store, &clock, &[("due", json!("2026-12-31"))], &[]);
     assert_eq!(find(&store, "sort:due"), [late, early, unset]);
     assert_eq!(find(&store, "sort:due-asc"), [early, late, unset]);
+}
+
+#[test]
+fn numbers_sort_by_value_not_text() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let ten = issue(&mut store, &clock, &[("area", json!(10))], &[]);
+    let unset = issue(&mut store, &clock, &[], &[]);
+    let half = issue(&mut store, &clock, &[("area", json!(2.5))], &[]);
+    let three = issue(&mut store, &clock, &[("area", json!(3))], &[]);
+    assert_eq!(find(&store, "sort:area"), [half, three, ten, unset]);
+    assert_eq!(find(&store, "sort:area-desc"), [ten, three, half, unset]);
+}
+
+#[test]
+fn scheme_people_sort_without_case() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut scheme = crate::support::scheme();
+    scheme
+        .add_field(tm_core::scheme::Field::custom(
+            "reviewer",
+            "Reviewer",
+            tm_core::scheme::FieldType::Person,
+            Vec::new(),
+        ))
+        .unwrap();
+    let mut store = open(&dir.db(), &clock).with_scheme(scheme);
+    let zed = issue(&mut store, &clock, &[("reviewer", json!("Zed"))], &[]);
+    let unset = issue(&mut store, &clock, &[], &[]);
+    let alpha = issue(&mut store, &clock, &[("reviewer", json!("alpha"))], &[]);
+    let beta = issue(&mut store, &clock, &[("reviewer", json!("Beta"))], &[]);
+    assert_eq!(find(&store, "sort:reviewer"), [alpha, beta, zed, unset]);
+    assert_eq!(
+        find(&store, "sort:reviewer-desc"),
+        [zed, beta, alpha, unset]
+    );
 }
 
 #[test]
