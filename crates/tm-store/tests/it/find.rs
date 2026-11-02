@@ -199,6 +199,8 @@ fn words_search_titles_descriptions_and_comments_not_retracted() {
         "not the retracted comment"
     );
     assert_eq!(find(&store, "SESSION"), [described]);
+    assert_eq!(find(&store, "timeouts"), [titled], "words match by stem");
+    assert_eq!(find(&store, "expiring"), [described]);
     assert_eq!(find(&store, "cafe"), [commented], "accents fold");
     assert_eq!(find(&store, r#""expires after""#), [described]);
     assert_eq!(find(&store, r#""after expires""#), Vec::<Uuid>::new());
@@ -250,6 +252,7 @@ fn words_search_titles_descriptions_and_comments_not_retracted() {
     let late = issue(&mut store, &clock, &[("title", json!("fresh"))], &[]);
     comment(&mut store, late, "zebra");
     assert_eq!(find(&store, "fresh zebra"), [late]);
+    assert_eq!(find(&store, "zebras"), [late], "comments match by stem too");
 }
 
 #[test]

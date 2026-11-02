@@ -138,6 +138,8 @@ pub(crate) const TEXT_INDEX: &str = "
 INSERT INTO issue_text (issue_id, title, description)
   SELECT id, title, description FROM issues;
 INSERT INTO comment_text (op_id, body) SELECT op_id, body FROM comments;
+INSERT INTO issue_text (issue_text) VALUES ('optimize');
+INSERT INTO comment_text (comment_text) VALUES ('optimize');
 
 CREATE TRIGGER issue_text_insert AFTER INSERT ON issues BEGIN
   INSERT INTO issue_text (issue_id, title, description)
@@ -290,12 +292,12 @@ CREATE INDEX comments_by_issue ON comments (issue_id, hlc);
 -- comments, so no index may point at them.
 CREATE VIRTUAL TABLE issue_text USING fts5 (
   issue_id UNINDEXED, title, description,
-  tokenize = 'unicode61 remove_diacritics 2'
+  tokenize = 'porter unicode61 remove_diacritics 2'
 );
 
 CREATE VIRTUAL TABLE comment_text USING fts5 (
   op_id UNINDEXED, body,
-  tokenize = 'unicode61 remove_diacritics 2'
+  tokenize = 'porter unicode61 remove_diacritics 2'
 );
 
 -- Keys outlive purged Issues, so they carry no foreign key.

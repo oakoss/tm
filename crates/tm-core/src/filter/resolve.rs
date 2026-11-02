@@ -168,7 +168,7 @@ enum Kind {
     /// resolving.
     Shortlist,
     Session,
-    /// Words or quoted phrases, each matched as whole words.
+    /// Words or quoted phrases, matched word by word on their stems.
     Text,
     /// Known, but filtering by value arrives later; `has:`/`no:` still work
     /// when there is a target.
