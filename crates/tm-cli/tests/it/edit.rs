@@ -147,6 +147,75 @@ fn a_field_reads_stdin_without_its_trailing_newline() {
 }
 
 #[test]
+fn append_adds_a_paragraph_after_a_blank_line() {
+    let scratch = Scratch::new();
+    let (repo, store) = two_issues(&scratch);
+
+    let (code, doc) = run(&scratch, &repo, &["TM-2", "--append", "description=first"]);
+    assert_eq!(code, Some(0), "{doc}");
+    assert_eq!(
+        doc["data"]["changed"][0]["after"], "first",
+        "an empty field takes it whole"
+    );
+
+    let out = piped(
+        &scratch,
+        &repo,
+        &["TM-2", "--append", "description=-", "--label", "plan"],
+        "second\nline\n",
+    );
+    assert!(out.status.success(), "{out:?}");
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["data"]["changed"][0]["before"], "first");
+    assert_eq!(doc["data"]["changed"][0]["after"], "first\n\nsecond\nline");
+
+    let (_, doc) = run(&scratch, &repo, &["TM-2", "--set", "description=ends\n\n"]);
+    assert_eq!(doc["data"]["changed"][0]["after"], "ends\n\n");
+    let (_, doc) = run(&scratch, &repo, &["TM-2", "--append", "description=next"]);
+    assert_eq!(
+        doc["data"]["changed"][0]["after"], "ends\n\nnext",
+        "one blank line, whatever the text ended with"
+    );
+
+    let before = ops(&store);
+    for (args, field) in [
+        (&["TM-2", "--append", "title=more"][..], "title"),
+        (&["TM-2", "--append", "description= "], "description"),
+        (
+            &[
+                "TM-2",
+                "--append",
+                "description=a",
+                "--set",
+                "description=b",
+            ],
+            "description",
+        ),
+        (&["TM-2", "--append", "bogus=x"], "bogus"),
+    ] {
+        let (code, doc) = run(&scratch, &repo, args);
+        assert_eq!(code, Some(1), "{args:?}: {doc}");
+        assert!(
+            ["invalid_value", "unknown_field"].contains(&doc["error"].as_str().unwrap()),
+            "{args:?}: {doc}"
+        );
+        assert_eq!(doc["field"], field, "{args:?}: {doc}");
+    }
+    let out = piped(
+        &scratch,
+        &repo,
+        &["TM-2", "--append", "description=-"],
+        "\n",
+    );
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        doc["reason"].as_str().unwrap().contains("text to add"),
+        "{doc}"
+    );
+    assert_eq!(ops(&store), before, "a refused append writes nothing");
+}
+
+#[test]
 fn an_edit_refuses_what_another_command_or_the_store_owns() {
     let scratch = Scratch::new();
     let (repo, store) = two_issues(&scratch);
