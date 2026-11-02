@@ -25,9 +25,34 @@ pub(crate) fn not_owned(field: &str) -> Result<(), String> {
 
 /// `FIELD=VALUE`, split at the first `=`.
 pub(crate) fn split_pair(pair: &str) -> Result<(String, String), String> {
-    pair.split_once('=')
-        .map(|(field, value)| (field.to_owned(), value.to_owned()))
-        .ok_or_else(|| format!("expected FIELD=VALUE, such as priority=high, not {pair:?}"))
+    let (field, value) = pair
+        .split_once('=')
+        .ok_or_else(|| format!("expected FIELD=VALUE, such as priority=high, not {pair:?}"))?;
+    not_placeholder(value)?;
+    Ok((field.to_owned(), value.to_owned()))
+}
+
+/// Refuses a value written as one word in angle brackets, such as `<value>`,
+/// as tm's fixes and help name what a person replaces, so a fix pasted
+/// unchanged stores nothing. Markup such as `<b>x</b>` is text.
+pub(crate) fn not_placeholder(value: &str) -> Result<(), String> {
+    let value = value.trim();
+    let word = value
+        .strip_prefix('<')
+        .and_then(|rest| rest.strip_suffix('>'));
+    if word.is_some_and(|word| {
+        !word.is_empty() && !word.contains(|c: char| c == '<' || c == '>' || c.is_whitespace())
+    }) {
+        return Err(format!(
+            "{value} is a placeholder; replace it with a real value"
+        ));
+    }
+    Ok(())
+}
+
+/// A clap value parser for text that must not be a placeholder.
+pub(crate) fn text_value(value: &str) -> Result<String, String> {
+    not_placeholder(value).map(|()| value.to_owned())
 }
 
 pub(crate) fn set(field: &str, value: Value) -> Change {
@@ -136,6 +161,8 @@ pub(crate) fn labels<'a>(labels: impl IntoIterator<Item = &'a String>) -> Result
             "cannot hold an empty label"
         } else if written.chars().any(char::is_control) {
             "cannot hold control characters"
+        } else if not_placeholder(written).is_err() {
+            "cannot hold a placeholder such as <label>; replace it with a real label"
         } else {
             continue;
         };

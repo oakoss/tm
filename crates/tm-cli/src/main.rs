@@ -192,7 +192,7 @@ enum Command {
         /// The Issue type, such as task or bug; `tm scheme show` lists them.
         #[arg(long = "type")]
         issue_type: Option<String>,
-        #[arg(long)]
+        #[arg(long, value_parser = fields::text_value)]
         title: Option<String>,
         /// Set a field, such as priority=high; FIELD=- reads the value from
         /// stdin. Repeat for more.

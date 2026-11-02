@@ -216,6 +216,46 @@ fn append_adds_a_paragraph_after_a_blank_line() {
 }
 
 #[test]
+fn a_fix_pasted_with_its_placeholder_writes_nothing() {
+    let scratch = Scratch::new();
+    let (repo, store) = two_issues(&scratch);
+    let before = ops(&store);
+    for args in [
+        &["edit", "TM-2", "--set", "priority=<value>"][..],
+        &["edit", "TM-2", "--append", "description=<value>"],
+        &["edit", "TM-2", "--label", "<label>"],
+        &["create", "--type", "task", "--title", "<title>"],
+    ] {
+        let out = tm(&scratch, &repo, &[&["--json"], args].concat());
+        assert!(!out.status.success(), "{args:?}: {out:?}");
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert!(
+            doc["message"].as_str().unwrap().contains("placeholder"),
+            "{args:?}: {doc}"
+        );
+    }
+    let out = jace(&scratch, &repo, &["--json", "start", "TM-2"])
+        .env("TM_AGENT", "<name>")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["error"], "no_identity", "{doc}");
+    assert!(
+        doc["message"].as_str().unwrap().contains("placeholder"),
+        "{doc}"
+    );
+    assert_eq!(ops(&store), before, "nothing wrote");
+
+    let (code, doc) = run(
+        &scratch,
+        &repo,
+        &["TM-2", "--set", "description=<b>bold</b>"],
+    );
+    assert_eq!(code, Some(0), "markup is text: {doc}");
+}
+
+#[test]
 fn an_edit_refuses_what_another_command_or_the_store_owns() {
     let scratch = Scratch::new();
     let (repo, store) = two_issues(&scratch);
@@ -298,15 +338,15 @@ fn a_field_given_as_a_flag_is_pointed_at_set() {
         ),
         (
             &["edit", "TM-2", "--assignee", "--label", "x"],
-            "tm edit TM-2 --set assignee=<value> --label x --json",
+            "tm edit TM-2 --set 'assignee=<value>' --label x --json",
         ),
         (
             &["edit", "TM-2", "--priority="],
-            "tm edit TM-2 --set priority=<value> --json",
+            "tm edit TM-2 --set 'priority=<value>' --json",
         ),
         (
             &["edit", "TM-2", "--priority", ""],
-            "tm edit TM-2 --set priority=<value> --json",
+            "tm edit TM-2 --set 'priority=<value>' --json",
         ),
         (
             &["create", "--title", "x", "--status", "done"],
@@ -334,7 +374,7 @@ fn a_field_given_as_a_flag_is_pointed_at_set() {
         ),
         (
             &["edit", "TM-2", "--status"],
-            "tm move TM-2 --json <status>",
+            "tm move TM-2 --json '<status>'",
         ),
         (
             &["edit", "TM-2", "--status", "todo", "--status", "done"],
@@ -354,7 +394,7 @@ fn a_field_given_as_a_flag_is_pointed_at_set() {
         ),
         (
             &["edit", "TM-2", "--priority", "-"],
-            "tm edit TM-2 --set priority=<value> --json",
+            "tm edit TM-2 --set 'priority=<value>' --json",
         ),
     ] {
         let out = tm(&scratch, &repo, &[&["--json"], args].concat());
@@ -388,9 +428,9 @@ fn a_line_clap_cannot_parse_with_the_field_gets_set_alone() {
     for (args, fix) in [
         (
             &["edit", "TM-2", "--description", "-text"][..],
-            "--set description=<value>",
+            "--set 'description=<value>'",
         ),
-        (&["edit", "--assignee", "TM-2"], "--set assignee=<value>"),
+        (&["edit", "--assignee", "TM-2"], "--set 'assignee=<value>'"),
     ] {
         let out = tm(&scratch, &repo, &[&["--json"], args].concat());
         assert_eq!(out.status.code(), Some(2), "{args:?}: {out:?}");

@@ -38,8 +38,8 @@ pub(crate) struct Identity {
 ///
 /// # Errors
 ///
-/// A message for a `TM_ACTOR` or `TM_AGENT` that is set but blank, or when
-/// no human can be found.
+/// A message for a `TM_ACTOR` or `TM_AGENT` that is set but blank or to a
+/// placeholder, or when no human can be found.
 pub(crate) fn resolve(
     var: impl Fn(&str) -> Option<Var>,
     email: impl FnOnce() -> Result<String, String>,
@@ -200,7 +200,9 @@ fn set(var: &impl Fn(&str) -> Option<Var>, name: &str) -> Result<Option<String>,
                 _ => "who you are",
             }
         )),
-        Some(Ok(value)) => Ok(Some(value.trim().to_owned())),
+        Some(Ok(value)) => crate::fields::not_placeholder(&value)
+            .map(|()| Some(value.trim().to_owned()))
+            .map_err(|reason| format!("{name}: {reason}")),
     }
 }
 

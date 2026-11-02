@@ -621,7 +621,7 @@ fn a_human_cannot_claim_and_a_bad_duration_is_a_usage_error() {
     assert_eq!(out.status.code(), Some(1));
     let refused = doc(&out);
     assert_eq!(refused["error"], "no_agent", "{refused}");
-    assert_eq!(refused["fix"], "TM_AGENT=<name> tm claim TM-1");
+    assert_eq!(refused["fix"], "TM_AGENT='<name>' tm claim TM-1");
 
     for bad in ["2w", "0m", "soon"] {
         let out = as_agent(&scratch, &repo, &["--json", "claim", "TM-1", "--for", bad]);
@@ -800,7 +800,7 @@ fn the_holder_or_the_human_it_is_held_for_releases_without_the_token() {
         refused["message"],
         "TM-1 is held by claude for jace, so name its Claim to release it"
     );
-    assert_eq!(refused["fix"], "tm release TM-1 <claim>");
+    assert_eq!(refused["fix"], "tm release TM-1 '<claim>'");
     assert_eq!(refused["key"], "TM-1", "{out:?}");
     let out = as_agent(&scratch, &repo, &["release", "TM-1"]);
     assert_eq!(text(&out.stdout), "released TM-1\n", "{out:?}");

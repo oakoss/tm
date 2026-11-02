@@ -42,7 +42,7 @@ pub(crate) fn take(reference: &str, lasts: &Lasts) -> Result<Output, CliError> {
             .map_err(|err| {
                 let err = CliError::from(err);
                 if err.code == "no_agent" {
-                    err.fix(format!("TM_AGENT=<name> tm claim {reference}"))
+                    err.fix(format!("TM_AGENT='<name>' tm claim {reference}"))
                 } else {
                     err
                 }
@@ -161,7 +161,7 @@ pub(crate) fn beat(reference: Option<&str>) -> Result<Beat, CliError> {
                     identity.actor.name()
                 ),
             )
-            .fix("TM_AGENT=<name> tm heartbeat"));
+            .fix("TM_AGENT='<name>' tm heartbeat"));
         }
         let ops = here.store.heartbeat(&identity.actor, issue)?;
         let mut renewed = Vec::with_capacity(ops.len());
@@ -277,7 +277,7 @@ fn release_all(whole_session: bool) -> Result<Output, CliError> {
                     writer.name()
                 ),
             )
-            .fix("TM_AGENT=<name> tm release --mine"));
+            .fix("TM_AGENT='<name>' tm release --mine"));
         }
         let human = writer.on_behalf_of().unwrap_or(writer.name());
         let session = writer.session().and_then(SessionId::parse);
@@ -380,7 +380,7 @@ fn own_claim(here: &Here, issue: Uuid, writer: &Actor, reference: &str) -> Resul
             ),
         )
         .issue(named(here, issue)?)
-        .fix(format!("tm release {reference} <claim>"))),
+        .fix(format!("tm release {reference} '<claim>'"))),
         None => Err(
             CliError::new("not_claim_holder", format!("{reference} is unclaimed"))
                 .issue(named(here, issue)?),

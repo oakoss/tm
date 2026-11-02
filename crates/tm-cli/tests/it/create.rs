@@ -107,7 +107,7 @@ fn without_a_type_create_names_type_with_its_allowed_ids_and_not_status() {
     );
     assert_eq!(
         doc["fix"],
-        r"tm create --title='it'\''s x' --label=-wip --type <type>"
+        r"tm create --title='it'\''s x' --label=-wip --type '<type>'"
     );
     assert!(doc.get("issue").is_none(), "{doc}");
     let count: i64 = store
@@ -136,7 +136,7 @@ fn without_a_type_create_names_type_with_its_allowed_ids_and_not_status() {
     let (_, doc) = create(&scratch, &repo, &["--type", "task"]);
     assert_eq!(doc["error"], "missing_fields", "{doc}");
     assert_eq!(doc["fields"], json!([{ "name": "title" }]));
-    assert_eq!(doc["fix"], "tm create --type=task --title <title>");
+    assert_eq!(doc["fix"], "tm create --type=task --title '<title>'");
 }
 
 #[test]
@@ -187,7 +187,7 @@ fn a_field_reads_stdin_without_its_trailing_newline() {
     let doc = piped(&["--set", "description=-"], b"a\nb'c\n");
     assert_eq!(doc["error"], "missing_fields", "{doc}");
     assert_eq!(
-        doc["fix"], "tm create --title=t --set='description=a\nb'\\''c' --type <type>",
+        doc["fix"], "tm create --title=t --set='description=a\nb'\\''c' --type '<type>'",
         "the fix carries the value stdin gave"
     );
 
