@@ -159,7 +159,7 @@ fn a_session_filter_finds_the_issues_it_wrote() {
     both.sort();
     assert_eq!(written, both);
     assert_eq!(find("no:session"), [three]);
-    assert!(store.find("session:a b", Context::default()).is_err());
+    assert!(store.find("session:a OR b", Context::default()).is_err());
 }
 
 /// A store whose log has no `session` column gains it on open and keeps

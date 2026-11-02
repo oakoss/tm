@@ -159,6 +159,102 @@ fn has_and_no_on_a_set_follow_its_current_members() {
     );
 }
 
+fn comment(store: &mut Store, issue: Uuid, body: &str) -> Uuid {
+    let change = Change::Comment { body: body.into() };
+    store.append(draft(issue, change)).unwrap().op_id
+}
+
+#[test]
+fn words_search_titles_descriptions_and_comments_not_retracted() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let titled = issue(
+        &mut store,
+        &clock,
+        &[("title", json!("Login timeout on mobile"))],
+        &[],
+    );
+    let described = issue(
+        &mut store,
+        &clock,
+        &[("description", json!("The session expires after a minute"))],
+        &[],
+    );
+    let commented = issue(&mut store, &clock, &[], &[]);
+    comment(&mut store, commented, "Seen on the Café wifi");
+    let retracted = issue(&mut store, &clock, &[], &[]);
+    let said = comment(&mut store, retracted, "another timeout here");
+    let undo = Change::Retract {
+        comment: said,
+        retracted: true,
+    };
+    store.append(draft(retracted, undo)).unwrap();
+    let split = issue(&mut store, &clock, &[("title", json!("alpha"))], &[]);
+    comment(&mut store, split, "beta");
+
+    assert_eq!(
+        find(&store, "timeout"),
+        [titled],
+        "not the retracted comment"
+    );
+    assert_eq!(find(&store, "SESSION"), [described]);
+    assert_eq!(find(&store, "timeouts"), [titled], "words match by stem");
+    assert_eq!(find(&store, "expiring"), [described]);
+    assert_eq!(find(&store, "cafe"), [commented], "accents fold");
+    assert_eq!(find(&store, r#""expires after""#), [described]);
+    assert_eq!(find(&store, r#""after expires""#), Vec::<Uuid>::new());
+    assert_eq!(find(&store, "login mobile"), [titled], "every word");
+    assert_eq!(find(&store, "login session"), Vec::<Uuid>::new());
+    assert_eq!(find(&store, "alpha beta"), [split], "each word anywhere");
+    assert_eq!(
+        sorted(find(&store, "text:login,session")),
+        sorted(vec![titled, described]),
+        "a comma list is any of"
+    );
+    assert_eq!(
+        sorted(find(&store, "-text:timeout")),
+        sorted(vec![described, commented, retracted, split])
+    );
+    assert_eq!(
+        find(&store, "NEAR"),
+        Vec::<Uuid>::new(),
+        "FTS5 syntax is a word"
+    );
+    assert!(store.find("---", ME).is_err());
+    assert!(store.find("has:text", ME).is_err());
+
+    store
+        .append(draft(titled, set_field("title", json!("Renamed"))))
+        .unwrap();
+    assert_eq!(
+        find(&store, "timeout"),
+        Vec::<Uuid>::new(),
+        "an edit replaces the old words"
+    );
+    assert_eq!(find(&store, "renamed"), [titled]);
+
+    store.rebuild().unwrap();
+    assert_eq!(
+        find(&store, "renamed"),
+        [titled],
+        "a rebuild fills the index"
+    );
+    assert_eq!(find(&store, "timeout"), Vec::<Uuid>::new());
+    store
+        .append(draft(described, set_field("description", json!("gone"))))
+        .unwrap();
+    assert_eq!(
+        find(&store, "session"),
+        Vec::<Uuid>::new(),
+        "and keeps it current"
+    );
+    let late = issue(&mut store, &clock, &[("title", json!("fresh"))], &[]);
+    comment(&mut store, late, "zebra");
+    assert_eq!(find(&store, "fresh zebra"), [late]);
+    assert_eq!(find(&store, "zebras"), [late], "comments match by stem too");
+}
+
 #[test]
 fn categories_follow_the_scheme_and_unknown_statuses_read_as_triage() {
     let dir = TempDir::new();

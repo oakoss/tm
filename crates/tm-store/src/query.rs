@@ -215,6 +215,7 @@ fn condition_sql(b: &mut Builder, condition: &Condition) {
                     b.list(values);
                 }),
                 Target::Sessions => written_in(b, *negated, |b| any_session(b, values)),
+                Target::Text => with_text(b, values, *negated),
             }
         }
         Condition::Present { target, present } => match target {
@@ -234,6 +235,8 @@ fn condition_sql(b: &mut Builder, condition: &Condition) {
             Target::Blockers => linked(b, "dst", !present, |_| {}),
             Target::Blocked => linked(b, "src", !present, |_| {}),
             Target::Sessions => written_in(b, !present, |_| {}),
+            // The resolver refuses has: and no: on text.
+            Target::Text => b.push("0"),
         },
         Condition::Is {
             blocked,
@@ -296,6 +299,32 @@ fn member_of(
     b.param(Sql::Text(field.to_owned()));
     rest(b);
     b.push(")");
+}
+
+/// `id [NOT] IN` the Issues whose title, description or a comment not
+/// retracted holds any of `values`, each a word or phrase. Both index tables
+/// hold a non-NULL Issue id, which `NOT IN` needs.
+fn with_text(b: &mut Builder, values: &[Literal], negated: bool) {
+    let phrases: Vec<String> = values
+        .iter()
+        .filter_map(|value| match value {
+            // A string to FTS5, so its operators and punctuation are words.
+            Literal::Text(text) => Some(format!("\"{}\"", text.replace('"', "\"\""))),
+            _ => None,
+        })
+        .collect();
+    let query = phrases.join(" OR ");
+    b.push(&format!(
+        "id {}IN (SELECT issue_id FROM issue_text WHERE issue_text MATCH ",
+        if negated { "NOT " } else { "" }
+    ));
+    b.param(Sql::Text(query.clone()));
+    b.push(
+        " UNION SELECT c.issue_id FROM comment_text t JOIN comments c ON c.op_id = t.op_id \
+         WHERE comment_text MATCH ",
+    );
+    b.param(Sql::Text(query));
+    b.push(" AND c.retracted = 0)");
 }
 
 /// `id [NOT] IN` the Issues an operation in a session wrote; `ops.issue_id`

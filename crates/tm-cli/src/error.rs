@@ -543,7 +543,6 @@ impl From<FilterError> for CliError {
         }
         let code = match err {
             FilterError::Syntax { .. } => "syntax",
-            FilterError::BareWord { .. } => "bare_word",
             FilterError::Unsupported { .. } => "unsupported",
             FilterError::UnknownField { .. } => "unknown_field",
             FilterError::UnknownValue { .. } => "unknown_value",

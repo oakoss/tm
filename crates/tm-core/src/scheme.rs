@@ -388,6 +388,7 @@ impl Scheme {
             "blocked_by",
             "blocking",
             "session",
+            "text",
             crate::link::FIELD,
             crate::op::COMMENTS_FIELD,
         ]
@@ -507,6 +508,7 @@ mod tests {
             "blocked_by",
             "blocking",
             "session",
+            "text",
             "links",
             "comments",
         ] {

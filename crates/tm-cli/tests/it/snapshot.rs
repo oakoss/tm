@@ -159,6 +159,11 @@ fn reads_fall_back_to_the_snapshot_where_the_store_is_refused() {
         }
         let listed = doc(&tm(&scratch, &repo, &["--json", "list"]));
         assert_eq!(listed["data"]["issues"][0]["key"], "TM-1");
+        let found = doc(&tm(&scratch, &repo, &["--json", "list", "ONE"]));
+        assert_eq!(
+            found["data"]["issues"][0]["key"], "TM-1",
+            "searched: {found}"
+        );
 
         let out = tm(
             &scratch,
