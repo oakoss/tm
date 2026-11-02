@@ -1,0 +1,19 @@
+[package]
+name = "snapbench"
+version = "0.1.0"
+edition = "2024"
+
+# Built on its own, outside tm's workspace.
+[workspace]
+
+[dependencies]
+rusqlite = { version = "0.40.2", features = ["bundled", "collation", "backup"] }
+serde_json = "1"
+tm-core = { path = "../../../../../crates/tm-core" }
+tm-store = { path = "../../../../../crates/tm-store" }
+uuid = { version = "1", features = ["v7"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
