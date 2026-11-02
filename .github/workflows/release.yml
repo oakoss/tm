@@ -84,7 +84,7 @@ jobs:
           submodules: recursive
       # No cache, so no cache entry anyone can write reaches a release.
       - name: Install dist
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
         with:
           install: true
           install_args: aqua:axodotdev/cargo-dist
@@ -160,7 +160,7 @@ jobs:
           submodules: recursive
       # No cache, so no cache entry anyone can write reaches a release.
       - name: Install dist and cargo-auditable
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
         with:
           install: true
           install_args: aqua:axodotdev/cargo-dist github:rust-secure-code/cargo-auditable
