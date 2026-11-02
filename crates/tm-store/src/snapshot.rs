@@ -4,7 +4,9 @@
 use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::path::Path;
+use std::time::Duration;
 
+use rusqlite::backup::Backup;
 use rusqlite::{Connection, OpenFlags};
 use tm_core::Scheme;
 use uuid::Uuid;
@@ -87,11 +89,9 @@ impl Store {
         lock.lock().map_err(failed(&lock_path))?;
         remove_partial(dir);
         let partial = dir.join(format!("{PARTIAL}{}.db", Uuid::now_v7()));
-        let copied = self
-            .conn
-            .execute("VACUUM INTO ?1", [uri(&partial)])
+        let copied = copy(&self.conn, &partial)
             .map_err(StoreError::from)
-            .and_then(|_| fs::rename(&partial, path).map_err(failed(path)));
+            .and_then(|()| fs::rename(&partial, path).map_err(failed(path)));
         if copied.is_err() {
             let _ = fs::remove_file(&partial);
         }
@@ -103,6 +103,14 @@ impl Store {
             .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))?;
         Ok(())
     }
+}
+
+/// A page copy keeps the store's WAL mark, which a reader denied every write
+/// cannot open without `immutable=1`, so the copy is switched back.
+fn copy(store: &Connection, to: &Path) -> rusqlite::Result<()> {
+    let mut copy = Connection::open(to)?;
+    Backup::new(store, &mut copy)?.run_to_completion(i32::MAX, Duration::ZERO, None)?;
+    copy.query_row("PRAGMA journal_mode = DELETE", [], |_| Ok(()))
 }
 
 /// Removes copies an interrupted publish left; the lock is held, so none is

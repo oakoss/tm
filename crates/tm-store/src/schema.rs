@@ -287,9 +287,8 @@ CREATE TABLE comments (
 
 CREATE INDEX comments_by_issue ON comments (issue_id, hlc);
 
--- Full-text indexes holding their own copy of the text, keyed by id: a
--- Snapshot made with VACUUM INTO may renumber the rowids of issues and
--- comments, so no index may point at them.
+-- Full-text indexes holding their own copy of the text, keyed by id, since
+-- a VACUUM may renumber the rowids of issues and comments.
 CREATE VIRTUAL TABLE issue_text USING fts5 (
   issue_id UNINDEXED, title, description,
   tokenize = 'porter unicode61 remove_diacritics 2'
