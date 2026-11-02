@@ -163,9 +163,9 @@ fn missing(scheme: &Scheme, create: &Create, fields: Vec<String>) -> CliError {
     }
     for name in &fields {
         match name.as_str() {
-            "type" => fix.push("--type <type>".into()),
-            "title" => fix.push("--title <title>".into()),
-            other => fix.push(format!("--set {other}=<value>")),
+            "type" => fix.push(format!("--type {}", quoted("<type>"))),
+            "title" => fix.push(format!("--title {}", quoted("<title>"))),
+            other => fix.push(format!("--set {}", quoted(&format!("{other}=<value>")))),
         }
     }
     CliError::new(

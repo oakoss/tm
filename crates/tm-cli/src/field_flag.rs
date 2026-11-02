@@ -129,7 +129,7 @@ impl Parsed {
             .flat_map(|(name, values)| {
                 values.iter().flat_map(move |value| {
                     let pair = value.as_ref().map_or_else(
-                        || format!("{name}=<value>"),
+                        || quoted(&format!("{name}=<value>")),
                         |v| quoted(&format!("{name}={v}")),
                     );
                     ["--set".to_owned(), pair]
@@ -185,7 +185,7 @@ impl Parsed {
         });
         let status = match (value, self.positionals.len()) {
             (Some(value), 1) => Some(quoted(value)),
-            (None, 1) => Some("<status>".to_owned()),
+            (None, 1) => Some(quoted("<status>")),
             (None, 2) => None,
             _ => return None,
         };
@@ -230,7 +230,7 @@ pub(crate) fn refused(cli: Command, args: &[String], flag: &str) -> Option<CliEr
     let set = "a field is set with --set FIELD=VALUE";
     let mut cli = cli.mut_subcommand(&command, accepting_fields);
     let Ok(matches) = cli.try_get_matches_from_mut(args) else {
-        return Some(error(set).fix(format!("--set {field}=<value>")));
+        return Some(error(set).fix(format!("--set {}", quoted(&format!("{field}=<value>")))));
     };
     let def = cli.find_subcommand(&command)?;
     let parsed = Parsed::read(def, matches.subcommand_matches(&command)?);

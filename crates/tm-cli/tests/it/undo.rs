@@ -336,5 +336,5 @@ fn an_agent_names_the_batch_and_a_human_with_nothing_is_told() {
         (Some(1), Some("batch_required")),
         "{doc}"
     );
-    assert_eq!(doc["fix"], "tm undo <batch>");
+    assert_eq!(doc["fix"], "tm undo '<batch>'");
 }

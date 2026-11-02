@@ -138,7 +138,7 @@ fn last(here: &Here, actor: &Actor) -> Result<(Uuid, Option<Uuid>), CliError> {
                 actor.name()
             ),
         )
-        .fix("tm undo <batch>"));
+        .fix("tm undo '<batch>'"));
     }
     match here.store.undo_candidates(actor.name(), 2)?.as_slice() {
         [] => Err(CliError::new(
