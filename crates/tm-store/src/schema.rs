@@ -3,7 +3,7 @@
 
 /// Stamped into `PRAGMA user_version`; a store with a different value is
 /// rebuilt on open.
-pub(crate) const PROJECTION_VERSION: i64 = 18;
+pub(crate) const PROJECTION_VERSION: i64 = 19;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
 /// Until tm v1 is released the log changes in place (ADR 0010).
@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS session_dirs (
 pub(crate) const TEXT_INDEX: &str = "
 INSERT INTO issue_text (issue_id, title, description)
   SELECT id, title, description FROM issues;
+INSERT INTO issue_text_rows SELECT issue_id, rowid FROM issue_text;
 INSERT INTO comment_text (op_id, body) SELECT op_id, body FROM comments;
 INSERT INTO issue_text (issue_text) VALUES ('optimize');
 INSERT INTO comment_text (comment_text) VALUES ('optimize');
@@ -144,12 +145,12 @@ INSERT INTO comment_text (comment_text) VALUES ('optimize');
 CREATE TRIGGER issue_text_insert AFTER INSERT ON issues BEGIN
   INSERT INTO issue_text (issue_id, title, description)
     VALUES (new.id, new.title, new.description);
+  INSERT INTO issue_text_rows VALUES (new.id, last_insert_rowid());
 END;
 
 CREATE TRIGGER issue_text_update AFTER UPDATE OF title, description ON issues BEGIN
-  DELETE FROM issue_text WHERE issue_id = old.id;
-  INSERT INTO issue_text (issue_id, title, description)
-    VALUES (new.id, new.title, new.description);
+  UPDATE issue_text SET title = new.title, description = new.description
+    WHERE rowid = (SELECT row FROM issue_text_rows WHERE issue_id = old.id);
 END;
 
 CREATE TRIGGER comment_text_insert AFTER INSERT ON comments BEGIN
@@ -159,6 +160,7 @@ END;
 
 pub(crate) const DROP_PROJECTIONS: &str = "
 DROP TABLE IF EXISTS comment_text;
+DROP TABLE IF EXISTS issue_text_rows;
 DROP TABLE IF EXISTS issue_text;
 DROP TABLE IF EXISTS memory_versions;
 DROP TABLE IF EXISTS memories;
@@ -293,6 +295,13 @@ CREATE VIRTUAL TABLE issue_text USING fts5 (
   issue_id UNINDEXED, title, description,
   tokenize = 'porter unicode61 remove_diacritics 2'
 );
+
+-- An edit finds its issue_text row here rather than by scanning the
+-- unindexed issue_id; FTS5 rowids survive a VACUUM.
+CREATE TABLE issue_text_rows (
+  issue_id BLOB PRIMARY KEY,
+  row INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
 
 CREATE VIRTUAL TABLE comment_text USING fts5 (
   op_id UNINDEXED, body,

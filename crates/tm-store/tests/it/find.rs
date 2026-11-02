@@ -165,6 +165,22 @@ fn comment(store: &mut Store, issue: Uuid, body: &str) -> Uuid {
 }
 
 #[test]
+fn an_edit_after_a_vacuum_replaces_the_issues_own_words() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let first = issue(&mut store, &clock, &[("title", json!("apple"))], &[]);
+    let second = issue(&mut store, &clock, &[("title", json!("banana"))], &[]);
+    store.connection().execute_batch("VACUUM").unwrap();
+    store
+        .append(draft(first, set_field("title", json!("cherry"))))
+        .unwrap();
+    assert_eq!(find(&store, "cherry"), [first]);
+    assert_eq!(find(&store, "apple"), Vec::<Uuid>::new());
+    assert_eq!(find(&store, "banana"), [second]);
+}
+
+#[test]
 fn words_search_titles_descriptions_and_comments_not_retracted() {
     let dir = TempDir::new();
     let clock = ManualClock::at(1_000);
