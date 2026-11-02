@@ -128,6 +128,18 @@ fn with_no_filter_list_shows_the_open_work() {
         ["TM-1", "TM-2", "TM-3"],
         "a filter naming no state narrows the open work"
     );
+    let (_, doc) = list(&scratch, &repo, &["DONE"]);
+    assert_eq!(
+        keys(&doc),
+        Vec::<String>::new(),
+        "a word narrows it too: {doc}"
+    );
+    let (_, doc) = list(&scratch, &repo, &["text:done", "status:done"]);
+    assert_eq!(keys(&doc), ["TM-4"]);
+    let (_, doc) = list(&scratch, &repo, &["triage", "active"]);
+    assert_eq!(keys(&doc), Vec::<String>::new(), "every word: {doc}");
+    let (_, doc) = list(&scratch, &repo, &["--", "-text:todo"]);
+    assert_eq!(keys(&doc), ["TM-2", "TM-3"]);
 
     for args in [
         &["--all"][..],

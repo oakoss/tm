@@ -225,8 +225,8 @@ enum Command {
     /// List the open Issues a filter matches; a filter naming status,
     /// category or archived reaches finished ones too.
     List {
-        /// A filter such as `status:todo priority:high -labels:bug` or
-        /// `is:blocked`.
+        /// A filter such as `status:todo priority:high -labels:bug`,
+        /// `is:blocked`, or words to search for (`login timeout`).
         filter: Vec<String>,
         /// Show at most this many.
         #[arg(long)]
