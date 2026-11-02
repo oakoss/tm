@@ -318,3 +318,58 @@ fn the_expiry_note_follows_the_harness_not_the_agent_name() {
         "a Codex session named claude: {codex}"
     );
 }
+
+#[test]
+fn sessions_lists_the_latest_first_with_the_issues_each_wrote() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    for title in ["first", "second", "human only"] {
+        store
+            .create_issue(&Actor::human("jace"), project, "task", title)
+            .unwrap();
+    }
+    drop(store);
+    assert_eq!(
+        ok(&tm(&scratch, &repo, &["sessions"])),
+        "no Agent session has written here\n"
+    );
+
+    ok(&codex(&scratch, &repo, &["comment", "TM-1", "started"]));
+    ok(&codex(&scratch, &repo, &["comment", "TM-2", "then this"]));
+    ok(&claude(&scratch, &repo, &["comment", "TM-1", "looked"]));
+
+    let listed = data(&tm(&scratch, &repo, &["--json", "sessions"]));
+    assert_eq!(listed["total"], 2, "{listed}");
+    let sessions = listed["sessions"].as_array().unwrap();
+    let keys = |at: usize| -> Vec<&str> {
+        sessions[at]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|issue| issue["key"].as_str().unwrap())
+            .collect()
+    };
+    assert_eq!(sessions[0]["session"], CLAUDE, "the latest first: {listed}");
+    assert_eq!(keys(0), ["TM-1"]);
+    assert_eq!(sessions[1]["session"], CODEX);
+    assert_eq!(keys(1), ["TM-2", "TM-1"], "its latest Issue first");
+    assert!(
+        sessions[1]["resume"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("codex resume {CODEX}")),
+        "{listed}"
+    );
+
+    let text = ok(&tm(&scratch, &repo, &["sessions", "--limit", "1"]));
+    assert!(text.contains(&format!("claude -r {CLAUDE}")), "{text}");
+    assert!(!text.contains(CODEX), "{text}");
+    assert!(
+        text.ends_with("(1 of 2 sessions shown; --limit for more)\n"),
+        "{text}"
+    );
+    assert_eq!(
+        ok(&tm(&scratch, &repo, &["sessions", "--limit", "0"])),
+        "(0 of 2 sessions shown; --limit for more)\n"
+    );
+}

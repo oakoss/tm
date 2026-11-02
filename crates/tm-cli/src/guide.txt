@@ -16,6 +16,8 @@ Find work
                              its blockers; blocked-by:KEY, what KEY blocks
   tm history KEY             what happened to an Issue, who did it, and
                              each write's batch for tm undo
+  tm sessions                recent Agent sessions, the Issues each wrote
+                             and how to resume it
 
 Short-lists
   tm shortlist               the ordered lists of what to do next that you

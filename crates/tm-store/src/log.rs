@@ -77,6 +77,20 @@ pub(crate) fn upgrade(conn: &mut Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Drops `ops_by_session`, which `ops_by_session_time` replaced; a store
+/// without it takes no lock.
+pub(crate) fn drop_replaced_index(conn: &Connection) -> Result<(), StoreError> {
+    let held: bool = conn.query_row(
+        "SELECT count(*) > 0 FROM sqlite_schema WHERE type = 'index' AND name = 'ops_by_session'",
+        [],
+        |row| row.get(0),
+    )?;
+    if held {
+        conn.execute_batch("DROP INDEX IF EXISTS ops_by_session")?;
+    }
+    Ok(())
+}
+
 /// Writes `op` to the log.
 pub(crate) fn insert(
     tx: &Transaction<'_>,

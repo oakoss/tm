@@ -858,3 +858,66 @@ fn ready_answers_in_a_fixed_shape() {
     }
     "#);
 }
+
+#[test]
+fn sessions_answers_in_a_fixed_shape() {
+    let (scratch, repo) = two_issues();
+    let out = crate::support::jace(&scratch, &repo, &["comment", "TM-1", "looked"])
+        .env(
+            "CLAUDE_CODE_SESSION_ID",
+            "50efc9d7-c49a-4377-bb73-793dd6ad2f9e",
+        )
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let doc = run(&scratch, &repo, &["sessions"]);
+    insta::assert_json_snapshot!(doc, {
+        ".data.sessions[].first_ms" => "[ms]",
+        ".data.sessions[].last_ms" => "[ms]",
+        ".data.sessions[].dir" => "[dir]",
+        ".data.sessions[].resume" => "[resume]",
+        ".data.sessions[].issues[].id" => "[id]",
+        ".data.sessions[].issues[].fields.created" => "[ms]",
+        ".data.sessions[].issues[].fields.updated" => "[ms]",
+    }, @r#"
+    {
+      "data": {
+        "sessions": [
+          {
+            "agent": "claude",
+            "dir": "[dir]",
+            "first_ms": "[ms]",
+            "harness": "claude",
+            "issues": [
+              {
+                "category": "todo",
+                "fields": {
+                  "archived": false,
+                  "created": "[ms]",
+                  "priority": "none",
+                  "reporter": "jace",
+                  "status": "todo",
+                  "title": "first",
+                  "type": "task",
+                  "updated": "[ms]"
+                },
+                "id": "[id]",
+                "key": "TM-1",
+                "project": "TM",
+                "sets": {}
+              }
+            ],
+            "last_ms": "[ms]",
+            "on_behalf_of": "jace",
+            "resume": "[resume]",
+            "session": "50efc9d7-c49a-4377-bb73-793dd6ad2f9e"
+          }
+        ],
+        "total": 1
+      },
+      "schema_version": 1,
+      "warnings": []
+    }
+    "#);
+}
