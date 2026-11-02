@@ -165,6 +165,17 @@ fn reads_fall_back_to_the_snapshot_where_the_store_is_refused() {
             "searched: {found}"
         );
 
+        // Any reader denied every write, not only tm's immutable one.
+        let plain = rusqlite::Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let issues: i64 = plain
+            .query_row("SELECT count(*) FROM issues", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(issues, 1);
+
         let out = tm(
             &scratch,
             &repo,
