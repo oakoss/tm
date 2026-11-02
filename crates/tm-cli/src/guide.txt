@@ -59,6 +59,7 @@ Claims
 Keep it current
   The description holds the current plan. Change it with
     tm edit KEY --set description=-      (reads the text from stdin)
+    tm edit KEY --append description=-   (adds a paragraph at the end)
   Progress, what was learned and changes of plan go in comments, which
   keep a dated trail an edit would overwrite:
     tm comment KEY -                     (reads the text from stdin)
