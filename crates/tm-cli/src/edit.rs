@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use serde_json::{Value, json};
 use tm_core::Change;
-use tm_core::scheme::Scheme;
+use tm_core::scheme::{FieldType, Scheme};
 use tm_store::{Draft, IssueView, Named, StoreError};
 use uuid::Uuid;
 
@@ -20,7 +20,7 @@ use crate::output::{Output, printable};
     clap::ArgGroup::new("changes")
         .required(true)
         .multiple(true)
-        .args(["set", "unset", "labels", "remove_labels", "parent", "no_parent"])
+        .args(["set", "append", "unset", "labels", "remove_labels", "parent", "no_parent"])
 ))]
 pub(crate) struct Edit {
     /// The Issue's Key or full id.
@@ -29,6 +29,10 @@ pub(crate) struct Edit {
     /// stdin. Repeat for more.
     #[arg(long, value_name = "FIELD=VALUE", value_parser = field_value)]
     set: Vec<(String, String)>,
+    /// Add a paragraph to the end of a long text field, such as
+    /// description=-, after a blank line.
+    #[arg(long, value_name = "FIELD=VALUE", value_parser = field_value)]
+    append: Vec<(String, String)>,
     /// Clear a field; repeat for more.
     #[arg(long, value_name = "FIELD", value_parser = unset_field)]
     unset: Vec<String>,
@@ -86,7 +90,8 @@ pub(crate) fn run(edit: &Edit) -> Result<Output, CliError> {
 }
 
 fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<String>), CliError> {
-    fields::given_once(edit.set.iter().map(|(field, _)| field).chain(&edit.unset))?;
+    let given: Vec<(String, String)> = edit.set.iter().chain(&edit.append).cloned().collect();
+    fields::given_once(given.iter().map(|(field, _)| field).chain(&edit.unset))?;
     refuse_status(reference, edit)?;
     let id = here.issue(reference)?;
     let (view, read) = here.store.issue_with_version(id)?.ok_or_else(|| {
@@ -119,8 +124,9 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
     let forced = |err| CliError::past_claim(err, "tm edit --force");
     // A refusal would lose piped text, so check before reading it; the write
     // checks again.
-    if !fields::piped(&edit.set).is_empty() {
+    if !fields::piped(&given).is_empty() {
         let mut written = fields::written(here.store.scheme(), &view, &edit.set, &edit.unset);
+        written.extend(edit.append.iter().map(|(field, _)| field.as_str()));
         if reparents {
             written.push("parent");
         }
@@ -130,8 +136,14 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
         here.store.check_version(id, based_on, &written)?;
     }
     // Read once all else is checked, so a mistake keeps the piped text.
-    let values = fields::read_stdin(&edit.set, "clear a field with --unset")?;
-    let (changes, report) = changes(here, &view, edit, &values, parent)?;
+    let blank = if fields::piped(&edit.append).is_empty() {
+        "clear a field with --unset"
+    } else {
+        "give the text to add"
+    };
+    let mut values = fields::read_stdin(&given, blank)?;
+    let appended = values.split_off(edit.set.len());
+    let (changes, report) = changes(here, &view, edit, &values, &appended, parent)?;
     let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
     let data = |report: &[Changed]| {
         json!({
@@ -202,7 +214,28 @@ fn refuse_status(reference: &str, edit: &Edit) -> Result<(), CliError> {
 /// the Scheme lacks or computes, one that cannot be cleared, a blank label
 /// to add, or a label both added and removed.
 fn check_flags(scheme: &Scheme, view: &IssueView, edit: &Edit) -> Result<(), CliError> {
-    fields::known(scheme, edit.set.iter().map(|(field, _)| field))?;
+    fields::known(
+        scheme,
+        edit.set.iter().chain(&edit.append).map(|(field, _)| field),
+    )?;
+    for (name, value) in &edit.append {
+        let long = scheme
+            .field(name)
+            .is_some_and(|field| field.field_type == FieldType::RichText);
+        if !long {
+            return Err(CliError::new(
+                "invalid_value",
+                format!("{name} takes no paragraphs; --append adds to a long text field, such as description"),
+            )
+            .with("field", name.as_str()));
+        }
+        if value.trim().is_empty() {
+            return Err(
+                CliError::new("invalid_value", format!("nothing to append to {name}"))
+                    .with("field", name.as_str()),
+            );
+        }
+    }
     fields::labels(&edit.labels)?;
     for name in &edit.unset {
         unsettable(scheme, view, name)?;
@@ -233,6 +266,7 @@ fn changes(
     view: &IssueView,
     edit: &Edit,
     values: &[(String, String)],
+    appended: &[(String, String)],
     parent: Option<Uuid>,
 ) -> Result<(Vec<Change>, Vec<Changed>), CliError> {
     let scheme = here.store.scheme();
@@ -251,6 +285,14 @@ fn changes(
     };
     for (name, value) in values {
         field(name, typed(scheme, name, value), view.fields.get(name));
+    }
+    for (name, value) in appended {
+        let before = view.fields.get(name);
+        let after = match before.and_then(Value::as_str).map(str::trim_end) {
+            Some(text) if !text.is_empty() => format!("{text}\n\n{value}"),
+            _ => value.clone(),
+        };
+        field(name, json!(after), before);
     }
     for name in &edit.unset {
         field(name, Value::Null, view.fields.get(name));
