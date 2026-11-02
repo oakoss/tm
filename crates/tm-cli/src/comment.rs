@@ -10,10 +10,7 @@ use crate::error::CliError;
 use crate::fields;
 use crate::here::{self, Here};
 use crate::identity;
-use crate::output::{Output, short};
-
-/// Fewer hex digits would too often match more than one comment.
-const MIN_PART: usize = 8;
+use crate::output::{Output, id_by_part, id_has_part, short};
 
 pub(crate) fn run(reference: &str, body: &str, edit: Option<&str>) -> Result<Output, CliError> {
     here::write(|here| write(here, reference, body, edit))
@@ -40,9 +37,13 @@ fn write(
         .ok_or_else(|| CliError::new("not_found", format!("no Issue is {reference}")))?;
     let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
         .map_err(|message| CliError::new("no_identity", message))?;
-    let edited = edit
-        .map(|which| edited_comment(here, (id, reference), which, &identity.actor))
-        .transpose()?;
+    let edited = match edit {
+        Some(which) => {
+            let comments = here.store.comments(id)?;
+            Some(pick_comment(&comments, reference, which, &identity.actor)?)
+        }
+        None => None,
+    };
     // Read once all else is checked, so a mistake keeps the piped text.
     let body = if body == "-" {
         let read = fields::read_stdin_text("body")?;
@@ -92,17 +93,15 @@ fn write(
     ))
 }
 
-/// The comment `which` names on the Issue: `last`, a person's own latest
-/// plain comment, or a full id or a unique start or end of one of at least
-/// [`MIN_PART`] hex digits. An Agent must name its comment, since other
-/// sessions may write under its name.
-fn edited_comment(
-    here: &Here,
-    (issue, reference): (Uuid, &str),
+/// The comment `which` names among an Issue's `comments`: `last`, a person's
+/// own latest plain comment, or a unique start or end of an id. An Agent
+/// must name its comment, since other sessions may write under its name.
+fn pick_comment(
+    comments: &[CommentView],
+    reference: &str,
     which: &str,
     actor: &Actor,
 ) -> Result<Uuid, CliError> {
-    let comments = here.store.comments(issue)?;
     if which == "last" {
         if actor.is_agent() {
             return Err(CliError::new(
@@ -132,51 +131,101 @@ fn edited_comment(
                 .with("kind", "comment")
             });
     }
-    let digits = which.replace('-', "").to_ascii_lowercase();
-    if digits.len() < MIN_PART || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+    let within = format!("on {reference}");
+    let id = id_by_part(which, ("comment", &within), |digits| {
+        let ids = comments.iter().map(|comment| comment.id);
+        Ok(ids.filter(|id| id_has_part(*id, digits)).collect())
+    })?;
+    // The store lets undo rewrite a hidden comment; a person edits only what
+    // they can see.
+    if comments
+        .iter()
+        .any(|comment| comment.id == id && comment.retracted)
+    {
         return Err(CliError::new(
             "invalid_value",
             format!(
-                "{which:?} names no comment; give last, or at least {MIN_PART} hex digits of its id"
+                "comment {} is retracted; undoing its retraction shows it again",
+                short(id)
             ),
         )
         .with("field", "comment"));
     }
-    let matching: Vec<&CommentView> = comments
-        .iter()
-        .filter(|comment| {
-            let hex = comment.id.simple().to_string();
-            hex.starts_with(&digits) || hex.ends_with(&digits)
-        })
-        .collect();
-    match matching.as_slice() {
-        [] => Err(CliError::new(
-            "not_found",
-            format!("{reference} has no comment whose id starts or ends with {which}"),
-        )
-        .with("kind", "comment")),
-        // The store lets undo rewrite a hidden comment; a person edits only
-        // what they can see.
-        [only] if only.retracted => Err(CliError::new(
+    Ok(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use tm_store::CommentRole;
+
+    use super::*;
+
+    fn said(actor: &str, on_behalf_of: Option<&str>) -> CommentView {
+        CommentView {
+            id: Uuid::now_v7(),
+            actor: actor.into(),
+            on_behalf_of: on_behalf_of.map(Into::into),
+            body: "x".into(),
+            utc_ms: 0,
+            retracted: false,
+            role: None,
+            options: Vec::new(),
+            edited_ms: None,
+        }
+    }
+
+    #[test]
+    fn last_is_the_persons_own_latest_shown_plain_comment() {
+        let own = said("Éva", None);
+        let retracted = CommentView {
+            retracted: true,
+            ..said("éva", None)
+        };
+        let asked = CommentView {
+            role: Some(CommentRole::Question),
+            ..said("éva", None)
+        };
+        let comments = [
+            own.clone(),
+            retracted,
+            asked,
+            said("claude", Some("éva")),
+            said("kim", None),
+        ];
+        let eva = Actor::human("éva");
+        assert_eq!(
+            pick_comment(&comments, "TM-1", "last", &eva).unwrap(),
+            own.id
+        );
+
+        let err = pick_comment(&comments, "TM-1", "last", &Actor::human("lee")).unwrap_err();
+        assert_eq!(err.code, "not_found");
+        let agent = Actor::agent("claude", "éva");
+        let err = pick_comment(&comments, "TM-1", "last", &agent).unwrap_err();
+        assert_eq!(err.code, "comment_required");
+    }
+
+    #[test]
+    fn an_id_names_one_shown_comment_by_its_start_or_end() {
+        let shown = said("jace", None);
+        let hidden = CommentView {
+            retracted: true,
+            ..said("jace", None)
+        };
+        let comments = [shown.clone(), hidden.clone()];
+        let jace = Actor::human("jace");
+        let pick = |which: &str| pick_comment(&comments, "TM-1", which, &jace);
+
+        assert_eq!(pick(&short(shown.id)).unwrap(), shown.id);
+        assert_eq!(pick(&shown.id.to_string()).unwrap(), shown.id);
+        let start = &shown.id.simple().to_string()[..8];
+        assert_eq!(
+            pick(start).unwrap_err().code,
             "invalid_value",
-            format!(
-                "comment {} is retracted; undoing its retraction shows it again",
-                short(only.id)
-            ),
-        )
-        .with("field", "comment")),
-        [only] => Ok(only.id),
-        several => Err(CliError::new(
-            "invalid_value",
-            format!("{which} matches more than one comment on {reference}; give more of it"),
-        )
-        .with("field", "comment")
-        .with(
-            "matches",
-            several
-                .iter()
-                .map(|comment| comment.id.to_string())
-                .collect::<Vec<_>>(),
-        )),
+            "both share it"
+        );
+        assert_eq!(pick(&short(hidden.id)).unwrap_err().code, "invalid_value");
+        assert_eq!(pick("ffffffffffff").unwrap_err().code, "not_found");
+        assert_eq!(pick("abc").unwrap_err().code, "invalid_value");
     }
 }

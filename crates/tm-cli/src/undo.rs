@@ -12,11 +12,8 @@ use uuid::Uuid;
 use crate::error::CliError;
 use crate::here::{self, Here};
 use crate::identity;
-use crate::output::{Output, printable, short};
+use crate::output::{Output, id_by_part, printable, short};
 use crate::show;
-
-/// Fewer characters would too often match more than one batch.
-const MIN_PART: usize = 8;
 
 pub(crate) fn run(reference: Option<&str>, dry_run: bool, force: bool) -> Result<Output, CliError> {
     here::write(|here| {
@@ -265,47 +262,13 @@ fn describe(
     }
 }
 
-/// The batch a full id, or a unique start or end of one of at least
-/// [`MIN_PART`] hex digits, names; one that matches several is refused.
+/// The batch a full id, or a unique start or end of one, names.
 fn batch(here: &Here, reference: &str) -> Result<Uuid, CliError> {
     if let Ok(id) = Uuid::parse_str(reference) {
         return Ok(id);
     }
-    let digits: String = reference.chars().filter(|c| *c != '-').collect();
-    if !digits.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(CliError::new(
-            "invalid_value",
-            format!("{reference:?} is not a batch id, which is hex digits"),
-        )
-        .with("field", "batch"));
-    }
-    if digits.len() < MIN_PART {
-        return Err(CliError::new(
-            "invalid_value",
-            format!(
-                "{reference:?} is too short to name a batch; give at least {MIN_PART} characters"
-            ),
-        )
-        .with("field", "batch"));
-    }
-    match here.store.batches_matching(reference)?.as_slice() {
-        [] => Err(CliError::new(
-            "not_found",
-            format!("no batch written on this Replica starts or ends with {reference}"),
-        )
-        .with("kind", "batch")
-        .with("reference", reference)),
-        [only] => Ok(*only),
-        several => Err(CliError::new(
-            "invalid_value",
-            format!(
-                "{reference} matches more than one batch; give more of it, or its last characters"
-            ),
-        )
-        .with("field", "batch")
-        .with(
-            "matches",
-            several.iter().map(Uuid::to_string).collect::<Vec<_>>(),
-        )),
-    }
+    let within = ("batch", "written on this Replica");
+    id_by_part(reference, within, |digits| {
+        Ok(here.store.batches_matching(digits)?)
+    })
 }

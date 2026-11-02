@@ -55,11 +55,58 @@ impl Output {
     }
 }
 
-/// A batch id's last 12 hex digits: a `UUIDv7` begins with its time, so only
-/// the end tells batches written close together apart.
-pub(crate) fn short(batch: Uuid) -> String {
-    let hex = batch.simple().to_string();
+/// An id's last 12 hex digits: a `UUIDv7` begins with its time, so only the
+/// end tells ids made close together apart.
+pub(crate) fn short(id: Uuid) -> String {
+    let hex = id.simple().to_string();
     hex[hex.len() - 12..].to_owned()
+}
+
+/// Fewer hex digits would too often match more than one id.
+const MIN_PART: usize = 8;
+
+/// The one id among those `find` returns for `part`, a start or end of at
+/// least [`MIN_PART`] hex digits, dashes ignored. `kind` names what the id is
+/// (`batch`), and `within` where `find` looked (`written on this Replica`).
+pub(crate) fn id_by_part(
+    part: &str,
+    (kind, within): (&str, &str),
+    find: impl FnOnce(&str) -> Result<Vec<Uuid>, CliError>,
+) -> Result<Uuid, CliError> {
+    let digits = part.replace('-', "");
+    let refuse = |message: String| CliError::new("invalid_value", message).with("field", kind);
+    if !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(refuse(format!(
+            "{part:?} is not a {kind} id, which is hex digits"
+        )));
+    }
+    if digits.len() < MIN_PART {
+        return Err(refuse(format!(
+            "{part:?} is too short to name a {kind}; give at least {MIN_PART} characters"
+        )));
+    }
+    match find(&digits.to_ascii_lowercase())?.as_slice() {
+        [] => Err(CliError::new(
+            "not_found",
+            format!("no {kind} {within} starts or ends with {part}"),
+        )
+        .with("kind", kind)
+        .with("reference", part)),
+        [only] => Ok(*only),
+        several => Err(refuse(format!(
+            "{part} matches more than one {kind}; give more of it, or its last characters"
+        ))
+        .with(
+            "matches",
+            several.iter().map(Uuid::to_string).collect::<Vec<_>>(),
+        )),
+    }
+}
+
+/// Whether `id` starts or ends with `digits`, lowercase hex.
+pub(crate) fn id_has_part(id: Uuid, digits: &str) -> bool {
+    let hex = id.simple().to_string();
+    hex.starts_with(digits) || hex.ends_with(digits)
 }
 
 /// Stored text made safe to print: control characters, which could move the

@@ -696,15 +696,13 @@ fn a_replayed_edit_of_a_question_or_another_issues_comment_is_not_applied() {
         remote_op(7, issue, &Change::Create, at(1_000), 0),
         remote_op(7, other, &Change::Create, at(1_000), 0),
     ];
-    let (edits, targets) = (
-        [edit(&question), edit(&comment)],
-        [question.clone(), comment.clone()],
-    );
+    let edits = [edit(&question), edit(&comment), edit(&created[0])];
+    let targets = [question.clone(), comment.clone()];
     // Each edit after what it edits, and each before it.
-    for (first, later) in [(&targets, &edits), (&edits, &targets)] {
+    for (first, later) in [(&targets[..], &edits[..]), (&edits[..], &targets[..])] {
         let dir = TempDir::new();
         let mut store = open(&dir.db(), &ManualClock::at(1_000));
-        let ops = created.iter().chain(first).chain(later.iter());
+        let ops = created.iter().chain(first).chain(later);
         for (seq, op) in (1..).zip(ops) {
             insert_acked(&store, op, seq, 9_000);
         }
@@ -717,6 +715,10 @@ fn a_replayed_edit_of_a_question_or_another_issues_comment_is_not_applied() {
             .collect();
         assert!(reasons[0].contains("question"), "{reasons:?}");
         assert!(reasons[1].contains("another Issue"), "{reasons:?}");
+        assert!(
+            reasons[2].contains("create operation, no comment"),
+            "{reasons:?}"
+        );
         assert_eq!(store.comments(issue).unwrap()[0].body, "which?");
         assert_eq!(store.comments(other).unwrap()[0].body, "x");
     }

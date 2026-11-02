@@ -240,7 +240,7 @@ fn check_edit(
             |row| row.get(0),
         )
         .optional()?;
-    let reason = match crate::apply::not_editable(tx, issue_id, comment)? {
+    let reason = match not_editable(tx, issue_id, comment)? {
         Some(reason) => reason,
         None if current.as_deref() == Some(body) => {
             "are edited only to new text, and this one already reads so".to_owned()
@@ -251,6 +251,41 @@ fn check_edit(
         field: COMMENTS_FIELD.into(),
         reason,
         valid: Vec::new(),
+    })
+}
+
+/// Why a comment cannot be edited as part of `issue`: it is on another
+/// Issue, or it asks, answers or withdraws a question, whose text decides
+/// what was chosen. Read from the log, which holds the comment even where
+/// replay has not reached it yet; one not logged takes the edit on arrival.
+/// Replay applies the same rule, so an edit written here never fails there.
+pub(crate) fn not_editable(
+    tx: &Transaction<'_>,
+    issue: Uuid,
+    comment: Uuid,
+) -> Result<Option<String>, StoreError> {
+    let found: Option<(Vec<u8>, String)> = tx
+        .query_row(
+            "SELECT issue_id, payload FROM ops WHERE op_id = ?1",
+            [comment.as_bytes()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((on, payload)) = found else {
+        return Ok(None);
+    };
+    if on != issue.as_bytes() {
+        return Ok(Some(format!("comment {comment} is on another Issue")));
+    }
+    let change: Change = serde_json::from_str(&payload)
+        .map_err(|err| StoreError::Corrupt(format!("a logged payload: {err}")))?;
+    Ok(match change {
+        Change::Comment { .. } => None,
+        Change::Ask { .. } | Change::Answer { .. } | Change::Withdraw { .. } => Some(
+            "that ask, answer or withdraw a question cannot be edited, since their text decides what was chosen"
+                .to_owned(),
+        ),
+        other => Some(format!("{comment} is a {} operation, no comment", other.kind())),
     })
 }
 

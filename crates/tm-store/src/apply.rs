@@ -278,35 +278,6 @@ fn pending_edit(tx: &Transaction<'_>, op: &Op) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Why a comment cannot be edited as part of `issue`: it is on another
-/// Issue, or it asks, answers or withdraws a question, whose text decides
-/// what was chosen. Read from the log, which holds the comment even where
-/// replay has not reached it yet; one not logged takes the edit on arrival.
-pub(crate) fn not_editable(
-    tx: &Transaction<'_>,
-    issue: Uuid,
-    comment: Uuid,
-) -> Result<Option<String>, StoreError> {
-    let found: Option<(Vec<u8>, String)> = tx
-        .query_row(
-            "SELECT issue_id, kind FROM ops WHERE op_id = ?1",
-            [comment.as_bytes()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    Ok(match found {
-        Some((on, _)) if on != issue.as_bytes() => {
-            Some(format!("comment {comment} is on another Issue"))
-        }
-        Some((_, kind)) if matches!(kind.as_str(), "ask" | "answer" | "withdraw") => Some(
-            "that ask, answer or withdraw a question cannot be edited, since their text decides what was chosen"
-                .to_owned(),
-        ),
-        Some((_, kind)) if kind != "comment" => Some(format!("{comment} is no comment")),
-        _ => None,
-    })
-}
-
 /// `base_seq` and `server_seq` are per Project, so an Issue operation filed
 /// under another Project would compare positions from different chains.
 fn check_filed(tx: &Transaction<'_>, op: &Op, change: &Change) -> Result<(), StoreError> {
@@ -349,7 +320,7 @@ fn retract(
 }
 
 /// The latest edit by the merge rule gives a comment its text; why it does
-/// not apply, when [`not_editable`] says so.
+/// not apply, when [`crate::validate::not_editable`] says so.
 fn edit_comment(
     tx: &Transaction<'_>,
     op: &Op,
@@ -357,7 +328,7 @@ fn edit_comment(
     body: &str,
     version: &Version,
 ) -> Result<Option<String>, StoreError> {
-    if let Some(reason) = not_editable(tx, op.subject, comment)? {
+    if let Some(reason) = crate::validate::not_editable(tx, op.subject, comment)? {
         return Ok(Some(reason));
     }
     let elem = comment.to_string();
