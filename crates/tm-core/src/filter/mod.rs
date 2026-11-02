@@ -88,8 +88,6 @@ pub enum Direction {
 pub enum FilterError {
     #[error("{message}")]
     Syntax { message: String, span: Span },
-    #[error("{word:?} is not a qualifier; write field:value")]
-    BareWord { word: String, span: Span },
     #[error("not supported yet: {construct}")]
     Unsupported { construct: String, span: Span },
     #[error("unknown field {field:?}; valid fields: {}", valid.join(", "))]

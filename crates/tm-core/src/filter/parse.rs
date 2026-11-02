@@ -3,9 +3,10 @@
 
 use super::{Direction, FilterError, Query, SortKey, Span, Term, Value};
 
-/// Parses a filter. Constructs reserved for later (bare words, `OR`, `AND`,
-/// `NOT`, parentheses, comparisons, functions other than `@me`) are errors
-/// now, so nothing accepted today changes meaning when they arrive.
+/// Parses a filter. A bare word or quoted phrase is a `text:` term.
+/// Constructs reserved for later (`OR`, `AND`, `NOT`, parentheses,
+/// comparisons, functions other than `@me`) are errors now, so nothing
+/// accepted today changes meaning when they arrive.
 ///
 /// # Errors
 ///
@@ -66,10 +67,21 @@ fn term(input: &str, start: usize) -> Result<(Parsed, usize), FilterError> {
         if ["OR", "AND", "NOT"].contains(&word) {
             return Err(unsupported("boolean operators", start, end));
         }
-        return Err(FilterError::BareWord {
-            word: word.to_owned(),
-            span: Span(start, end),
-        });
+        if negated && input[pos..].starts_with('-') {
+            return Err(FilterError::Syntax {
+                message: "a term is negated by one -".into(),
+                span: Span(start, end),
+            });
+        }
+        let (values, end) = values(input, pos)?;
+        return Ok((
+            Parsed::Term(Term::Match {
+                field: ("text".to_owned(), Span(pos, pos)),
+                negated,
+                values,
+            }),
+            end,
+        ));
     }
     let name_span = Span(pos, name_end);
     let values_start = name_end + 1;
@@ -362,15 +374,26 @@ mod tests {
     }
 
     #[test]
-    fn a_word_without_a_colon_is_a_bare_word() {
-        let err = parse("type:bug crash").unwrap_err();
+    fn bare_words_and_quoted_phrases_are_text_terms() {
+        let query = parse(r#"type:bug crash -text:x "time out""#).unwrap();
+        let found = matches(&query);
+        assert_eq!(found.len(), 4, "{query:?}");
         assert_eq!(
-            err,
-            FilterError::BareWord {
-                word: "crash".into(),
-                span: Span(9, 14),
-            }
+            found[1],
+            ("text".into(), false, vec![Value::Text("crash".into())])
         );
+        assert_eq!(
+            found[2],
+            ("text".into(), true, vec![Value::Text("x".into())])
+        );
+        assert_eq!(
+            found[3],
+            ("text".into(), false, vec![Value::Text("time out".into())])
+        );
+        let Term::Match { values, .. } = &query.terms[1] else {
+            panic!("{query:?}");
+        };
+        assert_eq!(values[0].1, Span(9, 14));
     }
 
     #[test]
@@ -393,11 +416,11 @@ mod tests {
 
     #[test]
     fn spans_count_bytes_and_cover_the_text_inside_quotes() {
-        let err = parse("type:é crash").unwrap_err();
-        let FilterError::BareWord { span, .. } = err else {
-            panic!("{err:?}");
+        let query = parse("type:é crash").unwrap();
+        let Term::Match { values, .. } = &query.terms[1] else {
+            panic!("{query:?}");
         };
-        assert_eq!(span, Span(8, 13));
+        assert_eq!(values[0].1, Span(8, 13));
         let query = parse(r#"labels:é,"ü x" sort:"é""#).unwrap();
         let Term::Match { values, .. } = &query.terms[0] else {
             panic!("{query:?}");
@@ -428,7 +451,7 @@ mod tests {
         assert_eq!((found[1].0.as_str(), found[1].1), ("story-points", false));
         assert!(matches!(
             parse("--x:y").unwrap_err(),
-            FilterError::BareWord { .. }
+            FilterError::Syntax { .. }
         ));
     }
 }

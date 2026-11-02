@@ -3,7 +3,7 @@
 
 /// Stamped into `PRAGMA user_version`; a store with a different value is
 /// rebuilt on open.
-pub(crate) const PROJECTION_VERSION: i64 = 17;
+pub(crate) const PROJECTION_VERSION: i64 = 18;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
 /// Until tm v1 is released the log changes in place (ADR 0010).
@@ -131,7 +131,33 @@ CREATE TABLE IF NOT EXISTS session_dirs (
 ) STRICT, WITHOUT ROWID;
 ";
 
+/// Fills the full-text indexes from the replayed projection, then keeps them
+/// current. Run after replay: an Issue is created untitled and titled by a
+/// later operation, so indexing during replay would rewrite every entry once.
+pub(crate) const TEXT_INDEX: &str = "
+INSERT INTO issue_text (issue_id, title, description)
+  SELECT id, title, description FROM issues;
+INSERT INTO comment_text (op_id, body) SELECT op_id, body FROM comments;
+
+CREATE TRIGGER issue_text_insert AFTER INSERT ON issues BEGIN
+  INSERT INTO issue_text (issue_id, title, description)
+    VALUES (new.id, new.title, new.description);
+END;
+
+CREATE TRIGGER issue_text_update AFTER UPDATE OF title, description ON issues BEGIN
+  DELETE FROM issue_text WHERE issue_id = old.id;
+  INSERT INTO issue_text (issue_id, title, description)
+    VALUES (new.id, new.title, new.description);
+END;
+
+CREATE TRIGGER comment_text_insert AFTER INSERT ON comments BEGIN
+  INSERT INTO comment_text (op_id, body) VALUES (new.op_id, new.body);
+END;
+";
+
 pub(crate) const DROP_PROJECTIONS: &str = "
+DROP TABLE IF EXISTS comment_text;
+DROP TABLE IF EXISTS issue_text;
 DROP TABLE IF EXISTS memory_versions;
 DROP TABLE IF EXISTS memories;
 DROP TABLE IF EXISTS shortlist_actors;
@@ -258,6 +284,19 @@ CREATE TABLE comments (
 ) STRICT;
 
 CREATE INDEX comments_by_issue ON comments (issue_id, hlc);
+
+-- Full-text indexes holding their own copy of the text, keyed by id: a
+-- Snapshot made with VACUUM INTO may renumber the rowids of issues and
+-- comments, so no index may point at them.
+CREATE VIRTUAL TABLE issue_text USING fts5 (
+  issue_id UNINDEXED, title, description,
+  tokenize = 'unicode61 remove_diacritics 2'
+);
+
+CREATE VIRTUAL TABLE comment_text USING fts5 (
+  op_id UNINDEXED, body,
+  tokenize = 'unicode61 remove_diacritics 2'
+);
 
 -- Keys outlive purged Issues, so they carry no foreign key.
 CREATE TABLE keys (

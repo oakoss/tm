@@ -1714,6 +1714,7 @@ fn rebuild_in(tx: &Transaction<'_>) -> Result<usize, StoreError> {
         }
     }
     unapplied += record_dangling_links(tx)?;
+    tx.execute_batch(schema::TEXT_INDEX)?;
     tx.execute_batch(&format!(
         "PRAGMA user_version = {}",
         schema::PROJECTION_VERSION
