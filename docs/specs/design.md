@@ -101,6 +101,7 @@ A Short-list is a named, ordered list of Issues in a Project with the Actors who
 ### Comments, mentions and attachments
 
 - Comment threads in Markdown, writable by humans and agents, recorded in the operation log.
+- `tm show` prints an Issue's latest 5 comments, from the question it waits on if that is older, and counts the earlier ones, in text and as `earlier_comments` in JSON; `--comments N` or `--comments all` shows more. Commands that answer with the Issue, such as `tm start` and `tm move`, print it the same way.
 - `@mentions` resolve to Actors and create **Notifications**, shown in a personal list separate from Triage. Mentioning an agent only notifies for now.
 - Attachments are stored once per content hash in the Workspace, with a configurable size limit (25 MB default). The web UI previews images; the TUI shows them inline in terminals that support it and otherwise opens them externally.
 

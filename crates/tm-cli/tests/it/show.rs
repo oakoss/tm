@@ -207,6 +207,10 @@ fn show_names_no_moves_for_a_status_its_workflow_does_not_define() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the inline snapshot is the whole document"
+)]
 fn show_gives_an_issues_fields_parent_labels_and_claim() {
     let scratch = Scratch::new();
     let (repo, mut store, project) = initialized(&scratch);
@@ -263,6 +267,7 @@ fn show_gives_an_issues_fields_parent_labels_and_claim() {
           "session": null
         },
         "comments": [],
+        "earlier_comments": 0,
         "fields": {
           "archived": false,
           "created": "[ms]",
@@ -414,6 +419,105 @@ fn show_names_links_from_this_end_and_gives_comments_in_order() {
         untimed(&text(&out.stdout)).contains("\nclaude for jace: (retracted)\n\njace:"),
         "{out:?}"
     );
+}
+
+#[test]
+fn show_prints_the_latest_comments_and_counts_the_earlier_ones() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let jace = Actor::human("jace");
+    let (issue, _) = store.create_issue(&jace, project, "task", "t").unwrap();
+    let options = ["sqlite".to_owned(), "postgres".to_owned()];
+    store
+        .ask(&jace, issue, "which?", &options, "kim", None)
+        .unwrap();
+    let question = store.open_question(issue).unwrap().unwrap().id;
+    store
+        .answer(&Actor::human("kim"), issue, question, "postgres")
+        .unwrap();
+    for n in 1..=4 {
+        let body = format!("note {n}");
+        change(&mut store, project, issue, Change::Comment { body });
+    }
+    let bodies = |doc: &Value| -> Vec<Value> {
+        doc["data"]["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|comment| comment["body"].clone())
+            .collect()
+    };
+
+    let (ok, doc) = show(&scratch, &repo, "TM-1");
+    assert!(ok, "{doc}");
+    assert_eq!(
+        bodies(&doc),
+        ["postgres", "note 1", "note 2", "note 3", "note 4"]
+    );
+    assert_eq!(doc["data"]["earlier_comments"], 1);
+    assert_eq!(
+        doc["data"]["comments"][0]["choice"], 2,
+        "an answer's choice reads its question, though the question is not shown"
+    );
+
+    let out = tm(&scratch, &repo, &["show", "TM-1"]);
+    let shown = text(&out.stdout);
+    assert!(
+        shown.contains("\n1 earlier comment: tm show TM-1 --comments all\n"),
+        "{shown}"
+    );
+    let out = tm(&scratch, &repo, &["show", "TM-1", "--comments", "1"]);
+    let shown = untimed(&text(&out.stdout));
+    assert!(
+        shown.ends_with("\n5 earlier comments: tm show TM-1 --comments all\n\njace:\n  note 4\n"),
+        "{shown}"
+    );
+    let out = tm(&scratch, &repo, &["show", "TM-1", "--comments", "all"]);
+    assert!(!text(&out.stdout).contains("earlier comment"), "{out:?}");
+
+    let out = tm(
+        &scratch,
+        &repo,
+        &["show", "TM-1", "--json", "--comments", "all"],
+    );
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(bodies(&doc).len(), 6, "{doc}");
+    assert_eq!(doc["data"]["earlier_comments"], 0);
+
+    let out = tm(&scratch, &repo, &["move", "TM-1", "triage", "--json"]);
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["data"]["earlier_comments"], 1, "{doc}");
+
+    let out = tm(&scratch, &repo, &["show", "TM-1", "--comments", "few"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+}
+
+#[test]
+fn show_keeps_the_open_question_however_many_comments_follow_it() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let jace = Actor::human("jace");
+    let (issue, _) = store.create_issue(&jace, project, "task", "t").unwrap();
+    change(
+        &mut store,
+        project,
+        issue,
+        Change::Comment { body: "old".into() },
+    );
+    store
+        .ask(&jace, issue, "which db?", &[], "kim", None)
+        .unwrap();
+    for n in 1..=5 {
+        let body = format!("note {n}");
+        change(&mut store, project, issue, Change::Comment { body });
+    }
+
+    let (_, doc) = show(&scratch, &repo, "TM-1");
+    assert_eq!(doc["data"]["earlier_comments"], 1, "{doc}");
+    assert_eq!(doc["data"]["comments"][0]["body"], "which db?");
+    assert_eq!(doc["data"]["comments"].as_array().unwrap().len(), 6);
+    let out = tm(&scratch, &repo, &["show", "TM-1"]);
+    assert!(text(&out.stdout).contains("\n  which db?\n"), "{out:?}");
 }
 
 #[test]
