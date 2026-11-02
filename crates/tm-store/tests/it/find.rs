@@ -165,6 +165,75 @@ fn comment(store: &mut Store, issue: Uuid, body: &str) -> Uuid {
 }
 
 #[test]
+fn a_text_field_searches_only_its_own_words() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut scheme = crate::support::scheme();
+    scheme
+        .add_field(tm_core::scheme::Field::custom(
+            "notes",
+            "Notes",
+            tm_core::scheme::FieldType::RichText,
+            Vec::new(),
+        ))
+        .unwrap();
+    let mut store = open(&dir.db(), &clock).with_scheme(scheme);
+    let titled = issue(
+        &mut store,
+        &clock,
+        &[("title", json!("Login timeout")), ("tier", json!("gold"))],
+        &[],
+    );
+    let described = issue(
+        &mut store,
+        &clock,
+        &[
+            ("description", json!("login fails")),
+            ("notes", json!("timeouts seen")),
+        ],
+        &[],
+    );
+
+    assert_eq!(find(&store, "title:login"), [titled]);
+    assert_eq!(find(&store, "description:login"), [described]);
+    assert_eq!(find(&store, r#"title:"login timeout""#), [titled]);
+    assert_eq!(
+        find(&store, "title:timeout,fails"),
+        [titled],
+        "any of, in the title"
+    );
+    assert_eq!(find(&store, "-title:login"), [described]);
+    assert_eq!(find(&store, "notes:timeout"), [described], "on its stem");
+    assert_eq!(
+        find(&store, "notes:gold"),
+        Vec::<Uuid>::new(),
+        "not the tier's value"
+    );
+    assert_eq!(find(&store, "has:notes"), [described]);
+
+    store
+        .append(draft(described, set_field("notes", json!("replaced"))))
+        .unwrap();
+    assert_eq!(find(&store, "notes:timeout"), Vec::<Uuid>::new());
+    assert_eq!(find(&store, "notes:replaced"), [described]);
+    store.rebuild().unwrap();
+    assert_eq!(
+        find(&store, "notes:replaced"),
+        [described],
+        "a rebuild fills it"
+    );
+    store
+        .append(draft(described, set_field("notes", Value::Null)))
+        .unwrap();
+    assert_eq!(
+        find(&store, "notes:replaced"),
+        Vec::<Uuid>::new(),
+        "a cleared field"
+    );
+    assert!(store.find("title:---", ME).is_err());
+}
+
+#[test]
 fn an_edit_after_a_vacuum_replaces_the_issues_own_words() {
     let dir = TempDir::new();
     let clock = ManualClock::at(1_000);

@@ -3,7 +3,7 @@
 
 /// Stamped into `PRAGMA user_version`; a store with a different value is
 /// rebuilt on open.
-pub(crate) const PROJECTION_VERSION: i64 = 19;
+pub(crate) const PROJECTION_VERSION: i64 = 20;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
 /// Until tm v1 is released the log changes in place (ADR 0010).
@@ -141,6 +141,10 @@ INSERT INTO issue_text (issue_id, title, description)
   SELECT id, title, description FROM issues;
 INSERT INTO issue_text_rows SELECT issue_id, rowid FROM issue_text;
 INSERT INTO comment_text (op_id, body) SELECT op_id, body FROM comments;
+INSERT INTO field_text (issue_id, field, txt)
+  SELECT issue_id, field, txt FROM field_values WHERE txt IS NOT NULL;
+INSERT INTO field_text_rows SELECT issue_id, field, rowid FROM field_text;
+INSERT INTO field_text (field_text) VALUES ('optimize');
 INSERT INTO issue_text (issue_text) VALUES ('optimize');
 INSERT INTO comment_text (comment_text) VALUES ('optimize');
 
@@ -158,10 +162,27 @@ END;
 CREATE TRIGGER comment_text_insert AFTER INSERT ON comments BEGIN
   INSERT INTO comment_text (op_id, body) VALUES (new.op_id, new.body);
 END;
+
+-- field_values is written by INSERT OR REPLACE, whose removal fires the
+-- delete trigger since recursive_triggers is on.
+CREATE TRIGGER field_text_insert AFTER INSERT ON field_values
+WHEN new.txt IS NOT NULL BEGIN
+  INSERT INTO field_text (issue_id, field, txt) VALUES (new.issue_id, new.field, new.txt);
+  INSERT INTO field_text_rows VALUES (new.issue_id, new.field, last_insert_rowid());
+END;
+
+CREATE TRIGGER field_text_delete AFTER DELETE ON field_values BEGIN
+  DELETE FROM field_text WHERE rowid = (
+    SELECT row FROM field_text_rows WHERE issue_id = old.issue_id AND field = old.field
+  );
+  DELETE FROM field_text_rows WHERE issue_id = old.issue_id AND field = old.field;
+END;
 ";
 
 pub(crate) const DROP_PROJECTIONS: &str = "
 DROP TABLE IF EXISTS comment_text;
+DROP TABLE IF EXISTS field_text_rows;
+DROP TABLE IF EXISTS field_text;
 DROP TABLE IF EXISTS issue_text_rows;
 DROP TABLE IF EXISTS issue_text;
 DROP TABLE IF EXISTS memory_versions;
@@ -303,6 +324,20 @@ CREATE VIRTUAL TABLE issue_text USING fts5 (
 CREATE TABLE issue_text_rows (
   issue_id BLOB PRIMARY KEY,
   row INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+
+-- Every text value in field_values, whatever its type, so the index needs
+-- no Scheme (ADR 0007).
+CREATE VIRTUAL TABLE field_text USING fts5 (
+  issue_id UNINDEXED, field UNINDEXED, txt,
+  tokenize = 'porter unicode61 remove_diacritics 2'
+);
+
+CREATE TABLE field_text_rows (
+  issue_id BLOB NOT NULL,
+  field TEXT NOT NULL,
+  row INTEGER NOT NULL,
+  PRIMARY KEY (issue_id, field)
 ) STRICT, WITHOUT ROWID;
 
 CREATE VIRTUAL TABLE comment_text USING fts5 (
