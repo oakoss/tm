@@ -66,6 +66,8 @@ Keep it current
   Progress, what was learned and changes of plan go in comments, which
   keep a dated trail an edit would overwrite:
     tm comment KEY -                     (reads the text from stdin)
+    tm comment KEY --edit COMMENT TEXT   (corrects one you wrote, by the
+                                          id tm show prints)
   Pipe long text in, from a file or a heredoc whose marker is quoted, so
   the shell leaves $, backticks and quotes in it alone:
     tm edit KEY --set description=- < plan.md

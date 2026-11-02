@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
-use tm_core::op::COMMENTS_FIELD;
+use tm_core::op::{COMMENT_BODY_FIELD, COMMENTS_FIELD};
 use tm_core::{Actor, link};
 use tm_store::{Restore, Target};
 use uuid::Uuid;
@@ -238,6 +238,9 @@ fn describe(
         (field, Some(elem)) if field == COMMENTS_FIELD => {
             let change = if present { "retracted" } else { "shown again" };
             format!("{issue} comment {elem}: {change}")
+        }
+        (field, Some(elem)) if field == COMMENT_BODY_FIELD => {
+            format!("{issue} comment {elem}: text restored")
         }
         (field, Some(elem)) => {
             let change = if present { "added" } else { "removed" };

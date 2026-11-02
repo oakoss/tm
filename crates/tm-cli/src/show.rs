@@ -14,7 +14,7 @@ use crate::claim::{self, claim_json};
 use crate::error::CliError;
 use crate::follow;
 use crate::here::{self, Here};
-use crate::output::{Output, local_time, printable};
+use crate::output::{Output, local_time, printable, short};
 
 /// How many of an Issue's comments `show` prints, the latest kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -410,6 +410,7 @@ fn comment_json(comment: &CommentView) -> Value {
         "utc_ms": comment.utc_ms,
         "retracted": comment.retracted,
         "role": comment.role,
+        "edited_utc_ms": comment.edited_ms,
     });
     if !comment.options.is_empty() && !comment.retracted {
         json["options"] = json!(comment.options);
@@ -457,7 +458,17 @@ fn write_comment(text: &mut String, comment: &CommentView) {
         Some(CommentRole::Withdrawn) => format!("{by} withdrew the question"),
         None => by,
     };
-    let by = format!("{by}, {}", local_time(comment.utc_ms));
+    let edited = if comment.edited_ms.is_some() {
+        " (edited)"
+    } else {
+        ""
+    };
+    // The id is what `tm comment --edit` takes.
+    let by = format!(
+        "{by}, {}{edited} [{}]",
+        local_time(comment.utc_ms),
+        short(comment.id)
+    );
     if comment.retracted {
         let _ = writeln!(text, "\n{by}: (retracted)");
         return;

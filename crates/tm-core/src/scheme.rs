@@ -391,6 +391,7 @@ impl Scheme {
             "text",
             crate::link::FIELD,
             crate::op::COMMENTS_FIELD,
+            crate::op::COMMENT_BODY_FIELD,
         ]
         .contains(&field.name.as_str())
         {

@@ -153,6 +153,10 @@ fn show_prints_times_in_local_time_and_text_across_lines() {
     let (_, doc) = show(&scratch, &repo, "TM-1");
     let created = doc["data"]["fields"]["created"].as_i64().unwrap();
     let said = doc["data"]["comments"][0]["utc_ms"].as_i64().unwrap();
+    let id = doc["data"]["comments"][0]["id"]
+        .as_str()
+        .unwrap()
+        .replace('-', "");
 
     let out = tm_command()
         .args(["show", "TM-1"])
@@ -173,7 +177,11 @@ fn show_prints_times_in_local_time_and_text_across_lines() {
         "{shown}"
     );
     assert!(
-        shown.contains(&format!("\njace, {}:\n  hi\n", in_zone(said, zone))),
+        shown.contains(&format!(
+            "\njace, {} [{}]:\n  hi\n",
+            in_zone(said, zone),
+            &id[id.len() - 12..]
+        )),
         "{shown}"
     );
     assert_eq!(

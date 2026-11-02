@@ -161,6 +161,10 @@ pub(crate) fn check(
             comment_author(tx, issue_id, comment)?;
             Ok(Change::Retract { comment, retracted })
         }
+        Change::EditComment { comment, body } => {
+            check_edit(tx, issue_id, comment, &body)?;
+            Ok(Change::EditComment { comment, body })
+        }
         Change::Link {
             link_type,
             target,
@@ -220,6 +224,36 @@ fn comment_author(
     })
 }
 
+/// A comment is edited only to new text. A blank or retracted one is the
+/// CLI's to refuse, so undo can restore text an import wrote blank, or
+/// under a retraction the same batch undoes.
+fn check_edit(
+    tx: &Transaction<'_>,
+    issue_id: Uuid,
+    comment: Uuid,
+    body: &str,
+) -> Result<(), StoreError> {
+    let current: Option<String> = tx
+        .query_row(
+            "SELECT body FROM comments WHERE op_id = ?1 AND issue_id = ?2",
+            params![comment.as_bytes(), issue_id.as_bytes()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let reason = match crate::apply::not_editable(tx, issue_id, comment)? {
+        Some(reason) => reason,
+        None if current.as_deref() == Some(body) => {
+            "are edited only to new text, and this one already reads so".to_owned()
+        }
+        None => return Ok(()),
+    };
+    Err(StoreError::Invalid {
+        field: COMMENTS_FIELD.into(),
+        reason,
+        valid: Vec::new(),
+    })
+}
+
 /// The rules a change kind sets on who writes it and how.
 fn check_writer(
     tx: &Transaction<'_>,
@@ -229,14 +263,16 @@ fn check_writer(
 ) -> Result<(), StoreError> {
     match change {
         Change::Claim { action } => crate::claim::check_taker(writing.actor, action),
-        Change::Retract { comment, .. } => check_retracter(tx, issue_id, writing.actor, *comment),
+        Change::Retract { comment, .. } | Change::EditComment { comment, .. } => {
+            check_comment_author(tx, issue_id, writing.actor, *comment)
+        }
         _ => Ok(()),
     }
 }
 
 /// Only a comment's author, or the human an Agent wrote it for, may retract
-/// it or bring it back.
-fn check_retracter(
+/// it, bring it back or edit it.
+fn check_comment_author(
     tx: &Transaction<'_>,
     issue_id: Uuid,
     writer: &Actor,
@@ -262,7 +298,7 @@ fn check_retracter(
     Err(StoreError::Invalid {
         field: COMMENTS_FIELD.into(),
         reason: format!(
-            "only {author}{} can retract this comment, not {}",
+            "only {author}{} can retract or edit this comment, not {}",
             for_human.map_or_else(String::new, |human| format!(" or {human}")),
             writer.name()
         ),

@@ -215,6 +215,8 @@ pub struct CommentView {
     pub role: Option<CommentRole>,
     /// The replies a question offers.
     pub options: Vec<String>,
+    /// When the edit that gave it its text was written.
+    pub edited_ms: Option<i64>,
 }
 
 /// The part a comment plays in a question, stored as its name.
@@ -254,11 +256,12 @@ const LINKS: &str = "SELECT type, dst, 0 FROM links WHERE src = ?1
      ORDER BY 1, 3, 2";
 
 const COMMENTS: &str = "SELECT c.op_id, c.actor, o.on_behalf_of, c.body, c.utc_ms, c.retracted,
-     c.role, c.options FROM comments c LEFT JOIN ops o ON o.op_id = c.op_id
+     c.role, c.options, c.edited_ms FROM comments c LEFT JOIN ops o ON o.op_id = c.op_id
      WHERE c.issue_id = ?1 ORDER BY c.hlc, o.replica_id, c.op_id";
 
 const OPEN_QUESTION: &str = "SELECT c.op_id, c.actor, o.on_behalf_of, c.body, c.utc_ms,
-     c.retracted, c.role, c.options FROM comments c LEFT JOIN ops o ON o.op_id = c.op_id
+     c.retracted, c.role, c.options, c.edited_ms FROM comments c
+     LEFT JOIN ops o ON o.op_id = c.op_id
      WHERE c.issue_id = ?1 AND c.role = 'question' AND c.retracted = 0
      ORDER BY c.hlc DESC, o.replica_id DESC, c.op_id DESC LIMIT 1";
 
@@ -316,7 +319,7 @@ pub(crate) fn open_question(
 pub(crate) fn settled(conn: &Connection, claim: Uuid) -> Result<Option<Settled>, StoreError> {
     let mut stmt = conn.prepare_cached(
         "SELECT c.op_id, c.actor, o.on_behalf_of, c.body, c.utc_ms, c.retracted, c.role,
-           c.options, asked.options FROM op_batches h
+           c.options, asked.options, c.edited_ms FROM op_batches h
          JOIN op_batches q ON q.batch = h.batch
          JOIN comments asked ON asked.op_id = q.op_id AND asked.role = 'question'
          JOIN comments c ON c.issue_id = asked.issue_id
@@ -358,6 +361,7 @@ fn comment(row: &Row<'_>) -> Result<CommentView, StoreError> {
             .map(CommentRole::parse)
             .transpose()?,
         options: options(row, 7)?,
+        edited_ms: row.get("edited_ms")?,
     })
 }
 

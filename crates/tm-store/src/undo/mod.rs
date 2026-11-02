@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Serialize;
 use serde_json::{Value, json};
-use tm_core::op::{COMMENTS_FIELD, ClaimAction};
+use tm_core::op::{COMMENT_BODY_FIELD, COMMENTS_FIELD, ClaimAction};
 use tm_core::{Actor, Change, Hlc, Op, ProjectId, Scheme, Subject, link, memory, shortlist};
 use uuid::Uuid;
 
@@ -626,7 +626,11 @@ fn restore(
         });
         return Ok(());
     }
-    let prior = prior.map(|op| op.change);
+    let prior = match prior {
+        Some(op) => Some(op.change),
+        None if field == COMMENT_BODY_FIELD => Some(first_text(conn, elem)?),
+        None => None,
+    };
     // A comment the batch wrote has no earlier state; the batch's own comment
     // is undone by retracting it, a retraction by showing the comment again.
     let wrote_comment = field == COMMENTS_FIELD
@@ -653,6 +657,28 @@ fn restore(
     });
     plan.changes.push((project, issue, change));
     Ok(())
+}
+
+/// The text a comment was written with, as the edit that restores it.
+fn first_text(conn: &Connection, elem: &str) -> Result<Change, StoreError> {
+    let comment = Uuid::parse_str(elem)
+        .map_err(|_| StoreError::Corrupt(format!("comment element {elem:?}")))?;
+    let payload: String = conn
+        .query_row(
+            "SELECT payload FROM ops WHERE op_id = ?1",
+            [comment.as_bytes()],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            StoreError::Corrupt(format!("an edit names {comment}, which is not in the log"))
+        })?;
+    match serde_json::from_str(&payload) {
+        Ok(Change::Comment { body }) => Ok(Change::EditComment { comment, body }),
+        _ => Err(StoreError::Corrupt(format!(
+            "an edit names {comment}, which is no comment"
+        ))),
+    }
 }
 
 fn target_ops(
@@ -696,6 +722,21 @@ fn current_state(
     field: &str,
     elem: &str,
 ) -> Result<Value, StoreError> {
+    if field == COMMENT_BODY_FIELD {
+        let comment = Uuid::parse_str(elem)
+            .map_err(|_| StoreError::Corrupt(format!("comment element {elem:?}")))?;
+        let body: String = conn
+            .query_row(
+                "SELECT body FROM comments WHERE op_id = ?1 AND issue_id = ?2",
+                params![comment.as_bytes(), issue.as_bytes()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                StoreError::Corrupt(format!("an edit names {comment}, no comment of {issue}"))
+            })?;
+        return Ok(Value::String(body));
+    }
     if !elem.is_empty() {
         let present: Option<bool> = conn
             .query_row(
@@ -747,6 +788,13 @@ fn inverse(
         Some(change @ Change::Remove { .. }) => (json!(false), change),
         Some(change @ Change::Link { present, .. }) => (json!(present), change),
         Some(change @ Change::Retract { retracted, .. }) => (json!(retracted), change),
+        Some(Change::EditComment { comment, body }) => (
+            json!(body),
+            Change::EditComment {
+                comment,
+                body: body.clone(),
+            },
+        ),
         Some(other) => {
             return Err(StoreError::Corrupt(format!(
                 "a {} operation filed under field {field}",

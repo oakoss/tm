@@ -3,7 +3,7 @@
 
 /// Stamped into `PRAGMA user_version`; a store with a different value is
 /// rebuilt on open.
-pub(crate) const PROJECTION_VERSION: i64 = 20;
+pub(crate) const PROJECTION_VERSION: i64 = 21;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
 /// Until tm v1 is released the log changes in place (ADR 0010).
@@ -141,6 +141,7 @@ INSERT INTO issue_text (issue_id, title, description)
   SELECT id, title, description FROM issues;
 INSERT INTO issue_text_rows SELECT issue_id, rowid FROM issue_text;
 INSERT INTO comment_text (op_id, body) SELECT op_id, body FROM comments;
+INSERT INTO comment_text_rows SELECT op_id, rowid FROM comment_text;
 INSERT INTO field_text (issue_id, field, txt)
   SELECT issue_id, field, txt FROM field_values WHERE txt IS NOT NULL;
 INSERT INTO field_text_rows SELECT issue_id, field, rowid FROM field_text;
@@ -161,6 +162,12 @@ END;
 
 CREATE TRIGGER comment_text_insert AFTER INSERT ON comments BEGIN
   INSERT INTO comment_text (op_id, body) VALUES (new.op_id, new.body);
+  INSERT INTO comment_text_rows VALUES (new.op_id, last_insert_rowid());
+END;
+
+CREATE TRIGGER comment_text_update AFTER UPDATE OF body ON comments BEGIN
+  UPDATE comment_text SET body = new.body
+    WHERE rowid = (SELECT row FROM comment_text_rows WHERE op_id = old.op_id);
 END;
 
 -- field_values is written by INSERT OR REPLACE, whose removal fires the
@@ -180,6 +187,7 @@ END;
 ";
 
 pub(crate) const DROP_PROJECTIONS: &str = "
+DROP TABLE IF EXISTS comment_text_rows;
 DROP TABLE IF EXISTS comment_text;
 DROP TABLE IF EXISTS field_text_rows;
 DROP TABLE IF EXISTS field_text;
@@ -307,7 +315,9 @@ CREATE TABLE comments (
   -- read::CommentRole's name for what tm ask, answer and withdraw write.
   role TEXT,
   -- A question's offered replies, as a JSON array.
-  options TEXT
+  options TEXT,
+  -- When the edit that gave it its text was written; null if never edited.
+  edited_ms INTEGER
 ) STRICT;
 
 CREATE INDEX comments_by_issue ON comments (issue_id, hlc);
@@ -344,6 +354,11 @@ CREATE VIRTUAL TABLE comment_text USING fts5 (
   op_id UNINDEXED, body,
   tokenize = 'porter unicode61 remove_diacritics 2'
 );
+
+CREATE TABLE comment_text_rows (
+  op_id BLOB PRIMARY KEY,
+  row INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
 
 -- Keys outlive purged Issues, so they carry no foreign key.
 CREATE TABLE keys (
