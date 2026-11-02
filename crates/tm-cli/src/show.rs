@@ -6,8 +6,8 @@ use std::fmt::Write as _;
 
 use serde_json::{Value, json};
 use tm_core::Scheme;
-use tm_core::scheme::{Category, FieldType, Status};
-use tm_store::{ClaimState, CommentRole, CommentView, IssueView, LinkView, Store};
+use tm_core::scheme::{Category, FieldType, Status, WAITING_ON};
+use tm_store::{ClaimState, CommentRole, CommentView, IssueView, LinkView, Store, StoreError};
 use uuid::Uuid;
 
 use crate::claim::{self, claim_json};
@@ -16,9 +16,48 @@ use crate::follow;
 use crate::here::{self, Here};
 use crate::output::{Output, local_time, printable};
 
-pub(crate) fn run(reference: &str) -> Result<Output, CliError> {
+/// How many of an Issue's comments `show` prints, the latest kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Comments {
+    Latest(usize),
+    All,
+}
+
+impl Default for Comments {
+    fn default() -> Self {
+        Self::Latest(5)
+    }
+}
+
+impl Comments {
+    /// How many of `comments`, the oldest, are left out; never the question
+    /// the Issue waits on.
+    fn earlier(self, comments: &[CommentView], open: Option<Uuid>) -> usize {
+        let earlier = match self {
+            Self::Latest(n) => comments.len().saturating_sub(n),
+            Self::All => 0,
+        };
+        open.and_then(|open| comments.iter().position(|comment| comment.id == open))
+            .map_or(earlier, |question| earlier.min(question))
+    }
+}
+
+pub(crate) fn comment_limit(value: &str) -> Result<Comments, String> {
+    if value == "all" {
+        return Ok(Comments::All);
+    }
+    value
+        .parse()
+        .map(Comments::Latest)
+        .map_err(|_| format!("expected a whole number of comments or all, not {value:?}"))
+}
+
+pub(crate) fn run(reference: &str, limit: Comments) -> Result<Output, CliError> {
     let here = here::read()?;
-    match here.issue(reference).and_then(|id| render(&here, id)) {
+    match here
+        .issue(reference)
+        .and_then(|id| render_with(&here, id, limit))
+    {
         Ok(mut output) => {
             output.warnings = here.warnings;
             Ok(output)
@@ -29,6 +68,10 @@ pub(crate) fn run(reference: &str) -> Result<Output, CliError> {
 
 /// An Issue as `show` prints it; `create` prints the Issue it made the same way.
 pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
+    render_with(here, id, Comments::default())
+}
+
+fn render_with(here: &Here, id: Uuid, limit: Comments) -> Result<Output, CliError> {
     let store = &here.store;
     let (view, project, parent, (claim, now_ms), links, below) = store.read(|store| {
         let view = store.issue(id)?.ok_or_else(|| {
@@ -57,7 +100,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
                 (link, other)
             })
             .collect();
-        let comments = store.comments(id)?;
+        let comments = shown_comments(store, &view, limit)?;
         let children = count_children(store.scheme(), &store.children(id)?);
         let membership = membership(store, &view)?;
         let version = store.issue_version(id)?;
@@ -71,7 +114,7 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
             (comments, children, membership, version, sessions),
         ))
     })?;
-    let (comments, children, membership, version, sessions) = below;
+    let ((comments, earlier), children, membership, version, sessions) = below;
     let moves = moves_to(store.scheme(), &view);
     let mut fields = view.fields.clone();
     fields.remove("shortlist");
@@ -92,7 +135,8 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
             .and_then(ClaimState::lapsed)
             .map(|lapsed| claim_json(lapsed, now_ms)),
         "links": links.iter().map(|(link, other)| link_json(link, other.as_ref())).collect::<Vec<_>>(),
-        "comments": comments_json(&comments),
+        "comments": &comments_json(&comments)[earlier..],
+        "earlier_comments": earlier,
         "children": children.json(),
         "moves_to": moves.iter().map(|status| status_json(status)).collect::<Vec<_>>(),
         "sessions": sessions.iter().map(crate::session::json).collect::<Vec<_>>(),
@@ -125,10 +169,38 @@ pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
         let _ = writeln!(text, "{line}");
     }
     crate::session::write_section(&mut text, &sessions, now_ms);
-    for comment in &comments {
-        write_comment(&mut text, comment);
-    }
+    write_comments(&mut text, &name, &comments, earlier);
     Ok(Output::new(text, data))
+}
+
+/// An Issue's comments, and how many of the oldest `limit` leaves out.
+fn shown_comments(
+    store: &Store,
+    view: &IssueView,
+    limit: Comments,
+) -> Result<(Vec<CommentView>, usize), StoreError> {
+    let comments = store.comments(view.id)?;
+    let waits_on = if view.fields.contains_key(WAITING_ON) {
+        store.open_question(view.id)?.map(|question| question.id)
+    } else {
+        None
+    };
+    let earlier = limit.earlier(&comments, waits_on);
+    Ok((comments, earlier))
+}
+
+/// The comments after the first `earlier`, with a line counting those.
+fn write_comments(text: &mut String, name: &str, comments: &[CommentView], earlier: usize) {
+    if earlier > 0 {
+        let noun = if earlier == 1 { "comment" } else { "comments" };
+        let _ = writeln!(
+            text,
+            "\n{earlier} earlier {noun}: tm show {name} --comments all"
+        );
+    }
+    for comment in &comments[earlier..] {
+        write_comment(text, comment);
+    }
 }
 
 fn link_json(link: &LinkView, other: Option<&IssueView>) -> Value {

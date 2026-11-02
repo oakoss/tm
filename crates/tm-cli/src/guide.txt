@@ -8,7 +8,8 @@ Find work
                              progress and the ready queue
   tm ready                   the work that can start now, most urgent first
   tm show KEY                one Issue: its fields, Links, children by
-                             Status and comments
+                             Status and latest 5 comments; --comments
+                             N or all for more
   tm list parent:KEY         an Issue's open children; --all for every one
   tm list login timeout      open Issues whose title, description or
                              comments hold every word

@@ -276,6 +276,9 @@ enum Command {
     Show {
         /// The Issue's Key, such as CPL-42, or its full id.
         issue: String,
+        /// Show the latest N comments, or all; 5 unless given.
+        #[arg(long, value_name = "N|all", value_parser = show::comment_limit)]
+        comments: Option<show::Comments>,
     },
     /// Show what happened to an Issue, oldest first: each write with when,
     /// who, and the batch to give `tm undo`. Claim renewals are left out.
@@ -528,7 +531,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Claims) => claim::list(),
         Some(Command::Sessions { limit }) => session::list(limit, json),
         Some(Command::Shortlist(args)) => shortlist::run(&args, json),
-        Some(Command::Show { issue }) => show::run(&issue),
+        Some(Command::Show { issue, comments }) => show::run(&issue, comments.unwrap_or_default()),
         Some(Command::History { issue, limit, all }) => history::run(&issue, limit, all),
         Some(Command::Undo {
             batch,

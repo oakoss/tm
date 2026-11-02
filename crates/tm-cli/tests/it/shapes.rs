@@ -59,6 +59,7 @@ fn create_answers_in_a_fixed_shape() {
         },
         "claim": null,
         "comments": [],
+        "earlier_comments": 0,
         "fields": {
           "archived": false,
           "created": "[ms]",
@@ -148,6 +149,7 @@ fn move_answers_in_a_fixed_shape() {
         },
         "claim": null,
         "comments": [],
+        "earlier_comments": 0,
         "fields": {
           "archived": false,
           "assignee": "jace",
@@ -464,6 +466,7 @@ fn undo_answers_in_a_fixed_shape() {
             },
             "claim": null,
             "comments": [],
+            "earlier_comments": 0,
             "fields": {
               "archived": false,
               "created": "[ms]",
