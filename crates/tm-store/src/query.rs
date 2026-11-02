@@ -216,6 +216,7 @@ fn condition_sql(b: &mut Builder, condition: &Condition) {
                 }),
                 Target::Sessions => written_in(b, *negated, |b| any_session(b, values)),
                 Target::Text => with_text(b, values, *negated),
+                Target::Words(field) => with_words(b, field, values, *negated),
             }
         }
         Condition::Present { target, present } => match target {
@@ -235,8 +236,9 @@ fn condition_sql(b: &mut Builder, condition: &Condition) {
             Target::Blockers => linked(b, "dst", !present, |_| {}),
             Target::Blocked => linked(b, "src", !present, |_| {}),
             Target::Sessions => written_in(b, !present, |_| {}),
-            // The resolver refuses has: and no: on text.
-            Target::Text => b.push("0"),
+            // The resolver refuses has: and no: on text, and reads a field's
+            // presence from its own target.
+            Target::Text | Target::Words(_) => b.push("0"),
         },
         Condition::Is {
             blocked,
@@ -305,15 +307,7 @@ fn member_of(
 /// retracted holds any of `values`, each a word or phrase. Both index tables
 /// hold a non-NULL Issue id, which `NOT IN` needs.
 fn with_text(b: &mut Builder, values: &[Literal], negated: bool) {
-    let phrases: Vec<String> = values
-        .iter()
-        .filter_map(|value| match value {
-            // A string to FTS5, so its operators and punctuation are words.
-            Literal::Text(text) => Some(format!("\"{}\"", text.replace('"', "\"\""))),
-            _ => None,
-        })
-        .collect();
-    let query = phrases.join(" OR ");
+    let query = any_of(values);
     b.push(&format!(
         "id {}IN (SELECT issue_id FROM issue_text WHERE issue_text MATCH ",
         if negated { "NOT " } else { "" }
@@ -325,6 +319,39 @@ fn with_text(b: &mut Builder, values: &[Literal], negated: bool) {
     );
     b.param(Sql::Text(query));
     b.push(" AND c.retracted = 0)");
+}
+
+/// An FTS5 query matching any of `values`, each a string to FTS5, so its
+/// operators and punctuation are words.
+fn any_of(values: &[Literal]) -> String {
+    let phrases: Vec<String> = values
+        .iter()
+        .filter_map(|value| match value {
+            Literal::Text(text) => Some(format!("\"{}\"", text.replace('"', "\"\""))),
+            _ => None,
+        })
+        .collect();
+    phrases.join(" OR ")
+}
+
+/// `id [NOT] IN` the Issues whose `field` holds any of `values`: the title or
+/// description through a column filter, a Scheme field through its own index.
+fn with_words(b: &mut Builder, field: &str, values: &[Literal], negated: bool) {
+    let not = if negated { "NOT " } else { "" };
+    if matches!(field, "title" | "description") {
+        b.push(&format!(
+            "id {not}IN (SELECT issue_id FROM issue_text WHERE issue_text MATCH "
+        ));
+        b.param(Sql::Text(format!("{{{field}}} : ({})", any_of(values))));
+    } else {
+        b.push(&format!(
+            "id {not}IN (SELECT issue_id FROM field_text WHERE field_text MATCH "
+        ));
+        b.param(Sql::Text(any_of(values)));
+        b.push(" AND field = ");
+        b.param(Sql::Text(field.to_owned()));
+    }
+    b.push(")");
 }
 
 /// `id [NOT] IN` the Issues an operation in a session wrote; `ops.issue_id`

@@ -36,6 +36,8 @@ pub enum Target {
     Sessions,
     /// The words of the Issue's title, description and comments not retracted.
     Text,
+    /// The words of one field: `title`, `description` or a Scheme field.
+    Words(String),
 }
 
 /// A filter field that takes an Issue by Key or id.
@@ -170,6 +172,8 @@ enum Kind {
     Session,
     /// Words or quoted phrases, matched word by word on their stems.
     Text,
+    /// The same, in one field; `has:` and `no:` read the second target.
+    Words(String, Target),
     /// Known, but filtering by value arrives later; `has:`/`no:` still work
     /// when there is a target.
     Later(&'static str, Option<Target>),
@@ -212,12 +216,12 @@ fn filterable(scheme: &Scheme) -> Vec<Filterable> {
         ),
         field(
             "title",
-            Kind::Later(SEARCH_ONE_FIELD, Some(Target::Column("title"))),
+            Kind::Words("title".into(), Target::Column("title")),
             Some((SortTarget::Column("title"), false)),
         ),
         field(
             "description",
-            Kind::Later(SEARCH_ONE_FIELD, Some(Target::Column("description"))),
+            Kind::Words("description".into(), Target::Column("description")),
             None,
         ),
         field(
@@ -317,9 +321,7 @@ fn scheme_field(def: &Field) -> Filterable {
             Some((SortTarget::SchemeName(name.clone()), false)),
         ),
         FieldType::Datetime => (Kind::Later("filtering by timestamp", Some(value())), None),
-        FieldType::Text | FieldType::RichText => {
-            (Kind::Later(SEARCH_ONE_FIELD, Some(value())), None)
-        }
+        FieldType::Text | FieldType::RichText => (Kind::Words(name.clone(), value()), None),
         // `add_field` refuses these for Scheme fields.
         FieldType::Key
         | FieldType::Labels
@@ -424,6 +426,7 @@ fn present_target(def: &Filterable, span: Span) -> Result<Target, FilterError> {
         Kind::Enumerated { target, .. }
         | Kind::Person(target)
         | Kind::Boolean(target)
+        | Kind::Words(_, target)
         | Kind::Later(_, Some(target)) => Ok(target.clone()),
         Kind::Issue(field) => Ok(field.target()),
         Kind::Number(field) | Kind::Date(field) | Kind::Select(field, _) => {
@@ -456,6 +459,7 @@ fn match_condition(
         Kind::Shortlist => Target::Shortlist,
         Kind::Session => Target::Sessions,
         Kind::Text => Target::Text,
+        Kind::Words(field, _) => Target::Words(field.clone()),
         Kind::Category => return category(def, values, negated, scheme),
         Kind::Is => return is(def, values, negated, scheme),
         Kind::Later(construct, _) => {
@@ -552,16 +556,15 @@ fn literal(
         }
         // The full-text index splits on everything but letters and digits,
         // so a value without one would match nothing.
-        Kind::Text if text.chars().any(char::is_alphanumeric) => Ok(Literal::Text(text.clone())),
-        Kind::Text => Err(invalid(def, text, span, "a word or a quoted phrase")),
+        Kind::Text | Kind::Words(..) if text.chars().any(char::is_alphanumeric) => {
+            Ok(Literal::Text(text.clone()))
+        }
+        Kind::Text | Kind::Words(..) => Err(invalid(def, text, span, "a word or a quoted phrase")),
         Kind::Category | Kind::Is | Kind::Later(..) => {
             Err(invalid(def, text, span, "a supported field"))
         }
     }
 }
-
-const SEARCH_ONE_FIELD: &str =
-    "searching one field; text: or bare words search title, description and comments";
 
 const SHORTLIST_VALUE: &str = "a Short-list's name or id";
 
@@ -1085,14 +1088,27 @@ mod tests {
     }
 
     #[test]
-    fn text_and_date_filters_wait_for_later_phases() {
-        for filter in ["title:crash", "created:2026-01-01", "description:x"] {
-            let err = run(filter).unwrap_err();
-            assert!(
-                matches!(err, FilterError::Unsupported { .. }),
-                "{filter}: {err:?}"
+    fn text_fields_search_their_own_words_and_timestamps_wait() {
+        for (filter, field) in [("title:crash", "title"), ("description:x", "description")] {
+            let resolved = run(filter).unwrap();
+            assert_eq!(
+                resolved.conditions[0],
+                Condition::Match {
+                    target: Target::Words(field.into()),
+                    values: vec![Literal::Text(filter[field.len() + 1..].into())],
+                    negated: false,
+                },
+                "{filter}"
             );
         }
+        assert!(matches!(
+            run("title:---").unwrap_err(),
+            FilterError::InvalidValue { .. }
+        ));
+        assert!(matches!(
+            run("created:2026-01-01").unwrap_err(),
+            FilterError::Unsupported { .. }
+        ));
         assert!(run("has:title no:description").is_ok());
     }
 
