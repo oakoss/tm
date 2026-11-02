@@ -39,7 +39,79 @@ pub struct SessionWork {
     pub moved_last: bool,
 }
 
+/// A session and the Issues it wrote, for finding it again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RecentSession {
+    pub session: String,
+    /// Who its latest write was from.
+    pub agent: String,
+    pub on_behalf_of: Option<String>,
+    pub first_ms: i64,
+    pub last_ms: i64,
+    pub place: Option<SessionPlace>,
+    /// The most recently written first.
+    pub issues: Vec<Uuid>,
+}
+
 impl Store {
+    /// The `limit` most recently active sessions, and how many sessions the
+    /// log holds.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed id.
+    pub fn recent_sessions(&self, limit: usize) -> Result<(Vec<RecentSession>, usize), StoreError> {
+        self.read(|store| {
+            let total: i64 = store.conn.query_row(
+                "SELECT count(DISTINCT session) FROM ops WHERE session IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )?;
+            let mut stmt = store.conn.prepare(
+                "SELECT session, min(utc_ms), max(utc_ms) FROM ops
+                 WHERE session IS NOT NULL
+                 GROUP BY session ORDER BY max(utc_ms) DESC, session LIMIT ?1",
+            )?;
+            let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+            let found: Vec<(String, i64, i64)> = stmt
+                .query_map([limit], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect::<Result<_, _>>()?;
+            let mut sessions = Vec::with_capacity(found.len());
+            for (session, first_ms, last_ms) in found {
+                let (agent, on_behalf_of) = store.conn.query_row(
+                    "SELECT actor, on_behalf_of FROM ops WHERE session = ?1
+                     ORDER BY utc_ms DESC, hlc DESC LIMIT 1",
+                    [&session],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                let mut issues = store.conn.prepare_cached(
+                    "SELECT o.issue_id FROM ops o JOIN issues i ON i.id = o.issue_id
+                     WHERE o.session = ?1
+                     GROUP BY o.issue_id ORDER BY max(o.utc_ms) DESC",
+                )?;
+                let issues = issues
+                    .query_map([&session], |row| row.get::<_, Vec<u8>>(0))?
+                    .map(|id| {
+                        let id = id?;
+                        Uuid::from_slice(&id)
+                            .map_err(|err| StoreError::Corrupt(format!("an Issue id: {err}")))
+                    })
+                    .collect::<Result<_, StoreError>>()?;
+                let place = place_of(&store.conn, &session)?;
+                sessions.push(RecentSession {
+                    session,
+                    agent,
+                    on_behalf_of,
+                    first_ms,
+                    last_ms,
+                    place,
+                    issues,
+                });
+            }
+            Ok((sessions, usize::try_from(total).unwrap_or(0)))
+        })
+    }
+
     /// The sessions that wrote `issue`, the most recently active first.
     ///
     /// # Errors

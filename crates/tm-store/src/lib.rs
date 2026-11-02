@@ -73,7 +73,7 @@ pub use record::{
     CommentRecord, IssueRecord, LinkRecord, ListRecord, MemberRecord, MemoryRecord, list_source,
     tm_source,
 };
-pub use session::{SessionPlace, SessionWork};
+pub use session::{RecentSession, SessionPlace, SessionWork};
 pub use shortlist::{Shortlist, ShortlistEdit};
 pub use undo::{Restore, Target, UndoPlan};
 
@@ -802,6 +802,7 @@ impl Store {
             // Creates tables and indexes an older build lacked, never columns;
             // with nothing to create it takes no lock.
             self.conn.execute_batch(schema::LOG)?;
+            log::drop_replaced_index(&self.conn)?;
             return Ok(());
         }
         let tx = self

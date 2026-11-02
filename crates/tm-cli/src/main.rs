@@ -259,6 +259,13 @@ enum Command {
     /// List who holds which Issue: every held Claim with its time left, and
     /// the lapsed ones another Agent may take.
     Claims,
+    /// List the most recently active Agent sessions, each with the Issues it
+    /// wrote and the command that resumes it.
+    Sessions {
+        /// Show at most this many; 10 unless given.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// Show your Short-lists, the ordered lists of what to do next, or with
     /// a subcommand create and change them.
     ///
@@ -519,6 +526,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Guide) => Ok(guide::run()),
         Some(Command::Ready { limit }) => ready::run(limit, json),
         Some(Command::Claims) => claim::list(),
+        Some(Command::Sessions { limit }) => session::list(limit, json),
         Some(Command::Shortlist(args)) => shortlist::run(&args, json),
         Some(Command::Show { issue }) => show::run(&issue),
         Some(Command::History { issue, limit, all }) => history::run(&issue, limit, all),

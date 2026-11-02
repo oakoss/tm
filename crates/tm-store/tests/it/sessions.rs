@@ -181,7 +181,7 @@ fn a_log_from_before_sessions_gains_the_column_on_open() {
         .connection()
         .execute_batch(
             "DROP TRIGGER ops_immutable;
-             DROP INDEX ops_by_session;
+             DROP INDEX ops_by_session_time;
              ALTER TABLE ops DROP COLUMN session;
              CREATE TRIGGER ops_immutable
              BEFORE UPDATE OF op_id, op_hash, v, kind, replica_id, actor, on_behalf_of, source,
@@ -202,6 +202,34 @@ fn a_log_from_before_sessions_gains_the_column_on_open() {
     assert!(changed.is_err(), "the trigger covers the new column");
     // Replay checks every stored hash against its operation.
     assert_eq!(store.rebuild().unwrap(), 0);
+}
+
+#[test]
+fn opening_a_store_replaces_the_session_index_without_time() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let store = open(&dir.db(), &clock);
+    store
+        .connection()
+        .execute_batch(
+            "DROP INDEX ops_by_session_time;
+             CREATE INDEX ops_by_session ON ops (session) WHERE session IS NOT NULL;",
+        )
+        .unwrap();
+    drop(store);
+
+    let store = open(&dir.db(), &clock);
+    let indexes: Vec<String> = store
+        .connection()
+        .prepare(
+            "SELECT name FROM sqlite_schema WHERE type = 'index' AND name LIKE 'ops_by_session%'",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(indexes, ["ops_by_session_time"]);
 }
 
 #[test]

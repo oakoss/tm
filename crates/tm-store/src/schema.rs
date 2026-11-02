@@ -42,7 +42,9 @@ CREATE TABLE IF NOT EXISTS ops (
 
 CREATE INDEX IF NOT EXISTS ops_target ON ops (issue_id, field, elem);
 
-CREATE INDEX IF NOT EXISTS ops_by_session ON ops (session) WHERE session IS NOT NULL;
+-- With the time, so listing recent sessions reads only the index.
+CREATE INDEX IF NOT EXISTS ops_by_session_time ON ops (session, utc_ms)
+  WHERE session IS NOT NULL;
 
 -- A re-import finds what it wrote before by source (ADR 0013).
 CREATE INDEX IF NOT EXISTS ops_by_source ON ops (source) WHERE source IS NOT NULL;
