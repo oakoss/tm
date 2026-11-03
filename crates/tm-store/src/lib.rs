@@ -28,6 +28,7 @@ mod schema;
 mod session;
 mod shortlist;
 mod snapshot;
+mod trekker;
 mod undo;
 mod validate;
 mod version;
@@ -75,6 +76,7 @@ pub use record::{
 };
 pub use session::{RecentSession, SessionPlace, SessionWork};
 pub use shortlist::{Shortlist, ShortlistEdit};
+pub use trekker::{TrekkerExport, TrekkerImported, read_trekker};
 pub use undo::{Restore, Target, UndoPlan};
 
 /// How long a writer waits for another writer before giving up.

@@ -192,6 +192,8 @@ fn restore_into(target: &Workspace, bytes: &[u8]) -> Result<Output, CliError> {
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub(crate) enum Adapter {
     Beads,
+    /// A `.trekker/trekker.db`, opened read-only.
+    Trekker,
 }
 
 /// What an import wrote, and what of the file it had no place for.
@@ -206,7 +208,23 @@ pub(crate) fn import_records(
     dry_run: bool,
     adapter: Option<Adapter>,
 ) -> Result<Output, CliError> {
-    let bytes = read(file)?;
+    // Trekker's database is opened read-only where it lies.
+    let bytes = match adapter {
+        Some(Adapter::Trekker) if file == "-" => {
+            return Err(CliError::new(
+                "invalid_value",
+                "a Trekker database is read from its file, such as .trekker/trekker.db, not stdin",
+            )
+            .with("field", "file"));
+        }
+        Some(Adapter::Trekker) => {
+            fs::metadata(file).map_err(|err| {
+                CliError::new("io", format!("{file}: {err}")).with("path", file.to_owned())
+            })?;
+            Vec::new()
+        }
+        _ => read(file)?,
+    };
     let (home, cwd, found) = here::find()?;
     let identity = identity::resolve(identity::env, || identity::git_email(&found.dir))
         .map_err(|message| CliError::new("no_identity", message))?;
@@ -224,6 +242,9 @@ pub(crate) fn import_records(
             Some(Adapter::Beads) => store
                 .import_beads(&mut bytes.as_slice(), project, &identity.actor)
                 .map(|beads| (beads.imported, Some(beads.dropped))),
+            Some(Adapter::Trekker) => store
+                .import_trekker(Path::new(file), project, &identity.actor)
+                .map(|trekker| (trekker.imported, Some(trekker.dropped))),
         }
     };
     let mut warnings = identity.warnings.clone();

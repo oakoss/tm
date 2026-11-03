@@ -254,6 +254,55 @@ fn a_beads_export_lands_in_the_mapped_project_with_bd_readys_queue() {
 }
 
 #[test]
+fn a_trekker_database_is_read_where_it_lies_and_not_from_stdin() {
+    let scratch = Scratch::new();
+    let (repo, _store, _) = initialized(&scratch);
+    let db = repo.join(".trekker/trekker.db");
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE epics (id TEXT, title TEXT, description TEXT, status TEXT,
+               priority INTEGER, created_at INTEGER, updated_at INTEGER, rank TEXT);
+             CREATE TABLE tasks (id TEXT, epic_id TEXT, parent_task_id TEXT, title TEXT,
+               description TEXT, priority INTEGER, status TEXT, tags TEXT,
+               created_at INTEGER, updated_at INTEGER, rank TEXT);
+             CREATE TABLE comments (id TEXT, task_id TEXT, author TEXT, content TEXT,
+               created_at INTEGER, updated_at INTEGER);
+             CREATE TABLE dependencies (id TEXT, task_id TEXT, depends_on_id TEXT);
+             INSERT INTO epics VALUES ('EPIC-1', 'Core', NULL, 'todo', 2, 1774665800,
+               1774665800, 'a0');
+             INSERT INTO tasks VALUES ('TREK-1', 'EPIC-1', NULL, 'Render', NULL, 1, 'todo',
+               'feature', 1774665835, 1774665835, NULL);",
+        )
+        .unwrap();
+    let file = db.to_str().unwrap();
+
+    let out = tm(
+        &scratch,
+        &repo,
+        &["--json", "import", "--from", "trekker", "-"],
+    );
+    assert_eq!(doc(&out)["error"], "invalid_value", "{out:?}");
+    let out = tm(
+        &scratch,
+        &repo,
+        &["--json", "import", "--from", "trekker", file, "--dry-run"],
+    );
+    assert_eq!(doc(&out)["data"]["created"], 2, "{out:?}");
+
+    let out = tm(&scratch, &repo, &["import", "--from", "trekker", file]);
+    let printed = text(&out.stdout);
+    assert!(
+        printed.starts_with("imported 2 records: 2 created, 0 updated, 0 unchanged"),
+        "{printed}"
+    );
+    assert!(printed.contains("not kept: rank (1)\n"), "{printed}");
+    let out = tm(&scratch, &repo, &["--json", "show", "TM-2"]);
+    assert_eq!(doc(&out)["data"]["parent"]["key"], "TM-1", "{out:?}");
+}
+
+#[test]
 fn a_beads_import_files_into_the_project_its_directory_maps_to() {
     let scratch = Scratch::new();
     let (repo, mut store, _) = initialized(&scratch);

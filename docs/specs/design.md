@@ -205,7 +205,7 @@ Off by default. An Issue can carry **Checks**: commands with an expected result.
 
 ## Import and export
 
-- `tm import` reads JSONL against a published schema and validates it like any other write. Adapters for beads, Jira, Linear and GitHub convert into that format; agents can write converters for anything else.
+- `tm import` reads JSONL against a published schema and validates it like any other write. Adapters for beads, Trekker, Jira, Linear and GitHub convert into that format (beads and Trekker exist: `tm import --from beads|trekker`); agents can write converters for anything else.
 - `--dry-run` previews how source fields map to the Scheme; the TUI edits and saves the mapping.
 - Re-runs are idempotent through stored `source:id` metadata.
 - `tm export` writes everything that can be exported (Issues, history, comments, attachments, config) in the format `tm import` reads; a round-trip test runs in CI.

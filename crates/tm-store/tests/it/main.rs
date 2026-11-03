@@ -29,6 +29,7 @@ mod sessions;
 mod shortlists;
 mod snapshot;
 mod support;
+mod trekker;
 mod undo;
 mod versions;
 mod workspace;
