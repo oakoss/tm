@@ -50,7 +50,13 @@ INSERT INTO tasks VALUES
   ('TREK-5', 'p', NULL, NULL, 'Odd', NULL, 9, 'blocked',
    'Core,core,Ä,ä,trekker-status:blocked', 1774665847, 1774665847, NULL),
   ('TREK-10', 'p', 'EPIC-1', 'TREK-404', 'Orphan', NULL, 2, 'todo', NULL,
-   1774665840, 1774665840, NULL);
+   1774665840, 1774665840, NULL),
+  ('TREK-11', 'p', 'EPIC-2', 'TREK-1', 'Elsewhere', NULL, 2, 'todo', NULL,
+   1774665848, 1774665848, NULL),
+  ('TREK-12', 'p', NULL, 'TREK-1', 'Under its task', NULL, 2, 'todo', NULL,
+   1774665849, 1774665849, NULL),
+  ('TREK-13', 'p', 'EPIC-2', 'TREK-2', 'Task has none', NULL, 2, 'todo', NULL,
+   1774665850, 1774665850, NULL);
 INSERT INTO comments VALUES
   ('CMT-1', 'TREK-1', 'claude', 'Started on it', 1774667951, 1774667951),
   ('CMT-2', 'TREK-99', 'claude', 'On a task since deleted', 1774667952, 1774667952),
@@ -157,17 +163,14 @@ fn epics_tasks_comments_and_dependencies_map_as_decided() {
             json!({"type": "task", "status": "todo", "priority": "medium",
             "labels": [], "parent": id("EPIC-1")}),
         ),
+        (
+            "TREK-11",
+            json!({"type": "sub_task", "status": "todo", "priority": "medium",
+            "labels": [], "parent": id("TREK-1")}),
+        ),
     ];
     for (source, want) in expected {
         assert_eq!(shape(&store, issue(&imported, source)), want, "{source}");
-    }
-    // Oldest first; in one second an epic first, then by the id's number.
-    let order = [
-        "EPIC-1", "TREK-1", "TREK-2", "TREK-10", "TREK-3", "EPIC-2", "TREK-4", "TREK-5",
-    ];
-    for (n, source) in order.into_iter().enumerate() {
-        let view = store.issue(issue(&imported, source)).unwrap().unwrap();
-        assert_eq!(view.key, Some(format!("CPL-{}", n + 1)), "{source}");
     }
     let view = store.issue(render).unwrap().unwrap();
     assert!(
@@ -204,8 +207,25 @@ fn epics_tasks_comments_and_dependencies_map_as_decided() {
             ("parent task not imported".to_owned(), 1),
             ("priority".to_owned(), 1),
             ("rank".to_owned(), 3),
+            ("sub-task's epic other than its task's".to_owned(), 2),
         ])
     );
+}
+
+#[test]
+fn keys_follow_creation_order() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_900_000_000_000));
+    let imported = import(&mut store, &trekker(&dir)).unwrap();
+    // Oldest first; in one second an epic first, then by the id's number.
+    let order = [
+        "EPIC-1", "TREK-1", "TREK-2", "TREK-10", "TREK-3", "EPIC-2", "TREK-4", "TREK-5", "TREK-11",
+        "TREK-12", "TREK-13",
+    ];
+    for (n, source) in order.into_iter().enumerate() {
+        let view = store.issue(issue(&imported, source)).unwrap().unwrap();
+        assert_eq!(view.key, Some(format!("CPL-{}", n + 1)), "{source}");
+    }
 }
 
 /// A database with the adapter's tables, then `rows`.
@@ -263,11 +283,13 @@ fn a_wal_database_is_refused_untouched_and_one_without_events_drops_none() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_900_000_000_000));
     let schema = SCHEMA.replace("CREATE TABLE events", "CREATE TABLE gone");
-    let path = database(
+    let made = database(
         &dir,
         &schema,
         ROWS.split("INSERT INTO events").next().unwrap(),
     );
+    let path = dir.path().join("o'k.db");
+    std::fs::rename(made, &path).unwrap();
     let journal = |mode: &str| {
         let conn = Connection::open(&path).unwrap();
         conn.query_row(&format!("PRAGMA journal_mode = {mode}"), [], |_| Ok(()))
@@ -285,12 +307,16 @@ fn a_wal_database_is_refused_untouched_and_one_without_events_drops_none() {
     journal("WAL");
     let before = beside();
     let err = import(&mut store, &path).unwrap_err();
-    assert!(err.to_string().contains("journal_mode=DELETE"), "{err}");
+    assert!(
+        err.to_string()
+            .contains(r"o'\''k.db' 'PRAGMA journal_mode=DELETE'"),
+        "{err}"
+    );
     assert_eq!(beside(), before, "nothing beside it, or in it, changed");
 
     journal("DELETE");
     let imported = import(&mut store, &path).unwrap();
-    assert_eq!(imported.imported.records.len(), 8);
+    assert_eq!(imported.imported.records.len(), 11);
     assert!(
         !imported.dropped.contains_key("events"),
         "{:?}",

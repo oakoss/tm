@@ -2,7 +2,7 @@
 //! records (ADR 0013), read without writing to it. Trekker has no export, so
 //! the database is the source.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use rusqlite::{Connection, ErrorCode, OpenFlags, Row};
@@ -51,7 +51,7 @@ pub fn read_trekker(path: &Path, project: &str) -> Result<TrekkerExport, StoreEr
             line: 0,
             reason: format!(
                 "it is in WAL mode, which Trekker does not use; with Trekker closed, run sqlite3 '{}' 'PRAGMA journal_mode=DELETE' and import again",
-                path.display()
+                path.display().to_string().replace('\'', r"'\''")
             ),
         });
     }
@@ -129,7 +129,10 @@ fn read_all(conn: &Connection, project: &str) -> Result<TrekkerExport, StoreErro
     }
     let mut items = rows(conn, EPICS, item)?;
     items.extend(rows(conn, TASKS, item)?);
-    let known: HashSet<String> = items.iter().map(|(_, item)| item.id.clone()).collect();
+    let known: HashMap<String, Option<String>> = items
+        .iter()
+        .map(|(_, item)| (item.id.clone(), item.epic_id.clone()))
+        .collect();
     let mut dropped = Dropped::new();
     let mut issues = Vec::new();
     for (line, item) in items {
@@ -261,7 +264,7 @@ impl Item {
     fn record(
         self,
         project: &str,
-        known: &HashSet<String>,
+        known: &HashMap<String, Option<String>>,
         dropped: &mut Dropped,
     ) -> Result<IssueRecord, StoreError> {
         let mut labels = Vec::new();
@@ -272,19 +275,26 @@ impl Item {
         }
         // A parent task not imported leaves its epic as the parent.
         let parent_task = self.parent_task.filter(|parent| {
-            let found = known.contains(parent);
+            let found = known.contains_key(parent);
             if !found {
                 note(dropped, "parent task not imported");
             }
             found
         });
         let epic = self.epic_id.filter(|epic| {
-            let found = known.contains(epic);
+            let found = known.contains_key(epic);
             if !found {
                 note(dropped, "epic not imported");
             }
             found
         });
+        // A sub_task's parent is its task, so an epic other than the task's is lost.
+        if let Some(parent) = &parent_task
+            && epic.is_some()
+            && known.get(parent).is_some_and(|theirs| *theirs != epic)
+        {
+            note(dropped, "sub-task's epic other than its task's");
+        }
         let has = |tag: &str| labels.iter().any(|label| label.to_lowercase() == tag);
         // A sub_task stays one whatever its tags, and bug wins over spike.
         let issue_type = if self.epic {
