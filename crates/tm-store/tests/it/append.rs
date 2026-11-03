@@ -554,6 +554,177 @@ fn a_comment_is_retracted_by_its_author_or_their_human_and_can_come_back() {
 }
 
 #[test]
+fn only_a_comments_author_edits_it_and_only_to_new_text() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = new_issue(&mut store);
+    let said = |store: &mut Store, change| {
+        store
+            .append(Draft {
+                actor: claude(),
+                ..draft(issue, change)
+            })
+            .unwrap()
+            .op_id
+    };
+    let comment = said(
+        &mut store,
+        Change::Comment {
+            body: "oops".into(),
+        },
+    );
+    let edit = |body: &str| Change::EditComment {
+        comment,
+        body: body.into(),
+    };
+    let refused = |store: &mut Store, actor: Actor, change| {
+        let err = store
+            .append(Draft {
+                actor,
+                ..draft(issue, change)
+            })
+            .unwrap_err();
+        assert!(
+            matches!(err, StoreError::Invalid { ref field, .. } if field == "comments"),
+            "{err}"
+        );
+        err.to_string()
+    };
+
+    refused(&mut store, Actor::agent("codex", "jace"), edit("x"));
+    refused(&mut store, Actor::agent("claude", "kim"), edit("x"));
+    assert!(refused(&mut store, claude(), edit("oops")).contains("already reads"));
+
+    store.append(draft(issue, edit("fixed"))).unwrap();
+    let shown = &store.comments(issue).unwrap()[0];
+    assert_eq!(
+        (shown.body.as_str(), shown.edited_ms.is_some()),
+        ("fixed", true),
+        "jace, the human claude wrote it for, may edit it"
+    );
+    store.rebuild().unwrap();
+    assert_eq!(
+        store.comments(issue).unwrap()[0].body,
+        "fixed",
+        "an edit replays"
+    );
+
+    store
+        .ask(&jace(), issue, "which?", &[], "kim", None)
+        .unwrap();
+    let question = store.open_question(issue).unwrap().unwrap().id;
+    let change = Change::EditComment {
+        comment: question,
+        body: "what?".into(),
+    };
+    assert!(refused(&mut store, jace(), change).contains("question"));
+
+    let err = store
+        .append(draft(issue, set_field("comment_body", json!("x"))))
+        .unwrap_err();
+    assert!(err.to_string().contains("comment_body"), "{err}");
+}
+
+#[test]
+fn edits_merge_by_clock_and_one_before_its_comment_waits_for_it() {
+    let issue = Uuid::now_v7();
+    let comment = remote_op(
+        7,
+        issue,
+        &Change::Comment { body: "x".into() },
+        Hlc::new(2_000, 0),
+        1,
+    );
+    let edit = |body: &str, ms| {
+        let change = Change::EditComment {
+            comment: comment.op_id,
+            body: body.into(),
+        };
+        remote_op(8, issue, &change, Hlc::new(ms, 0), 2)
+    };
+    let create = remote_op(7, issue, &Change::Create, Hlc::new(1_000, 0), 0);
+    // The later clock wins though it arrives first, and an edit that arrives
+    // before its comment still gives it its text.
+    for order in [
+        [
+            create.clone(),
+            comment.clone(),
+            edit("late", 5_000),
+            edit("early", 3_000),
+        ],
+        [
+            create.clone(),
+            edit("early", 3_000),
+            edit("late", 5_000),
+            comment.clone(),
+        ],
+    ] {
+        let dir = TempDir::new();
+        let mut store = open(&dir.db(), &ManualClock::at(1_000));
+        for (seq, op) in (1..).zip(&order) {
+            insert_acked(&store, op, seq, 6_000);
+        }
+        store.rebuild().unwrap();
+        let shown = &store.comments(issue).unwrap()[0];
+        assert_eq!(
+            (shown.body.as_str(), shown.edited_ms.is_some()),
+            ("late", true)
+        );
+        assert_eq!(store.unapplied().unwrap(), []);
+    }
+}
+
+#[test]
+fn a_replayed_edit_of_a_question_or_another_issues_comment_is_not_applied() {
+    let (issue, other) = (Uuid::now_v7(), Uuid::now_v7());
+    let at = |ms| Hlc::new(ms, 0);
+    let ask = Change::Ask {
+        body: "which?".into(),
+        options: Vec::new(),
+    };
+    let question = remote_op(7, issue, &ask, at(2_000), 1);
+    let said = Change::Comment { body: "x".into() };
+    let comment = remote_op(7, other, &said, at(2_000), 1);
+    let edit = |comment: &tm_core::Op| {
+        let change = Change::EditComment {
+            comment: comment.op_id,
+            body: "   ".into(),
+        };
+        remote_op(8, issue, &change, at(9_000), 2)
+    };
+    let created = [
+        remote_op(7, issue, &Change::Create, at(1_000), 0),
+        remote_op(7, other, &Change::Create, at(1_000), 0),
+    ];
+    let edits = [edit(&question), edit(&comment), edit(&created[0])];
+    let targets = [question.clone(), comment.clone()];
+    // Each edit after what it edits, and each before it.
+    for (first, later) in [(&targets[..], &edits[..]), (&edits[..], &targets[..])] {
+        let dir = TempDir::new();
+        let mut store = open(&dir.db(), &ManualClock::at(1_000));
+        let ops = created.iter().chain(first).chain(later);
+        for (seq, op) in (1..).zip(ops) {
+            insert_acked(&store, op, seq, 9_000);
+        }
+        store.rebuild().unwrap();
+        let reasons: Vec<String> = store
+            .unapplied()
+            .unwrap()
+            .into_iter()
+            .map(|unapplied| unapplied.reason)
+            .collect();
+        assert!(reasons[0].contains("question"), "{reasons:?}");
+        assert!(reasons[1].contains("another Issue"), "{reasons:?}");
+        assert!(
+            reasons[2].contains("create operation, no comment"),
+            "{reasons:?}"
+        );
+        assert_eq!(store.comments(issue).unwrap()[0].body, "which?");
+        assert_eq!(store.comments(other).unwrap()[0].body, "x");
+    }
+}
+
+#[test]
 fn concurrent_retractions_of_a_comment_merge_by_clock_not_arrival() {
     let dir = TempDir::new();
     let store = open(&dir.db(), &ManualClock::at(1_000));

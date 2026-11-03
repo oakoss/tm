@@ -186,6 +186,76 @@ fn undoing_a_comment_retracts_it_and_undoing_that_brings_it_back() {
 }
 
 #[test]
+fn undoing_an_edit_restores_the_text_before_it() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = new_issue(&mut store);
+    let comment = write(&mut store, issue, Change::Comment { body: "a".into() });
+    let edit = |body: &str| Change::EditComment {
+        comment,
+        body: body.into(),
+    };
+    let first = write(&mut store, issue, edit("b"));
+    let second = write(&mut store, issue, edit("c"));
+    let text = |store: &Store| store.comments(issue).unwrap()[0].body.clone();
+
+    let err = undo(&mut store, first).unwrap_err();
+    let StoreError::UndoConflict { conflicts, .. } = err else {
+        panic!("a later edit stands: {err}");
+    };
+    assert_eq!(
+        conflicts[0].from,
+        json!("c"),
+        "named with the text it holds"
+    );
+    undo(&mut store, second).unwrap();
+    assert_eq!(text(&store), "b");
+    undo(&mut store, first).unwrap();
+    assert_eq!(text(&store), "a", "the first undo stands aside");
+    store.rebuild().unwrap();
+    assert_eq!(text(&store), "a");
+}
+
+#[test]
+fn undo_restores_blank_text_and_text_under_a_retraction_it_undoes() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = new_issue(&mut store);
+    let comment = write(&mut store, issue, Change::Comment { body: " ".into() });
+    let text = |store: &Store| store.comments(issue).unwrap()[0].clone();
+    let edit = Change::EditComment {
+        comment,
+        body: "filled".into(),
+    };
+    let filled = write(&mut store, issue, edit);
+    undo(&mut store, filled).unwrap();
+    assert_eq!(text(&store).body, " ", "as an import may have written it");
+
+    let both = store
+        .append_all(vec![
+            draft(
+                issue,
+                Change::EditComment {
+                    comment,
+                    body: "again".into(),
+                },
+            ),
+            draft(
+                issue,
+                Change::Retract {
+                    comment,
+                    retracted: true,
+                },
+            ),
+        ])
+        .unwrap()[0]
+        .op_id;
+    undo(&mut store, both).unwrap();
+    let shown = text(&store);
+    assert_eq!((shown.body.as_str(), shown.retracted), (" ", false));
+}
+
+#[test]
 fn undoing_a_link_removes_it() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));

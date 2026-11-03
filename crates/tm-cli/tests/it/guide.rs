@@ -99,7 +99,7 @@ fn as_claude(scratch: &Scratch, repo: &Path, args: &[&str], input: &str) -> Outp
 }
 
 /// Every command the guide prints runs as printed, in order, with KEY,
-/// OTHER, TEXT, AGENT and BATCH filled in: an Agent runs all but the bare
+/// OTHER, TEXT, AGENT, BATCH and COMMENT filled in: an Agent runs all but the bare
 /// `tm undo` and `tm setup`, which the guide gives to a human, who
 /// confirms the setup with --yes here as no terminal asks. A shell
 /// redirection ends the command; the text it would pipe in is given on stdin.
@@ -115,6 +115,7 @@ fn every_command_in_the_guide_runs_as_printed() {
 
     let guide = elsewhere(&scratch, &["guide"]);
     let mut batch = String::new();
+    let mut comment = String::new();
     let mut ran = Vec::new();
     for line in guide.lines().map(str::trim_start) {
         let Some(command) = line.strip_prefix("tm ") else {
@@ -133,6 +134,7 @@ fn every_command_in_the_guide_runs_as_printed() {
                 // Handed to itself, so the Agent's later edits stay its own.
                 "AGENT" => "claude".to_owned(),
                 "BATCH" => batch.clone(),
+                "COMMENT" => comment.clone(),
                 word => word.replace("KEY", "TM-1"),
             })
             .collect();
@@ -159,6 +161,9 @@ fn every_command_in_the_guide_runs_as_printed() {
         let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
         if let Some(written) = doc["data"]["batch"].as_str() {
             batch = written.to_owned();
+        }
+        if let Some(written) = doc["data"]["comment"]["id"].as_str() {
+            comment = written.to_owned();
         }
         ran.push(words.join(" "));
     }

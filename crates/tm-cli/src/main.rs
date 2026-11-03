@@ -183,6 +183,10 @@ enum Command {
         issue: String,
         /// The comment, or `-` to read it from stdin.
         body: String,
+        /// Correct a comment you wrote instead: its id as `tm show` prints
+        /// it, or last for your own latest.
+        #[arg(long, value_name = "ID|last")]
+        edit: Option<String>,
     },
     /// Create an Issue in the Project this directory maps to.
     ///
@@ -505,7 +509,9 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Git {
             action: GitAction::Scan { dry_run },
         }) => scan::run(dry_run),
-        Some(Command::Comment { issue, body }) => comment::run(&issue, &body),
+        Some(Command::Comment { issue, body, edit }) => {
+            comment::run(&issue, &body, edit.as_deref())
+        }
         Some(Command::Doctor) => doctor::run(),
         Some(Command::Create {
             issue_type,

@@ -341,6 +341,41 @@ fn words_search_titles_descriptions_and_comments_not_retracted() {
 }
 
 #[test]
+fn an_edited_comment_is_found_by_its_new_words_only() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let indexed = issue(&mut store, &clock, &[], &[]);
+    let cafe = comment(&mut store, indexed, "Seen on the Café wifi");
+    store.rebuild().unwrap();
+    let since = issue(&mut store, &clock, &[], &[]);
+    let zebra = comment(&mut store, since, "zebra");
+
+    for (issue, said, body) in [
+        (indexed, cafe, "the hotel wifi"),
+        (since, zebra, "a giraffe"),
+    ] {
+        let edit = Change::EditComment {
+            comment: said,
+            body: body.into(),
+        };
+        store.append(draft(issue, edit)).unwrap();
+    }
+    assert_eq!(
+        find(&store, "cafe"),
+        Vec::<Uuid>::new(),
+        "one the rebuild indexed"
+    );
+    assert_eq!(
+        find(&store, "zebra"),
+        Vec::<Uuid>::new(),
+        "one indexed since"
+    );
+    assert_eq!(find(&store, "hotel"), [indexed]);
+    assert_eq!(find(&store, "giraffe"), [since]);
+}
+
+#[test]
 fn categories_follow_the_scheme_and_unknown_statuses_read_as_triage() {
     let dir = TempDir::new();
     let clock = ManualClock::at(1_000);

@@ -120,6 +120,12 @@ pub enum Change {
         comment: Uuid,
         retracted: bool,
     },
+    /// Replaces a comment's text; the text it had stays in the log.
+    EditComment {
+        /// The id of the operation that added the comment.
+        comment: Uuid,
+        body: String,
+    },
     /// Adds or removes a Link, filed under its canonical source Issue.
     Link {
         link_type: String,
@@ -182,6 +188,11 @@ pub const CLAIM_FIELD: &str = "claim";
 /// The field a retraction is filed under, one element per comment.
 pub const COMMENTS_FIELD: &str = "comments";
 
+/// The field an edit of a comment's text is filed under, one element per
+/// comment, apart from [`COMMENTS_FIELD`] so an edit and a retraction never
+/// decide each other.
+pub const COMMENT_BODY_FIELD: &str = "comment_body";
+
 /// A take applies only while the Issue's current Claim is still `prev`, and
 /// a release only while it is still `claim`, so server order decides between
 /// concurrent ones.
@@ -241,6 +252,7 @@ impl Change {
             Self::Answer { .. } => "answer",
             Self::Withdraw { .. } => "withdraw",
             Self::Retract { .. } => "retract",
+            Self::EditComment { .. } => "edit_comment",
             Self::Link { .. } => "link",
             Self::Claim { .. } => "claim",
             Self::CreateProject { .. } => "create_project",
@@ -274,6 +286,7 @@ impl Change {
             | Self::Answer { .. }
             | Self::Withdraw { .. }
             | Self::Retract { .. }
+            | Self::EditComment { .. }
             | Self::Link { .. }
             | Self::Claim { .. } => Subject::Issue,
         }
@@ -289,6 +302,7 @@ impl Change {
             Self::Link { .. } => Some(crate::link::FIELD),
             Self::Claim { .. } => Some(CLAIM_FIELD),
             Self::Retract { .. } => Some(COMMENTS_FIELD),
+            Self::EditComment { .. } => Some(COMMENT_BODY_FIELD),
             Self::SetShortlist { field, .. } => Some(field.as_str()),
             Self::SetMemory { field, .. } => Some(field.as_str()),
             Self::ShortlistActor { .. } => Some(shortlist::ACTORS),
@@ -314,7 +328,9 @@ impl Change {
             Self::Link {
                 link_type, target, ..
             } => Some(Cow::Owned(crate::link::elem(link_type, *target))),
-            Self::Retract { comment, .. } => Some(Cow::Owned(comment.to_string())),
+            Self::Retract { comment, .. } | Self::EditComment { comment, .. } => {
+                Some(Cow::Owned(comment.to_string()))
+            }
             Self::ShortlistActor { actor, .. } => Some(Cow::Borrowed(actor)),
             Self::Create
             | Self::SetField { .. }
@@ -365,6 +381,9 @@ impl Change {
         }
         if self.field() == Some(COMMENTS_FIELD) && !matches!(self, Self::Retract { .. }) {
             return Err(OpError::ReservedField(COMMENTS_FIELD));
+        }
+        if self.field() == Some(COMMENT_BODY_FIELD) && !matches!(self, Self::EditComment { .. }) {
+            return Err(OpError::ReservedField(COMMENT_BODY_FIELD));
         }
         if let Self::Link { link_type, .. } = self
             && !crate::scheme::is_id(link_type)
@@ -746,6 +765,10 @@ mod tests {
             Change::Retract {
                 comment: Uuid::nil(),
                 retracted: true,
+            },
+            Change::EditComment {
+                comment: Uuid::nil(),
+                body: "fixed".into(),
             },
             Change::Comment {
                 body: String::new(),

@@ -1,7 +1,184 @@
-use serde_json::Value;
-use tm_core::Actor;
+use std::process::Stdio;
 
-use crate::support::{Scratch, initialized, text, tm, tm_command, tm_piped};
+use serde_json::{Value, json};
+use tm_core::{Actor, Change};
+use tm_store::{Draft, Store};
+
+use crate::support::{Scratch, initialized, jace, text, tm, tm_command, tm_piped};
+
+#[test]
+fn a_comment_is_corrected_by_its_id_or_as_your_last_and_undone() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let (issue, _) = store
+        .create_issue(&Actor::human("jace"), project, "task", "t")
+        .unwrap();
+    let json = |args: &[&str]| -> Value {
+        let out = tm(&scratch, &repo, &[&["--json"], args].concat());
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let first = json(&["comment", "TM-1", "first"])["data"]["comment"]["id"]
+        .as_str()
+        .unwrap()
+        .replace('-', "");
+    json(&["comment", "TM-1", "second"]);
+    for (actor, body) in [
+        (Actor::agent("claude", "jace"), "for jace"),
+        (Actor::human("kim"), "from kim"),
+    ] {
+        let change = Change::Comment { body: body.into() };
+        let draft = Draft {
+            actor,
+            project,
+            subject: issue,
+            change,
+        };
+        store.append(draft).unwrap();
+    }
+    let bodies = || -> Vec<Value> {
+        let doc = json(&["show", "TM-1"]);
+        let comments = doc["data"]["comments"].as_array().unwrap().clone();
+        comments.iter().map(|c| c["body"].clone()).collect()
+    };
+
+    let out = tm(
+        &scratch,
+        &repo,
+        &["comment", "TM-1", "--edit", "last", "2nd"],
+    );
+    let said = text(&out.stdout);
+    assert!(said.starts_with("edited comment "), "{out:?}");
+    assert_eq!(
+        bodies(),
+        ["first", "2nd", "for jace", "from kim"],
+        "last is jace's own latest, not one an Agent wrote for jace or kim's"
+    );
+    let shown = text(&tm(&scratch, &repo, &["show", "TM-1"]).stdout);
+    assert!(shown.contains(" (edited) ["), "{shown}");
+
+    let tail = &first[first.len() - 12..];
+    let out = tm(&scratch, &repo, &["comment", "TM-1", "--edit", tail, "1st"]);
+    assert!(out.status.success(), "{out:?}");
+    let doc = json(&["comment", "TM-1", "--edit", &first[..8], "one"]);
+    assert!(
+        doc["matches"].as_array().is_some_and(|ids| ids.len() > 1),
+        "ids made close together share their start: {doc}"
+    );
+    let doc = json(&["comment", "TM-1", "--edit", &first, "one"]);
+    assert_eq!(doc["data"]["comment"]["body"], "one", "{doc}");
+    assert_eq!(bodies(), ["one", "2nd", "for jace", "from kim"]);
+
+    let out = tm(&scratch, &repo, &["undo"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(text(&out.stdout).contains(": text restored\n"), "{out:?}");
+    assert_eq!(bodies(), ["1st", "2nd", "for jace", "from kim"]);
+    let history = text(&tm(&scratch, &repo, &["history", "TM-1"]).stdout);
+    assert!(history.contains("commented: first"), "{history}");
+    assert!(history.contains("edited comment "), "{history}");
+    let doc = json(&["history", "TM-1"]);
+    let befores: Vec<&Value> = doc["data"]["writes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|write| write["changes"].as_array().into_iter().flatten())
+        .filter(|change| change["change"]["kind"] == "edit_comment")
+        .map(|change| &change["before"])
+        .collect();
+    assert_eq!(befores[..2], [&json!("second"), &json!("first")], "{doc}");
+
+    for (which, error) in [
+        ("abc", "invalid_value"),
+        ("ffffffffffff", "not_found"),
+        ("last", "invalid_value"),
+    ] {
+        let body = if which == "last" { "2nd" } else { "x" };
+        let doc = json(&["comment", "TM-1", "--edit", which, body]);
+        assert_eq!(doc["error"], error, "{which}: {doc}");
+    }
+    let out = jace(
+        &scratch,
+        &repo,
+        &["--json", "comment", "TM-1", "--edit", "last", "x"],
+    )
+    .env("TM_AGENT", "claude")
+    .stdin(Stdio::null())
+    .output()
+    .unwrap();
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["error"], "comment_required", "{doc}");
+}
+
+#[test]
+fn last_passes_over_retracted_comments_and_questions_and_reads_names_in_any_case() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let eva = Actor::human("Éva");
+    let (issue, _) = store.create_issue(&eva, project, "task", "t").unwrap();
+    let say = |store: &mut Store, change| {
+        let draft = Draft {
+            actor: eva.clone(),
+            project,
+            subject: issue,
+            change,
+        };
+        store.append(draft).unwrap()
+    };
+    say(
+        &mut store,
+        Change::Comment {
+            body: "plain".into(),
+        },
+    );
+    let hidden = say(
+        &mut store,
+        Change::Comment {
+            body: "hidden".into(),
+        },
+    )
+    .op_id;
+    let retract = Change::Retract {
+        comment: hidden,
+        retracted: true,
+    };
+    say(&mut store, retract);
+    store.ask(&eva, issue, "which?", &[], "kim", None).unwrap();
+
+    let out = jace(
+        &scratch,
+        &repo,
+        &["--json", "comment", "TM-1", "--edit", "last", "fixed"],
+    )
+    .env("TM_ACTOR", "éva")
+    .stdin(Stdio::null())
+    .output()
+    .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let bodies: Vec<String> = store
+        .comments(issue)
+        .unwrap()
+        .into_iter()
+        .map(|comment| comment.body)
+        .collect();
+    assert_eq!(bodies, ["fixed", "hidden", "which?"]);
+
+    let hex = hidden.simple().to_string();
+    let out = jace(
+        &scratch,
+        &repo,
+        &["--json", "comment", "TM-1", "--edit", &hex, "x"],
+    )
+    .env("TM_ACTOR", "éva")
+    .stdin(Stdio::null())
+    .output()
+    .unwrap();
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        doc["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("retracted")),
+        "{doc}"
+    );
+}
 
 /// A mistyped Key is refused before stdin is read, so the text piped in is
 /// left unread for the command run again: an empty pipe still reports the

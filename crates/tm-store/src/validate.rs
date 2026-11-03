@@ -161,6 +161,10 @@ pub(crate) fn check(
             comment_author(tx, issue_id, comment)?;
             Ok(Change::Retract { comment, retracted })
         }
+        Change::EditComment { comment, body } => {
+            check_edit(tx, issue_id, comment, &body)?;
+            Ok(Change::EditComment { comment, body })
+        }
         Change::Link {
             link_type,
             target,
@@ -220,6 +224,71 @@ fn comment_author(
     })
 }
 
+/// A comment is edited only to new text. A blank or retracted one is the
+/// CLI's to refuse, so undo can restore text an import wrote blank, or
+/// under a retraction the same batch undoes.
+fn check_edit(
+    tx: &Transaction<'_>,
+    issue_id: Uuid,
+    comment: Uuid,
+    body: &str,
+) -> Result<(), StoreError> {
+    let current: Option<String> = tx
+        .query_row(
+            "SELECT body FROM comments WHERE op_id = ?1 AND issue_id = ?2",
+            params![comment.as_bytes(), issue_id.as_bytes()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let reason = match not_editable(tx, issue_id, comment)? {
+        Some(reason) => reason,
+        None if current.as_deref() == Some(body) => {
+            "are edited only to new text, and this one already reads so".to_owned()
+        }
+        None => return Ok(()),
+    };
+    Err(StoreError::Invalid {
+        field: COMMENTS_FIELD.into(),
+        reason,
+        valid: Vec::new(),
+    })
+}
+
+/// Why a comment cannot be edited as part of `issue`: it is on another
+/// Issue, or it asks, answers or withdraws a question, whose text decides
+/// what was chosen. Read from the log, which holds the comment even where
+/// replay has not reached it yet; one not logged takes the edit on arrival.
+/// Replay applies the same rule, so an edit written here never fails there.
+pub(crate) fn not_editable(
+    tx: &Transaction<'_>,
+    issue: Uuid,
+    comment: Uuid,
+) -> Result<Option<String>, StoreError> {
+    let found: Option<(Vec<u8>, String)> = tx
+        .query_row(
+            "SELECT issue_id, payload FROM ops WHERE op_id = ?1",
+            [comment.as_bytes()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((on, payload)) = found else {
+        return Ok(None);
+    };
+    if on != issue.as_bytes() {
+        return Ok(Some(format!("comment {comment} is on another Issue")));
+    }
+    let change: Change = serde_json::from_str(&payload)
+        .map_err(|err| StoreError::Corrupt(format!("a logged payload: {err}")))?;
+    Ok(match change {
+        Change::Comment { .. } => None,
+        Change::Ask { .. } | Change::Answer { .. } | Change::Withdraw { .. } => Some(
+            "that ask, answer or withdraw a question cannot be edited, since their text decides what was chosen"
+                .to_owned(),
+        ),
+        other => Some(format!("{comment} is a {} operation, no comment", other.kind())),
+    })
+}
+
 /// The rules a change kind sets on who writes it and how.
 fn check_writer(
     tx: &Transaction<'_>,
@@ -229,14 +298,16 @@ fn check_writer(
 ) -> Result<(), StoreError> {
     match change {
         Change::Claim { action } => crate::claim::check_taker(writing.actor, action),
-        Change::Retract { comment, .. } => check_retracter(tx, issue_id, writing.actor, *comment),
+        Change::Retract { comment, .. } | Change::EditComment { comment, .. } => {
+            check_comment_author(tx, issue_id, writing.actor, *comment)
+        }
         _ => Ok(()),
     }
 }
 
 /// Only a comment's author, or the human an Agent wrote it for, may retract
-/// it or bring it back.
-fn check_retracter(
+/// it, bring it back or edit it.
+fn check_comment_author(
     tx: &Transaction<'_>,
     issue_id: Uuid,
     writer: &Actor,
@@ -262,7 +333,7 @@ fn check_retracter(
     Err(StoreError::Invalid {
         field: COMMENTS_FIELD.into(),
         reason: format!(
-            "only {author}{} can retract this comment, not {}",
+            "only {author}{} can retract or edit this comment, not {}",
             for_human.map_or_else(String::new, |human| format!(" or {human}")),
             writer.name()
         ),

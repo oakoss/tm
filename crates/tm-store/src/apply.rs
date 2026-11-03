@@ -9,7 +9,7 @@
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value as Json;
-use tm_core::op::{COMMENTS_FIELD, ClaimAction, OpError};
+use tm_core::op::{COMMENT_BODY_FIELD, COMMENTS_FIELD, ClaimAction, OpError};
 use tm_core::scheme::priority_rank;
 use tm_core::{Change, Hlc, Op, ProjectId, Subject, link};
 use uuid::Uuid;
@@ -188,6 +188,11 @@ pub(crate) fn apply(
         Change::Retract { comment, retracted } => {
             retract(tx, op.subject, comment, retracted, &version)?;
         }
+        Change::EditComment { comment, body } => {
+            if let Some(reason) = edit_comment(tx, op, comment, &body, &version)? {
+                return Ok(Some(reason));
+            }
+        }
         Change::Comment { body } => comment(tx, op, &body, None, &[])?,
         Change::Ask { body, options } => {
             comment(tx, op, &body, Some(CommentRole::Question), &options)?;
@@ -236,6 +241,40 @@ fn comment(
             options,
         ],
     )?;
+    if role.is_none() {
+        pending_edit(tx, op)?;
+    }
+    Ok(())
+}
+
+/// Gives a comment the text of an edit that replayed before it, as the
+/// insert takes a retraction that did.
+fn pending_edit(tx: &Transaction<'_>, op: &Op) -> Result<(), StoreError> {
+    let edit: Option<(String, i64)> = tx
+        .query_row(
+            "SELECT o.payload, o.utc_ms FROM field_versions v JOIN ops o ON o.op_id = v.op_id
+             WHERE v.issue_id = ?1 AND v.field = ?2 AND v.elem = ?3",
+            params![
+                op.subject.as_bytes(),
+                COMMENT_BODY_FIELD,
+                op.op_id.to_string()
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((payload, edited_ms)) = edit else {
+        return Ok(());
+    };
+    let Ok(Change::EditComment { body, .. }) = serde_json::from_str(&payload) else {
+        return Err(StoreError::Corrupt(format!(
+            "the edit of comment {} is no edit",
+            op.op_id
+        )));
+    };
+    tx.execute(
+        "UPDATE comments SET body = ?1, edited_ms = ?2 WHERE op_id = ?3",
+        params![body, edited_ms, op.op_id.as_bytes()],
+    )?;
     Ok(())
 }
 
@@ -278,6 +317,30 @@ fn retract(
         params![retracted, comment.as_bytes(), issue_id.as_bytes()],
     )?;
     Ok(())
+}
+
+/// The latest edit by the merge rule gives a comment its text; why it does
+/// not apply, when [`crate::validate::not_editable`] says so.
+fn edit_comment(
+    tx: &Transaction<'_>,
+    op: &Op,
+    comment: Uuid,
+    body: &str,
+    version: &Version,
+) -> Result<Option<String>, StoreError> {
+    if let Some(reason) = crate::validate::not_editable(tx, op.subject, comment)? {
+        return Ok(Some(reason));
+    }
+    let elem = comment.to_string();
+    if !wins(tx, op.subject, COMMENT_BODY_FIELD, &elem, version)? {
+        return Ok(None);
+    }
+    record(tx, op.subject, COMMENT_BODY_FIELD, &elem, true, version)?;
+    tx.execute(
+        "UPDATE comments SET body = ?1, edited_ms = ?2 WHERE op_id = ?3 AND issue_id = ?4",
+        params![body, op.utc_ms, comment.as_bytes(), op.subject.as_bytes()],
+    )?;
+    Ok(None)
 }
 
 /// Labels compare without case. Writes already store them lowercased; this

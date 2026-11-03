@@ -235,7 +235,7 @@ fn describe(
     before: &mut HashMap<String, Before>,
     names: &mut Names<'_>,
 ) -> Result<(String, Option<Value>), CliError> {
-    let mut stored = None;
+    let mut stored = comment_text(entry, before);
     let line = match &entry.change {
         Change::Create => "created".to_owned(),
         Change::SetField { field, .. } if field == RANK => "Short-list: reordered".to_owned(),
@@ -294,13 +294,12 @@ fn describe(
         Change::Ask { body, .. } => format!("asked: {}", first_line(body)),
         Change::Answer { body } => format!("answered: {}", first_line(body)),
         Change::Withdraw { body } => format!("withdrew the question: {}", first_line(body)),
-        Change::Retract { retracted, .. } => {
-            let line = if *retracted {
-                "retracted a comment"
-            } else {
-                "showed a retracted comment again"
-            };
-            line.to_owned()
+        Change::Retract {
+            retracted: true, ..
+        } => "retracted a comment".to_owned(),
+        Change::Retract { .. } => "showed a retracted comment again".to_owned(),
+        Change::EditComment { comment, body } => {
+            format!("edited comment {}: {}", short(*comment), first_line(body))
         }
         Change::Link {
             link_type,
@@ -335,6 +334,36 @@ fn describe(
         None => line,
     };
     Ok((line, stored))
+}
+
+/// Keeps each comment's text in `before` under `comment/<id>`, and gives an
+/// edit the text it replaced.
+fn comment_text(entry: &HistoryEntry, before: &mut HashMap<String, Before>) -> Option<Value> {
+    let (comment, body) = match &entry.change {
+        Change::Comment { body }
+        | Change::Ask { body, .. }
+        | Change::Answer { body }
+        | Change::Withdraw { body } => (entry.op_id, body),
+        Change::EditComment { comment, body } => (*comment, body),
+        _ => return None,
+    };
+    let key = format!("comment/{comment}");
+    let edit = matches!(entry.change, Change::EditComment { .. });
+    let prior = edit.then(|| {
+        before
+            .get(&key)
+            .map_or(Value::Null, |prior| prior.stored.clone())
+    });
+    // A comment replayed after its edit keeps the edit's text.
+    if entry.unapplied.is_none() && !entry.lost && (edit || !before.contains_key(&key)) {
+        let text = Value::String(body.clone());
+        let now = Before {
+            stored: text.clone(),
+            shown: text,
+        };
+        before.insert(key, now);
+    }
+    prior
 }
 
 /// A field's value before an operation: as stored, and as the line shows it.
