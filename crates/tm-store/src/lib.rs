@@ -1042,6 +1042,50 @@ impl Store {
         project::issue_by_number(&self.conn, project, number)
     }
 
+    /// The Issues an id at an import's source names, matched without case:
+    /// `TREK-114` for the Issue imported as `trekker:TREK-114`.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
+    pub fn issues_by_import_id(&self, id: &str) -> Result<Vec<Uuid>, StoreError> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT DISTINCT issue_id FROM ops
+             WHERE kind = 'create' AND source IS NOT NULL
+               AND lower(substr(source, instr(source, ':') + 1)) = lower(?1)",
+        )?;
+        let rows = stmt.query_map([id], |row| row.get::<_, Vec<u8>>(0))?;
+        rows.map(|issue| uuid_from(&issue?)).collect()
+    }
+
+    /// The comments, with their Issues, an import's comment id names without
+    /// case, read against the Issue's source so either id may hold a `#`.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
+    pub fn comments_by_import_id(&self, id: &str) -> Result<Vec<(Uuid, Uuid)>, StoreError> {
+        // Sought by the id's last `#` segment, which every match ends with,
+        // then held to the Issue's source; CROSS JOIN keeps that order.
+        let last = id.rsplit('#').next().unwrap_or(id);
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT DISTINCT c.issue_id, c.op_id FROM ops c CROSS JOIN ops i
+             WHERE c.kind = 'comment' AND c.source IS NOT NULL
+               AND lower(substr(c.source, length(rtrim(c.source, replace(c.source, '#', ''))) + 1))
+                 = lower(?2)
+               AND i.issue_id = c.issue_id AND +i.kind = 'create' AND i.source IS NOT NULL
+               AND lower(c.source) = lower(i.source || '#' || ?1)",
+        )?;
+        let rows = stmt.query_map([id, last], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        rows.map(|row| {
+            let (issue, comment) = row?;
+            Ok((uuid_from(&issue)?, uuid_from(&comment)?))
+        })
+        .collect()
+    }
+
     /// Creates an Issue in its Workflow's starting Status.
     ///
     /// # Errors

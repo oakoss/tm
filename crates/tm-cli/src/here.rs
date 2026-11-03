@@ -7,7 +7,7 @@ use std::time::UNIX_EPOCH;
 
 use tm_core::{Actor, ProjectId};
 use tm_store::workspace::{self, Found, Workspace, WorkspaceError};
-use tm_store::{Store, Workplace};
+use tm_store::{Store, StoreError, Workplace};
 use uuid::Uuid;
 
 use crate::backup;
@@ -355,24 +355,84 @@ impl Here {
     }
 
     /// The Issue a Key, matched without case and through retired Project
-    /// keys, or a full UUID names. A UUID prefix is never guessed at.
+    /// keys, a full UUID, or an Issue's id at an import's source names, in
+    /// that order. A UUID prefix is never guessed at.
     ///
     /// # Errors
     ///
-    /// `not_found` when nothing has that Key or id, or `invalid_value` when
-    /// the text is neither.
+    /// `not_found` when nothing has that Key or id, naming `tm show` when it
+    /// is an imported comment's id, or `invalid_value` when the text is no
+    /// Key and no imported id, or an imported id more than one Issue holds.
     pub(crate) fn issue(&self, reference: &str) -> Result<Uuid, CliError> {
+        let (issue, refused) = self.lookup(reference)?;
+        if let Some(issue) = issue {
+            return Ok(issue);
+        }
+        if !self.store.comments_by_import_id(reference)?.is_empty() {
+            return Err(CliError::new(
+                "not_found",
+                format!("{reference} is a comment; tm show {reference} shows its Issue"),
+            )
+            .with("kind", "issue")
+            .with("reference", reference));
+        }
+        Err(refused)
+    }
+
+    /// The Issue a reference names, as [`Here::issue`] reads it, or an
+    /// imported comment's id, such as Trekker's `CMT-243`, names with the
+    /// comment; for where the comment is what was asked for.
+    ///
+    /// # Errors
+    ///
+    /// As [`Here::issue`], or `invalid_value` for an imported comment id more
+    /// than one comment holds.
+    pub(crate) fn find(&self, reference: &str) -> Result<(Uuid, Option<Uuid>), CliError> {
+        let (issue, refused) = self.lookup(reference)?;
+        if let Some(issue) = issue {
+            return Ok((issue, None));
+        }
+        match self.store.comments_by_import_id(reference)?.as_slice() {
+            [] => Err(refused),
+            [(issue, comment)] => Ok((*issue, Some(*comment))),
+            several => Err(imported_twice(reference, several.iter().map(|(_, c)| *c))),
+        }
+    }
+
+    /// The Issue a full UUID, a Key or an imported Issue id names, else the
+    /// error to give when nothing else does either.
+    fn lookup(&self, reference: &str) -> Result<(Option<Uuid>, CliError), CliError> {
         let not_found = || {
             CliError::new("not_found", format!("no Issue is {reference}"))
                 .with("kind", "issue")
                 .with("reference", reference)
         };
+        let mut refused = not_found();
         if let Ok(id) = Uuid::parse_str(reference) {
-            return match self.store.issue(id)? {
-                Some(_) => Ok(id),
-                None => Err(not_found()),
-            };
+            if self.store.issue(id)?.is_some() {
+                return Ok((Some(id), refused));
+            }
+        } else {
+            match self.store.issue_by_key(reference) {
+                Ok(Some(issue)) => return Ok((Some(issue), refused)),
+                Ok(None) => {}
+                Err(err @ StoreError::Invalid { .. }) => refused = err.into(),
+                Err(err) => return Err(err.into()),
+            }
         }
-        self.store.issue_by_key(reference)?.ok_or_else(not_found)
+        match self.store.issues_by_import_id(reference)?.as_slice() {
+            [] => Ok((None, refused)),
+            [only] => Ok((Some(*only), refused)),
+            several => Err(imported_twice(reference, several.iter().copied())),
+        }
     }
+}
+
+fn imported_twice(reference: &str, ids: impl Iterator<Item = Uuid>) -> CliError {
+    CliError::new(
+        "invalid_value",
+        format!("{reference} is imported more than once; name it by its Key"),
+    )
+    .with("field", "issue")
+    .with("matches", ids.map(|id| id.to_string()).collect::<Vec<_>>())
 }

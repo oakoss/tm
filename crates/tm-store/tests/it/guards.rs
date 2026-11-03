@@ -160,6 +160,7 @@ fn a_log_another_build_wrote_is_refused_by_name() {
         .connection()
         .execute_batch(
             "DROP TRIGGER ops_immutable; DROP INDEX ops_by_source;
+             DROP INDEX ops_by_import_id; DROP INDEX ops_by_comment_import_id;
              ALTER TABLE ops DROP COLUMN source;",
         )
         .unwrap();
