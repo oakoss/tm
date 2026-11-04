@@ -44,7 +44,7 @@ use std::fmt::Write as _;
 use std::process::ExitCode;
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
-use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
+use clap::{ArgGroup, CommandFactory, FromArgMatches as _, Parser, Subcommand};
 use serde_json::json;
 use tm_core::Scheme;
 use tm_core::scheme::Category;
@@ -63,8 +63,80 @@ struct Cli {
     command: Option<Command>,
 }
 
-// Listed by use, as `tm --help` shows them: everyday work, an Agent's work,
-// memories, then setup and data.
+/// The headings `tm --help` lists commands under, in order; clap gives a
+/// command list one heading only.
+const GROUPS: [(&str, &[&str]); 5] = [
+    (
+        "Everyday",
+        &[
+            "create", "list", "ready", "show", "edit", "move", "comment", "link", "unlink",
+        ],
+    ),
+    ("History and undo", &["history", "undo"]),
+    (
+        "Agent work",
+        &[
+            "next",
+            "start",
+            "claim",
+            "heartbeat",
+            "handoff",
+            "release",
+            "claims",
+            "sessions",
+            "shortlist",
+            "ask",
+            "answer",
+            "withdraw",
+            "prime",
+            "guide",
+        ],
+    ),
+    ("Memories", &["remember", "memories", "forget"]),
+    (
+        "Setup and data",
+        &[
+            "init", "setup", "scheme", "git", "export", "import", "rebuild", "doctor", "help",
+        ],
+    ),
+];
+
+/// tm's command line, with its help listing commands under [`GROUPS`].
+fn cli() -> clap::Command {
+    // Building adds the `help` subcommand the listing names, but also
+    // expands `tm help help`; only a copy is built.
+    let mut built = Cli::command();
+    built.build();
+    Cli::command().help_template(grouped_help(&built))
+}
+
+/// A help template listing `command`'s subcommands under [`GROUPS`], each by
+/// its first line, then the options.
+fn grouped_help(command: &clap::Command) -> String {
+    let styles = command.get_styles();
+    let (header, literal) = (styles.get_header(), styles.get_literal());
+    let width = GROUPS
+        .iter()
+        .flat_map(|(_, names)| names.iter().map(|name| name.len()))
+        .max()
+        .unwrap_or(0);
+    let mut out = String::from("{about-with-newline}\n{usage-heading} {usage}\n");
+    for (heading, names) in GROUPS {
+        let _ = write!(out, "\n{header}{heading}:{header:#}\n");
+        for name in names {
+            let about = command
+                .find_subcommand(name)
+                .and_then(clap::Command::get_about)
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            let pad = " ".repeat(width - name.len() + 2);
+            let _ = writeln!(out, "  {literal}{name}{literal:#}{pad}{about}");
+        }
+    }
+    let _ = write!(out, "\n{header}Options:{header:#}\n{{options}}");
+    out
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Create an Issue in the Project this directory maps to.
@@ -488,7 +560,10 @@ fn main() -> ExitCode {
         output::install_panic_hook();
     }
     let parsed = list::filter_last(&mut Cli::command(), std::env::args_os().collect());
-    let cli = match Cli::try_parse_from(parsed) {
+    let cli = match cli()
+        .try_get_matches_from(parsed)
+        .and_then(|matches| Cli::from_arg_matches(&matches))
+    {
         Ok(cli) => cli,
         Err(err) => {
             // A fix built from lossy arguments would write what clap refuses.
@@ -529,7 +604,7 @@ fn main() -> ExitCode {
 fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
     match command {
         None => {
-            let help = Cli::command().render_help().to_string();
+            let help = cli().render_help().to_string();
             Ok(Output::new(help.clone(), json!({ "help": help })))
         }
         Some(Command::Scheme {
@@ -767,43 +842,45 @@ fn scheme_text(scheme: &Scheme) -> String {
 mod tests {
     use clap::CommandFactory;
 
-    use super::Cli;
+    use super::{Cli, GROUPS, cli};
 
     /// The longest first line a command list shows before it wraps at 80
     /// columns, past its two-space indent and the name column.
     const ABOUT: usize = 64;
 
-    /// `tm` and every command under it, by path such as `tm git scan`; a
-    /// hidden one and its subcommands only with `hidden`.
-    fn commands(hidden: bool) -> Vec<(String, clap::Command)> {
+    /// `tm` and every command under it, by path such as `tm git scan`, each
+    /// with whether a help list shows it: neither it nor a parent is hidden.
+    fn commands() -> Vec<(String, clap::Command, bool)> {
         fn walk(
             path: &str,
             command: &clap::Command,
-            hidden: bool,
-            out: &mut Vec<(String, clap::Command)>,
+            shown: bool,
+            out: &mut Vec<(String, clap::Command, bool)>,
         ) {
-            out.push((path.to_owned(), command.clone()));
+            let shown = shown && !command.is_hide_set();
+            out.push((path.to_owned(), command.clone(), shown));
             for sub in command.get_subcommands() {
-                if hidden || !sub.is_hide_set() {
-                    walk(&format!("{path} {}", sub.get_name()), sub, hidden, out);
-                }
+                walk(&format!("{path} {}", sub.get_name()), sub, shown, out);
             }
         }
         let mut out = Vec::new();
-        walk("tm", &Cli::command(), hidden, &mut out);
+        walk("tm", &Cli::command(), true, &mut out);
         out
     }
 
     #[test]
     fn every_command_says_what_it_does_in_one_short_line() {
-        let long: Vec<String> = commands(false)
+        let long: Vec<String> = commands()
             .into_iter()
             .skip(1)
-            .filter_map(|(path, command)| match command.get_about() {
-                None => Some(format!("{path}: no description")),
-                Some(about) => {
-                    let about = about.to_string();
-                    (about.chars().count() > ABOUT).then(|| format!("{path}: {about}"))
+            .filter_map(|(path, command, shown)| {
+                let about = command.get_about().map(ToString::to_string);
+                match about.as_deref().map(str::trim) {
+                    None | Some("") => Some(format!("{path}: no description")),
+                    Some(about) if shown && about.chars().count() > ABOUT => {
+                        Some(format!("{path}: {about}"))
+                    }
+                    Some(_) => None,
                 }
             })
             .collect();
@@ -812,19 +889,76 @@ mod tests {
 
     #[test]
     fn only_the_hooks_command_is_left_out_of_the_list() {
-        let hidden: Vec<String> = Cli::command()
-            .get_subcommands()
-            .filter(|sub| sub.is_hide_set())
-            .map(|sub| sub.get_name().to_owned())
+        let hidden: Vec<String> = commands()
+            .into_iter()
+            .filter(|(_, command, _)| command.is_hide_set())
+            .map(|(path, ..)| path)
             .collect();
-        assert_eq!(hidden, ["hook"]);
+        assert_eq!(hidden, ["tm hook"]);
+    }
+
+    #[test]
+    fn tm_help_lists_every_command_once_under_a_heading() {
+        let mut command = cli();
+        command.build();
+        let shown: Vec<&str> = command
+            .get_subcommands()
+            .filter(|sub| !sub.is_hide_set())
+            .map(clap::Command::get_name)
+            .collect();
+        let grouped: Vec<&str> = GROUPS
+            .iter()
+            .flat_map(|(_, names)| names.iter().copied())
+            .collect();
+        let mut missing: Vec<&str> = shown
+            .iter()
+            .copied()
+            .filter(|name| !grouped.contains(name))
+            .collect();
+        missing.extend(grouped.iter().copied().filter(|name| !shown.contains(name)));
+        assert!(
+            missing.is_empty(),
+            "in GROUPS or tm's commands, not both: {missing:?}"
+        );
+        let mut unique = grouped.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), grouped.len(), "a command under two headings");
+
+        let help = command.clone().render_help().to_string();
+        let width = grouped.iter().map(|name| name.len()).max().unwrap_or(0);
+        for (heading, names) in GROUPS {
+            assert!(
+                help.contains(&format!("\n{heading}:\n")),
+                "{heading} in {help}"
+            );
+            for name in names {
+                assert_eq!(
+                    help.matches(&format!("\n  {name} ")).count(),
+                    1,
+                    "{name} once in {help}"
+                );
+                let about = command.find_subcommand(name).unwrap().get_about().unwrap();
+                let line = format!("\n  {name:width$}  {about}\n");
+                assert!(help.contains(&line), "{line:?} in {help}");
+            }
+        }
+        assert!(
+            help.contains("\nOptions:\n") && help.contains("--json"),
+            "{help}"
+        );
+        let wide: Vec<&str> = help
+            .lines()
+            .filter(|line| line.chars().count() > 80 && !line.trim_start().starts_with('-'))
+            .collect();
+        assert!(wide.is_empty(), "{wide:#?}");
     }
 
     #[test]
     fn every_argument_is_described() {
-        let bare: Vec<String> = commands(true)
+        let bare: Vec<String> = commands()
             .into_iter()
-            .flat_map(|(path, command)| {
+            .flat_map(|(path, command, _)| {
                 command
                     .get_arguments()
                     .filter(|arg| !arg.is_hide_set() && arg.get_help().is_none())
