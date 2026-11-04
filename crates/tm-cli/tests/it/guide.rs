@@ -54,6 +54,10 @@ fn move_help_points_at_the_statuses_tm_show_lists() {
         help.contains("`tm show ISSUE` lists those it can move to"),
         "{help}"
     );
+    assert!(
+        help.contains("tm leaves both to you"),
+        "the detail past its first line: {help}"
+    );
 }
 
 #[test]

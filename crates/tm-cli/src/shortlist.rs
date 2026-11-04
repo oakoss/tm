@@ -27,21 +27,25 @@ pub(crate) struct Shortlists {
 
 #[derive(Subcommand)]
 enum Action {
-    /// Create a list worked through by the named Actors: an Agent's name,
-    /// such as claude, or a human's as tm records it; @me is you.
+    /// Create a list worked through by the named Actors.
     Create {
+        /// The list's name.
         name: String,
+        /// An Actor who works through it: an Agent's name, such as claude, or
+        /// a human's as tm records it; @me is you. Repeat for more.
         #[arg(long = "actor", value_name = "NAME", required = true)]
         actors: Vec<String>,
         /// How many Issues it holds; 10 unless set.
         #[arg(long)]
         size: Option<u64>,
     },
-    /// Put Issues on a list, in the order given, at its end unless placed;
-    /// an Issue on another list leaves it.
+    /// Put Issues on a list, at its end unless placed.
+    ///
+    /// They go in the order given; an Issue on another list leaves it.
     Add {
         /// The list's name, or its id.
         list: String,
+        /// The Issues' Keys, in the order they go.
         #[arg(value_name = "KEY", required = true)]
         issues: Vec<String>,
         #[command(flatten)]
@@ -50,6 +54,7 @@ enum Action {
     /// Move an Issue within its list.
     #[command(group = ArgGroup::new("place").required(true).args(["top", "end", "before", "after"]))]
     Move {
+        /// The Issue's Key.
         #[arg(value_name = "KEY")]
         issue: String,
         #[command(flatten)]
@@ -57,6 +62,7 @@ enum Action {
     },
     /// Take Issues off their lists.
     Remove {
+        /// The Issues' Keys.
         #[arg(value_name = "KEY", required = true)]
         issues: Vec<String>,
     },
@@ -64,12 +70,16 @@ enum Action {
     Edit {
         /// The list's name, or its id, as when two lists share a name.
         list: String,
+        /// Its new name.
         #[arg(long)]
         name: Option<String>,
+        /// How many Issues it holds.
         #[arg(long)]
         size: Option<u64>,
+        /// Add an Actor who works through it; repeat for more.
         #[arg(long = "actor", value_name = "NAME")]
         add: Vec<String>,
+        /// Remove one of its Actors; repeat for more.
         #[arg(long = "remove-actor", value_name = "NAME")]
         remove: Vec<String>,
     },
