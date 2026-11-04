@@ -49,6 +49,15 @@ CREATE INDEX IF NOT EXISTS ops_by_session_time ON ops (session, utc_ms)
 -- A re-import finds what it wrote before by source (ADR 0013).
 CREATE INDEX IF NOT EXISTS ops_by_source ON ops (source) WHERE source IS NOT NULL;
 
+-- An id at an import's source names what it brought (ADR 0013): an Issue by
+-- its create's source after `system:`, a comment by its source after the
+-- last `#` (rtrim strips back to it).
+CREATE INDEX IF NOT EXISTS ops_by_import_id ON ops (lower(substr(source, instr(source, ':') + 1)))
+  WHERE kind = 'create' AND source IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ops_by_comment_import_id
+  ON ops (lower(substr(source, length(rtrim(source, replace(source, '#', ''))) + 1)))
+  WHERE kind = 'comment' AND source IS NOT NULL;
+
 -- Server order is per Project (one chain per Project, ADR 0006).
 CREATE UNIQUE INDEX IF NOT EXISTS ops_server_position ON ops (project, server_seq);
 

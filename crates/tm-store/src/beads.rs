@@ -190,9 +190,9 @@ fn text(bead: &Map<String, Value>, field: &str) -> Result<Option<String>, String
     }
 }
 
-/// Adds a label unless the bead already holds it in any spelling tm reads as
-/// the same.
-fn add_label(labels: &mut Vec<String>, label: String) {
+/// Adds a label unless the record already holds it in any spelling tm reads
+/// as the same.
+pub(crate) fn add_label(labels: &mut Vec<String>, label: String) {
     let key = |label: &str| label.trim().to_lowercase();
     if !labels.iter().any(|held| key(held) == key(&label)) {
         labels.push(label);

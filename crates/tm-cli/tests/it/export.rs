@@ -253,6 +253,169 @@ fn a_beads_export_lands_in_the_mapped_project_with_bd_readys_queue() {
     assert_eq!(doc(&out)["data"]["unchanged"], 16, "{out:?}");
 }
 
+/// A Trekker database in `repo`: an epic, and a task under it with seven
+/// comments, `CMT-1` the oldest.
+fn trekker_db(repo: &Path) -> String {
+    let db = repo.join(".trekker/trekker.db");
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE epics (id TEXT, title TEXT, description TEXT, status TEXT,
+           priority INTEGER, created_at INTEGER, updated_at INTEGER, rank TEXT);
+         CREATE TABLE tasks (id TEXT, epic_id TEXT, parent_task_id TEXT, title TEXT,
+           description TEXT, priority INTEGER, status TEXT, tags TEXT,
+           created_at INTEGER, updated_at INTEGER, rank TEXT);
+         CREATE TABLE comments (id TEXT, task_id TEXT, author TEXT, content TEXT,
+           created_at INTEGER, updated_at INTEGER);
+         CREATE TABLE dependencies (id TEXT, task_id TEXT, depends_on_id TEXT);
+         INSERT INTO epics VALUES ('EPIC-1', 'Core', NULL, 'todo', 2, 1774665800,
+           1774665800, 'a0');
+         INSERT INTO tasks VALUES ('TREK-1', 'EPIC-1', NULL, 'Render', NULL, 1, 'todo',
+           'feature', 1774665835, 1774665835, NULL);",
+    )
+    .unwrap();
+    for n in 1..=7 {
+        conn.execute(
+            "INSERT INTO comments VALUES (?1, 'TREK-1', 'jace', ?2, ?3, ?3)",
+            rusqlite::params![format!("CMT-{n}"), format!("note {n}"), 1_774_667_000 + n],
+        )
+        .unwrap();
+    }
+    db.to_str().unwrap().to_owned()
+}
+
+#[test]
+fn trekker_ids_name_their_issue_and_comment_after_the_import() {
+    let scratch = Scratch::new();
+    let (repo, _store, _) = initialized(&scratch);
+    let file = trekker_db(&repo);
+    let out = tm(&scratch, &repo, &["import", "--from", "trekker", &file]);
+    assert!(out.status.success(), "{out:?}");
+
+    for (reference, key) in [("TREK-1", "TM-2"), ("trek-1", "TM-2"), ("EPIC-1", "TM-1")] {
+        let out = tm(&scratch, &repo, &["--json", "show", reference]);
+        assert_eq!(doc(&out)["data"]["key"], key, "{reference}: {out:?}");
+    }
+    let out = tm(&scratch, &repo, &["show", "CMT-1"]);
+    let shown = text(&out.stdout);
+    assert!(shown.starts_with("TM-2  Render\n"), "{shown}");
+    assert!(
+        shown.contains(" [CMT-1]:\n  note 1\n"),
+        "the oldest comment is kept for being named: {shown}"
+    );
+    let out = tm(&scratch, &repo, &["show", "TREK-1"]);
+    assert!(!text(&out.stdout).contains("[CMT-1]"), "{out:?}");
+
+    let out = tm(
+        &scratch,
+        &repo,
+        &["--json", "move", "TREK-1", "in_progress"],
+    );
+    assert_eq!(
+        doc(&out)["data"]["fields"]["status"],
+        "in_progress",
+        "{out:?}"
+    );
+    let out = tm(
+        &scratch,
+        &repo,
+        &["comment", "TREK-1", "--edit", "cmt-2", "note 2, fixed"],
+    );
+    assert!(
+        text(&out.stdout).starts_with("edited comment CMT-2 on TM-2\n"),
+        "{out:?}"
+    );
+    let out = tm(
+        &scratch,
+        &repo,
+        &["--json", "show", "CMT-2", "--comments", "1"],
+    );
+    let comments = doc(&out)["data"]["comments"].clone();
+    let edited = comments
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|comment| comment["source"] == "trekker:TREK-1#CMT-2")
+        .cloned();
+    assert_eq!(
+        edited.map(|comment| comment["body"].clone()),
+        Some(json!("note 2, fixed")),
+        "kept in JSON too"
+    );
+
+    let out = tm(&scratch, &repo, &["--json", "move", "CMT-1", "done"]);
+    let refused = doc(&out);
+    assert_eq!(refused["error"], "not_found", "{refused}");
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("tm show CMT-1"),
+        "{refused}"
+    );
+    let out = tm(
+        &scratch,
+        &repo,
+        &["--json", "comment", "TM-1", "--edit", "CMT-2", "x"],
+    );
+    assert_eq!(doc(&out)["error"], "not_found", "{out:?}");
+
+    // An imported id that reads as a Key loses to it, and one imported twice
+    // names nothing.
+    let records = repo.join("records.jsonl");
+    let record = |source: &str| {
+        json!({"_type": "issue", "source": source, "project": "TM", "type": "task",
+            "title": source, "status": "todo"})
+        .to_string()
+    };
+    let lines = [record("x:TM-1"), record("y:TWICE-9"), record("z:TWICE-9")];
+    fs::write(&records, lines.join("\n")).unwrap();
+    let records = records.to_str().unwrap();
+    let out = tm(&scratch, &repo, &["import", "--records", records]);
+    assert!(out.status.success(), "{out:?}");
+    let out = tm(&scratch, &repo, &["--json", "show", "TM-1"]);
+    assert_eq!(doc(&out)["data"]["fields"]["title"], "Core", "{out:?}");
+    let out = tm(&scratch, &repo, &["--json", "show", "twice-9"]);
+    let twice = doc(&out);
+    assert_eq!(twice["error"], "invalid_value", "{twice}");
+    assert_eq!(
+        twice["matches"].as_array().map(Vec::len),
+        Some(2),
+        "{twice}"
+    );
+}
+
+#[test]
+fn a_trekker_database_is_read_where_it_lies_and_not_from_stdin() {
+    let scratch = Scratch::new();
+    let (repo, _store, _) = initialized(&scratch);
+    let file = trekker_db(&repo);
+    let file = file.as_str();
+
+    let out = tm(
+        &scratch,
+        &repo,
+        &["--json", "import", "--from", "trekker", "-"],
+    );
+    assert_eq!(doc(&out)["error"], "invalid_value", "{out:?}");
+    let out = tm(
+        &scratch,
+        &repo,
+        &["--json", "import", "--from", "trekker", file, "--dry-run"],
+    );
+    assert_eq!(doc(&out)["data"]["created"], 2, "{out:?}");
+
+    let out = tm(&scratch, &repo, &["import", "--from", "trekker", file]);
+    let printed = text(&out.stdout);
+    assert!(
+        printed.starts_with("imported 2 records: 2 created, 0 updated, 0 unchanged"),
+        "{printed}"
+    );
+    assert!(printed.contains("not kept: rank (1)\n"), "{printed}");
+    let out = tm(&scratch, &repo, &["--json", "show", "TM-2"]);
+    assert_eq!(doc(&out)["data"]["parent"]["key"], "TM-1", "{out:?}");
+}
+
 #[test]
 fn a_beads_import_files_into_the_project_its_directory_maps_to() {
     let scratch = Scratch::new();

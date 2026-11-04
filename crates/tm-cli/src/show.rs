@@ -30,15 +30,17 @@ impl Default for Comments {
 }
 
 impl Comments {
-    /// How many of `comments`, the oldest, are left out; never the question
-    /// the Issue waits on.
-    fn earlier(self, comments: &[CommentView], open: Option<Uuid>) -> usize {
+    /// How many of `comments`, the oldest, are left out; never one of
+    /// `kept`, such as the question the Issue waits on.
+    fn earlier(self, comments: &[CommentView], kept: &[Uuid]) -> usize {
         let earlier = match self {
             Self::Latest(n) => comments.len().saturating_sub(n),
             Self::All => 0,
         };
-        open.and_then(|open| comments.iter().position(|comment| comment.id == open))
-            .map_or(earlier, |question| earlier.min(question))
+        comments
+            .iter()
+            .position(|comment| kept.contains(&comment.id))
+            .map_or(earlier, |first| earlier.min(first))
     }
 }
 
@@ -52,11 +54,13 @@ pub(crate) fn comment_limit(value: &str) -> Result<Comments, String> {
         .map_err(|_| format!("expected a whole number of comments or all, not {value:?}"))
 }
 
+/// `reference` may name an imported comment, such as `CMT-243`: its Issue
+/// is shown, with that comment however old.
 pub(crate) fn run(reference: &str, limit: Comments) -> Result<Output, CliError> {
     let here = here::read()?;
     match here
-        .issue(reference)
-        .and_then(|id| render_with(&here, id, limit))
+        .find(reference)
+        .and_then(|(id, named)| render_with(&here, id, limit, named))
     {
         Ok(mut output) => {
             output.warnings = here.warnings;
@@ -68,10 +72,15 @@ pub(crate) fn run(reference: &str, limit: Comments) -> Result<Output, CliError> 
 
 /// An Issue as `show` prints it; `create` prints the Issue it made the same way.
 pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
-    render_with(here, id, Comments::default())
+    render_with(here, id, Comments::default(), None)
 }
 
-fn render_with(here: &Here, id: Uuid, limit: Comments) -> Result<Output, CliError> {
+fn render_with(
+    here: &Here,
+    id: Uuid,
+    limit: Comments,
+    named: Option<Uuid>,
+) -> Result<Output, CliError> {
     let store = &here.store;
     let (view, project, parent, (claim, now_ms), links, below) = store.read(|store| {
         let view = store.issue(id)?.ok_or_else(|| {
@@ -100,7 +109,7 @@ fn render_with(here: &Here, id: Uuid, limit: Comments) -> Result<Output, CliErro
                 (link, other)
             })
             .collect();
-        let comments = shown_comments(store, &view, limit)?;
+        let comments = shown_comments(store, &view, limit, named)?;
         let children = count_children(store.scheme(), &store.children(id)?);
         let membership = membership(store, &view)?;
         let version = store.issue_version(id)?;
@@ -173,11 +182,13 @@ fn render_with(here: &Here, id: Uuid, limit: Comments) -> Result<Output, CliErro
     Ok(Output::new(text, data))
 }
 
-/// An Issue's comments, and how many of the oldest `limit` leaves out.
+/// An Issue's comments, and how many of the oldest `limit` leaves out,
+/// keeping the `named` one and the question it waits on.
 fn shown_comments(
     store: &Store,
     view: &IssueView,
     limit: Comments,
+    named: Option<Uuid>,
 ) -> Result<(Vec<CommentView>, usize), StoreError> {
     let comments = store.comments(view.id)?;
     let waits_on = if view.fields.contains_key(WAITING_ON) {
@@ -185,8 +196,14 @@ fn shown_comments(
     } else {
         None
     };
-    let earlier = limit.earlier(&comments, waits_on);
+    let kept: Vec<Uuid> = waits_on.into_iter().chain(named).collect();
+    let earlier = limit.earlier(&comments, &kept);
     Ok((comments, earlier))
+}
+
+/// The id an import brought a comment with, such as Trekker's `CMT-243`.
+pub(crate) fn imported_id(comment: &CommentView) -> Option<&str> {
+    comment.import_id.as_deref()
 }
 
 /// The comments after the first `earlier`, with a line counting those.
@@ -411,6 +428,7 @@ fn comment_json(comment: &CommentView) -> Value {
         "retracted": comment.retracted,
         "role": comment.role,
         "edited_utc_ms": comment.edited_ms,
+        "source": comment.source,
     });
     if !comment.options.is_empty() && !comment.retracted {
         json["options"] = json!(comment.options);
@@ -463,12 +481,10 @@ fn write_comment(text: &mut String, comment: &CommentView) {
     } else {
         ""
     };
-    // The id is what `tm comment --edit` takes.
-    let by = format!(
-        "{by}, {}{edited} [{}]",
-        local_time(comment.utc_ms),
-        short(comment.id)
-    );
+    // The id is what `tm comment --edit` takes; an imported one goes by the
+    // id its source gave it, which notes elsewhere cite.
+    let id = imported_id(comment).map_or_else(|| short(comment.id), printable);
+    let by = format!("{by}, {}{edited} [{id}]", local_time(comment.utc_ms));
     if comment.retracted {
         let _ = writeln!(text, "\n{by}: (retracted)");
         return;

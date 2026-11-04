@@ -800,3 +800,43 @@ fn a_refused_record_names_its_line_and_keeps_what_came_before() {
         "the ordinary write checks hold: {err}"
     );
 }
+
+#[test]
+fn an_id_at_the_source_names_its_issue_or_comment_whatever_it_holds() {
+    let dir = TempDir::new();
+    let mut store = store(&dir, &ManualClock::at(1_000));
+    let record = |source: &str, comment: &str| {
+        json!({
+            "_type": "issue", "source": source, "project": "CPL", "type": "task",
+            "title": "t", "status": "todo", "reporter": "ana",
+            "comments": [{"id": comment, "actor": "ana", "body": "x"}],
+        })
+    };
+    let imported = import(
+        &mut store,
+        &[
+            record("gh:o/r#12", "part#tail"),
+            record("beads:x-1", "c1"),
+            record("other:X-1", "c2"),
+        ],
+    )
+    .unwrap();
+    let hashed = issue(&imported, "gh:o/r#12");
+
+    assert_eq!(store.issues_by_import_id("O/R#12").unwrap(), [hashed]);
+    let comments = store.comments_by_import_id("PART#tail").unwrap();
+    assert_eq!(comments.len(), 1, "{comments:?}");
+    assert_eq!(comments[0].0, hashed);
+    let shown = store.comments(hashed).unwrap();
+    assert_eq!(shown[0].import_id.as_deref(), Some("part#tail"));
+    assert_eq!(
+        store.comments_by_import_id("tail").unwrap(),
+        Vec::<(Uuid, Uuid)>::new()
+    );
+    assert_eq!(
+        store.issues_by_import_id("x-1").unwrap().len(),
+        2,
+        "two sources"
+    );
+    assert_eq!(store.issues_by_import_id("X-1").unwrap().len(), 2);
+}

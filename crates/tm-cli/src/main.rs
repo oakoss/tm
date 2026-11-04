@@ -317,7 +317,8 @@ enum Command {
         /// state and comments but not history.
         #[arg(long)]
         records: bool,
-        /// Write another tracker's export, such as `bd export`'s, as records.
+        /// Write another tracker's export as records: `bd export`'s, or a
+        /// Trekker database such as .trekker/trekker.db, read-only.
         #[arg(long, value_enum, conflicts_with = "records")]
         from: Option<export::Adapter>,
         /// Check the file and the Workspace, and write nothing.
