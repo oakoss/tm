@@ -68,7 +68,7 @@ fn write(
     let mut branch_warning = None;
     // A human starts the work without a Claim, which only an Agent holds.
     let (claim, held, ops, begun) = if actor.is_agent() {
-        let ttl_ms = lasts.ttl_ms(here);
+        let ttl_ms = lasts.apply(here);
         branch_warning = here.record_branch();
         let started = here.store.take_with(&actor, id, ttl_ms, drafts)?;
         let (taken, kept) = if started.kept {

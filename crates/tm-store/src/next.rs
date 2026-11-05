@@ -6,7 +6,7 @@ use tm_core::scheme::Category;
 use tm_core::{Actor, Change, Op};
 use uuid::Uuid;
 
-use crate::claim::{Claim, current, taken};
+use crate::claim::{Claim, current, made_by};
 use crate::membership::{open_blocks, passed_over};
 use crate::{Draft, Lineage, Store, StoreError};
 
@@ -42,7 +42,7 @@ impl Store {
     ) -> Result<Option<Next<T>>, StoreError> {
         let scheme = self.scheme.clone();
         let writer = actor.clone();
-        let branch = self.place.branch.clone();
+        let (branch, paths) = (self.place.branch.clone(), self.place.paths.clone());
         let mut extend = Some(extend);
         let mut chosen = None;
         let mut made = T::default();
@@ -69,7 +69,7 @@ impl Store {
                             project: view.project,
                             subject: view.id,
                             change: Change::Claim {
-                                action: take(&writer, ttl_ms, prev, branch.clone()),
+                                action: take(&writer, ttl_ms, prev, (&branch, &paths)),
                             },
                         });
                     }
@@ -95,7 +95,7 @@ impl Store {
                         })
                     )
             })
-            .map(|op| taken(op, actor.name(), ttl_ms, actor.session()))
+            .map(made_by)
             .transpose()?;
         Ok(Some(Next {
             issue,
@@ -110,13 +110,14 @@ fn take(
     actor: &Actor,
     ttl_ms: Option<u64>,
     prev: Option<Uuid>,
-    branch: Option<String>,
+    (branch, paths): (&Option<String>, &[String]),
 ) -> ClaimAction {
     ClaimAction::Take {
         agent: actor.name().to_owned(),
         ttl_ms,
         prev,
         session: actor.session().map(str::to_owned),
-        branch,
+        branch: branch.clone(),
+        paths: paths.to_vec(),
     }
 }

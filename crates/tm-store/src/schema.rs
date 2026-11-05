@@ -3,7 +3,7 @@
 
 /// Stamped into `PRAGMA user_version`; a store with a different value is
 /// rebuilt on open.
-pub(crate) const PROJECTION_VERSION: i64 = 21;
+pub(crate) const PROJECTION_VERSION: i64 = 22;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
 /// Until tm v1 is released the log changes in place (ADR 0010).
@@ -411,7 +411,11 @@ CREATE TABLE claims (
   expires_ms INTEGER,
   ttl_ms INTEGER,
   session TEXT,
-  handed INTEGER NOT NULL DEFAULT 0
+  handed INTEGER NOT NULL DEFAULT 0,
+  branch TEXT,
+  paths TEXT,
+  -- Taken by replacing its own session's live Claim, which undo refuses.
+  retook INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 
 -- Short-lists (ADR 0016). A name is not unique here: two Replicas may each

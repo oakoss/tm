@@ -159,6 +159,7 @@ fn opened(
         dir: Some(found.dir.display().to_string()),
         branch: None,
         harnesses: crate::identity::harness_sessions(crate::identity::env),
+        paths: Vec::new(),
     });
     Ok(Here {
         home,

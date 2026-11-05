@@ -15,7 +15,7 @@ use crate::follow;
 use crate::here::{self, Here};
 use crate::identity;
 use crate::list::line_within;
-use crate::output::{Output, local_time, span};
+use crate::output::{Output, local_time, printable, span};
 use crate::prime::TITLE_BYTES;
 
 /// A duration such as `90s`, `30m`, `2h` or `1d`, in milliseconds.
@@ -34,7 +34,7 @@ pub(crate) fn take(reference: &str, lasts: &Lasts) -> Result<Output, CliError> {
         let issue = here.issue(reference)?;
         let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
             .map_err(|message| CliError::new("no_identity", message))?;
-        let ttl_ms = lasts.ttl_ms(here);
+        let ttl_ms = lasts.apply(here);
         let branch_warning = here.record_branch();
         let claim = here
             .store
@@ -74,14 +74,24 @@ pub(crate) fn taken_lines(shown: &str, claim: &Claim) -> (String, String) {
         _ => " with no expiry".to_owned(),
     };
     (
-        format!("{shown} claimed by {}{lasts}\n", holder(claim)),
+        format!(
+            "{shown} claimed by {}{}{lasts}\n",
+            holder(claim),
+            covering(claim)
+        ),
         format!("Claim {}; release with: tm release {shown}\n", claim.id),
     )
 }
 
-/// How long a Claim a command takes lasts, for `tm claim` and `tm start`.
+/// How long a Claim a command takes lasts, and the files it covers, for
+/// `tm claim`, `tm start` and `tm next`.
 #[derive(clap::Args)]
 pub(crate) struct Lasts {
+    /// A file, directory or glob from the repository root the Claim covers,
+    /// such as 'crates/tm-store/**'; another Agent session is warned before
+    /// editing one. Repeat for more.
+    #[arg(long = "paths", value_name = "GLOB", value_parser = covered)]
+    paths: Vec<String>,
     /// How long the Claim lasts without renewal, such as 30m or 2h; another
     /// Agent may then take the Issue. Defaults to `claim_expiry` in
     /// .config/tm.toml, else 2h.
@@ -94,14 +104,22 @@ pub(crate) struct Lasts {
 }
 
 impl Lasts {
-    /// The duration a take records, falling back to the repo file's.
-    pub(crate) fn ttl_ms(&self, here: &Here) -> Option<u64> {
+    /// Gives the store the files the take covers, and returns the duration
+    /// it records, falling back to the repo file's.
+    pub(crate) fn apply(&self, here: &mut Here) -> Option<u64> {
+        here.store.set_paths(self.paths.clone());
         if self.no_expiry {
             None
         } else {
             self.ttl_ms.or_else(|| here.found.file.claim_ttl_ms())
         }
     }
+}
+
+/// A `--paths` value as a Claim keeps it, or why it names no file in the
+/// repository.
+fn covered(path: &str) -> Result<String, String> {
+    tm_core::paths::normalize(path).map_err(|reason| format!("the path {reason}"))
 }
 
 /// What a heartbeat did.
@@ -227,10 +245,11 @@ pub(crate) fn list() -> Result<Output, CliError> {
         for (claim, view) in shown {
             let _ = writeln!(
                 text,
-                "  {}  ({}, {})",
+                "  {}  ({}, {}{})",
                 line_within(view, TITLE_BYTES),
                 holder(claim),
-                expiry(claim, now_ms)
+                expiry(claim, now_ms),
+                covering(claim)
             );
             items.push(json!({
                 "issue": { "id": view.id, "key": view.key },
@@ -410,7 +429,18 @@ pub(crate) fn claim_json(claim: &Claim, now_ms: i64) -> serde_json::Value {
         "expires_in_ms": claim.expires_ms.map(|at| (at - now_ms).max(0)),
         "session": claim.session,
         "handed": claim.handed,
+        "branch": claim.branch,
+        "paths": claim.paths,
     })
+}
+
+/// `, covering a, b` for a Claim with paths, or nothing.
+pub(crate) fn covering(claim: &Claim) -> String {
+    if claim.paths.is_empty() {
+        String::new()
+    } else {
+        format!(", covering {}", printable(&claim.paths.join(", ")))
+    }
 }
 
 /// A Claim's expiry at `now_ms`: `expires in 1h 12m`, `lapsed` and when in

@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use tm_core::actor::{SessionId, is_session_id};
 use tm_core::op::{CLAIM_FIELD, ClaimAction};
-use tm_core::{Actor, Change, Op};
+use tm_core::{Actor, Change, Op, paths};
 use uuid::Uuid;
 
 use crate::apply::{issue_project, uuid_from};
@@ -35,6 +35,10 @@ pub struct Claim {
     /// Handed to `agent` by another session and not yet taken by one of its
     /// own, so its first session may take it over while it holds.
     pub handed: bool,
+    /// The git branch the take recorded; a handoff keeps the Claim's.
+    pub branch: Option<String>,
+    /// The files it covers; a handoff keeps the Claim's.
+    pub paths: Vec<String>,
 }
 
 impl Claim {
@@ -221,22 +225,27 @@ impl Store {
         issue: Uuid,
         ttl_ms: Option<u64>,
     ) -> Result<Claim, StoreError> {
-        let branch = self.place.branch.clone();
-        let take = |prev| ClaimAction::Take {
+        let (branch, paths) = (self.place.branch.clone(), self.place.paths.clone());
+        let take = |prev, paths| ClaimAction::Take {
             agent: actor.name().to_owned(),
             ttl_ms,
             prev,
             session: actor.session().map(str::to_owned),
             branch: branch.clone(),
+            paths,
         };
-        let draft = self.claim_draft(actor.clone(), issue, take(None))?;
+        let draft = self.claim_draft(actor.clone(), issue, take(None, Vec::new()))?;
         // `prev` is read inside the write, so no other take slips in between.
         let ops = self.append_with(
             Vec::new(),
             |tx, _| {
-                let prev = current(tx, issue)?.map(|held| held.id);
+                let held = current(tx, issue)?;
+                let paths = covering(held.as_ref(), actor, &paths);
+                let prev = held.map(|held| held.id);
                 Ok(vec![Draft {
-                    change: Change::Claim { action: take(prev) },
+                    change: Change::Claim {
+                        action: take(prev, paths),
+                    },
                     ..draft
                 }])
             },
@@ -245,7 +254,7 @@ impl Store {
         )?;
         // From the operation, not the table: another writer may already have
         // released and retaken the Issue.
-        taken(&ops[0], actor.name(), ttl_ms, actor.session())
+        made_by(&ops[0])
     }
 
     /// [`Store::take`], with the drafts `extend` makes from `issue` and its
@@ -263,15 +272,16 @@ impl Store {
         ttl_ms: Option<u64>,
         extend: impl FnOnce(&Lineage) -> (Vec<Draft>, T),
     ) -> Result<TakenWith<T>, StoreError> {
-        let branch = self.place.branch.clone();
-        let take = |prev| ClaimAction::Take {
+        let (branch, paths) = (self.place.branch.clone(), self.place.paths.clone());
+        let take = |prev, paths| ClaimAction::Take {
             agent: actor.name().to_owned(),
             ttl_ms,
             prev,
             session: actor.session().map(str::to_owned),
             branch: branch.clone(),
+            paths,
         };
-        let draft = self.claim_draft(actor.clone(), issue, take(None))?;
+        let draft = self.claim_draft(actor.clone(), issue, take(None, Vec::new()))?;
         let scheme = self.scheme.clone();
         let mut made = T::default();
         let mut kept = None;
@@ -281,16 +291,21 @@ impl Store {
                 let held = current(tx, issue)?;
                 let (more, out) = extend(&crate::family::lineage(tx, &scheme, issue, at_ms)?);
                 made = out;
-                if let Some(own) = held
-                    .as_ref()
-                    .filter(|held| held.taken_by(actor) && !held.lapsed(at_ms))
-                {
+                // Taken again when it is to cover other files.
+                if let Some(own) = held.as_ref().filter(|held| {
+                    held.taken_by(actor)
+                        && !held.lapsed(at_ms)
+                        && (paths.is_empty() || held.paths == paths)
+                }) {
                     kept = Some(own.clone());
                     return Ok(more);
                 }
+                let paths = covering(held.as_ref(), actor, &paths);
                 let prev = held.map(|held| held.id);
                 let mut drafts = vec![Draft {
-                    change: Change::Claim { action: take(prev) },
+                    change: Change::Claim {
+                        action: take(prev, paths),
+                    },
                     ..draft
                 }];
                 drafts.extend(more);
@@ -319,7 +334,7 @@ impl Store {
                     )
             })
             .ok_or_else(|| StoreError::Corrupt("a take's batch holds no take".into()))?;
-        let claim = taken(take, actor.name(), ttl_ms, actor.session())?;
+        let claim = made_by(take)?;
         Ok(TakenWith {
             claim,
             kept: false,
@@ -405,6 +420,8 @@ impl Store {
         let handed = Claim {
             on_behalf_of: held.on_behalf_of.clone(),
             handed: true,
+            branch: held.branch.clone(),
+            paths: held.paths.clone(),
             ..taken(&ops[0], agent, ttl_ms, None)?
         };
         Ok((ops, handed))
@@ -504,7 +521,8 @@ impl Store {
     pub fn claims(&self) -> Result<AgentClaims, StoreError> {
         let now_ms = self.utc_ms()?;
         let mut stmt = self.conn.prepare_cached(
-            "SELECT issue_id, op_id, agent, on_behalf_of, expires_ms, ttl_ms, session, handed
+            "SELECT issue_id, op_id, agent, on_behalf_of, expires_ms, ttl_ms, session, handed,
+                    branch, paths
              FROM claims ORDER BY agent, on_behalf_of, session, issue_id",
         )?;
         let (lapsed, held) = stmt
@@ -539,7 +557,8 @@ impl Store {
 pub(crate) fn current(conn: &Connection, issue: Uuid) -> Result<Option<Claim>, StoreError> {
     let row = conn
         .query_row(
-            "SELECT issue_id, op_id, agent, on_behalf_of, expires_ms, ttl_ms, session, handed
+            "SELECT issue_id, op_id, agent, on_behalf_of, expires_ms, ttl_ms, session, handed,
+                    branch, paths
              FROM claims WHERE issue_id = ?1",
             [issue.as_bytes()],
             ClaimRow::read,
@@ -558,6 +577,9 @@ struct ClaimRow {
     ttl_ms: Option<i64>,
     session: Option<String>,
     handed: bool,
+    branch: Option<String>,
+    /// One per line, as no kept path holds a line break.
+    paths: Option<String>,
 }
 
 impl ClaimRow {
@@ -571,6 +593,8 @@ impl ClaimRow {
             ttl_ms: row.get(5)?,
             session: row.get(6)?,
             handed: row.get(7)?,
+            branch: row.get(8)?,
+            paths: row.get(9)?,
         })
     }
 
@@ -588,6 +612,11 @@ impl ClaimRow {
                 .map_err(|_| StoreError::Corrupt("a Claim's duration is negative".into()))?,
             session: self.session,
             handed: self.handed,
+            branch: self.branch,
+            paths: self
+                .paths
+                .map(|paths| paths.lines().map(str::to_owned).collect())
+                .unwrap_or_default(),
         })
     }
 }
@@ -820,11 +849,72 @@ pub(crate) fn renewals(
 
 fn claims_of(conn: &Connection, agent: &str, on_behalf_of: &str) -> Result<Vec<Claim>, StoreError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT issue_id, op_id, agent, on_behalf_of, expires_ms, ttl_ms, session, handed
+        "SELECT issue_id, op_id, agent, on_behalf_of, expires_ms, ttl_ms, session, handed,
+                branch, paths
          FROM claims WHERE agent = ?1 AND on_behalf_of = ?2 ORDER BY issue_id",
     )?;
     let rows = stmt.query_map(params![agent, on_behalf_of], ClaimRow::read)?;
     rows.map(|row| row?.claim()).collect()
+}
+
+/// A take's branch, and its paths held to the spelling `tm_core::paths`
+/// keeps on every Replica, so a pulled take is held to them too.
+fn check_place(branch: Option<&str>, paths: &[String]) -> Result<(), StoreError> {
+    if branch.is_some_and(|branch| branch.trim().is_empty() || branch.contains(char::is_control)) {
+        return Err(invalid(
+            "cannot record a blank branch or one with control characters",
+        ));
+    }
+    if paths.len() > paths::MAX_PATHS {
+        return Err(invalid(&format!(
+            "covers {} paths; the most is {}",
+            paths.len(),
+            paths::MAX_PATHS
+        )));
+    }
+    if !paths::is_kept_order(paths) {
+        return Err(invalid("covers paths out of order or one twice"));
+    }
+    for path in paths {
+        match paths::normalize(path) {
+            Ok(kept) if kept == *path => {}
+            Ok(kept) => {
+                return Err(invalid(&format!("path {path:?} is kept as {kept:?}")));
+            }
+            Err(reason) => return Err(invalid(&format!("path {path:?} {reason}"))),
+        }
+    }
+    Ok(())
+}
+
+/// Whether the take `take` holds `issue` by having replaced its own session's
+/// live Claim, so only changed the files it covers.
+pub(crate) fn retook(conn: &Connection, issue: Uuid, take: Uuid) -> Result<bool, StoreError> {
+    let retook: Option<bool> = conn
+        .query_row(
+            "SELECT retook FROM claims WHERE issue_id = ?1 AND op_id = ?2",
+            [issue.as_bytes(), take.as_bytes()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(retook.unwrap_or(false))
+}
+
+/// The paths a take covers: `paths`, or when it names none and takes up a
+/// Claim handed to its Agent, the paths that Claim covered.
+fn covering(held: Option<&Claim>, actor: &Actor, paths: &[String]) -> Vec<String> {
+    let human = actor.on_behalf_of().unwrap_or(actor.name());
+    match held {
+        Some(held)
+            if paths.is_empty()
+                && held.handed
+                && held.agent == actor.name()
+                && held.on_behalf_of == human =>
+        {
+            held.paths.clone()
+        }
+        _ => paths.to_vec(),
+    }
 }
 
 fn invalid(reason: &str) -> StoreError {
@@ -842,12 +932,24 @@ fn invalid(reason: &str) -> StoreError {
 /// operation records, never the clock, so every Replica replays the same.
 fn stands(held: Option<&Claim>, action: &ClaimAction, (at_ms, human): (i64, &str)) -> bool {
     match action {
-        ClaimAction::Take { prev, agent, .. } => match held {
+        ClaimAction::Take {
+            prev,
+            agent,
+            session,
+            paths,
+            ..
+        } => match held {
             None => prev.is_none(),
             Some(held) => {
-                let handed_to_taker =
-                    held.handed && held.agent == *agent && held.on_behalf_of == human;
-                *prev == Some(held.id) && (held.lapsed(at_ms) || handed_to_taker)
+                let same_holder = held.agent == *agent && held.on_behalf_of == human;
+                let handed_to_taker = held.handed && same_holder;
+                // Its own session takes it again to cover other files.
+                let retaken = same_holder
+                    && held.session.is_some()
+                    && held.session == *session
+                    && !paths.is_empty()
+                    && *paths != held.paths;
+                *prev == Some(held.id) && (held.lapsed(at_ms) || handed_to_taker || retaken)
             }
         },
         ClaimAction::Renew { claim, .. }
@@ -880,6 +982,32 @@ fn expiry(op: &Op, ttl_ms: u64) -> Result<i64, StoreError> {
         .ok_or_else(|| invalid(&format!("expiry {ttl_ms} ms is out of range")))
 }
 
+/// The Claim the take `op` makes, branch and paths included.
+pub(crate) fn made_by(op: &Op) -> Result<Claim, StoreError> {
+    let Change::Claim {
+        action:
+            ClaimAction::Take {
+                agent,
+                ttl_ms,
+                session,
+                branch,
+                paths,
+                ..
+            },
+    } = op.change()?
+    else {
+        return Err(StoreError::Corrupt(format!(
+            "operation {} is not a take",
+            op.op_id
+        )));
+    };
+    Ok(Claim {
+        branch,
+        paths,
+        ..taken(op, &agent, ttl_ms, session.as_deref())?
+    })
+}
+
 /// The Claim a take makes, held to the rules that need no state, so replay
 /// holds a pulled take to them too.
 pub(crate) fn taken(
@@ -910,6 +1038,8 @@ pub(crate) fn taken(
         ttl_ms,
         session: session.map(str::to_owned),
         handed: false,
+        branch: None,
+        paths: Vec::new(),
     })
 }
 
@@ -1033,17 +1163,15 @@ pub(crate) fn apply(
             ttl_ms,
             session,
             branch,
+            paths,
             ..
         } => {
-            if branch
-                .as_deref()
-                .is_some_and(|branch| branch.trim().is_empty() || branch.contains(char::is_control))
-            {
-                return Err(invalid(
-                    "cannot record a blank branch or one with control characters",
-                ));
-            }
-            Some(taken(op, agent, *ttl_ms, session.as_deref())?)
+            check_place(branch.as_deref(), paths)?;
+            Some(Claim {
+                branch: branch.clone(),
+                paths: paths.clone(),
+                ..taken(op, agent, *ttl_ms, session.as_deref())?
+            })
         }
         ClaimAction::Hand { agent, ttl_ms, .. } => Some(Claim {
             handed: true,
@@ -1082,32 +1210,24 @@ pub(crate) fn apply(
             }
         }));
     }
-    // A handed Claim stays held for the human the Claim it replaces was.
+    // A handed Claim stays held for the human the Claim it replaces was, on
+    // the same branch and files.
     let claim = claim.map(|claim| match (&held, claim.handed) {
         (Some(held), true) => Claim {
             on_behalf_of: held.on_behalf_of.clone(),
+            branch: held.branch.clone(),
+            paths: held.paths.clone(),
             ..claim
         },
         _ => claim,
     });
+    // A take that stood over a live Claim not handed on is its own session's.
+    let retook = matches!(action, ClaimAction::Take { .. })
+        && held
+            .as_ref()
+            .is_some_and(|held| !held.handed && !held.lapsed(op.utc_ms));
     match (claim, renewed) {
-        // Replaces a lapsed or handed Claim the take took over, or the one
-        // handed on.
-        (Some(claim), _) => tx.execute(
-            "INSERT OR REPLACE INTO claims
-               (issue_id, agent, on_behalf_of, op_id, expires_ms, ttl_ms, session, handed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                claim.issue.as_bytes(),
-                claim.agent,
-                claim.on_behalf_of,
-                claim.id.as_bytes(),
-                claim.expires_ms,
-                claim.ttl_ms.and_then(|ttl| i64::try_from(ttl).ok()),
-                claim.session,
-                claim.handed
-            ],
-        )?,
+        (Some(claim), _) => hold(tx, &claim, retook)?,
         (None, Some((expires_ms, ttl_ms))) => tx.execute(
             "UPDATE claims SET expires_ms = ?1, ttl_ms = ?2 WHERE issue_id = ?3",
             params![
@@ -1122,4 +1242,28 @@ pub(crate) fn apply(
         )?,
     };
     Ok(None)
+}
+
+/// Writes `claim` as its Issue's, replacing a lapsed, handed or own Claim
+/// a take took over, or the one handed on.
+fn hold(tx: &Transaction<'_>, claim: &Claim, retook: bool) -> Result<usize, StoreError> {
+    Ok(tx.execute(
+        "INSERT OR REPLACE INTO claims
+           (issue_id, agent, on_behalf_of, op_id, expires_ms, ttl_ms, session, handed,
+            branch, paths, retook)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            claim.issue.as_bytes(),
+            claim.agent,
+            claim.on_behalf_of,
+            claim.id.as_bytes(),
+            claim.expires_ms,
+            claim.ttl_ms.and_then(|ttl| i64::try_from(ttl).ok()),
+            claim.session,
+            claim.handed,
+            claim.branch,
+            (!claim.paths.is_empty()).then(|| claim.paths.join("\n")),
+            retook,
+        ],
+    )?)
 }

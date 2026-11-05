@@ -455,6 +455,7 @@ fn take(agent: &str, ttl_ms: Option<u64>, prev: Option<Uuid>) -> Change {
             prev,
             session: None,
             branch: None,
+            paths: Vec::new(),
         },
     }
 }

@@ -545,11 +545,13 @@ fn claim_release_and_doctor_answer_in_fixed_shapes() {
         "batch": "[id]",
         "claim": {
           "agent": "claude",
+          "branch": "main",
           "expires_in_ms": "[ms]",
           "expires_ms": "[ms]",
           "handed": false,
           "id": "[id]",
           "on_behalf_of": "jace",
+          "paths": [],
           "session": null
         },
         "issue": {
@@ -1162,4 +1164,87 @@ fn writing_to_an_issue_taken_over_warns_its_old_holder() {
         &["--json", "comment", "TM-1", "mine"],
     );
     assert_eq!(doc(&out)["warnings"], json!([]), "{out:?}");
+}
+
+#[test]
+fn a_claim_covers_the_paths_it_names_and_its_session_changes_them() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    for title in ["claimed", "started"] {
+        store
+            .create_issue(&Actor::human("jace"), project, "task", title)
+            .unwrap();
+    }
+    drop(store);
+    let in_session = |session: &str, args: &[&str]| {
+        tm_command()
+            .args(args)
+            .current_dir(&repo)
+            .env("TM_HOME", scratch.home())
+            .env("TM_ACTOR", "jace")
+            .env("TM_AGENT", "claude")
+            .env("TM_SESSION", session)
+            .env("GIT_CONFIG_GLOBAL", scratch.git_config())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+
+    let out = in_session(
+        "s1",
+        &["claim", "TM-1", "--paths", "./src/", "--paths", "docs/**"],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let said = text(&out.stdout);
+    assert!(said.contains("covering docs/**, src"), "{said}");
+    assert_eq!(
+        claim_of(&scratch, &repo, "TM-1")["paths"],
+        json!(["docs/**", "src"])
+    );
+    let shown = text(&tm(&scratch, &repo, &["show", "TM-1"]).stdout);
+    assert!(shown.contains(", covering docs/**, src (Claim "), "{shown}");
+
+    for bad in ["../x", "/etc", ""] {
+        let out = in_session("s1", &["--json", "claim", "TM-1", "--paths", bad]);
+        assert_eq!(out.status.code(), Some(2), "{bad}: {out:?}");
+        assert_eq!(doc(&out)["error"], "usage");
+    }
+
+    // Its own session takes it again to cover other files; no other may.
+    let out = in_session("s1", &["--json", "claim", "TM-1", "--paths", "lib"]);
+    assert!(out.status.success(), "{out:?}");
+    let batch = doc(&out)["data"]["batch"].as_str().unwrap().to_owned();
+    assert_eq!(claim_of(&scratch, &repo, "TM-1")["paths"], json!(["lib"]));
+    let history = text(&tm(&scratch, &repo, &["history", "TM-1"]).stdout);
+    assert!(history.contains("claimed again: claude"), "{history}");
+    assert!(!history.contains("took over"), "{history}");
+    let out = in_session("s1", &["--json", "undo", &batch]);
+    let refused = doc(&out);
+    assert_eq!(refused["error"], "cannot_undo", "{refused}");
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("claim the Issue again with the paths you want"),
+        "{refused}"
+    );
+    assert_eq!(claim_of(&scratch, &repo, "TM-1")["paths"], json!(["lib"]));
+    let out = in_session("s1", &["--json", "claim", "TM-1"]);
+    assert_eq!(doc(&out)["error"], "already_claimed", "{out:?}");
+    let out = in_session("s2", &["--json", "claim", "TM-1", "--paths", "web"]);
+    assert_eq!(doc(&out)["error"], "already_claimed", "{out:?}");
+
+    let out = in_session("s1", &["start", "TM-2"]);
+    assert!(out.status.success(), "{out:?}");
+    let out = in_session("s1", &["start", "TM-2", "--paths", "web"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(claim_of(&scratch, &repo, "TM-2")["paths"], json!(["web"]));
+    let out = in_session("s1", &["start", "TM-2"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        claim_of(&scratch, &repo, "TM-2")["paths"],
+        json!(["web"]),
+        "a start naming no paths keeps the Claim"
+    );
 }

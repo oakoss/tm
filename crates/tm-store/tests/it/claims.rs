@@ -32,6 +32,7 @@ fn take(agent: &str, prev: Option<Uuid>) -> Change {
             prev,
             session: None,
             branch: None,
+            paths: Vec::new(),
         },
     }
 }
@@ -98,6 +99,7 @@ fn a_pulled_take_naming_a_session_outside_the_session_alphabet_does_not_fit() {
             prev: None,
             session: Some(session.into()),
             branch: None,
+            paths: Vec::new(),
         },
     };
     let (blank, control, spaced, fine) = (
@@ -139,6 +141,7 @@ fn a_pulled_take_recording_a_blank_or_control_branch_does_not_fit() {
             prev: None,
             session: None,
             branch: Some(branch.into()),
+            paths: Vec::new(),
         },
     };
     let issues = [(); 4].map(|()| Uuid::now_v7());
@@ -177,6 +180,7 @@ fn a_take_must_name_the_session_writing_it() {
             prev: None,
             session: session.map(str::to_owned),
             branch: None,
+            paths: Vec::new(),
         },
     };
     for (writer, session) in [
@@ -210,6 +214,8 @@ fn a_session_name_is_shown_whole_and_a_harness_id_by_its_last_eight_digits() {
             ttl_ms: None,
             session: Some(session.into()),
             handed: false,
+            branch: None,
+            paths: Vec::new(),
         }
         .taker()
     };
@@ -238,6 +244,8 @@ fn a_claim_with_no_session_reads_as_taken_in_every_session() {
         ttl_ms: None,
         session: session.map(str::to_owned),
         handed: false,
+        branch: None,
+        paths: Vec::new(),
     };
     assert!(claim(None).taken_in(Some("s1")));
     assert!(claim(None).taken_in(None));
@@ -532,6 +540,7 @@ fn a_pulled_take_is_held_to_the_rules_that_need_no_state_but_not_to_archiving() 
             prev: None,
             session: None,
             branch: None,
+            paths: Vec::new(),
         },
     };
     let ids = insert_all(
@@ -676,6 +685,7 @@ fn a_pulled_take_over_a_claim_wins_only_once_its_time_is_past_the_expiry() {
             prev: None,
             session: None,
             branch: None,
+            paths: Vec::new(),
         },
     };
     // claude's take is written at 1_002, so it lapses at 1_010.

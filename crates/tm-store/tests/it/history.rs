@@ -152,6 +152,7 @@ fn claims_apply_by_compare_and_set_not_by_merge() {
             prev,
             session: None,
             branch: None,
+            paths: Vec::new(),
         },
     };
     let first = remote_op(7, issue, &take("claude", None), Hlc::new(5 * minute, 0), 1);

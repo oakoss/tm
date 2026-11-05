@@ -215,6 +215,10 @@ pub enum ClaimAction {
         /// repository or on a detached head.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         branch: Option<String>,
+        /// The files it covers, as [`crate::paths`] keeps them, which another
+        /// session is warned before editing.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        paths: Vec<String>,
     },
     /// Extends the Claim `claim`, lapsed or not, to `ttl_ms` from when it is
     /// written; it applies only while that Claim still holds the Issue's row.
@@ -1144,12 +1148,13 @@ mod tests {
                 prev: None,
                 session: Some("s1".into()),
                 branch: Some("feat/x".into()),
+                paths: vec!["crates/tm-store/**".into()],
             },
         };
         let json = serde_json::to_string(&take).unwrap();
         assert_eq!(
             json,
-            r#"{"kind":"claim","action":{"action":"take","agent":"claude","ttl_ms":7200000,"session":"s1","branch":"feat/x"}}"#
+            r#"{"kind":"claim","action":{"action":"take","agent":"claude","ttl_ms":7200000,"session":"s1","branch":"feat/x","paths":["crates/tm-store/**"]}}"#
         );
         let earlier = r#"{"kind":"claim","action":{"action":"take","agent":"claude"}}"#;
         assert!(matches!(
@@ -1158,9 +1163,10 @@ mod tests {
                 action: ClaimAction::Take {
                     session: None,
                     branch: None,
+                    ref paths,
                     ..
                 }
-            }
+            } if paths.is_empty()
         ));
         assert_eq!(serde_json::from_str::<Change>(&json).unwrap(), take);
         assert_eq!(take.field(), Some("claim"));

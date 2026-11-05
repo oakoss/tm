@@ -550,6 +550,8 @@ pub struct Workplace {
     pub branch: Option<String>,
     /// Each harness and the session its variables name here.
     pub harnesses: Vec<(String, String)>,
+    /// The files a Claim taken here covers, as `tm_core::paths` keeps them.
+    pub paths: Vec<String>,
 }
 
 /// Whether undoing the last batch this Store wrote would succeed, as tried
@@ -796,6 +798,14 @@ impl Store {
     /// Set only by commands that take a Claim, so others never run git.
     pub fn set_branch(&mut self, branch: Option<String>) {
         self.place.branch = branch;
+    }
+
+    /// The files the Claims taken from here cover, sorted with none twice as
+    /// a take keeps them.
+    pub fn set_paths(&mut self, mut paths: Vec<String>) {
+        paths.sort();
+        paths.dedup();
+        self.place.paths = paths;
     }
 
     fn init(&mut self) -> Result<(), StoreError> {

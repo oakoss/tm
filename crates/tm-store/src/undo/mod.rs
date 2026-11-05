@@ -376,6 +376,15 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
                     "it released a Claim; take the Issue again with tm claim",
                 ));
             }
+            // Releasing would lose the Claim its own session only meant to
+            // change the files of.
+            Change::Claim {
+                action: ClaimAction::Take { .. },
+            } if crate::claim::retook(conn, op.issue, op.op_id)? => {
+                return Err(cannot(
+                    "it changed the files a Claim covers; claim the Issue again with the paths you want",
+                ));
+            }
             // Undoing a handoff releases the handed Claim as undoing a take
             // does; the Claim it replaced is not taken back.
             Change::Claim {

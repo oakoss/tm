@@ -791,11 +791,13 @@ fn primes_claims_answer_in_a_fixed_shape() {
         "category": "todo",
         "claim": {
           "agent": "claude",
+          "branch": null,
           "expires_in_ms": "[ms]",
           "expires_ms": "[ms]",
           "handed": false,
           "id": "[id]",
           "on_behalf_of": "jace",
+          "paths": [],
           "session": null
         },
         "fields": {
