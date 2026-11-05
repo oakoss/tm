@@ -104,7 +104,7 @@ fn list(
     Ok(Output::new(text, Value::Null))
 }
 
-/// `args` with `tm list`'s filter words moved after a `--`, in the order
+/// `args` with `tm list`'s filter words, by any of its names, moved after a `--`, in the order
 /// typed, so clap reads a negated term such as `-type:spike` as a filter
 /// word rather than a flag. Flags stay before it, each with the value `cli`
 /// says it takes; other commands' arguments are returned as they are.
@@ -117,7 +117,11 @@ pub(crate) fn filter_last(cli: &mut clap::Command, args: Vec<OsString>) -> Vec<O
     else {
         return args;
     };
-    if args[at] != "list" {
+    let named = |name: &str| args[at] == name;
+    let listing = cli
+        .find_subcommand("list")
+        .is_some_and(|list| named(list.get_name()) || list.get_all_aliases().any(named));
+    if !listing {
         return args;
     }
     cli.build();

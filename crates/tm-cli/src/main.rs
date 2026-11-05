@@ -165,7 +165,8 @@ enum Command {
     /// List the open Issues a filter matches.
     ///
     /// A filter naming status, category or archived reaches finished ones
-    /// too.
+    /// too. `tm search` is the same command.
+    #[command(alias = "search")]
     List {
         /// A filter such as `status:todo priority:high -labels:bug`,
         /// `is:blocked`, or words to search for (`login timeout`).
