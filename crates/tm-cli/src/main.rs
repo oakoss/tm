@@ -44,7 +44,7 @@ use std::fmt::Write as _;
 use std::process::ExitCode;
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
-use clap::{ArgGroup, CommandFactory, Parser, Subcommand};
+use clap::{ArgGroup, CommandFactory, FromArgMatches as _, Parser, Subcommand};
 use serde_json::json;
 use tm_core::Scheme;
 use tm_core::scheme::Category;
@@ -63,10 +63,330 @@ struct Cli {
     command: Option<Command>,
 }
 
+/// The headings `tm --help` lists commands under, in order; clap gives a
+/// command list one heading only.
+const GROUPS: [(&str, &[&str]); 5] = [
+    (
+        "Everyday",
+        &[
+            "create", "list", "ready", "show", "edit", "move", "comment", "link", "unlink",
+        ],
+    ),
+    ("History and undo", &["history", "undo"]),
+    (
+        "Agent work",
+        &[
+            "next",
+            "start",
+            "claim",
+            "heartbeat",
+            "handoff",
+            "release",
+            "claims",
+            "sessions",
+            "shortlist",
+            "ask",
+            "answer",
+            "withdraw",
+            "prime",
+            "guide",
+        ],
+    ),
+    ("Memories", &["remember", "memories", "forget"]),
+    (
+        "Setup and data",
+        &[
+            "init", "setup", "scheme", "git", "export", "import", "rebuild", "doctor", "help",
+        ],
+    ),
+];
+
+/// tm's command line, with its help listing commands under [`GROUPS`].
+fn cli() -> clap::Command {
+    // Building adds the `help` subcommand the listing names, but also
+    // expands `tm help help`; only a copy is built.
+    let mut built = Cli::command();
+    built.build();
+    Cli::command().help_template(grouped_help(&built))
+}
+
+/// A help template listing `command`'s subcommands under [`GROUPS`], each by
+/// its first line, then the options.
+fn grouped_help(command: &clap::Command) -> String {
+    let styles = command.get_styles();
+    let (header, literal) = (styles.get_header(), styles.get_literal());
+    let width = GROUPS
+        .iter()
+        .flat_map(|(_, names)| names.iter().map(|name| name.len()))
+        .max()
+        .unwrap_or(0);
+    let mut out = String::from("{about-with-newline}\n{usage-heading} {usage}\n");
+    for (heading, names) in GROUPS {
+        let _ = write!(out, "\n{header}{heading}:{header:#}\n");
+        for name in names {
+            let about = command
+                .find_subcommand(name)
+                .and_then(clap::Command::get_about)
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            let pad = " ".repeat(width - name.len() + 2);
+            let _ = writeln!(out, "  {literal}{name}{literal:#}{pad}{about}");
+        }
+    }
+    let _ = write!(out, "\n{header}Options:{header:#}\n{{options}}");
+    out
+}
+
 #[derive(Subcommand)]
 enum Command {
-    /// Create a Workspace for this repo and map the repo to it in
-    /// .config/tm.toml, after showing the file.
+    /// Create an Issue in the Project this directory maps to.
+    ///
+    /// Created in an active Status, such as with `--set status=in_progress`,
+    /// it starts each parent still in triage or todo, as `tm move` does.
+    Create {
+        /// The Issue type, such as task or bug; `tm scheme show` lists them.
+        #[arg(long = "type")]
+        issue_type: Option<String>,
+        /// The Issue's title.
+        #[arg(long, value_parser = fields::text_value)]
+        title: Option<String>,
+        /// Set a field, such as priority=high; FIELD=- reads the value from
+        /// stdin. Repeat for more.
+        #[arg(long, value_name = "FIELD=VALUE", value_parser = create::field_value)]
+        set: Vec<(String, String)>,
+        /// Add a label; repeat for more.
+        #[arg(long = "label", value_name = "LABEL")]
+        labels: Vec<String>,
+        /// The parent Issue's Key or id.
+        #[arg(long)]
+        parent: Option<String>,
+    },
+    /// List the open Issues a filter matches.
+    ///
+    /// A filter naming status, category or archived reaches finished ones
+    /// too.
+    List {
+        /// A filter such as `status:todo priority:high -labels:bug`,
+        /// `is:blocked`, or words to search for (`login timeout`).
+        filter: Vec<String>,
+        /// Show at most this many.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Every Status, done and cancelled included, rather than only the
+        /// open work.
+        #[arg(long)]
+        all: bool,
+    },
+    /// List the work that can start now, most urgent first.
+    ///
+    /// Unclaimed todo Issues no open Issue blocks, each with what it would
+    /// unblock.
+    Ready {
+        /// Show at most this many.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Show an Issue's fields, Claim and latest comments.
+    Show {
+        /// The Issue's Key, such as CPL-42, or its full id.
+        issue: String,
+        /// Show the latest N comments, or all; 5 unless given.
+        #[arg(long, value_name = "N|all", value_parser = show::comment_limit)]
+        comments: Option<show::Comments>,
+    },
+    /// Change an Issue's fields, labels or parent in one write.
+    ///
+    /// The Status changes with `tm move`. The description holds the current
+    /// plan; record progress against it with `tm comment`.
+    Edit(edit::Edit),
+    /// Move an Issue to a Status of its Workflow.
+    ///
+    /// Starting work on it starts each parent still in triage or todo, in the
+    /// same batch. Finishing its parent's last open child prints the move
+    /// that closes the parent, and reopening a child of a finished parent
+    /// the move that reopens it; tm leaves both to you. It prints a line per
+    /// change; `tm show` or `--json` gives the whole Issue.
+    Move(moves::Move),
+    /// Comment on an Issue.
+    ///
+    /// Comments keep a dated trail an edit would overwrite: progress, what
+    /// was learned and changes of plan.
+    Comment {
+        /// The Issue's Key or full id.
+        issue: String,
+        /// The comment, or `-` to read it from stdin.
+        body: String,
+        /// Correct a comment you wrote instead: its id as `tm show` prints
+        /// it, or last for your own latest.
+        #[arg(long, value_name = "ID|last")]
+        edit: Option<String>,
+    },
+    /// Link two Issues, such as `tm link TM-1 blocks TM-2`.
+    ///
+    /// A Link reads from either end: `tm link TM-2 is blocked by TM-1` makes
+    /// the same one.
+    Link {
+        /// An Issue, the Link's name, then the other Issue.
+        #[arg(value_name = "ISSUE NAME… ISSUE", num_args = 3.., required = true)]
+        words: Vec<String>,
+    },
+    /// Remove a Link, named as `tm link` names it.
+    Unlink {
+        /// An Issue, the Link's name, then the other Issue.
+        #[arg(value_name = "ISSUE NAME… ISSUE", num_args = 3.., required = true)]
+        words: Vec<String>,
+    },
+    /// Show what happened to an Issue, oldest first.
+    ///
+    /// Each write with when, who, and the batch to give `tm undo`. Claim
+    /// renewals are left out.
+    History {
+        /// The Issue's Key, such as CPL-42, or its full id.
+        issue: String,
+        /// Show only the latest N writes.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+        /// Include Claim renewals.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Undo one command's writes, or your own last command.
+    ///
+    /// A command is named by the batch id it printed; with no batch, your own
+    /// last command, stepping back each time.
+    Undo {
+        /// The batch id, or a unique start or end of it, 8 characters or more.
+        batch: Option<String>,
+        /// Show what would be restored, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Restore a field another Agent session's live Claim protects; only
+        /// once that session has stopped work on it.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Take and start the next Issue on your Short-lists or ready queue.
+    ///
+    /// As `tm start` does, it takes the first Issue your Short-lists hold
+    /// that can start now (`TM_SHORTLIST` names one list), or the most urgent
+    /// ready Issue when you have none; with nothing to take, says why.
+    Next {
+        /// Show the Issue it would take, without taking it.
+        #[arg(long, conflicts_with_all = ["ttl_ms", "no_expiry"])]
+        peek: bool,
+        #[command(flatten)]
+        lasts: claim::Lasts,
+    },
+    /// Start work on an Issue and print a branch name for it.
+    ///
+    /// An Agent claims it, it moves from triage or todo to its first active
+    /// Status with its parents, and it gains its Assignee if it has none, all
+    /// as one undo.
+    Start {
+        /// The Issue's Key or full id.
+        issue: String,
+        #[command(flatten)]
+        lasts: claim::Lasts,
+    },
+    /// Claim an Issue for the Agent writing.
+    ///
+    /// Prints the Claim id that releases it.
+    Claim {
+        /// The Issue's Key or full id.
+        issue: String,
+        #[command(flatten)]
+        lasts: claim::Lasts,
+    },
+    /// Renew this session's Claims during quiet work.
+    ///
+    /// Writes renew them too; this covers quiet work such as a long read or
+    /// test run. A hook may run it after each tool use.
+    Heartbeat {
+        /// Renew only this Issue's Claim, by Key or full id.
+        issue: Option<String>,
+    },
+    /// Hand an Issue's Claim to another Agent with a note.
+    ///
+    /// Its next session takes it with `tm start`.
+    Handoff(handoff::Handoff),
+    /// Release a Claim.
+    ///
+    /// The session holding it, and the human it is held for, may leave out
+    /// the id `tm claim` printed.
+    #[command(group = ArgGroup::new("what").required(true).args(["issue", "mine"]))]
+    Release {
+        /// The Issue's Key or full id.
+        issue: Option<String>,
+        /// The Claim id `tm claim` printed.
+        claim: Option<uuid::Uuid>,
+        /// Release every Claim this session took, as a harness does when the
+        /// session ends.
+        #[arg(long, conflicts_with_all = ["issue", "claim"])]
+        mine: bool,
+    },
+    /// List who holds which Issue.
+    ///
+    /// Every held Claim with its time left, and the lapsed ones another Agent
+    /// may take.
+    Claims,
+    /// List the most recently active Agent sessions.
+    ///
+    /// Each with the Issues it wrote and the command that resumes it.
+    Sessions {
+        /// Show at most this many; 10 unless given.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Show your Short-lists, or create and change them.
+    ///
+    /// A Short-list is an ordered list of what to do next. A member that
+    /// cannot be taken next stays on its list, marked with why: blocked,
+    /// claimed, started, archived, an epic or in triage.
+    Shortlist(shortlist::Shortlists),
+    /// Ask a person a question the Issue waits on, then take other work.
+    ///
+    /// The question joins its comments and the Issue leaves the ready queue;
+    /// a Claim your session holds is kept for your Agent, which resumes it
+    /// with `tm start` once answered. Use it when your human is not in the
+    /// session or the decision can wait; when they are present, ask them
+    /// there.
+    Ask(ask::Ask),
+    /// Answer the question an Issue waits on.
+    ///
+    /// The Agent that asked resumes it with `tm start`. A number or an
+    /// option's words picks one of the question's options; any other reply
+    /// is taken as written. At a terminal, `tm answer KEY` asks for the
+    /// reply, and a bare `tm answer` walks each question waiting on you.
+    Answer(ask::Answer),
+    /// Withdraw a question you asked and settled yourself.
+    ///
+    /// Say why; the Issue waits on no one and your Agent resumes it with
+    /// `tm start`.
+    Withdraw(ask::Withdraw),
+    /// Print the context an Agent session starts from.
+    ///
+    /// For a `SessionStart` hook.
+    Prime,
+    /// Print how to work with tm.
+    ///
+    /// Finding, starting, recording and finishing work.
+    Guide,
+    /// Remember a fact about this Project for every session.
+    ///
+    /// Every session's tm prime shows it. A memory is a durable fact a future
+    /// session needs, such as how to run the tests or a trap in the build.
+    /// Progress on an Issue belongs in tm comment, and what AGENTS.md already
+    /// says needs no memory. Memories stay in this machine's tm, not in git.
+    Remember(memory::Remember),
+    /// List, search or show this Project's memories.
+    ///
+    /// Search them by words, or show one by its key.
+    Memories(memory::Memories),
+    /// Forget a memory; tm undo brings it back.
+    Forget(memory::Forget),
+    /// Create this repo's Workspace and map the repo to it.
+    ///
+    /// The map is .config/tm.toml, written after showing the file.
     ///
     /// It also offers a pointer to `tm guide` for AGENTS.md or CLAUDE.md,
     /// written only on a yes from a person at a terminal, which an Agent is
@@ -91,213 +411,36 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
-    /// Claim an Issue for the Agent writing; prints the Claim id that
-    /// releases it.
-    Claim {
-        /// The Issue's Key or full id.
-        issue: String,
-        #[command(flatten)]
-        lasts: claim::Lasts,
-    },
-    /// Start work on an Issue: an Agent claims it, it moves from triage or
-    /// todo to its first active Status with its parents, and it gains its
-    /// Assignee if it has none, all as one undo; prints a branch name for it.
-    Start {
-        /// The Issue's Key or full id.
-        issue: String,
-        #[command(flatten)]
-        lasts: claim::Lasts,
-    },
-    /// Take and start, as `tm start` does, the first Issue your Short-lists
-    /// hold that can start now (`TM_SHORTLIST` names one list), or the most
-    /// urgent ready Issue when you have none; with nothing to take, says why.
-    Next {
-        /// Show the Issue it would take, without taking it.
-        #[arg(long, conflicts_with_all = ["ttl_ms", "no_expiry"])]
-        peek: bool,
-        #[command(flatten)]
-        lasts: claim::Lasts,
-    },
-    /// Renew this session's Claims, as its writes do, through quiet work
-    /// such as a long read or test run; a hook may run it after each tool use.
-    Heartbeat {
-        /// Renew only this Issue's Claim, by Key or full id.
-        issue: Option<String>,
-    },
-    /// Hand an Issue's Claim to another Agent with a note; its next session
-    /// takes it with `tm start`.
-    Handoff(handoff::Handoff),
-    /// Ask a person a question the Issue waits on, then take other work.
+    /// Write tm's hooks into an agent harness's settings for this repo.
     ///
-    /// The question joins its comments and the Issue leaves the ready queue;
-    /// a Claim your session holds is kept for your Agent, which resumes it
-    /// with `tm start` once answered. Use it when your human is not in the
-    /// session or the decision can wait; when they are present, ask them
-    /// there.
-    Ask(ask::Ask),
-    /// Answer the question an Issue waits on; the Agent that asked resumes it
-    /// with `tm start`.
-    ///
-    /// A number or an option's words picks one of the question's options;
-    /// any other reply is taken as written. At a terminal, `tm answer KEY`
-    /// asks for the reply, and a bare `tm answer` walks each question
-    /// waiting on you.
-    Answer(ask::Answer),
-    /// Withdraw a question you asked and settled yourself, saying why; the
-    /// Issue waits on no one and your Agent resumes it with `tm start`.
-    Withdraw(ask::Withdraw),
-    /// Remember a fact about this Project that every session's tm prime
-    /// shows.
-    ///
-    /// A memory is a durable fact a future session needs, such as how to run
-    /// the tests or a trap in the build. Progress on an Issue belongs in tm
-    /// comment, and what AGENTS.md already says needs no memory. Memories stay
-    /// in this machine's tm, not in git.
-    Remember(memory::Remember),
-    /// List this Project's memories, search them by words, or show one by
-    /// its key.
-    Memories(memory::Memories),
-    /// Forget a memory; tm undo brings it back.
-    Forget(memory::Forget),
-    /// Release a Claim. The session holding it, and the human it is held
-    /// for, may leave out the id `tm claim` printed.
-    #[command(group = ArgGroup::new("what").required(true).args(["issue", "mine"]))]
-    Release {
-        /// The Issue's Key or full id.
-        issue: Option<String>,
-        claim: Option<uuid::Uuid>,
-        /// Release every Claim this session took, as a harness does when the
-        /// session ends.
-        #[arg(long, conflicts_with_all = ["issue", "claim"])]
-        mine: bool,
-    },
-    /// List logged operations that did not apply, and Claims another take,
-    /// renewal or release won.
-    Doctor,
-    /// Comment on an Issue.
-    ///
-    /// Comments keep a dated trail an edit would overwrite: progress, what
-    /// was learned and changes of plan.
-    Comment {
-        /// The Issue's Key or full id.
-        issue: String,
-        /// The comment, or `-` to read it from stdin.
-        body: String,
-        /// Correct a comment you wrote instead: its id as `tm show` prints
-        /// it, or last for your own latest.
-        #[arg(long, value_name = "ID|last")]
-        edit: Option<String>,
-    },
-    /// Create an Issue in the Project this directory maps to.
-    ///
-    /// Created in an active Status, such as with `--set status=in_progress`,
-    /// it starts each parent still in triage or todo, as `tm move` does.
-    Create {
-        /// The Issue type, such as task or bug; `tm scheme show` lists them.
-        #[arg(long = "type")]
-        issue_type: Option<String>,
-        #[arg(long, value_parser = fields::text_value)]
-        title: Option<String>,
-        /// Set a field, such as priority=high; FIELD=- reads the value from
-        /// stdin. Repeat for more.
-        #[arg(long, value_name = "FIELD=VALUE", value_parser = create::field_value)]
-        set: Vec<(String, String)>,
-        /// Add a label; repeat for more.
-        #[arg(long = "label", value_name = "LABEL")]
-        labels: Vec<String>,
-        /// The parent Issue's Key or id.
+    /// The hooks run tm prime when a session starts, a heartbeat after each
+    /// tool use, and release the session's Claims when it ends. Shows the
+    /// diff and writes only on a person's yes; an Agent is only shown it.
+    Setup {
+        /// The harness whose settings get the hooks.
+        harness: hook::Harness,
+        /// Remove the hooks tm setup adds, and nothing else.
         #[arg(long)]
-        parent: Option<String>,
+        undo: bool,
+        /// Write without asking, for a person not at a terminal.
+        #[arg(long)]
+        yes: bool,
     },
-    /// Change an Issue's fields, labels or parent in one write; the Status
-    /// changes with `tm move`.
+    /// Inspect the Scheme.
     ///
-    /// The description holds the current plan; record progress against it
-    /// with `tm comment`.
-    Edit(edit::Edit),
-    /// Link two Issues, read from either end: `tm link TM-1 blocks TM-2` or
-    /// `tm link TM-2 is blocked by TM-1`.
-    Link {
-        #[arg(value_name = "ISSUE NAME… ISSUE", num_args = 3.., required = true)]
-        words: Vec<String>,
+    /// With no subcommand, print it as `tm scheme show` does.
+    Scheme {
+        #[command(subcommand)]
+        action: Option<SchemeAction>,
     },
-    /// Remove a Link, named as `tm link` names it.
-    Unlink {
-        #[arg(value_name = "ISSUE NAME… ISSUE", num_args = 3.., required = true)]
-        words: Vec<String>,
+    /// Read this repo's git history; tm never writes to git.
+    Git {
+        #[command(subcommand)]
+        action: GitAction,
     },
-    /// List the open Issues a filter matches; a filter naming status,
-    /// category or archived reaches finished ones too.
-    List {
-        /// A filter such as `status:todo priority:high -labels:bug`,
-        /// `is:blocked`, or words to search for (`login timeout`).
-        filter: Vec<String>,
-        /// Show at most this many.
-        #[arg(long)]
-        limit: Option<usize>,
-        /// Every Status, done and cancelled included, rather than only the
-        /// open work.
-        #[arg(long)]
-        all: bool,
-    },
-    /// Move an Issue to a Status of its Workflow.
+    /// Write this Workspace's log to stdout as JSONL, for `tm import`.
     ///
-    /// Starting work on it starts each parent still in triage or todo, in the
-    /// same batch. Finishing its parent's last open child prints the move
-    /// that closes the parent, and reopening a child of a finished parent
-    /// the move that reopens it; tm leaves both to you. It prints a line per
-    /// change; `tm show` or `--json` gives the whole Issue.
-    Move(moves::Move),
-    /// Print the context an Agent session starts from, for a `SessionStart` hook.
-    Prime,
-    /// Print how to work with tm: finding, starting, recording and finishing
-    /// work.
-    Guide,
-    /// List the work that can start now: unclaimed todo Issues no open Issue
-    /// blocks, most urgent first, with what each would unblock.
-    Ready {
-        /// Show at most this many.
-        #[arg(long)]
-        limit: Option<usize>,
-    },
-    /// List who holds which Issue: every held Claim with its time left, and
-    /// the lapsed ones another Agent may take.
-    Claims,
-    /// List the most recently active Agent sessions, each with the Issues it
-    /// wrote and the command that resumes it.
-    Sessions {
-        /// Show at most this many; 10 unless given.
-        #[arg(long)]
-        limit: Option<usize>,
-    },
-    /// Show your Short-lists, the ordered lists of what to do next, or with
-    /// a subcommand create and change them.
-    ///
-    /// A member that cannot be taken next stays on its list, marked with why:
-    /// blocked, claimed, started, archived, an epic or in triage.
-    Shortlist(shortlist::Shortlists),
-    /// Show an Issue's fields and Claim.
-    Show {
-        /// The Issue's Key, such as CPL-42, or its full id.
-        issue: String,
-        /// Show the latest N comments, or all; 5 unless given.
-        #[arg(long, value_name = "N|all", value_parser = show::comment_limit)]
-        comments: Option<show::Comments>,
-    },
-    /// Show what happened to an Issue, oldest first: each write with when,
-    /// who, and the batch to give `tm undo`. Claim renewals are left out.
-    History {
-        /// The Issue's Key, such as CPL-42, or its full id.
-        issue: String,
-        /// Show only the latest N writes.
-        #[arg(long, value_name = "N")]
-        limit: Option<usize>,
-        /// Include Claim renewals.
-        #[arg(long)]
-        all: bool,
-    },
-    /// Write this Workspace's log to stdout as JSONL, for `tm import`; there
-    /// `--json` changes only how an error prints.
+    /// There `--json` changes only how an error prints.
     Export {
         /// Write it to tm's home as exports/<Workspace>/<date>.jsonl instead,
         /// unless nothing changed since the newest one there, and remove old
@@ -305,10 +448,12 @@ enum Command {
         #[arg(long)]
         dated: bool,
     },
-    /// Restore an export into its Workspace on this machine, creating the
-    /// Workspace when this machine lacks it; with `--records`, write its
-    /// Issue records into this repo's Workspace instead, and with `--from`,
-    /// another tracker's export as records.
+    /// Restore an export, or import another tracker's Issues.
+    ///
+    /// An export restores into its Workspace on this machine, creating the
+    /// Workspace when this machine lacks it; with `--records`, its Issue
+    /// records are written into this repo's Workspace instead, and with
+    /// `--from`, another tracker's export as records.
     Import {
         /// The export, records file or tracker export, or `-` to read it from
         /// stdin.
@@ -327,57 +472,27 @@ enum Command {
     },
     /// Rebuild every table from the log.
     Rebuild,
-    /// Undo one command's writes, named by the batch id it printed; with no
-    /// batch, your own last command, stepping back each time.
-    Undo {
-        /// The batch id, or a unique start or end of it, 8 characters or more.
-        batch: Option<String>,
-        /// Show what would be restored, and write nothing.
-        #[arg(long)]
-        dry_run: bool,
-        /// Restore a field another Agent session's live Claim protects; only
-        /// once that session has stopped work on it.
-        #[arg(long)]
-        force: bool,
-    },
-    /// Inspect the Scheme; with no subcommand, print it as `tm scheme show`
-    /// does.
-    Scheme {
-        #[command(subcommand)]
-        action: Option<SchemeAction>,
-    },
-    /// Write tm's hooks into an agent harness's settings for this repo: tm
-    /// prime when a session starts, a heartbeat after each tool use, and
-    /// releasing the session's Claims when it ends. Shows the diff and writes
-    /// only on a person's yes; an Agent is only shown it.
-    Setup {
-        harness: hook::Harness,
-        /// Remove the hooks tm setup adds, and nothing else.
-        #[arg(long)]
-        undo: bool,
-        /// Write without asking, for a person not at a terminal.
-        #[arg(long)]
-        yes: bool,
-    },
+    /// List logged operations that did not apply, and lost Claims.
+    ///
+    /// A Claim is listed when another take, renewal or release won it.
+    Doctor,
     /// What the hooks tm setup writes run, each reading the hook's JSON on
     /// stdin: codex's session, and a Claude Code sub-agent's id.
+    #[command(hide = true)]
     Hook {
         #[command(subcommand)]
         action: HookAction,
-    },
-    /// Read this repo's git history; tm never writes to git.
-    Git {
-        #[command(subcommand)]
-        action: GitAction,
     },
 }
 
 #[derive(Subcommand)]
 enum GitAction {
-    /// Move each Issue a `Closes TM-n` line names to done once its commit is
-    /// on the default branch, as this clone last fetched it, commenting the
-    /// commit and pull request it shipped in. Done Issues are skipped, so it
-    /// is safe to run after every merge.
+    /// Move the Issues merged commits close to done.
+    ///
+    /// Each Issue a `Closes TM-n` line names moves once its commit is on the
+    /// default branch, as this clone last fetched it, with a comment naming
+    /// the commit and pull request it shipped in. Done Issues are skipped, so
+    /// it is safe to run after every merge.
     Scan {
         /// Show what would move, and write nothing.
         #[arg(long)]
@@ -388,18 +503,33 @@ enum GitAction {
 #[derive(Subcommand)]
 enum HookAction {
     /// Print tm prime for the session that is starting.
-    SessionStart { harness: hook::Harness },
+    SessionStart {
+        /// The harness running the hook.
+        harness: hook::Harness,
+    },
     /// Make a Claude Code sub-agent's Bash command that runs tm write as that
     /// sub-agent, by exporting `TM_AGENT` first.
-    PreBash { harness: ClaudeOnly },
+    PreBash {
+        /// The harness running the hook.
+        harness: ClaudeOnly,
+    },
     /// Renew this session's Claims as tm heartbeat does, printing the
     /// harness's hook output only for a warning not yet given this session.
-    Heartbeat { harness: hook::Harness },
+    Heartbeat {
+        /// The harness running the hook.
+        harness: hook::Harness,
+    },
     /// Release a finished Claude Code sub-agent's Claims.
-    SubagentStop { harness: ClaudeOnly },
+    SubagentStop {
+        /// The harness running the hook.
+        harness: ClaudeOnly,
+    },
     /// Release the session's Claims, a Claude Code session's sub-agents'
     /// included.
-    SessionEnd { harness: hook::Harness },
+    SessionEnd {
+        /// The harness running the hook.
+        harness: hook::Harness,
+    },
 }
 
 /// The harness of a hook only Claude Code has.
@@ -411,8 +541,9 @@ enum ClaudeOnly {
 
 #[derive(Subcommand)]
 enum SchemeAction {
-    /// Print the Scheme's types, Workflows and fields; with a type, that
-    /// type's Workflow and the fields it carries.
+    /// Print the Scheme's types, Workflows and fields.
+    ///
+    /// With a type, that type's Workflow and the fields it carries.
     Show {
         /// An Issue type by id or label, such as task.
         #[arg(value_name = "TYPE")]
@@ -429,7 +560,10 @@ fn main() -> ExitCode {
         output::install_panic_hook();
     }
     let parsed = list::filter_last(&mut Cli::command(), std::env::args_os().collect());
-    let cli = match Cli::try_parse_from(parsed) {
+    let cli = match cli()
+        .try_get_matches_from(parsed)
+        .and_then(|matches| Cli::from_arg_matches(&matches))
+    {
         Ok(cli) => cli,
         Err(err) => {
             // A fix built from lossy arguments would write what clap refuses.
@@ -470,7 +604,7 @@ fn main() -> ExitCode {
 fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
     match command {
         None => {
-            let help = Cli::command().render_help().to_string();
+            let help = cli().render_help().to_string();
             Ok(Output::new(help.clone(), json!({ "help": help })))
         }
         Some(Command::Scheme {
@@ -702,4 +836,136 @@ fn scheme_text(scheme: &Scheme) -> String {
         );
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::{Cli, GROUPS, cli};
+
+    /// The longest first line a command list shows before it wraps at 80
+    /// columns, past its two-space indent and the name column.
+    const ABOUT: usize = 64;
+
+    /// `tm` and every command under it, by path such as `tm git scan`, each
+    /// with whether a help list shows it: neither it nor a parent is hidden.
+    fn commands() -> Vec<(String, clap::Command, bool)> {
+        fn walk(
+            path: &str,
+            command: &clap::Command,
+            shown: bool,
+            out: &mut Vec<(String, clap::Command, bool)>,
+        ) {
+            let shown = shown && !command.is_hide_set();
+            out.push((path.to_owned(), command.clone(), shown));
+            for sub in command.get_subcommands() {
+                walk(&format!("{path} {}", sub.get_name()), sub, shown, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk("tm", &Cli::command(), true, &mut out);
+        out
+    }
+
+    #[test]
+    fn every_command_says_what_it_does_in_one_short_line() {
+        let long: Vec<String> = commands()
+            .into_iter()
+            .skip(1)
+            .filter_map(|(path, command, shown)| {
+                let about = command.get_about().map(ToString::to_string);
+                match about.as_deref().map(str::trim) {
+                    None | Some("") => Some(format!("{path}: no description")),
+                    Some(about) if shown && about.chars().count() > ABOUT => {
+                        Some(format!("{path}: {about}"))
+                    }
+                    Some(_) => None,
+                }
+            })
+            .collect();
+        assert!(long.is_empty(), "{}", long.join("\n"));
+    }
+
+    #[test]
+    fn only_the_hooks_command_is_left_out_of_the_list() {
+        let hidden: Vec<String> = commands()
+            .into_iter()
+            .filter(|(_, command, _)| command.is_hide_set())
+            .map(|(path, ..)| path)
+            .collect();
+        assert_eq!(hidden, ["tm hook"]);
+    }
+
+    #[test]
+    fn tm_help_lists_every_command_once_under_a_heading() {
+        let mut command = cli();
+        command.build();
+        let shown: Vec<&str> = command
+            .get_subcommands()
+            .filter(|sub| !sub.is_hide_set())
+            .map(clap::Command::get_name)
+            .collect();
+        let grouped: Vec<&str> = GROUPS
+            .iter()
+            .flat_map(|(_, names)| names.iter().copied())
+            .collect();
+        let mut missing: Vec<&str> = shown
+            .iter()
+            .copied()
+            .filter(|name| !grouped.contains(name))
+            .collect();
+        missing.extend(grouped.iter().copied().filter(|name| !shown.contains(name)));
+        assert!(
+            missing.is_empty(),
+            "in GROUPS or tm's commands, not both: {missing:?}"
+        );
+        let mut unique = grouped.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), grouped.len(), "a command under two headings");
+
+        let help = command.clone().render_help().to_string();
+        let width = grouped.iter().map(|name| name.len()).max().unwrap_or(0);
+        for (heading, names) in GROUPS {
+            assert!(
+                help.contains(&format!("\n{heading}:\n")),
+                "{heading} in {help}"
+            );
+            for name in names {
+                assert_eq!(
+                    help.matches(&format!("\n  {name} ")).count(),
+                    1,
+                    "{name} once in {help}"
+                );
+                let about = command.find_subcommand(name).unwrap().get_about().unwrap();
+                let line = format!("\n  {name:width$}  {about}\n");
+                assert!(help.contains(&line), "{line:?} in {help}");
+            }
+        }
+        assert!(
+            help.contains("\nOptions:\n") && help.contains("--json"),
+            "{help}"
+        );
+        let wide: Vec<&str> = help
+            .lines()
+            .filter(|line| line.chars().count() > 80 && !line.trim_start().starts_with('-'))
+            .collect();
+        assert!(wide.is_empty(), "{wide:#?}");
+    }
+
+    #[test]
+    fn every_argument_is_described() {
+        let bare: Vec<String> = commands()
+            .into_iter()
+            .flat_map(|(path, command, _)| {
+                command
+                    .get_arguments()
+                    .filter(|arg| !arg.is_hide_set() && arg.get_help().is_none())
+                    .map(move |arg| format!("{path} {}", arg.get_id()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert!(bare.is_empty(), "{}", bare.join("\n"));
+    }
 }

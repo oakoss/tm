@@ -46,14 +46,37 @@ fn tm_json_selects_json_mode_without_the_flag() {
 
 #[test]
 fn help_and_bare_tm_are_documents_in_json_mode() {
+    let mut helps = Vec::new();
     for args in [&["--json"][..], &["--help", "--json"][..]] {
         let output = tm(args, &[]);
         assert!(output.status.success(), "{args:?}");
-        let doc = document(&output);
-        assert!(
-            doc["data"]["help"].as_str().unwrap().contains("Usage"),
-            "{args:?}"
-        );
+        let help = document(&output)["data"]["help"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        for heading in ["\nEveryday:\n", "\nSetup and data:\n", "\nOptions:\n"] {
+            assert!(help.contains(heading), "{args:?}: {help}");
+        }
+        assert!(!help.contains("\nCommands:\n"), "{args:?}: {help}");
+        helps.push(help);
+    }
+    assert_eq!(helps[0], helps[1], "bare tm and tm --help print one help");
+    let text = String::from_utf8(tm(&["--help"], &[]).stdout).unwrap();
+    assert_eq!(
+        text.trim_end(),
+        helps[1].trim_end(),
+        "the text and JSON helps"
+    );
+}
+
+#[test]
+fn tm_help_help_keeps_its_own_usage_under_the_grouped_listing() {
+    let output = tm(&["help", "help"], &[]);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Usage: tm help [COMMAND]..."), "{text}");
+    for listing in ["\nCommands:\n", "\nEveryday:\n"] {
+        assert!(!text.contains(listing), "{text}");
     }
 }
 
