@@ -144,6 +144,8 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
     let mut values = fields::read_stdin(&given, blank)?;
     let appended = values.split_off(edit.set.len());
     let (changes, report) = changes(here, &view, edit, &values, &appended, parent)?;
+    let mut warnings = identity.warnings.clone();
+    warnings.extend(fields::entity_warnings(&changes));
     let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
     let data = |report: &[Changed]| {
         json!({
@@ -183,7 +185,7 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
         ops[0].op_id,
         &identity.actor,
     )?;
-    Ok((output, identity.warnings))
+    Ok((output, warnings))
 }
 
 /// The Status changes only by `tm move`, which also releases a Claim when

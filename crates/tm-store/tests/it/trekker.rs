@@ -368,3 +368,25 @@ fn a_file_that_is_not_a_trekker_database_writes_nothing() {
         .unwrap();
     assert_eq!(issues, 0);
 }
+
+#[test]
+fn html_entities_an_agent_wrote_are_decoded_and_other_ampersands_kept() {
+    let dir = TempDir::new();
+    let path = trekker(&dir);
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO tasks VALUES ('TREK-20', 'p', NULL, NULL, 'Add a Build &amp; Run section',
+               'Holds Mutex&lt;Pane&gt; while it takes &mut self && reads &amp;lt;', 2, 'todo',
+               NULL, 1774665851, 1774665851, NULL);",
+        )
+        .unwrap();
+    let mut store = open(&dir.db(), &ManualClock::at(1_900_000_000_000));
+    let imported = import(&mut store, &path).unwrap();
+    let view = store.issue(issue(&imported, "TREK-20")).unwrap().unwrap();
+    assert_eq!(view.fields["title"], "Add a Build & Run section");
+    assert_eq!(
+        view.fields["description"],
+        "Holds Mutex<Pane> while it takes &mut self && reads &lt;"
+    );
+}

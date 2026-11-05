@@ -2,6 +2,7 @@
 
 pub mod actor;
 pub mod duration;
+pub mod entities;
 pub mod filter;
 pub mod hlc;
 pub mod link;
