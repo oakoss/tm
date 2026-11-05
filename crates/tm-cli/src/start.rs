@@ -147,7 +147,7 @@ pub(crate) fn report(
         let _ = writeln!(text, "{name}: nothing changed");
     }
     text.extend(release);
-    let branch = branch(&issue);
+    let branch = branch(&issue, prefixed(&here.found.dir));
     if let Some(branch) = &branch {
         let _ = writeln!(text, "a branch for it: git switch -c {branch}");
     }
@@ -218,24 +218,66 @@ pub(crate) fn begin(scheme: &Scheme, actor: &Actor, lineage: &Lineage) -> (Vec<D
 
 /// A branch name for `issue`: its Key and the first words of its title, such
 /// as `tm-64-claim-and-start-work`. Only a suggestion; tm creates no branch.
-fn branch(issue: &IssueView) -> Option<String> {
+fn branch(issue: &IssueView, prefixed: bool) -> Option<String> {
     let key = issue.key.as_deref()?.to_ascii_lowercase();
     let title = issue
         .fields
         .get("title")
         .and_then(Value::as_str)
         .unwrap_or_default()
-        .to_ascii_lowercase();
+        .to_ascii_lowercase()
+        .replace(['\'', '’'], "");
     let words: Vec<String> = title
         .split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|word| !word.is_empty())
         .take(5)
         .map(str::to_owned)
         .collect();
-    Some(
-        std::iter::once(key)
-            .chain(words)
-            .collect::<Vec<_>>()
-            .join("-"),
-    )
+    let name = std::iter::once(key)
+        .chain(words)
+        .collect::<Vec<_>>()
+        .join("-");
+    if !prefixed {
+        return Some(name);
+    }
+    let kind = match issue.fields.get("type").and_then(Value::as_str) {
+        Some("bug") => "fix",
+        _ => "feat",
+    };
+    Some(format!("{kind}/{name}"))
+}
+
+/// Whether most of the repository's branches at `dir`, local and remote,
+/// other than `main`, `master` and `HEAD`, are named `word/…`; false when git
+/// cannot say.
+fn prefixed(dir: &std::path::Path) -> bool {
+    let Ok(refs) = crate::scan::git(
+        dir,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    ) else {
+        return false;
+    };
+    let Ok(remotes) = crate::scan::git(dir, &["remote"]) else {
+        return false;
+    };
+    let names: Vec<&str> = refs
+        .lines()
+        .filter_map(|full| {
+            full.strip_prefix("refs/heads/").or_else(|| {
+                let rest = full.strip_prefix("refs/remotes/")?;
+                remotes
+                    .lines()
+                    .filter_map(|remote| rest.strip_prefix(remote)?.strip_prefix('/'))
+                    .min_by_key(|name| name.len())
+            })
+        })
+        .filter(|name| !["main", "master", "HEAD"].contains(name))
+        .collect();
+    let slashed = names.iter().filter(|name| name.contains('/')).count();
+    slashed * 2 > names.len()
 }
