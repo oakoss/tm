@@ -252,3 +252,64 @@ fn a_human_starts_without_a_claim() {
     );
     assert_eq!(show(&scratch, &repo, "TM-2")["fields"]["status"], "done");
 }
+
+#[test]
+fn a_branch_keeps_words_whole_and_takes_the_repos_prefix_when_it_has_one() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    store
+        .create_issue(
+            &Actor::human("jace"),
+            project,
+            "bug",
+            "See an Issue's children",
+        )
+        .unwrap();
+    store
+        .create_issue(&Actor::human("jace"), project, "task", "Don’t stop")
+        .unwrap();
+    drop(store);
+    let branch = |key: &str| {
+        let out = tm(&scratch, &repo, &["--json", "start", key]);
+        assert!(out.status.success(), "{out:?}");
+        doc(&out)["data"]["branch"].clone()
+    };
+    assert_eq!(
+        branch("TM-1"),
+        "tm-1-see-an-issues-children",
+        "no prefix in a plain repo"
+    );
+
+    let git = |args: &[&str]| crate::support::git(&scratch, &repo, args);
+    git(&["branch", "feat/a"]);
+    git(&["branch", "plain"]);
+    let unprefixed = "tm-1-see-an-issues-children";
+    assert_eq!(branch("TM-1"), unprefixed, "half is not most");
+
+    git(&["remote", "add", "team/origin", "/nowhere"]);
+    for name in ["main", "HEAD", "other"] {
+        git(&[
+            "update-ref",
+            &format!("refs/remotes/team/origin/{name}"),
+            "HEAD",
+        ]);
+    }
+    assert_eq!(
+        branch("TM-1"),
+        unprefixed,
+        "a remote's branches are counted by their own names, without main or HEAD"
+    );
+
+    git(&["branch", "fix/b"]);
+    git(&["branch", "docs/c"]);
+    assert_eq!(
+        branch("TM-1"),
+        "fix/tm-1-see-an-issues-children",
+        "a bug is a fix"
+    );
+    assert_eq!(
+        branch("TM-2"),
+        "feat/tm-2-dont-stop",
+        "any other type a feat"
+    );
+}
