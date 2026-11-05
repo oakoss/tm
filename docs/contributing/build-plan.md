@@ -35,7 +35,7 @@ Done on 2026-10-20: beads' Issues were imported with `tm import --from beads`, c
 - "On behalf of" in history; Actor detection and recording it are Phase 1 ([ADR 0010](../decisions/0010-operations-record-who-an-agent-acts-for-and-undo-names-a-batch.md)).
 - Full Claims: protected fields, `--force` beyond the finishing move it already guards ([ADR 0009](../decisions/0009-claims-apply-by-compare-and-set-and-links-are-keyed-canonically.md)), version-checked writes, expiry and heartbeat, `tm start`, `tm handoff`, Path Claims.
 - Short-lists and `tm next`, which takes the next Issue on the session's lists, or with no list the most urgent ready one ([ADR 0016](../decisions/0016-short-lists-order-what-to-do-next.md)).
-- Notifications and `@mentions`, `tm remember`, `--watch`, and a `tm --help` a person can scan.
+- `tm remember`, `--watch`, and a `tm --help` a person can scan.
 - `tm setup claude` and `tm setup codex`, showing a diff before writing.
 
 Done when:
@@ -47,7 +47,7 @@ Done when:
 
 Built once the CLI has settled through Phase 2 and the polish between phases, so the screens rest on commands that no longer change underneath them.
 
-Issue list with filters, Issue detail with history, Triage, Board, ready queue. Views defined in config.
+Issue list with filters, Issue detail with history, Triage, Board, ready queue. Views defined in config. Notifications and `@mentions` (`TM-82`), and the holder's Notification of a forced write (`TM-130`), which need a screen that shows them unasked and completes a mention as it is typed.
 
 Done when daily triage and planning for this project happen in the TUI.
 
