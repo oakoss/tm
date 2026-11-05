@@ -382,3 +382,26 @@ fn each_listed_issue_names_its_open_blockers() {
         format!("TM-3  todo  none  held  [blocked by TM-1, {second}]\n")
     );
 }
+
+#[test]
+fn tm_search_is_tm_list() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    new(&mut store, project, "Login timeout");
+    new(&mut store, project, "Render glyphs");
+    drop(store);
+    for filter in [&["login"][..], &["login", "-type:bug"], &["-labels:x"]] {
+        let searched = tm(&scratch, &repo, &[&["search"], filter].concat());
+        assert!(searched.status.success(), "{filter:?}: {searched:?}");
+        let listed = tm(&scratch, &repo, &[&["list"], filter].concat());
+        assert_eq!(text(&searched.stdout), text(&listed.stdout), "{filter:?}");
+        assert!(
+            text(&searched.stdout).contains("Login timeout"),
+            "{filter:?}"
+        );
+        assert!(
+            !text(&searched.stdout).contains("Render glyphs") || filter == ["-labels:x"],
+            "{filter:?}"
+        );
+    }
+}

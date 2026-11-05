@@ -80,7 +80,7 @@ Key, type, title, description, status, Assignee, reporter, Agent and Claim, pare
 - **Snooze**: `tm defer CPL-42 --until <date>` or `--until-activity` hides an Issue from the ready queue until the date or the next comment or change.
 - Links that would create a blocking cycle are refused, since a cycle silently empties the ready queue.
 - The ready queue shows what each Issue would unblock, and `tm list` names the open Issues blocking each open Issue it lists.
-- `tm list` lists the open work, and a filter narrows it; a filter naming `status`, `category` or `archived` reaches finished Issues too, and `--all` lists every Status.
+- `tm list` lists the open work, and a filter narrows it; a filter naming `status`, `category` or `archived` reaches finished Issues too, and `--all` lists every Status. `tm search` is the same command, since a filter of words searches.
 
 ### Releases
 
