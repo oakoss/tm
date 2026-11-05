@@ -12,6 +12,8 @@ On macOS or Linux, with Homebrew:
 brew install oakoss/tap/tm
 ```
 
+Homebrew 7 skips a third-party formula it does not trust when it upgrades; installing by the full name above trusts tm. If Homebrew prints `Skipping tm: tap formula is not trusted`, or `brew upgrade` stops upgrading tm, as after an install from before Homebrew 5.1.15, run `brew trust --formula oakoss/tap/tm` once.
+
 Or run the shell installer attached to the [latest release](https://github.com/oakoss/tm/releases/latest), or build from source with `cargo install --locked --path crates/tm-cli`. Until v1 the store's format can change between releases; take a copy with `tm export` before upgrading.
 
 ## More
