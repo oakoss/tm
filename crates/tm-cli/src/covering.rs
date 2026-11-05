@@ -127,6 +127,9 @@ pub(crate) struct Overlap {
 pub(crate) struct Check {
     pub(crate) found: Vec<Overlap>,
     pub(crate) unchecked: Vec<String>,
+    /// Whether a file needed a branch's files, so `unchecked` says all a
+    /// branch could not tell.
+    pub(crate) branches: bool,
 }
 
 /// The live Claims naming paths or a branch that `me` did not take by its
@@ -159,6 +162,7 @@ pub(crate) fn overlaps(dir: &Path, others: &[Claim], files: &[String]) -> Check 
             {
                 Why::Path(path.clone())
             } else if let Some(branch) = &claim.branch {
+                check.branches = true;
                 if !committed.contains_key(branch) {
                     let default = default.get_or_insert_with(|| {
                         scan::default_branch(dir)

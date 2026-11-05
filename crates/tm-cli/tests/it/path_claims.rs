@@ -365,6 +365,18 @@ fn prime_lists_committed_and_untracked_changes_and_says_what_it_cannot_check() {
         primed.contains("warning: Path Claims: cannot list your committed changes: "),
         "{primed}"
     );
+
+    let released = in_session(&scratch, &repo, "s1", &["release", "TM-2"]);
+    assert!(released.status.success(), "{released:?}");
+    let at = |file: &str| repo.join(file).display().to_string();
+    assert!(before_editing(&scratch, &repo, "s4", &at("README.md")).starts_with("tm: cannot tell"));
+    for file in ["src/a.rs", "README.md", "src/a.rs", "README.md"] {
+        let said = before_editing(&scratch, &repo, "s4", &at(file));
+        assert!(
+            !said.contains("cannot tell"),
+            "a file a path covers checks no branch, so does not forget it: {file}: {said}"
+        );
+    }
 }
 
 #[test]
@@ -446,11 +458,26 @@ fn a_file_is_placed_by_the_checkout_it_lies_in_and_a_new_claim_is_told() {
     );
 
     let feat = repo.join(".git/refs/heads/feat/x");
+    let good = fs::read_to_string(&feat).unwrap();
     fs::write(&feat, "garbage\n").unwrap();
     let said = before_editing(&scratch, &repo, "s10", &at("README.md"));
     assert!(
         said.starts_with("tm: cannot tell which files feat/x commits: ") && said.contains("broken"),
         "{said}"
+    );
+    for file in ["/etc/hosts".to_owned(), at("README.md")] {
+        assert_eq!(
+            before_editing(&scratch, &repo, "s10", &file),
+            "",
+            "an edit that checks no branch does not forget it: {file}"
+        );
+    }
+    fs::write(&feat, &good).unwrap();
+    assert_eq!(before_editing(&scratch, &repo, "s10", &at("README.md")), "");
+    fs::write(&feat, "garbage\n").unwrap();
+    assert!(
+        before_editing(&scratch, &repo, "s10", &at("README.md")).starts_with("tm: cannot tell"),
+        "told again once the check came back and failed again"
     );
     fs::write(&feat, format!("{}\n", "1".repeat(40))).unwrap();
     let said = before_editing(&scratch, &repo, "s14", &at("README.md"));

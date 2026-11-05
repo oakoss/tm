@@ -30,7 +30,7 @@ const SHARED_NAME_FIX: &str = "name a list by the id tm shortlist --all --json g
 const SHARED_NAME_IMPORT_FIX: &str =
     "rename one with tm shortlist edit ID --name NAME, by the id tm shortlist --all --json gives";
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct CliError {
     pub(crate) code: &'static str,
     pub(crate) message: String,

@@ -589,20 +589,24 @@ fn main() -> ExitCode {
     }
     // The harness reads only its own hook format, which TM_JSON must not wrap.
     if let Some(Command::Hook { action }) = &cli.command {
+        let input = hook::input();
+        let enter = |harness| {
+            input
+                .clone()
+                .and_then(|input| hook::enter(harness, input.as_ref()))
+        };
         let result = match *action {
             HookAction::SessionStart { harness } => {
-                hook::enter(harness).and_then(|_| hook::session_start())
+                enter(harness).and_then(|_| hook::session_start())
             }
-            HookAction::PreBash { .. } => hook::pre_bash(),
-            HookAction::PreEdit { .. } => Ok(hook::pre_edit()),
-            HookAction::Heartbeat { harness } => {
-                hook::enter(harness).map(|_| hook::heartbeat(harness))
-            }
+            HookAction::PreBash { .. } => input.and_then(|input| hook::pre_bash(input.as_ref())),
+            HookAction::PreEdit { .. } => Ok(hook::pre_edit(input)),
+            HookAction::Heartbeat { harness } => enter(harness).map(|_| hook::heartbeat()),
             HookAction::SubagentStop { .. } => {
-                hook::enter(hook::Harness::Claude).and_then(hook::subagent_stop)
+                enter(hook::Harness::Claude).and_then(hook::subagent_stop)
             }
             HookAction::SessionEnd { harness } => {
-                hook::enter(harness).and_then(|_| hook::session_end(harness))
+                enter(harness).and_then(|_| hook::session_end(harness))
             }
         };
         return output::finish(false, result, &[]);

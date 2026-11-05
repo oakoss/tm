@@ -5,7 +5,6 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{self, IsTerminal as _, Read as _};
 use std::path::PathBuf;
-use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 use tm_core::actor::SessionId;
@@ -22,10 +21,10 @@ pub(crate) use crate::harness::Harness;
 /// Claude Code names a sub-agent only by the `agent_id` on stdin, and its
 /// commands by the `TM_AGENT` [`pre_bash`] exports. Returns whether it writes
 /// as a sub-agent.
-pub(crate) fn enter(harness: Harness) -> Result<bool, CliError> {
+pub(crate) fn enter(harness: Harness, input: Option<&Value>) -> Result<bool, CliError> {
     match harness {
         Harness::Claude => {
-            let name = stdin_json()?.as_ref().and_then(sub_agent);
+            let name = input.and_then(sub_agent);
             let found = name.is_some();
             if let Some(name) = name {
                 identity::hook_var("TM_AGENT", name);
@@ -33,8 +32,7 @@ pub(crate) fn enter(harness: Harness) -> Result<bool, CliError> {
             Ok(found)
         }
         Harness::Codex => {
-            let session = stdin_json()?
-                .as_ref()
+            let session = input
                 .and_then(|input| input.get("session_id"))
                 .and_then(Value::as_str)
                 .and_then(SessionId::parse)
@@ -50,15 +48,8 @@ fn failed(why: impl Into<String>) -> CliError {
 }
 
 /// The hook's JSON on stdin; `None` for no input, as from a hook written
-/// before tm read it. Read once, as [`enter`] and the hook both ask for it.
-fn stdin_json() -> Result<Option<Value>, CliError> {
-    static READ: OnceLock<Result<Option<Value>, String>> = OnceLock::new();
-    READ.get_or_init(|| read_stdin().map_err(|err| err.message))
-        .clone()
-        .map_err(failed)
-}
-
-fn read_stdin() -> Result<Option<Value>, CliError> {
+/// before tm read it.
+pub(crate) fn input() -> Result<Option<Value>, CliError> {
     let mut stdin = io::stdin();
     // Run by hand at a terminal, it would wait for input that never comes.
     if stdin.is_terminal() {
@@ -113,12 +104,12 @@ fn sub_agent(input: &Value) -> Option<String> {
 /// that exports its name first, so the command writes as that sub-agent.
 /// Other commands pass untouched: two hooks rewriting one command do not
 /// merge, and one of them is dropped.
-pub(crate) fn pre_bash() -> Result<Output, CliError> {
+pub(crate) fn pre_bash(input: Option<&Value>) -> Result<Output, CliError> {
     let none = || Ok(Output::new(String::new(), json!({ "rewritten": false })));
-    let Some(input) = stdin_json()? else {
+    let Some(input) = input else {
         return none();
     };
-    let Some(name) = sub_agent(&input) else {
+    let Some(name) = sub_agent(input) else {
         return none();
     };
     let Some(Value::Object(tool_input)) = input.get("tool_input") else {
@@ -153,35 +144,61 @@ pub(crate) fn pre_bash() -> Result<Output, CliError> {
 /// Before Claude Code edits a file, tells the Agent of each other Agent's or
 /// session's live Claim covering it, once per Claim and file for each Agent
 /// in this session, and never blocks the edit. Silent outside a Workspace;
-/// what it could not check, and an error, are told once.
-pub(crate) fn pre_edit() -> Output {
-    let (notes, succeeded) = match edit_notes() {
-        Ok(notes) => (notes, true),
-        Err(err) if err.code == "no_workspace" => (Vec::new(), true),
-        Err(err) => (
-            vec![(format!("error:pre-edit:{}", err.message), err.message)],
-            false,
-        ),
+/// what it could not check, and an error, are told once while they last.
+pub(crate) fn pre_edit(input: Result<Option<Value>, CliError>) -> Output {
+    report(
+        ("pre-edit", "PreToolUse"),
+        input.and_then(|input| {
+            input.map_or_else(|| Ok(Notes::default()), |input| edit_notes(&input))
+        }),
+    )
+}
+
+/// What a hook has to tell this session: each `lasting` note once, and each
+/// of `checked`, what a check it ran could not tell, once until a run that
+/// checks no longer has it; `None` when this run checked nothing.
+#[derive(Debug, Default)]
+struct Notes {
+    lasting: Vec<(String, String)>,
+    checked: Option<Vec<(String, String)>>,
+}
+
+/// The `hook`'s output for `found`: silent with nothing new, else the
+/// harness's hook JSON for `event`, which Claude Code and Codex both read.
+/// Outside a Workspace says nothing; an error is told once until a run does
+/// not fail, and its warnings last.
+fn report((hook, event): (&str, &str), found: Result<Notes, CliError>) -> Output {
+    let (notes, error) = match found {
+        Ok(notes) => (notes, None),
+        Err(err) if err.code == "no_workspace" => (Notes::default(), None),
+        Err(err) => {
+            let lasting = err
+                .warnings
+                .into_iter()
+                .map(|warning| (format!("note:{warning}"), warning))
+                .collect();
+            let notes = Notes {
+                lasting,
+                checked: None,
+            };
+            (notes, Some(err.message))
+        }
     };
-    let fresh = unreported(notes, ("error:pre-edit:", succeeded));
+    let fresh = unreported(hook, notes, error);
     if fresh.is_empty() {
         return Output::new(String::new(), json!({ "reported": fresh }));
     }
-    let context = format!("tm: {}", fresh.join("\ntm: "));
     let shown = json!({
         "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "additionalContext": context,
+            "hookEventName": event,
+            "additionalContext": format!("tm: {}", fresh.join("\ntm: ")),
         },
     });
     Output::new(format!("{shown}\n"), json!({ "reported": fresh }))
 }
 
-/// The `(key, text)` notes for the file the hook's input edits.
-fn edit_notes() -> Result<Vec<(String, String)>, CliError> {
-    let Some(input) = stdin_json()? else {
-        return Ok(Vec::new());
-    };
+/// The notes for the file the hook's `input` edits.
+fn edit_notes(input: &Value) -> Result<Notes, CliError> {
     let tool = input.get("tool_input");
     let file = tool
         .and_then(|tool| tool.get("file_path").or_else(|| tool.get("notebook_path")))
@@ -202,21 +219,21 @@ fn edit_notes() -> Result<Vec<(String, String)>, CliError> {
         .and_then(Value::as_str)
         .map_or_else(|| here.cwd.clone(), PathBuf::from);
     let Some(file) = covering::in_repo(&here.found.dir, &base, file) else {
-        return Ok(Vec::new());
+        return Ok(Notes::default());
     };
-    enter(Harness::Claude)?;
+    enter(Harness::Claude, Some(input))?;
     let me = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
         .map_err(|why| failed(format!("cannot tell who is editing: {why}")))?;
     let others = covering::others(&here.store.claims()?, Some(&me.actor));
     if others.is_empty() {
-        return Ok(Vec::new());
+        return Ok(Notes::default());
     }
     let check = covering::overlaps(&here.found.dir, &others, std::slice::from_ref(&file));
-    let mut notes: Vec<(String, String)> = check
-        .unchecked
-        .into_iter()
-        .map(|why| (format!("unchecked:{why}"), why))
-        .collect();
+    let unchecked = check.unchecked.into_iter().map(|why| (why.clone(), why));
+    let mut notes = Notes {
+        lasting: Vec::new(),
+        checked: check.branches.then(|| unchecked.collect()),
+    };
     for overlap in check.found {
         let shown = here
             .store
@@ -233,7 +250,7 @@ fn edit_notes() -> Result<Vec<(String, String)>, CliError> {
             overlap.claim.id,
             overlap.file
         );
-        notes.push((key, text));
+        notes.lasting.push((key, text));
     }
     Ok(notes)
 }
@@ -283,53 +300,47 @@ fn quiet_untracked(result: Result<Output, CliError>) -> Result<Output, CliError>
 /// hook JSON, which is how an async hook reaches the Agent. Each warning is
 /// told once per session, or it would repeat after every tool use: a takeover
 /// once per Claim that took over, an error once until a heartbeat succeeds.
-pub(crate) fn heartbeat(harness: Harness) -> Output {
+/// Codex ignores a hook's plain output here, so both harnesses get the JSON.
+pub(crate) fn heartbeat() -> Output {
     let note = |warning: String| (format!("note:{warning}"), warning);
-    let (notes, succeeded) = match claim::beat(None) {
-        Ok(beat) => {
-            let (before, published) = beat.warnings;
-            let mut notes: Vec<(String, String)> = before.into_iter().map(note).collect();
-            notes.extend(
-                beat.taken_over
-                    .into_iter()
-                    .map(|(claim, warning)| (format!("takeover:{claim}"), warning)),
-            );
-            notes.extend(beat.unchecked.into_iter().chain(published).map(note));
-            (notes, true)
+    let found = claim::beat(None).map(|beat| {
+        let (before, published) = beat.warnings;
+        let mut lasting: Vec<(String, String)> = before.into_iter().map(note).collect();
+        lasting.extend(
+            beat.taken_over
+                .into_iter()
+                .map(|(claim, warning)| (format!("takeover:{claim}"), warning)),
+        );
+        lasting.extend(beat.unchecked.into_iter().chain(published).map(note));
+        Notes {
+            lasting,
+            checked: None,
         }
-        // A hook pasted for every repo also runs where tm tracks nothing.
-        Err(err) if err.code == "no_workspace" => (Vec::new(), true),
-        Err(err) => {
-            let mut notes: Vec<(String, String)> = err.warnings.into_iter().map(note).collect();
-            notes.push((format!("error:heartbeat:{}", err.message), err.message));
-            (notes, false)
-        }
-    };
-    let fresh = unreported(notes, ("error:heartbeat:", succeeded));
-    let text = if fresh.is_empty() {
-        String::new()
-    } else {
-        let context = format!("tm: {}", fresh.join("\ntm: "));
-        // Both harnesses read this shape; Codex ignores plain output here.
-        let shown = match harness {
-            Harness::Claude | Harness::Codex => json!({
-                "hookSpecificOutput": {
-                    "hookEventName": "PostToolUse",
-                    "additionalContext": context,
-                },
-            }),
-        };
-        format!("{shown}\n")
-    };
-    Output::new(text, json!({ "reported": fresh }))
+    });
+    report(("heartbeat", "PostToolUse"), found)
 }
 
-/// The text of those `(key, text)` notes this session has not been told,
-/// recorded in tm's home by key as told; a hook that `succeeded` forgets its
-/// own errors, keyed under `errors`, so a later failure is told again.
-/// Without a session to key them by, or a home to keep them in, every note is
-/// fresh.
-fn unreported(notes: Vec<(String, String)>, (errors, succeeded): (&str, bool)) -> Vec<String> {
+/// The text of those `notes` this session has not been told, recorded in
+/// tm's home by key as told. The `hook`'s `error` is forgotten by a run of it
+/// that does not fail, and what its check could not tell by a run that checks
+/// and can, so each is told again if it comes back. Without a session to key
+/// them by, or a home to keep them in, every note is fresh.
+fn unreported(hook: &str, notes: Notes, error: Option<String>) -> Vec<String> {
+    let failed = format!("now:{hook}:error:");
+    let unchecked = format!("now:{hook}:check:");
+    let checked = notes.checked.is_some();
+    let notes: Vec<(String, String)> = notes
+        .lasting
+        .into_iter()
+        .chain(
+            notes
+                .checked
+                .into_iter()
+                .flatten()
+                .map(|(key, text)| (format!("{unchecked}{key}"), text)),
+        )
+        .chain(error.map(|error| (format!("{failed}{error}"), error)))
+        .collect();
     let Some(path) = reported_path() else {
         return notes.into_iter().map(|(_, text)| text).collect();
     };
@@ -341,10 +352,13 @@ fn unreported(notes: Vec<(String, String)>, (errors, succeeded): (&str, bool)) -
                 .collect()
         })
         .unwrap_or_default();
-    let forgotten = succeeded && told.iter().any(|key| key.starts_with(errors));
-    if forgotten {
-        told.retain(|key| !key.starts_with(errors));
-    }
+    let before = told.len();
+    let passed = |key: &String| {
+        let gone = !notes.iter().any(|(now, _)| now == key);
+        gone && (key.starts_with(&failed) || checked && key.starts_with(&unchecked))
+    };
+    told.retain(|key| !passed(key));
+    let forgotten = told.len() != before;
     let seen: HashSet<&String> = told.iter().collect();
     let fresh: Vec<(String, String)> = notes
         .into_iter()
