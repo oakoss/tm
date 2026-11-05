@@ -45,9 +45,9 @@ impl Closing {
 }
 
 /// The ref merged work lands on, as this clone last fetched it.
-struct Branch {
+pub(crate) struct Branch {
     /// The full ref, so a tag of the same name cannot shadow it.
-    full: String,
+    pub(crate) full: String,
     shown: String,
     /// Why commits on it may not be merged yet, when they may not.
     caveat: Option<String>,
@@ -317,7 +317,7 @@ fn landed(here: &Here, actor: &Actor, (id, name): (Uuid, &str), batch: Uuid, rep
 
 /// The remote's default branch when it is known, else a local `main` or
 /// `master` by its upstream, else that local branch. tm fetches nothing.
-fn default_branch(dir: &Path) -> Result<Branch, CliError> {
+pub(crate) fn default_branch(dir: &Path) -> Result<Branch, CliError> {
     let head = "refs/remotes/origin/HEAD";
     let origin = git(dir, &["for-each-ref", "--format=%(symref)", head])?;
     if let Some(full) = origin.lines().next().filter(|full| !full.is_empty()) {
@@ -380,13 +380,8 @@ fn shown(full: &str) -> String {
     shown.unwrap_or(full).to_owned()
 }
 
-fn git(dir: &Path, args: &[&str]) -> Result<String, CliError> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()
-        .map_err(|err| CliError::new("git_failed", format!("cannot run git: {err}")))?;
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, CliError> {
+    let output = git_output(dir, args)?;
     if !output.status.success() {
         let said = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         let said = if said.is_empty() {
@@ -400,6 +395,24 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, CliError> {
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// What `git args` printed in `dir`, however it exited. Trace variables are
+/// left out, so what git writes on stderr is only what it has to say.
+pub(crate) fn git_output(dir: &Path, args: &[&str]) -> Result<std::process::Output, CliError> {
+    let mut command = Command::new("git");
+    command
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("GIT_TRACE") {
+            command.env_remove(name);
+        }
+    }
+    command
+        .output()
+        .map_err(|err| CliError::new("git_failed", format!("cannot run git: {err}")))
 }
 
 /// What follows `Closes` or `Closes:` on `line`, when it starts so.

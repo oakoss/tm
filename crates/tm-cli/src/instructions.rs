@@ -858,10 +858,13 @@ mod tests {
             needs_hook(&dir, &mut warnings),
             "a tm prime alone lacks the heartbeat"
         );
+        let pre_edit = r#"cd "${CLAUDE_PROJECT_DIR:?}" && tm hook pre-edit claude || exit 1"#;
+        let pre_tool = format!(
+            r#"[{{"hooks":[{{"command":"tm hook pre-bash claude || exit 1"}},{{"command":{pre_edit:?}}}]}}]"#
+        );
         let all = format!(
-            r#"{{"hooks":{{"SessionStart":{},"PreToolUse":{},"PostToolUse":{},"SubagentStop":{},"SessionEnd":{}}}}}"#,
+            r#"{{"hooks":{{"SessionStart":{},"PreToolUse":{pre_tool},"PostToolUse":{},"SubagentStop":{},"SessionEnd":{}}}}}"#,
             group("tm prime"),
-            group("tm hook pre-bash claude || exit 1"),
             group(r#"cd "${CLAUDE_PROJECT_DIR:?}" && tm hook heartbeat claude"#),
             group(r#"cd "${CLAUDE_PROJECT_DIR:?}" && tm hook subagent-stop claude || exit 1"#),
             group(r#"cd "${CLAUDE_PROJECT_DIR:?}" && tm hook session-end claude"#),

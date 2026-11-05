@@ -140,7 +140,7 @@ fn peek(here: &Here, actor: &Actor) -> Result<Output, CliError> {
 
 fn take(here: &mut Here, actor: &Actor, lasts: &Lasts) -> Result<Output, CliError> {
     let from = source(here, actor)?;
-    let ttl_ms = lasts.ttl_ms(here);
+    let ttl_ms = lasts.apply(here);
     let branch_warning = here.record_branch();
     let scheme = here.store.scheme().clone();
     let begin = |lineage: &_| start::begin(&scheme, actor, lineage);

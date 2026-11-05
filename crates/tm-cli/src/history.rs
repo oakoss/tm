@@ -317,7 +317,7 @@ fn describe(
             let verb = if *present { "linked" } else { "unlinked" };
             format!("{verb}: {name} {}", names.key(other)?)
         }
-        Change::Claim { action } => claim_line(action, entry.session.as_deref()),
+        Change::Claim { action } => claim_line(action, entry, before),
         Change::CreateProject { .. }
         | Change::RenameProject { .. }
         | Change::CreateShortlist
@@ -399,8 +399,54 @@ fn first_value(field: &str, value: &Value) -> String {
     printable(&line)
 }
 
-/// `written_in` is the write's own session, which its header names already.
-fn claim_line(action: &ClaimAction, written_in: Option<&str>) -> String {
+/// Whether a take is by the Agent and session that held the Claim it
+/// replaced, read from the holder `before` keeps as history is walked in
+/// order, since a take names only the Claim's id; then records the holder
+/// `action` leaves, when it `applied`.
+fn holding(action: &ClaimAction, applied: bool, before: &mut HashMap<String, Before>) -> bool {
+    let holder = |agent: &str, session: &Option<String>| json!([agent, session]);
+    let again = match action {
+        ClaimAction::Take {
+            agent,
+            session,
+            prev: Some(_),
+            ..
+        } => before
+            .get(CLAIM_HOLDER)
+            .is_some_and(|held| session.is_some() && held.stored == holder(agent, session)),
+        _ => false,
+    };
+    let left = match action {
+        ClaimAction::Take { agent, session, .. } => holder(agent, session),
+        ClaimAction::Hand { agent, .. } => holder(agent, &None),
+        ClaimAction::Release { .. } => Value::Null,
+        ClaimAction::Renew { .. } => return again,
+    };
+    if !applied {
+        return again;
+    }
+    before.insert(
+        CLAIM_HOLDER.to_owned(),
+        Before {
+            stored: left.clone(),
+            shown: left,
+        },
+    );
+    again
+}
+
+/// The key under which [`holding`] keeps the Claim's holder.
+const CLAIM_HOLDER: &str = "\0claim holder";
+
+/// `entry`'s session is the write's own, which its header names already;
+/// `before` holds the Claim's holder so far, which [`holding`] keeps.
+fn claim_line(
+    action: &ClaimAction,
+    entry: &HistoryEntry,
+    before: &mut HashMap<String, Before>,
+) -> String {
+    let written_in = entry.session.as_deref();
+    let again = holding(action, entry.unapplied.is_none() && !entry.lost, before);
     let lasts = |ttl_ms: Option<u64>| match ttl_ms.and_then(|ttl| i64::try_from(ttl).ok()) {
         Some(ttl) => format!(" for {}", span(ttl)),
         None => ", with no expiry".to_owned(),
@@ -412,6 +458,7 @@ fn claim_line(action: &ClaimAction, written_in: Option<&str>) -> String {
             prev,
             session,
             branch,
+            paths,
         } => {
             let mut who = printable(agent);
             if let Some(session) = session
@@ -425,10 +472,16 @@ fn claim_line(action: &ClaimAction, written_in: Option<&str>) -> String {
                 let _ = write!(who, " on {}", printable(branch));
             }
             let verb = match prev {
+                Some(_) if again => "claimed again",
                 Some(_) => "took over the Claim",
                 None => "claimed",
             };
-            format!("{verb}: {who}{}", lasts(*ttl_ms))
+            let covering = if paths.is_empty() {
+                String::new()
+            } else {
+                format!(", covering {}", printable(&paths.join(", ")))
+            };
+            format!("{verb}: {who}{}{covering}", lasts(*ttl_ms))
         }
         ClaimAction::Renew { ttl_ms, .. } => format!("Claim renewed{}", lasts(Some(*ttl_ms))),
         ClaimAction::Release { .. } => "Claim released".to_owned(),
@@ -602,6 +655,56 @@ mod tests {
         );
         assert_eq!(shown_name("f1", "Risk score"), "Risk score");
         assert_eq!(shown_name("f1", ""), "f1", "no label recorded");
+    }
+
+    #[test]
+    fn a_take_by_the_session_holding_the_claim_reads_as_claiming_it_again() {
+        let take = |agent: &str, session: &str, prev: bool, unapplied: Option<&'static str>| {
+            let action = ClaimAction::Take {
+                agent: agent.into(),
+                ttl_ms: None,
+                prev: prev.then(Uuid::now_v7),
+                session: Some(session.into()),
+                branch: None,
+                paths: Vec::new(),
+            };
+            (action, unapplied)
+        };
+        let renew = ClaimAction::Renew {
+            claim: Uuid::now_v7(),
+            ttl_ms: 1,
+        };
+        let actions = [
+            take("claude", "s1", false, None),
+            (renew, None),
+            take("claude", "s1", true, None),
+            take("claude", "s2", true, Some("lost")),
+            take("claude", "s1", true, None),
+            take("codex", "s1", true, None),
+        ];
+        let mut before = HashMap::new();
+        let verbs: Vec<String> = actions
+            .into_iter()
+            .map(|(action, unapplied)| {
+                let entry = HistoryEntry {
+                    unapplied: unapplied.map(str::to_owned),
+                    ..priority("high", None)
+                };
+                let line = claim_line(&action, &entry, &mut before);
+                line.split(':').next().unwrap().to_owned()
+            })
+            .collect();
+        assert_eq!(
+            verbs,
+            [
+                "claimed",
+                "Claim renewed for under a minute",
+                "claimed again",
+                "took over the Claim",
+                "claimed again",
+                "took over the Claim",
+            ]
+        );
     }
 
     #[test]

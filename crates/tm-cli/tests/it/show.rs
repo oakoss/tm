@@ -267,11 +267,13 @@ fn show_gives_an_issues_fields_parent_labels_and_claim() {
         },
         "claim": {
           "agent": "claude",
+          "branch": null,
           "expires_in_ms": null,
           "expires_ms": null,
           "handed": false,
           "id": "[id]",
           "on_behalf_of": "jace",
+          "paths": [],
           "session": null
         },
         "comments": [],

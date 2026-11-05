@@ -673,6 +673,7 @@ fn prime_answers_in_a_fixed_shape() {
           "total": 0
         },
         "other_session_claims": [],
+        "path_claims": [],
         "project": "TM",
         "ready": {
           "issues": [
@@ -791,11 +792,13 @@ fn primes_claims_answer_in_a_fixed_shape() {
         "category": "todo",
         "claim": {
           "agent": "claude",
+          "branch": null,
           "expires_in_ms": "[ms]",
           "expires_ms": "[ms]",
           "handed": false,
           "id": "[id]",
           "on_behalf_of": "jace",
+          "paths": [],
           "session": null
         },
         "fields": {

@@ -53,9 +53,12 @@ Claims
                              Agent's sessions, and tm start KEY takes it
   tm setup claude            for a person: shows, asks, then adds hooks that
                              run tm prime at session start, heartbeat after
-                             each tool use and release the session's Claims
-                             when it ends
-  tm setup codex             the same for Codex, in .codex/hooks.json
+                             each tool use, warn before editing a file
+                             another session's Claim covers (by its --paths
+                             or committed on its branch) and release the
+                             session's Claims when it ends
+  tm setup codex             the same for Codex, in .codex/hooks.json, but
+                             with no edit warning
   Where tm is a mise shim, a new worktree whose mise config needs trust
   stops the hooks from starting tm until a person runs mise trust there.
   Sessions of one Agent are told apart by the harness's session id, or

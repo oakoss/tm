@@ -302,9 +302,10 @@ fn write_claim(text: &mut String, state: Option<&ClaimState>, view: &IssueView, 
         Some(ClaimState::Held(claim)) => {
             let _ = writeln!(
                 text,
-                "claimed by {}, {} (Claim {})",
+                "claimed by {}, {}{} (Claim {})",
                 claim::holder(claim),
                 claim::expiry(claim, now_ms),
+                claim::covering(claim),
                 claim.id
             );
         }

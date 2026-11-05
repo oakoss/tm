@@ -18,6 +18,7 @@ mod link;
 mod list;
 mod moves;
 mod next;
+mod path_claims;
 mod prime;
 mod prompts;
 mod protected;

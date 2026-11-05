@@ -4,6 +4,7 @@ mod ask;
 mod backup;
 mod claim;
 mod comment;
+mod covering;
 mod create;
 mod diff;
 mod doctor;
@@ -414,7 +415,8 @@ enum Command {
     /// Write tm's hooks into an agent harness's settings for this repo.
     ///
     /// The hooks run tm prime when a session starts, a heartbeat after each
-    /// tool use, and release the session's Claims when it ends. Shows the
+    /// tool use, and release the session's Claims when it ends; Claude Code's
+    /// also warn before an edit to a file another session's Claim covers. Shows the
     /// diff and writes only on a person's yes; an Agent is only shown it.
     Setup {
         /// The harness whose settings get the hooks.
@@ -513,6 +515,12 @@ enum HookAction {
         /// The harness running the hook.
         harness: ClaudeOnly,
     },
+    /// Tell a Claude Code Agent about to edit a file which other sessions'
+    /// Claims cover it, without blocking the edit.
+    PreEdit {
+        /// The harness running the hook.
+        harness: ClaudeOnly,
+    },
     /// Renew this session's Claims as tm heartbeat does, printing the
     /// harness's hook output only for a warning not yet given this session.
     Heartbeat {
@@ -581,19 +589,24 @@ fn main() -> ExitCode {
     }
     // The harness reads only its own hook format, which TM_JSON must not wrap.
     if let Some(Command::Hook { action }) = &cli.command {
+        let input = hook::input();
+        let enter = |harness| {
+            input
+                .clone()
+                .and_then(|input| hook::enter(harness, input.as_ref()))
+        };
         let result = match *action {
             HookAction::SessionStart { harness } => {
-                hook::enter(harness).and_then(|_| hook::session_start())
+                enter(harness).and_then(|_| hook::session_start())
             }
-            HookAction::PreBash { .. } => hook::pre_bash(),
-            HookAction::Heartbeat { harness } => {
-                hook::enter(harness).map(|_| hook::heartbeat(harness))
-            }
+            HookAction::PreBash { .. } => input.and_then(|input| hook::pre_bash(input.as_ref())),
+            HookAction::PreEdit { .. } => Ok(hook::pre_edit(input)),
+            HookAction::Heartbeat { harness } => enter(harness).map(|_| hook::heartbeat()),
             HookAction::SubagentStop { .. } => {
-                hook::enter(hook::Harness::Claude).and_then(hook::subagent_stop)
+                enter(hook::Harness::Claude).and_then(hook::subagent_stop)
             }
             HookAction::SessionEnd { harness } => {
-                hook::enter(harness).and_then(|_| hook::session_end(harness))
+                enter(harness).and_then(|_| hook::session_end(harness))
             }
         };
         return output::finish(false, result, &[]);
