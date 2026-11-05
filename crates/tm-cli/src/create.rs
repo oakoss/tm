@@ -67,6 +67,8 @@ fn write(here: &mut Here, mut create: Create) -> Result<(Output, Vec<String>), C
     let create = &create;
     let issue = Uuid::now_v7();
     let changes = changes(&scheme, create, parent);
+    let mut warnings = identity.warnings.clone();
+    warnings.extend(fields::entity_warnings(&changes));
     let active = create.issue_type.as_deref().is_some_and(|issue_type| {
         status(&changes).and_then(|status| scheme.category(issue_type, status))
             == Some(Category::Active)
@@ -98,7 +100,7 @@ fn write(here: &mut Here, mut create: Create) -> Result<(Output, Vec<String>), C
     };
     let shown = follow::report(&here.store, show::render(here, issue)?, starts, issue)?;
     let output = here.undoable(shown, ops[0].op_id, &identity.actor)?;
-    Ok((output, identity.warnings))
+    Ok((output, warnings))
 }
 
 /// The Status `changes` leave, the last one set.

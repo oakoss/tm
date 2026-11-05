@@ -7,7 +7,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, ErrorCode, OpenFlags, Row};
 use serde::Serialize;
-use tm_core::{Actor, link};
+use tm_core::{Actor, entities, link};
 
 use crate::beads::add_label;
 use crate::import::Parsed;
@@ -334,8 +334,11 @@ impl Item {
             project: project.to_owned(),
             key: None,
             issue_type: Some(issue_type.to_owned()),
-            title: Some(self.title),
-            description: self.description.filter(|text| !text.is_empty()),
+            title: Some(entities::decoded(&self.title).into_owned()),
+            description: self
+                .description
+                .filter(|text| !text.is_empty())
+                .map(|text| entities::decoded(&text).into_owned()),
             status: Some(status.to_owned()),
             priority: priority.map(str::to_owned),
             assignee: None,

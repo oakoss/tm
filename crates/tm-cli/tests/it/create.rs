@@ -271,3 +271,70 @@ fn create_in_a_mapped_directory_files_into_that_project() {
     assert!(ok, "{doc}");
     assert_eq!(doc["data"]["key"], "TM-1");
 }
+
+#[test]
+fn a_title_or_description_holding_an_html_entity_is_kept_with_a_warning() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    let (ok, doc) = create(
+        &scratch,
+        &repo,
+        &[
+            "--type",
+            "task",
+            "--title",
+            "Build &amp; Run",
+            "--set",
+            "description=takes &mut self",
+        ],
+    );
+    assert!(ok, "{doc}");
+    assert_eq!(
+        doc["data"]["fields"]["title"], "Build &amp; Run",
+        "kept as written"
+    );
+    assert_eq!(
+        doc["warnings"],
+        json!([
+            "the title holds &amp;, as escaped HTML does; it is stored as written, so write the character itself if that is what you meant"
+        ]),
+        "a plain & in the description warns of nothing"
+    );
+
+    let out = tm(
+        &scratch,
+        &repo,
+        &[
+            "--json",
+            "edit",
+            "TM-1",
+            "--set",
+            "description=Mutex&lt;Pane&gt;",
+        ],
+    );
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(out.status.success(), "{doc}");
+    assert_eq!(
+        doc["warnings"],
+        json!([
+            "the description holds &lt;, as escaped HTML does; it is stored as written, so write the character itself if that is what you meant"
+        ])
+    );
+    assert_eq!(
+        doc["data"]["changed"][0]["after"], "Mutex&lt;Pane&gt;",
+        "an edit stores it as written too"
+    );
+
+    let out = tm(
+        &scratch,
+        &repo,
+        &["--json", "edit", "TM-1", "--set", "assignee=a&amp;b"],
+    );
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(out.status.success(), "{doc}");
+    assert_eq!(
+        doc["warnings"],
+        json!([]),
+        "only a title or description warns"
+    );
+}

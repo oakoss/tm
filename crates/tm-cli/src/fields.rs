@@ -50,6 +50,24 @@ pub(crate) fn not_placeholder(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A warning for each title or description `changes` set that holds an HTML
+/// entity, as text an Agent escaped by mistake does; it is stored as written.
+pub(crate) fn entity_warnings(changes: &[Change]) -> Vec<String> {
+    changes
+        .iter()
+        .filter_map(|change| match change {
+            Change::SetField { field, value, .. } if field == "title" || field == "description" => {
+                let entity = tm_core::entities::found(value.as_str()?)?;
+                Some(format!(
+                    "the {field} holds {entity}, as escaped HTML does; it is stored as written, \
+                     so write the character itself if that is what you meant"
+                ))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// A clap value parser for text that must not be a placeholder.
 pub(crate) fn text_value(value: &str) -> Result<String, String> {
     not_placeholder(value).map(|()| value.to_owned())
