@@ -56,6 +56,8 @@ Claims
                              each tool use and release the session's Claims
                              when it ends
   tm setup codex             the same for Codex, in .codex/hooks.json
+  Where tm is a mise shim, a new worktree whose mise config needs trust
+  stops the hooks from starting tm until a person runs mise trust there.
   Sessions of one Agent are told apart by the harness's session id, or
   TM_SESSION when set.
 
