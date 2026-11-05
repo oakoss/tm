@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{self, IsTerminal as _, Read as _};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 use tm_core::actor::SessionId;
@@ -12,7 +13,7 @@ use tm_store::workspace;
 
 use crate::error::CliError;
 use crate::output::Output;
-use crate::{claim, identity, prime};
+use crate::{claim, covering, here, identity, prime};
 
 pub(crate) use crate::harness::Harness;
 
@@ -49,8 +50,15 @@ fn failed(why: impl Into<String>) -> CliError {
 }
 
 /// The hook's JSON on stdin; `None` for no input, as from a hook written
-/// before tm read it.
+/// before tm read it. Read once, as [`enter`] and the hook both ask for it.
 fn stdin_json() -> Result<Option<Value>, CliError> {
+    static READ: OnceLock<Result<Option<Value>, String>> = OnceLock::new();
+    READ.get_or_init(|| read_stdin().map_err(|err| err.message))
+        .clone()
+        .map_err(failed)
+}
+
+fn read_stdin() -> Result<Option<Value>, CliError> {
     let mut stdin = io::stdin();
     // Run by hand at a terminal, it would wait for input that never comes.
     if stdin.is_terminal() {
@@ -142,6 +150,94 @@ pub(crate) fn pre_bash() -> Result<Output, CliError> {
     ))
 }
 
+/// Before Claude Code edits a file, tells the Agent of each other Agent's or
+/// session's live Claim covering it, once per Claim and file for each Agent
+/// in this session, and never blocks the edit. Silent outside a Workspace;
+/// what it could not check, and an error, are told once.
+pub(crate) fn pre_edit() -> Output {
+    let (notes, succeeded) = match edit_notes() {
+        Ok(notes) => (notes, true),
+        Err(err) if err.code == "no_workspace" => (Vec::new(), true),
+        Err(err) => (
+            vec![(format!("error:pre-edit:{}", err.message), err.message)],
+            false,
+        ),
+    };
+    let fresh = unreported(notes, ("error:pre-edit:", succeeded));
+    if fresh.is_empty() {
+        return Output::new(String::new(), json!({ "reported": fresh }));
+    }
+    let context = format!("tm: {}", fresh.join("\ntm: "));
+    let shown = json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": context,
+        },
+    });
+    Output::new(format!("{shown}\n"), json!({ "reported": fresh }))
+}
+
+/// The `(key, text)` notes for the file the hook's input edits.
+fn edit_notes() -> Result<Vec<(String, String)>, CliError> {
+    let Some(input) = stdin_json()? else {
+        return Ok(Vec::new());
+    };
+    let tool = input.get("tool_input");
+    let file = tool
+        .and_then(|tool| tool.get("file_path").or_else(|| tool.get("notebook_path")))
+        .and_then(Value::as_str);
+    let Some(file) = file else {
+        let keys: Vec<&str> = tool
+            .and_then(Value::as_object)
+            .map(|tool| tool.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        return Err(failed(format!(
+            "cannot find the edited file in the hook's input (tool_input holds {}), so Path Claims go unchecked",
+            keys.join(", ")
+        )));
+    };
+    let here = here::read()?;
+    let base = input
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map_or_else(|| here.cwd.clone(), PathBuf::from);
+    let Some(file) = covering::in_repo(&here.found.dir, &base, file) else {
+        return Ok(Vec::new());
+    };
+    enter(Harness::Claude)?;
+    let me = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
+        .map_err(|why| failed(format!("cannot tell who is editing: {why}")))?;
+    let others = covering::others(&here.store.claims()?, Some(&me.actor));
+    if others.is_empty() {
+        return Ok(Vec::new());
+    }
+    let check = covering::overlaps(&here.found.dir, &others, std::slice::from_ref(&file));
+    let mut notes: Vec<(String, String)> = check
+        .unchecked
+        .into_iter()
+        .map(|why| (format!("unchecked:{why}"), why))
+        .collect();
+    for overlap in check.found {
+        let shown = here
+            .store
+            .issue(overlap.claim.issue)?
+            .and_then(|view| view.key)
+            .unwrap_or_else(|| overlap.claim.issue.to_string());
+        let text = format!(
+            "{}; ask its holder or tm show {shown} before editing it",
+            covering::told(&overlap, &shown)
+        );
+        let key = format!(
+            "covers:{}:{}:{}",
+            me.actor.name(),
+            overlap.claim.id,
+            overlap.file
+        );
+        notes.push((key, text));
+    }
+    Ok(notes)
+}
+
 /// Whether `command` names tm as a word; a tm run from a script it calls is
 /// missed, and writes as the main Agent.
 fn runs_tm(command: &str) -> bool {
@@ -205,11 +301,11 @@ pub(crate) fn heartbeat(harness: Harness) -> Output {
         Err(err) if err.code == "no_workspace" => (Vec::new(), true),
         Err(err) => {
             let mut notes: Vec<(String, String)> = err.warnings.into_iter().map(note).collect();
-            notes.push((format!("error:{}", err.message), err.message));
+            notes.push((format!("error:heartbeat:{}", err.message), err.message));
             (notes, false)
         }
     };
-    let fresh = unreported(notes, succeeded);
+    let fresh = unreported(notes, ("error:heartbeat:", succeeded));
     let text = if fresh.is_empty() {
         String::new()
     } else {
@@ -229,10 +325,11 @@ pub(crate) fn heartbeat(harness: Harness) -> Output {
 }
 
 /// The text of those `(key, text)` notes this session has not been told,
-/// recorded in tm's home by key as told; `succeeded` forgets the errors told,
-/// so a later failure is told again. Without a session to key them by, or a
-/// home to keep them in, every note is fresh.
-fn unreported(notes: Vec<(String, String)>, succeeded: bool) -> Vec<String> {
+/// recorded in tm's home by key as told; a hook that `succeeded` forgets its
+/// own errors, keyed under `errors`, so a later failure is told again.
+/// Without a session to key them by, or a home to keep them in, every note is
+/// fresh.
+fn unreported(notes: Vec<(String, String)>, (errors, succeeded): (&str, bool)) -> Vec<String> {
     let Some(path) = reported_path() else {
         return notes.into_iter().map(|(_, text)| text).collect();
     };
@@ -244,9 +341,9 @@ fn unreported(notes: Vec<(String, String)>, succeeded: bool) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default();
-    let forgotten = succeeded && told.iter().any(|key| key.starts_with("error:"));
+    let forgotten = succeeded && told.iter().any(|key| key.starts_with(errors));
     if forgotten {
-        told.retain(|key| !key.starts_with("error:"));
+        told.retain(|key| !key.starts_with(errors));
     }
     let seen: HashSet<&String> = told.iter().collect();
     let fresh: Vec<(String, String)> = notes

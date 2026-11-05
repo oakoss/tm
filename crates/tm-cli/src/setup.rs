@@ -343,6 +343,13 @@ fn handlers(harness: Harness) -> Vec<Handler> {
                     replaces: None,
                 },
                 Handler {
+                    event: "PreToolUse",
+                    matcher: Some("Edit|MultiEdit|Write|NotebookEdit"),
+                    command: unblocking(from_project("hook pre-edit claude")),
+                    extra: vec![timeout()],
+                    replaces: None,
+                },
+                Handler {
                     event: "PostToolUse",
                     matcher: Some("*"),
                     command: from_project("hook heartbeat claude"),
@@ -698,7 +705,7 @@ mod tests {
     fn the_owners_keys_keep_their_order_and_indent() {
         let before = "{\n    \"zebra\": 1,\n    \"apple\": [true, null, 2.5]\n}\n";
         let (after, added) = added(before);
-        assert_eq!(added.len(), 5);
+        assert_eq!(added.len(), 6);
         assert!(
             after.starts_with("{\n    \"zebra\": 1,\n    \"apple\": [\n        true,"),
             "{after}"
@@ -736,8 +743,8 @@ mod tests {
         let (after, removed) = removed(&with_tm);
         assert_eq!(
             removed.len(),
-            5,
-            "the one already there and the four added: {removed:?}"
+            6,
+            "the one already there and the five added: {removed:?}"
         );
         let after = parse(&after);
         let expected = parse(

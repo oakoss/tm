@@ -69,6 +69,12 @@ fn yes_writes_the_hooks_once_and_undo_removes_the_file_it_made() {
         ]
     );
     assert_eq!(written["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+    let edit = &written["hooks"]["PreToolUse"][1];
+    assert_eq!(edit["matcher"], "Edit|MultiEdit|Write|NotebookEdit");
+    assert_eq!(
+        edit["hooks"][0]["command"],
+        "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm hook pre-edit claude || exit 1"
+    );
     assert_eq!(written["hooks"]["PostToolUse"][0]["matcher"], "*");
     assert_eq!(
         written["hooks"]["PostToolUse"][0]["hooks"][0]["async"],
@@ -92,7 +98,7 @@ fn yes_writes_the_hooks_once_and_undo_removes_the_file_it_made() {
     assert!(undone.status.success(), "{undone:?}");
     let data = &doc(&undone.stdout)["data"];
     assert_eq!(data["deleted"], true);
-    assert_eq!(data["changed"].as_array().unwrap().len(), 5);
+    assert_eq!(data["changed"].as_array().unwrap().len(), 6);
     assert!(!repo.join(SETTINGS).exists());
 
     let none = tm(&scratch, &repo, &["setup", "claude", "--undo", "--yes"]);

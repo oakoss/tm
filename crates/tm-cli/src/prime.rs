@@ -15,6 +15,7 @@ use tm_store::{
 use uuid::Uuid;
 
 use crate::claim;
+use crate::covering;
 use crate::error::CliError;
 use crate::guide::HABITS;
 use crate::here;
@@ -29,6 +30,9 @@ pub(crate) const READY_SHOWN: usize = 15;
 
 /// Fewer for a session with Short-lists, which `tm next` takes from first.
 const READY_SHOWN_WITH_LISTS: usize = 3;
+
+/// The files a Path Claim's line names before counting the rest.
+const PATH_FILES_SHOWN: usize = 3;
 
 /// The lists' share of the budget, 1,000 bytes, which the one `tm next`
 /// takes from, at most about 450 bytes, may pass.
@@ -81,6 +85,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
     } = read.map_err(|err| err.warned(warnings.clone()))?;
     let resumes = resumes(&here.store, &waiting, &mut warnings);
     let scheme = here.store.scheme();
+    let touching = path_claims(&here, actor.as_ref(), &mut warnings);
 
     let mut text = String::new();
     if !json {
@@ -102,6 +107,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
     let waiting_items = waiting_section(&mut text, asked, &waiting, &projects, now_ms);
     let sessions = by_session(claims, session);
     let claim_items = claims_sections(&mut text, (&sessions, &notes), &claimed, &projects, now_ms);
+    let path_claims = path_claims_section(&mut text, &here, &touching, now_ms);
     let shortlists = next::lists_section(&mut text, &lists, LISTS_ROOM);
     section(
         &mut text,
@@ -130,6 +136,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
         "claims": claim_items.held,
         "other_session_claims": claim_items.others,
         "lapsed_claims": claim_items.lapsed,
+        "path_claims": path_claims,
         "shortlists": shortlists,
         "in_progress": {
             "issues": active.iter().map(|view| item(view, &projects)).collect::<Vec<_>>(),
@@ -444,6 +451,99 @@ struct SessionClaims {
     mine: Vec<Claim>,
     others: Vec<Claim>,
     lapsed: Vec<Claim>,
+}
+
+/// The files this checkout changes that other sessions' live Claims cover;
+/// git runs only when such a Claim names paths or a branch.
+fn path_claims(
+    here: &here::Here,
+    me: Option<&Actor>,
+    warnings: &mut Vec<String>,
+) -> Vec<covering::Overlap> {
+    let claims = match here.store.claims() {
+        Ok(claims) => claims,
+        Err(err) => {
+            warnings.push(format!("Path Claims: {err}"));
+            return Vec::new();
+        }
+    };
+    let others = covering::others(&claims, me);
+    if others.is_empty() {
+        return Vec::new();
+    }
+    let dir = &here.found.dir;
+    let (files, unlisted) = covering::changed(dir);
+    let check = covering::overlaps(dir, &others, &files);
+    warnings.extend(
+        unlisted
+            .into_iter()
+            .chain(check.unchecked)
+            .map(|why| format!("Path Claims: {why}")),
+    );
+    check.found
+}
+
+/// `Path Claims on your changes`, one line per Claim with the files it
+/// covers; nothing when none does.
+fn path_claims_section(
+    text: &mut String,
+    here: &here::Here,
+    touching: &[covering::Overlap],
+    now_ms: i64,
+) -> Value {
+    let mut by_claim: Vec<(&Claim, Vec<&covering::Overlap>)> = Vec::new();
+    for overlap in touching {
+        match by_claim
+            .iter_mut()
+            .find(|(claim, _)| claim.id == overlap.claim.id)
+        {
+            Some((_, files)) => files.push(overlap),
+            None => by_claim.push((&overlap.claim, vec![overlap])),
+        }
+    }
+    if by_claim.is_empty() {
+        return json!([]);
+    }
+    let _ = writeln!(text, "Path Claims on your changes ({}):", by_claim.len());
+    let mut items = Vec::with_capacity(by_claim.len());
+    for (claim, files) in by_claim {
+        let key = here
+            .store
+            .issue(claim.issue)
+            .ok()
+            .flatten()
+            .and_then(|view| view.key);
+        let shown = key.clone().unwrap_or_else(|| claim.issue.to_string());
+        let names: Vec<String> = files
+            .iter()
+            .map(|overlap| printable(&overlap.file))
+            .collect();
+        let listed = names[..names.len().min(PATH_FILES_SHOWN)].join(", ");
+        let more = match names.len().saturating_sub(PATH_FILES_SHOWN) {
+            0 => String::new(),
+            more => format!(", and {more} more"),
+        };
+        let _ = writeln!(
+            text,
+            "  {shown}  {} covers {listed}{more}",
+            claim::holder(claim)
+        );
+        let files: Vec<Value> = files
+            .iter()
+            .map(|overlap| match &overlap.why {
+                covering::Why::Path(path) => json!({ "file": overlap.file, "path": path }),
+                covering::Why::Branch(branch) => {
+                    json!({ "file": overlap.file, "branch": branch })
+                }
+            })
+            .collect();
+        items.push(json!({
+            "issue": { "id": claim.issue, "key": key },
+            "claim": claim::claim_json(claim, now_ms),
+            "files": files,
+        }));
+    }
+    Value::Array(items)
 }
 
 /// `claims` sorted by whether `session` took them; one handed to the Agent

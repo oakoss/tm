@@ -45,9 +45,9 @@ impl Closing {
 }
 
 /// The ref merged work lands on, as this clone last fetched it.
-struct Branch {
+pub(crate) struct Branch {
     /// The full ref, so a tag of the same name cannot shadow it.
-    full: String,
+    pub(crate) full: String,
     shown: String,
     /// Why commits on it may not be merged yet, when they may not.
     caveat: Option<String>,
@@ -317,7 +317,7 @@ fn landed(here: &Here, actor: &Actor, (id, name): (Uuid, &str), batch: Uuid, rep
 
 /// The remote's default branch when it is known, else a local `main` or
 /// `master` by its upstream, else that local branch. tm fetches nothing.
-fn default_branch(dir: &Path) -> Result<Branch, CliError> {
+pub(crate) fn default_branch(dir: &Path) -> Result<Branch, CliError> {
     let head = "refs/remotes/origin/HEAD";
     let origin = git(dir, &["for-each-ref", "--format=%(symref)", head])?;
     if let Some(full) = origin.lines().next().filter(|full| !full.is_empty()) {
@@ -380,7 +380,7 @@ fn shown(full: &str) -> String {
     shown.unwrap_or(full).to_owned()
 }
 
-fn git(dir: &Path, args: &[&str]) -> Result<String, CliError> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, CliError> {
     let output = Command::new("git")
         .args(args)
         .current_dir(dir)
