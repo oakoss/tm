@@ -228,7 +228,8 @@ fn edit_notes(input: &Value) -> Result<Notes, CliError> {
     if others.is_empty() {
         return Ok(Notes::default());
     }
-    let check = covering::overlaps(&here.found.dir, &others, std::slice::from_ref(&file));
+    let mut git = covering::Git::new(&here.found.dir);
+    let check = covering::overlaps(&mut git, &others, std::slice::from_ref(&file));
     let unchecked = check.unchecked.into_iter().map(|why| (why.clone(), why));
     let mut notes = Notes {
         lasting: Vec::new(),

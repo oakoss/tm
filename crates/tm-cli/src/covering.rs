@@ -1,6 +1,7 @@
 //! Path Claims: which other sessions' live Claims cover a file, by a path
 //! they name or as already committed on their branch.
 
+use std::cell::OnceCell;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 
@@ -147,14 +148,28 @@ pub(crate) fn others(claims: &AgentClaims, me: Option<&Actor>) -> Vec<Claim> {
         .collect()
 }
 
-/// Each of `files`, from the root at `dir`, that one of `others` covers: by
-/// a path it names, else as committed on its branch, which git is asked about
-/// once per branch and only when a path does not cover the file. A file on a
+/// Each of `files`, from the checkout `git` asks in, that one of `others`
+/// covers, with what git could not tell since `git` was made.
+pub(crate) fn overlaps(git: &mut Git, others: &[Claim], files: &[String]) -> Check {
+    let (found, branches) = matches(others, files, |branch, file| git.on_branch(branch, file));
+    Check {
+        found,
+        unchecked: std::mem::take(&mut git.unchecked),
+        branches,
+    }
+}
+
+/// Each of `files` that one of `others` covers: by a path it names, else as
+/// committed on its branch, which `on_branch` is asked only then. A file on a
 /// branch one session holds several Claims on is told once, with the first.
-pub(crate) fn overlaps(dir: &Path, others: &[Claim], files: &[String]) -> Check {
-    let mut check = Check::default();
-    let mut default: Option<Result<String, String>> = None;
-    let mut committed: HashMap<String, BTreeSet<String>> = HashMap::new();
+/// Also whether `on_branch` was asked.
+fn matches(
+    others: &[Claim],
+    files: &[String],
+    mut on_branch: impl FnMut(&str, &str) -> bool,
+) -> (Vec<Overlap>, bool) {
+    let mut found = Vec::new();
+    let mut asked = false;
     let mut told = BTreeSet::new();
     for claim in others {
         for file in files {
@@ -162,83 +177,129 @@ pub(crate) fn overlaps(dir: &Path, others: &[Claim], files: &[String]) -> Check 
             {
                 Why::Path(path.clone())
             } else if let Some(branch) = &claim.branch {
-                check.branches = true;
-                if !committed.contains_key(branch) {
-                    let default = default.get_or_insert_with(|| {
-                        scan::default_branch(dir)
-                            .map(|branch| branch.full)
-                            .map_err(said)
-                    });
-                    let files = match default {
-                        Ok(default) => branch_files(dir, default, branch).map_err(|why| {
-                            format!(
-                                "cannot tell which files {} commits: {why}",
-                                printable(branch)
-                            )
-                        }),
-                        Err(why) => Err(format!(
-                            "cannot tell which files Claims' branches commit: {why}"
-                        )),
-                    };
-                    committed.insert(
-                        branch.clone(),
-                        files.unwrap_or_else(|unchecked| {
-                            if !check.unchecked.contains(&unchecked) {
-                                check.unchecked.push(unchecked);
-                            }
-                            BTreeSet::new()
-                        }),
-                    );
-                }
+                asked = true;
                 let holder = (&claim.agent, &claim.on_behalf_of, &claim.session);
-                if !committed[branch].contains(file) || !told.insert((holder, branch, file)) {
+                if !on_branch(branch, file) || !told.insert((holder, branch, file)) {
                     continue;
                 }
                 Why::Branch(branch.clone())
             } else {
                 continue;
             };
-            check.found.push(Overlap {
+            found.push(Overlap {
                 claim: claim.clone(),
                 file: file.clone(),
                 why,
             });
         }
     }
-    check
+    (found, asked)
 }
 
-/// The files committed on `branch` and not on `default`, both full refs but
-/// `branch`; none for the default branch itself or one this clone does not
-/// have.
-fn branch_files(dir: &Path, default: &str, branch: &str) -> Result<BTreeSet<String>, String> {
-    let full = format!("refs/heads/{branch}");
-    if full == default {
-        return Ok(BTreeSet::new());
+/// Git as Path Claims ask it in the checkout at `dir`: the default branch
+/// and each branch's files looked up once, and what it could not tell, each
+/// said once.
+pub(crate) struct Git<'a> {
+    dir: &'a Path,
+    default: OnceCell<Option<String>>,
+    branches: HashMap<String, BTreeSet<String>>,
+    unchecked: Vec<String>,
+}
+
+impl<'a> Git<'a> {
+    pub(crate) fn new(dir: &'a Path) -> Self {
+        Self {
+            dir,
+            default: OnceCell::new(),
+            branches: HashMap::new(),
+            unchecked: Vec::new(),
+        }
     }
-    if !has_branch(dir, &full)? {
-        return Ok(BTreeSet::new());
+
+    fn tell(&mut self, unchecked: String) {
+        if !self.unchecked.contains(&unchecked) {
+            self.unchecked.push(unchecked);
+        }
     }
-    names(dir, &format!("{default}...{full}"))
+
+    /// The default branch's full ref; `None`, told once, when git cannot say.
+    fn default(&mut self) -> Option<String> {
+        if self.default.get().is_none() {
+            let found = scan::default_branch(self.dir).map(|branch| branch.full);
+            if let Err(err) = &found {
+                self.tell(format!(
+                    "cannot tell what is committed off the default branch: {}",
+                    said(err)
+                ));
+            }
+            let _ = self.default.set(found.ok());
+        }
+        self.default.get().cloned().flatten()
+    }
+
+    fn on_branch(&mut self, branch: &str, file: &str) -> bool {
+        if !self.branches.contains_key(branch) {
+            let files = self.branch_files(branch);
+            self.branches.insert(branch.to_owned(), files);
+        }
+        self.branches[branch].contains(file)
+    }
+
+    /// The files committed on `branch` and not on the default branch; none
+    /// for the default branch itself or one this clone does not have.
+    fn branch_files(&mut self, branch: &str) -> BTreeSet<String> {
+        let Some(default) = self.default() else {
+            return BTreeSet::new();
+        };
+        let full = format!("refs/heads/{branch}");
+        if full == default {
+            return BTreeSet::new();
+        }
+        let files = match has_branch(self.dir, &full) {
+            Ok(true) => names(self.dir, &format!("{default}...{full}")),
+            Ok(false) => Ok(BTreeSet::new()),
+            Err(why) => Err(why),
+        };
+        files.unwrap_or_else(|why| {
+            self.tell(format!(
+                "cannot tell which files {} commits: {why}",
+                printable(branch)
+            ));
+            BTreeSet::new()
+        })
+    }
+
+    /// The files the checkout changes: committed since the default branch,
+    /// staged, unstaged or untracked.
+    pub(crate) fn changed(&mut self) -> Vec<String> {
+        let mut files = BTreeSet::new();
+        if let Some(default) = self.default() {
+            match names(self.dir, &format!("{default}...HEAD")) {
+                Ok(names) => files.extend(names),
+                Err(why) => self.tell(format!("cannot list your committed changes: {why}")),
+            }
+        }
+        let status = scan::git(
+            self.dir,
+            &["status", "--porcelain", "-z", "--untracked-files=all"],
+        );
+        match status {
+            Ok(status) => files.extend(porcelain(&status)),
+            Err(err) => self.tell(format!(
+                "cannot list your uncommitted changes: {}",
+                said(&err)
+            )),
+        }
+        files.into_iter().collect()
+    }
 }
 
 /// Whether the branch `full` names is here. A missing ref and a broken one
-/// fail alike, and only the broken one writes to stderr (so trace is off); a
-/// ref to a missing commit is here and fails at the diff.
+/// fail alike, and only the broken one says why on stderr; a ref to a missing
+/// commit is here and fails at the diff.
 fn has_branch(dir: &Path, full: &str) -> Result<bool, String> {
-    let mut command = std::process::Command::new("git");
-    command
-        .args(["rev-parse", "--verify", "--quiet", full])
-        .current_dir(dir)
-        .env("GIT_OPTIONAL_LOCKS", "0");
-    for (name, _) in std::env::vars_os() {
-        if name.to_string_lossy().starts_with("GIT_TRACE") {
-            command.env_remove(name);
-        }
-    }
-    let output = command
-        .output()
-        .map_err(|err| format!("cannot run git: {err}"))?;
+    let output = scan::git_output(dir, &["rev-parse", "--verify", "--quiet", full])
+        .map_err(|err| said(&err))?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     match (output.status.success(), stderr.trim()) {
         (true, _) => Ok(true),
@@ -252,44 +313,18 @@ fn has_branch(dir: &Path, full: &str) -> Result<bool, String> {
 fn names(dir: &Path, range: &str) -> Result<BTreeSet<String>, String> {
     let said_by_git = scan::git(dir, &["diff", "-z", "--name-only", "--no-renames", range]);
     Ok(said_by_git
-        .map_err(said)?
+        .map_err(|err| said(&err))?
         .split('\0')
         .filter(|name| !name.is_empty())
         .map(str::to_owned)
         .collect())
 }
 
-/// The files the checkout at `dir` changes: committed since the default
-/// branch, staged, unstaged or untracked, with what git could not list.
-pub(crate) fn changed(dir: &Path) -> (Vec<String>, Vec<String>) {
-    let mut files = BTreeSet::new();
-    let mut unchecked = Vec::new();
-    let committed = scan::default_branch(dir)
-        .map_err(said)
-        .and_then(|default| names(dir, &format!("{}...HEAD", default.full)));
-    match committed {
-        Ok(names) => files.extend(names),
-        Err(why) => unchecked.push(format!("cannot list your committed changes: {why}")),
-    }
-    let status = scan::git(
-        dir,
-        &["status", "--porcelain", "-z", "--untracked-files=all"],
-    );
-    match status {
-        Ok(status) => files.extend(porcelain(&status)),
-        Err(err) => unchecked.push(format!(
-            "cannot list your uncommitted changes: {}",
-            said(err)
-        )),
-    }
-    (files.into_iter().collect(), unchecked)
-}
-
 /// An error as one line, with its fix when it has one.
-fn said(err: CliError) -> String {
-    match err.fix {
+fn said(err: &CliError) -> String {
+    match &err.fix {
         Some(fix) => format!("{} ({fix})", err.message),
-        None => err.message,
+        None => err.message.clone(),
     }
 }
 
@@ -311,6 +346,68 @@ fn porcelain(status: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn claim(session: &str, paths: &[&str], branch: Option<&str>) -> Claim {
+        Claim {
+            id: uuid::Uuid::now_v7(),
+            issue: uuid::Uuid::now_v7(),
+            agent: "claude".to_owned(),
+            on_behalf_of: "jace".to_owned(),
+            expires_ms: None,
+            ttl_ms: None,
+            session: Some(session.to_owned()),
+            handed: false,
+            branch: branch.map(str::to_owned),
+            paths: paths.iter().map(|path| (*path).to_owned()).collect(),
+        }
+    }
+
+    fn whys(found: &[Overlap]) -> Vec<(String, Why)> {
+        found
+            .iter()
+            .map(|overlap| (overlap.file.clone(), overlap.why.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn a_path_covers_a_file_before_its_branch_is_asked() {
+        let others = [claim("s1", &["src/**"], Some("feat/x"))];
+        let files = ["src/a.rs".to_owned(), "README.md".to_owned()];
+        let mut asked = Vec::new();
+        let (found, branches) = matches(&others, &files, |branch, file| {
+            asked.push((branch.to_owned(), file.to_owned()));
+            true
+        });
+        assert_eq!(
+            whys(&found),
+            [
+                ("src/a.rs".to_owned(), Why::Path("src/**".to_owned())),
+                ("README.md".to_owned(), Why::Branch("feat/x".to_owned())),
+            ]
+        );
+        assert_eq!(asked, [("feat/x".to_owned(), "README.md".to_owned())]);
+        assert!(branches);
+
+        let (_, branches) = matches(&others, &files[..1], |_, _| panic!("asked"));
+        assert!(!branches, "a file a path covers asks no branch");
+    }
+
+    #[test]
+    fn a_branch_file_is_told_once_per_holding_session() {
+        let others = [
+            claim("s1", &[], Some("feat/x")),
+            claim("s1", &[], Some("feat/x")),
+            claim("s2", &[], Some("feat/x")),
+            claim("s3", &[], Some("feat/y")),
+        ];
+        let files = ["a.rs".to_owned()];
+        let (found, _) = matches(&others, &files, |branch, _| branch == "feat/x");
+        let sessions: Vec<_> = found
+            .iter()
+            .map(|overlap| overlap.claim.session.clone().unwrap())
+            .collect();
+        assert_eq!(sessions, ["s1", "s2"]);
+    }
 
     #[test]
     fn porcelain_names_each_changed_file_once() {

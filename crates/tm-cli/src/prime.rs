@@ -471,13 +471,13 @@ fn path_claims(
     if others.is_empty() {
         return Vec::new();
     }
-    let dir = &here.found.dir;
-    let (files, unlisted) = covering::changed(dir);
-    let check = covering::overlaps(dir, &others, &files);
+    let mut git = covering::Git::new(&here.found.dir);
+    let files = git.changed();
+    let check = covering::overlaps(&mut git, &others, &files);
     warnings.extend(
-        unlisted
+        check
+            .unchecked
             .into_iter()
-            .chain(check.unchecked)
             .map(|why| format!("Path Claims: {why}")),
     );
     check.found

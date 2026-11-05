@@ -345,7 +345,7 @@ fn prime_lists_committed_and_untracked_changes_and_says_what_it_cannot_check() {
         &repo.join("README.md").display().to_string(),
     );
     assert!(
-        said.starts_with("tm: cannot tell which files Claims' branches commit: ")
+        said.starts_with("tm: cannot tell what is committed off the default branch: ")
             && said.contains("no origin/HEAD and no main or master branch")
             && !said.contains('\n'),
         "{said}"
@@ -362,8 +362,12 @@ fn prime_lists_committed_and_untracked_changes_and_says_what_it_cannot_check() {
     );
     let primed = text(&in_session(&scratch, &repo, "s2", &["prime"]).stdout);
     assert!(
-        primed.contains("warning: Path Claims: cannot list your committed changes: "),
-        "{primed}"
+        primed
+            .matches("warning: Path Claims: cannot tell what is committed off the default branch: ")
+            .count()
+            == 1
+            && !primed.contains("cannot list your committed changes"),
+        "one warning for one cause: {primed}"
     );
 
     let released = in_session(&scratch, &repo, "s1", &["release", "TM-2"]);

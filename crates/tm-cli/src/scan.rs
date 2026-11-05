@@ -381,12 +381,7 @@ fn shown(full: &str) -> String {
 }
 
 pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, CliError> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()
-        .map_err(|err| CliError::new("git_failed", format!("cannot run git: {err}")))?;
+    let output = git_output(dir, args)?;
     if !output.status.success() {
         let said = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         let said = if said.is_empty() {
@@ -400,6 +395,24 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, CliError> {
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// What `git args` printed in `dir`, however it exited. Trace variables are
+/// left out, so what git writes on stderr is only what it has to say.
+pub(crate) fn git_output(dir: &Path, args: &[&str]) -> Result<std::process::Output, CliError> {
+    let mut command = Command::new("git");
+    command
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("GIT_TRACE") {
+            command.env_remove(name);
+        }
+    }
+    command
+        .output()
+        .map_err(|err| CliError::new("git_failed", format!("cannot run git: {err}")))
 }
 
 /// What follows `Closes` or `Closes:` on `line`, when it starts so.
