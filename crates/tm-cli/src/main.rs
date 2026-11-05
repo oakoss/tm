@@ -169,7 +169,7 @@ enum Command {
     #[command(alias = "search")]
     List {
         /// A filter such as `status:todo priority:high -labels:bug`,
-        /// `is:blocked`, or words to search for (`login timeout`).
+        /// `is:blocked`, `no:parent`, or words to search for (`login timeout`).
         filter: Vec<String>,
         /// Show at most this many.
         #[arg(long)]
