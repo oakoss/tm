@@ -252,8 +252,9 @@ fn written(harness: Harness, undo: bool, deleted: bool, changed: &[String], show
     let (hooks, runs) = match harness {
         Harness::Claude => (
             "tm prime when a session starts, each sub-agent's tm commands written under its own \
-             name, a heartbeat after each tool use, and releasing Claims when a sub-agent or the \
-             session ends",
+             name, a warning before an edit to a file another session's Claim covers, a \
+             heartbeat after each tool use, and releasing Claims when a sub-agent or the session \
+             ends",
             "Claude Code runs them once you trust this folder, which it asks when a session \
              starts here.",
         ),

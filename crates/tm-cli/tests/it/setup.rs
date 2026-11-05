@@ -41,6 +41,15 @@ fn yes_writes_the_hooks_once_and_undo_removes_the_file_it_made() {
         "{shown}"
     );
     assert!(shown.ends_with("Commit .claude/settings.json\n"), "{shown}");
+    assert!(
+        shown.contains(
+            "Added tm's hooks to .claude/settings.json: tm prime when a session starts, each \
+             sub-agent's tm commands written under its own name, a warning before an edit to a \
+             file another session's Claim covers, a heartbeat after each tool use, and releasing \
+             Claims when a sub-agent or the session ends."
+        ),
+        "the summary names every hook it writes: {shown}"
+    );
     let written: Value =
         serde_json::from_str(&fs::read_to_string(repo.join(SETTINGS)).unwrap()).unwrap();
     let events = [
