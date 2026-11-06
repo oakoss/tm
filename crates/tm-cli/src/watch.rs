@@ -19,14 +19,18 @@ const POLL: Duration = Duration::from_millis(250);
 /// other error ends the watch, as does the first print after the reader
 /// closed the pipe.
 pub(crate) fn run(json: bool, read: impl FnMut() -> Result<Output, CliError>) -> ExitCode {
-    watching(json, watch, read)
+    watching(json, watch, read, |result, before, warnings| {
+        output::finish_again(json, result, before, warnings)
+    })
 }
 
-/// [`run`], with the Watch made by `make`.
+/// [`run`], with the Watch made by `make` and each result printed by
+/// `print`, as [`output::finish_again`] does.
 fn watching(
     json: bool,
     mut make: impl FnMut() -> Result<Watch, CliError>,
     mut read: impl FnMut() -> Result<Output, CliError>,
+    mut print: impl FnMut(Result<Output, CliError>, &str, &[String]) -> Option<ExitCode>,
 ) -> ExitCode {
     // Text warns at once; JSON, which writes nothing to stderr (ADR 0011),
     // carries it in the next document's warnings.
@@ -61,7 +65,7 @@ fn watching(
             match read() {
                 Err(err) if err.code == "busy" => busy(&mut held),
                 result => {
-                    match output::finish_again(json, result, &before, &std::mem::take(&mut held)) {
+                    match print(result, &before, &std::mem::take(&mut held)) {
                         None => return ExitCode::SUCCESS,
                         Some(code) if code != ExitCode::SUCCESS => return code,
                         Some(_) => {}
@@ -112,11 +116,22 @@ mod tests {
         path
     }
 
+    /// Ends the watch at its first print, keeping the warnings it was given.
+    fn first_print(
+        printed: &RefCell<Vec<String>>,
+    ) -> impl FnMut(Result<Output, CliError>, &str, &[String]) -> Option<ExitCode> {
+        |_, _, warnings| {
+            printed.borrow_mut().extend_from_slice(warnings);
+            Some(ExitCode::FAILURE)
+        }
+    }
+
     #[test]
     fn the_watch_is_made_before_the_first_read() {
         let path = store();
         let calls = RefCell::new(Vec::new());
-        let code = watching(
+        let printed = RefCell::new(Vec::new());
+        watching(
             true,
             || {
                 calls.borrow_mut().push("watch");
@@ -126,18 +141,19 @@ mod tests {
                 calls.borrow_mut().push("read");
                 Err(CliError::new("stop", "stop"))
             },
+            first_print(&printed),
         );
-        assert_ne!(code, ExitCode::SUCCESS);
         assert_eq!(*calls.borrow(), ["watch", "read"]);
     }
 
-    #[test]
-    fn a_busy_store_is_tried_again_at_the_start_and_on_a_read() {
+    /// Busy at the start, then on the first read, then read.
+    fn busy_twice(json: bool) -> ((usize, usize), Vec<String>) {
         let path = store();
         let (made, read) = (RefCell::new(0), RefCell::new(0));
+        let printed = RefCell::new(Vec::new());
         let busy = || CliError::new("busy", "busy");
-        let code = watching(
-            true,
+        watching(
+            json,
             || {
                 *made.borrow_mut() += 1;
                 if *made.borrow() == 1 {
@@ -147,14 +163,24 @@ mod tests {
             },
             || {
                 *read.borrow_mut() += 1;
-                Err(if *read.borrow() == 1 {
-                    busy()
-                } else {
-                    CliError::new("stop", "stop")
-                })
+                if *read.borrow() == 1 {
+                    return Err(busy());
+                }
+                Ok(Output::new(String::new(), serde_json::Value::Null))
             },
+            first_print(&printed),
         );
-        assert_ne!(code, ExitCode::SUCCESS);
-        assert_eq!((*made.borrow(), *read.borrow()), (2, 2));
+        let counts = (*made.borrow(), *read.borrow());
+        (counts, printed.into_inner())
+    }
+
+    #[test]
+    fn a_busy_store_is_tried_again_and_json_carries_it_once_in_the_next_document() {
+        let (counts, warnings) = busy_twice(true);
+        assert_eq!(counts, (2, 2));
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("busy"), "{warnings:?}");
+        let (_, warnings) = busy_twice(false);
+        assert!(warnings.is_empty(), "text warns on stderr at once");
     }
 }

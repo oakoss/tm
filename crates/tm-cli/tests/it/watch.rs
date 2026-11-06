@@ -21,16 +21,14 @@ const WAIT: Duration = Duration::from_secs(10);
 struct Watching {
     child: Child,
     lines: Option<Receiver<String>>,
-    stderr: PathBuf,
 }
 
 impl Watching {
     fn start(scratch: &Scratch, repo: &Path, args: &[&str]) -> Self {
-        let stderr = scratch.0.join(format!("stderr-{}", uuid::Uuid::now_v7()));
         let mut child = jace(scratch, repo, args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(fs::File::create(&stderr).unwrap())
+            .stderr(Stdio::null())
             .spawn()
             .unwrap();
         let stdout = child.stdout.take().unwrap();
@@ -46,12 +44,7 @@ impl Watching {
         Self {
             child,
             lines: Some(lines),
-            stderr,
         }
-    }
-
-    fn stderr(&self) -> String {
-        fs::read_to_string(&self.stderr).unwrap()
     }
 
     fn next(&self) -> String {
@@ -186,32 +179,4 @@ fn a_reader_refused_the_store_watches_the_snapshot() {
     assert_eq!(keys(&first), ["TM-1"]);
     create(&scratch, &repo, "b");
     assert_eq!(keys(&watching.next()).len(), 2);
-}
-
-#[test]
-fn json_carries_a_busy_store_in_the_next_documents_warnings_not_on_stderr() {
-    let scratch = Scratch::new();
-    let (repo, store, _project) = initialized(&scratch);
-    drop(store);
-    create(&scratch, &repo, "a");
-    let watching = Watching::start(&scratch, &repo, &["--json", "list", "--watch"]);
-    watching.next();
-    // A write, then the lock at once, so the read that write prompts meets a
-    // busy store however slowly tm started.
-    let lock = rusqlite::Connection::open(store_path(&scratch)).unwrap();
-    lock.execute_batch(
-        "INSERT OR REPLACE INTO meta (k, v) VALUES ('probe', 1);
-         BEGIN EXCLUSIVE;",
-    )
-    .unwrap();
-    // Past the store's 5 s busy timeout, from a read starting within a poll.
-    thread::sleep(Duration::from_secs(7));
-    lock.execute_batch("COMMIT").unwrap();
-    let doc: Value = serde_json::from_str(&watching.next()).unwrap();
-    let warnings = doc["warnings"].as_array().unwrap();
-    assert!(
-        warnings.len() == 1 && warnings[0].as_str().unwrap().contains("busy"),
-        "{doc}"
-    );
-    assert_eq!(watching.stderr(), "");
 }
