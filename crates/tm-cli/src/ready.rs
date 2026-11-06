@@ -117,7 +117,7 @@ fn session_lists(here: &mut Here) -> Vec<(Shortlist, Vec<Member>)> {
 }
 
 fn read(here: &mut Here, project: ProjectId) -> Result<Vec<(Shortlist, Vec<Member>)>, String> {
-    match identity::resolve(identity::env, || identity::git_email(&here.found.dir)) {
+    match identity::reader(identity::env, || identity::git_email(&here.found.dir)) {
         Ok(identity) => {
             here.warnings.extend(identity.warnings);
             next::session_lists(here, project, &identity.actor).map_err(|err| next::unread(&err))

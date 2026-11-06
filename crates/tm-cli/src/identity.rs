@@ -44,10 +44,31 @@ pub(crate) fn resolve(
     var: impl Fn(&str) -> Option<Var>,
     email: impl FnOnce() -> Result<String, String>,
 ) -> Result<Identity, String> {
-    let human = match set(&var, "TM_ACTOR")? {
-        Some(human) => human,
-        None => email()?,
-    };
+    resolve_with(var, |_| email())
+}
+
+/// [`resolve`] for a read that tells writers apart by name and session only,
+/// as Claims and Short-lists do: without `TM_ACTOR`, an Agent skips git and
+/// names no human.
+///
+/// # Errors
+///
+/// As [`resolve`].
+pub(crate) fn reader(
+    var: impl Fn(&str) -> Option<Var>,
+    email: impl FnOnce() -> Result<String, String>,
+) -> Result<Identity, String> {
+    resolve_with(var, |agent| {
+        agent.map_or_else(email, |agent| Ok(agent.to_owned()))
+    })
+}
+
+/// `human` is asked, with the Agent's name, only when `TM_ACTOR` is unset.
+fn resolve_with(
+    var: impl Fn(&str) -> Option<Var>,
+    human: impl FnOnce(Option<&str>) -> Result<String, String>,
+) -> Result<Identity, String> {
+    let actor_var = set(&var, "TM_ACTOR")?;
     let detected = harnesses(&var);
     let mut warnings = Vec::new();
     let agent = match (set(&var, "TM_AGENT")?, detected.as_slice()) {
@@ -61,6 +82,10 @@ pub(crate) fn resolve(
             ));
             Some((*first).to_owned())
         }
+    };
+    let human = match actor_var {
+        Some(human) => human,
+        None => human(agent.as_deref())?,
     };
     let actor = match agent {
         Some(agent) => {
@@ -317,6 +342,67 @@ mod tests {
         );
     }
 
+    fn read_as(vars: &[(&str, &str)]) -> (String, Option<String>, Option<String>) {
+        let vars: BTreeMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        let actor = reader(
+            |name| vars.get(name).cloned().map(Ok),
+            || {
+                assert!(
+                    !agent_detected(|name| vars.get(name).cloned().map(Ok)),
+                    "git was asked for an Agent"
+                );
+                Ok("jace@x.io".into())
+            },
+        )
+        .unwrap()
+        .actor;
+        (
+            actor.name().to_owned(),
+            actor.session().map(str::to_owned),
+            actor.on_behalf_of().map(str::to_owned),
+        )
+    }
+
+    #[test]
+    fn a_reader_finds_an_agent_without_git() {
+        assert_eq!(
+            read_as(&[("CLAUDE_CODE_SESSION_ID", "s1")]),
+            ("claude".into(), Some("s1".into()), None)
+        );
+        assert_eq!(
+            read_as(&[("TM_AGENT", "reviewer"), ("TM_SESSION", "t1")]),
+            ("reviewer".into(), Some("t1".into()), None)
+        );
+        assert_eq!(
+            read_as(&[("TM_ACTOR", "kim"), ("CLAUDE_CODE_SESSION_ID", "s1")]),
+            ("claude".into(), Some("s1".into()), Some("kim".into()))
+        );
+        assert_eq!(read_as(&[]), ("jace@x.io".into(), None, None));
+    }
+
+    #[test]
+    fn a_reader_tells_writers_apart_as_a_write_names_them() {
+        for vars in [
+            &[("CLAUDE_CODE_SESSION_ID", "c1")][..],
+            &[("CODEX_THREAD_ID", "x1"), ("TM_SESSION", "t1")],
+            &[("CLAUDE_CODE_SESSION_ID", "c1"), ("CODEX_THREAD_ID", "x1")],
+            &[("TM_AGENT", "jace@x.io")],
+            &[("TM_ACTOR", "kim"), ("TM_AGENT", "a")],
+            &[],
+        ] {
+            let written = resolved(vars).unwrap().actor;
+            let (name, session, _) = read_as(vars);
+            assert_eq!(
+                (name.as_str(), session.as_deref()),
+                (written.name(), written.session()),
+                "{vars:?}"
+            );
+        }
+    }
+
     #[test]
     fn each_harness_is_detected_by_its_own_variables() {
         for (vars, agent) in [
@@ -536,6 +622,29 @@ mod tests {
         for name in ["TM_ACTOR", "TM_AGENT"] {
             let err = resolved(&[(name, "  ")]).unwrap_err();
             assert!(err.starts_with(name), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_bad_variable_is_named_before_git_is_asked() {
+        let blank = |vars: &[(&str, &str)], read: bool| {
+            let var = |name: &str| {
+                vars.iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| Ok((*v).to_owned()))
+            };
+            let email = || -> Result<String, String> { panic!("git was asked") };
+            if read {
+                reader(var, email).unwrap_err()
+            } else {
+                resolve(var, email).unwrap_err()
+            }
+        };
+        for read in [false, true] {
+            let both = blank(&[("TM_ACTOR", " "), ("TM_AGENT", " ")], read);
+            assert!(both.starts_with("TM_ACTOR"), "{both}");
+            let agent = blank(&[("TM_AGENT", " ")], read);
+            assert!(agent.starts_with("TM_AGENT"), "{agent}");
         }
     }
 }

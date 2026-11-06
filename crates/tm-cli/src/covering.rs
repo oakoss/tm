@@ -137,7 +137,10 @@ pub(crate) struct Check {
 /// name in its session; a sub-agent's and a handed Claim's count as others.
 pub(crate) fn others(claims: &AgentClaims, me: Option<&Actor>) -> Vec<Claim> {
     let own = |claim: &Claim| {
-        me.is_some_and(|me| claim.agent == me.name() && claim.session.as_deref() == me.session())
+        !claim.handed
+            && me.is_some_and(|me| {
+                claim.agent == me.name() && claim.session.as_deref() == me.session()
+            })
     };
     claims
         .held
@@ -360,6 +363,23 @@ mod tests {
             branch: branch.map(str::to_owned),
             paths: paths.iter().map(|path| (*path).to_owned()).collect(),
         }
+    }
+
+    #[test]
+    fn a_handed_claim_is_others_even_to_its_agent_in_no_session() {
+        let sessionless = |handed: bool| {
+            let mut claim = claim("s1", &["src/**"], None);
+            claim.session = None;
+            claim.handed = handed;
+            AgentClaims {
+                held: vec![claim],
+                lapsed: Vec::new(),
+                at_ms: 0,
+            }
+        };
+        let me = Actor::agent("claude", "jace");
+        assert_eq!(others(&sessionless(true), Some(&me)).len(), 1);
+        assert_eq!(others(&sessionless(false), Some(&me)).len(), 0);
     }
 
     fn whys(found: &[Overlap]) -> Vec<(String, Why)> {
