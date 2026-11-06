@@ -89,7 +89,7 @@ fn watching(
 }
 
 /// Watches the store, or the Snapshot where this process may not open it.
-fn watch() -> Result<Watch, CliError> {
+pub(crate) fn watch() -> Result<Watch, CliError> {
     let here = here::read()?;
     let watch = if here.snapshot.is_some() {
         Watch::snapshot(&here.workspace.snapshot_path())

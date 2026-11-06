@@ -36,6 +36,7 @@ mod snapshot;
 mod start;
 mod subagent;
 mod support;
+mod tui;
 mod undo;
 mod versions;
 mod watch;

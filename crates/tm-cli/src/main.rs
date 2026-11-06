@@ -39,6 +39,7 @@ mod setup;
 mod shortlist;
 mod show;
 mod start;
+mod tui;
 mod undo;
 mod watch;
 
@@ -71,7 +72,7 @@ const GROUPS: [(&str, &[&str]); 5] = [
     (
         "Everyday",
         &[
-            "create", "list", "ready", "show", "edit", "move", "comment", "link", "unlink",
+            "create", "list", "ready", "show", "edit", "move", "comment", "link", "unlink", "tui",
         ],
     ),
     ("History and undo", &["history", "undo"]),
@@ -384,6 +385,8 @@ enum Command {
     ///
     /// Finding, starting, recording and finishing work.
     Guide,
+    /// Open the screens over this Workspace in the terminal.
+    Tui,
     /// Remember a fact about this Project for every session.
     ///
     /// Every session's tm prime shows it. A memory is a durable fact a future
@@ -632,6 +635,7 @@ fn main() -> ExitCode {
         }) => watch::run(json, || list::run(&filter, limit, all, json)),
         Some(Command::Ready { limit, watch: true }) => watch::run(json, || ready::run(limit, json)),
         Some(Command::Claims { watch: true }) => watch::run(json, claim::list),
+        Some(Command::Tui) => tui::run(json),
         command => output::finish(json, run(command, json), &[]),
     }
 }
@@ -705,6 +709,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Move(args)) => moves::run(&args),
         Some(Command::Prime) => prime::run(json),
         Some(Command::Guide) => Ok(guide::run()),
+        Some(Command::Tui) => unreachable!("main opens the TUI itself"),
         Some(Command::Ready { limit, .. }) => ready::run(limit, json),
         Some(Command::Claims { .. }) => claim::list(),
         Some(Command::Sessions { limit }) => session::list(limit, json),

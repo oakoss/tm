@@ -7,7 +7,14 @@ license.workspace = true
 publish = false
 repository.workspace = true
 rust-version.workspace = true
-description = "Ratatui screens. Empty until the TUI is built."
+description = "Ratatui screens, opened by tm tui (ADR 0018)."
+
+[dependencies]
+ratatui.workspace = true
+signal-hook.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
 
 [lints]
 workspace = true
