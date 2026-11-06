@@ -19,6 +19,8 @@ const PAGE: usize = 10;
 pub(crate) enum Done {
     /// The filter changed, so the list must be read again.
     Reload,
+    /// Open the selected Issue: its id and Key.
+    Open(Uuid, String),
     Handled,
     /// Not a list key.
     Passed,
@@ -115,7 +117,7 @@ impl List {
     }
 
     /// The selected Issue's id and Key.
-    pub(crate) fn selected(&self) -> Option<(Uuid, String)> {
+    fn selected(&self) -> Option<(Uuid, String)> {
         self.table
             .selected()
             .and_then(|at| self.rows.get(at))
@@ -151,6 +153,11 @@ impl List {
             KeyCode::Char('a') => {
                 self.all = !self.all;
                 return Done::Reload;
+            }
+            KeyCode::Enter => {
+                return self
+                    .selected()
+                    .map_or(Done::Handled, |(id, key)| Done::Open(id, key));
             }
             KeyCode::Char('j') | KeyCode::Down => at.saturating_add(1).min(last),
             KeyCode::Char('k') | KeyCode::Up => at.saturating_sub(1),

@@ -135,23 +135,13 @@ impl Shell {
                 }
             };
         }
-        if !self.list.typing() {
-            match key.code {
-                KeyCode::Char('q') => return Flow::Quit,
-                KeyCode::Enter => {
-                    return match self.list.selected() {
-                        Some((id, key)) => {
-                            self.detail = Some(Detail::new(id, key));
-                            Flow::Reload
-                        }
-                        None => Flow::Stay,
-                    };
-                }
-                _ => {}
-            }
-        }
         match self.list.key(key) {
             Done::Reload => Flow::Reload,
+            Done::Open(id, key) => {
+                self.detail = Some(Detail::new(id, key));
+                Flow::Reload
+            }
+            Done::Passed if key.code == KeyCode::Char('q') => Flow::Quit,
             Done::Handled | Done::Passed => Flow::Stay,
         }
     }
