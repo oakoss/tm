@@ -15,7 +15,7 @@ dprint = "0.64.3"
 rumdl = "0.3.2"
 shellcheck = "0.11.0"
 # Reads `$/` self-repo action refs and lints .github/actions/ too.
-jactionlint = "2.4.0"
+jactionlint = "2.5.0"
 # Security tools resolve through aqua, which verifies checksums on every
 # download, rather than being curled in a workflow step.
 gitleaks = "8.30.1"
