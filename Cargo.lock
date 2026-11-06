@@ -2119,6 +2119,9 @@ dependencies = [
  "insta",
  "ratatui",
  "signal-hook",
+ "tm-core",
+ "tm-store",
+ "uuid",
 ]
 
 [[package]]

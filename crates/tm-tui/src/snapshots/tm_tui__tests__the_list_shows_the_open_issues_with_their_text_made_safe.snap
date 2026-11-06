@@ -1,0 +1,14 @@
+---
+source: crates/tm-tui/src/lib.rs
+expression: screen
+---
+"tm · TM                                                     "
+"┌ open Issues ─────────────────────────────────── 3 Issues ┐"
+"│TM-3  todo  none  third \u{1b}[31mred                     │"
+"│TM-2  todo  none  second with a tab                       │"
+"│TM-1  todo  none  first                                   │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"└──────────────────────────────────────────────────────────┘"
+"q quit · / filter · ? keys                                  "

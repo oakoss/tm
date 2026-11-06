@@ -18,6 +18,28 @@ pub use resolve::{
 /// The open Issues: not done or cancelled.
 pub const OPEN: &str = "-category:done,cancelled";
 
+/// `filter` narrowed to the open work, unless `all` is asked for, the filter
+/// names a state, which the default would contradict, or it does not parse,
+/// so its own error is reported. The default goes last so error spans still
+/// point into what was typed.
+#[must_use]
+pub fn open_unless_named(filter: &str, all: bool) -> String {
+    match parse(filter) {
+        Ok(query) if !all && !names_state(&query) => format!("{filter} {OPEN}"),
+        _ => filter.to_owned(),
+    }
+}
+
+/// Whether a term asks about status, category or archived.
+fn names_state(query: &Query) -> bool {
+    query.terms.iter().any(|term| {
+        let (Term::Match { field, .. } | Term::Has { field, .. }) = term;
+        ["status", "category", "archived"]
+            .iter()
+            .any(|name| same_field(&field.0, name))
+    })
+}
+
 /// Whether two field names are the same, ignoring case and reading `-` as
 /// `_`, since Scheme field names never hold `-`.
 #[must_use]
@@ -129,4 +151,23 @@ pub enum FilterError {
         span: Span,
         count: usize,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_open_default_yields_to_all_a_named_state_and_a_parse_error() {
+        assert_eq!(
+            open_unless_named("label:x", false),
+            format!("label:x {OPEN}")
+        );
+        assert_eq!(open_unless_named("", false), format!(" {OPEN}"));
+        assert_eq!(open_unless_named("label:x", true), "label:x");
+        for named in ["Status:todo", "-category:done", "has:archived"] {
+            assert_eq!(open_unless_named(named, false), named);
+        }
+        assert_eq!(open_unless_named("status:", false), "status:");
+    }
 }

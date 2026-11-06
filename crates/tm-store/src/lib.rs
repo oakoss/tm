@@ -932,15 +932,22 @@ impl Store {
     /// [`StoreError::Corrupt`] if the stored id is malformed, any SQLite
     /// failure, or [`StoreError::Busy`].
     pub fn set_workspace_id(&mut self, id: Uuid) -> Result<(), StoreError> {
+        let stored = |conn: &Connection| -> Result<Option<Uuid>, StoreError> {
+            conn.query_row("SELECT v FROM meta WHERE k = 'workspace_id'", [], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })
+            .optional()?
+            .map(|bytes| uuid_from(&bytes))
+            .transpose()
+        };
+        // Read first, so opening a store that holds the id waits on no writer.
+        if stored(&self.conn)?.is_some_and(|stored| stored == id) {
+            return Ok(());
+        }
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let stored: Option<Vec<u8>> = tx
-            .query_row("SELECT v FROM meta WHERE k = 'workspace_id'", [], |row| {
-                row.get(0)
-            })
-            .optional()?;
-        match stored.map(|bytes| uuid_from(&bytes)).transpose()? {
+        match stored(&tx)? {
             Some(stored) if stored == id => return Ok(()),
             Some(stored) => return Err(StoreError::WorkspaceMismatch { stored, given: id }),
             None => {

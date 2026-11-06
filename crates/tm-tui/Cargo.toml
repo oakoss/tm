@@ -12,9 +12,12 @@ description = "Ratatui screens, opened by tm tui (ADR 0018)."
 [dependencies]
 ratatui.workspace = true
 signal-hook.workspace = true
+tm-core.workspace = true
+tm-store.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

@@ -71,7 +71,7 @@ fn at_a_terminal_it_names_the_project_shows_its_keys_and_quits_on_q() {
     let (repo, _store, _project) = initialized(&scratch);
     let mut tui = sized(&scratch, &repo, "tui");
     tui.exp_string("TM").unwrap();
-    tui.exp_string("Nothing").unwrap();
+    tui.exp_string("match").unwrap();
     press(&mut tui, "?");
     tui.exp_string("Keys").unwrap();
     press(&mut tui, "q");
@@ -85,14 +85,37 @@ fn a_write_elsewhere_shows_in_the_footer() {
     let scratch = Scratch::new();
     let (repo, _store, _project) = initialized(&scratch);
     let mut tui = sized(&scratch, &repo, "tui");
-    tui.exp_string("Nothing").unwrap();
+    tui.exp_string("match").unwrap();
     let made = tm(
         &scratch,
         &repo,
-        &["create", "--type", "task", "--title", "a"],
+        &["create", "--type", "task", "--title", "fresh"],
     );
     assert!(made.status.success(), "{made:?}");
+    tui.exp_string("fresh").unwrap();
     tui.exp_string("elsewhere").unwrap();
+    press(&mut tui, "q");
+    tui.exp_eof().unwrap();
+    assert_eq!(exit_code(&tui), 0);
+}
+
+#[test]
+fn the_list_shows_open_issues_and_a_typed_filter_narrows_it() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    for title in ["alpha", "beta"] {
+        let made = tm(
+            &scratch,
+            &repo,
+            &["create", "--type", "task", "--title", title],
+        );
+        assert!(made.status.success(), "{made:?}");
+    }
+    let mut tui = sized(&scratch, &repo, "tui");
+    tui.exp_string("beta").unwrap();
+    tui.exp_string("alpha").unwrap();
+    press(&mut tui, "/title:nothing\r");
+    tui.exp_string("match").unwrap();
     press(&mut tui, "q");
     tui.exp_eof().unwrap();
     assert_eq!(exit_code(&tui), 0);
@@ -104,7 +127,7 @@ fn a_store_removed_while_open_restores_the_terminal_then_says_so() {
     let (repo, store, _project) = initialized(&scratch);
     drop(store);
     let mut tui = sized(&scratch, &repo, "tui");
-    tui.exp_string("Nothing").unwrap();
+    tui.exp_string("match").unwrap();
     let path = store_path(&scratch);
     for suffix in ["", "-wal", "-shm"] {
         let _ = fs::remove_file(format!("{}{suffix}", path.display()));
@@ -137,7 +160,7 @@ fn a_signal_restores_the_terminal_and_exits_as_the_signal_would() {
         let scratch = Scratch::new();
         let (repo, _store, _project) = initialized(&scratch);
         let mut tui = sized(&scratch, &repo, "tui");
-        tui.exp_string("Nothing").unwrap();
+        tui.exp_string("match").unwrap();
         tui.process_mut().signal(signal).unwrap();
         let rest = tui.exp_eof().unwrap();
         assert!(rest.contains(LEFT), "{signal:?} left the alternate screen");
@@ -150,7 +173,7 @@ fn a_hangup_ends_it_as_the_signal_does() {
     let scratch = Scratch::new();
     let (repo, _store, _project) = initialized(&scratch);
     let mut tui = sized(&scratch, &repo, "tui");
-    tui.exp_string("Nothing").unwrap();
+    tui.exp_string("match").unwrap();
     tui.process_mut().signal(Signal::SIGHUP).unwrap();
     tui.exp_eof().unwrap();
     let status = tui.process().wait().unwrap();
@@ -158,4 +181,87 @@ fn a_hangup_ends_it_as_the_signal_does() {
         matches!(status, WaitStatus::Signaled(_, Signal::SIGHUP, _)),
         "{status:?}"
     );
+}
+
+#[test]
+fn a_reader_refused_the_store_reads_each_snapshot_published() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let scratch = Scratch::new();
+    let (repo, store, _project) = initialized(&scratch);
+    drop(store);
+    let made = tm(
+        &scratch,
+        &repo,
+        &["create", "--type", "task", "--title", "before"],
+    );
+    assert!(made.status.success(), "{made:?}");
+    let path = store_path(&scratch);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    let mut tui = sized(&scratch, &repo, "tui");
+    tui.exp_string("Snapshot").unwrap();
+    tui.exp_string("before").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    let made = tm(
+        &scratch,
+        &repo,
+        &["create", "--type", "task", "--title", "after"],
+    );
+    assert!(made.status.success(), "{made:?}");
+    tui.exp_string("after").unwrap();
+    press(&mut tui, "q");
+    tui.exp_eof().unwrap();
+    assert_eq!(exit_code(&tui), 0);
+}
+
+#[test]
+fn at_me_is_the_person_at_the_terminal() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    for args in [
+        &["create", "--type", "task", "--title", "mine"][..],
+        &["edit", "TM-1", "--set", "assignee=jace"],
+    ] {
+        let out = tm(&scratch, &repo, args);
+        assert!(out.status.success(), "{out:?}");
+    }
+    let mut tui = sized(&scratch, &repo, "tui");
+    tui.exp_string("mine").unwrap();
+    // Only when @me is jace does excluding jace's Issues leave none.
+    press(&mut tui, "/-assignee:@me\r");
+    tui.exp_string("match").unwrap();
+    press(&mut tui, "q");
+    tui.exp_eof().unwrap();
+    assert_eq!(exit_code(&tui), 0);
+}
+
+#[test]
+fn a_store_replaced_while_open_is_read_from_its_new_file() {
+    let scratch = Scratch::new();
+    let (repo, store, _project) = initialized(&scratch);
+    drop(store);
+    let mut tui = sized(&scratch, &repo, "tui");
+    tui.exp_string("match").unwrap();
+    let path = store_path(&scratch);
+    let copy = scratch.0.join("copy.db");
+    fs::copy(&path, &copy).unwrap();
+    let made = tm(
+        &scratch,
+        &repo,
+        &["create", "--type", "task", "--title", "lost"],
+    );
+    assert!(made.status.success(), "{made:?}");
+    tui.exp_string("lost").unwrap();
+    let mut replacement = tm_store::Store::open(&copy).unwrap();
+    let jace = tm_core::Actor::human("jace");
+    let project = replacement.project_by_key("TM").unwrap().unwrap();
+    replacement
+        .create_issue(&jace, project, "task", "replacing")
+        .unwrap();
+    drop(replacement);
+    fs::rename(&copy, &path).unwrap();
+    tui.exp_string("replacing").unwrap();
+    press(&mut tui, "q");
+    tui.exp_eof().unwrap();
+    assert_eq!(exit_code(&tui), 0);
 }
