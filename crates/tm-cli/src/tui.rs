@@ -37,18 +37,26 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
     }
     drop(here);
     let mut watch = watch::watch()?;
-    tm_tui::run(place, || match watch.changed() {
-        Ok(true) => Ok(Seen::Changed(
-            jiff::Zoned::now().strftime("%H:%M:%S").to_string(),
-        )),
-        Ok(false) => Ok(Seen::Nothing),
-        Err(StoreError::Busy(_)) => Ok(Seen::Busy),
-        Err(err) => Err(Ended::Store(err.into())),
+    tm_tui::run(place, || {
+        seen(watch.changed(), || {
+            jiff::Zoned::now().strftime("%H:%M:%S").to_string()
+        })
     })
     .map_err(|ended| match ended {
         Ended::Terminal(err) => CliError::new("io", format!("the terminal: {err}")),
         Ended::Store(err) => err,
     })
+}
+
+/// What a look at the store shows: a busy store waits for the next look,
+/// any other error ends the TUI.
+fn seen(changed: Result<bool, StoreError>, now: impl FnOnce() -> String) -> Result<Seen, Ended> {
+    match changed {
+        Ok(true) => Ok(Seen::Changed(now())),
+        Ok(false) => Ok(Seen::Nothing),
+        Err(StoreError::Busy(_)) => Ok(Seen::Busy),
+        Err(err) => Err(Ended::Store(err.into())),
+    }
 }
 
 enum Ended {
@@ -59,5 +67,27 @@ enum Ended {
 impl From<io::Error> for Ended {
     fn from(err: io::Error) -> Self {
         Self::Terminal(err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn busy() -> StoreError {
+        StoreError::Busy(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            None,
+        ))
+    }
+
+    #[test]
+    fn a_busy_store_waits_and_any_other_error_ends_the_tui() {
+        let now = || "10:15:03".to_owned();
+        assert!(matches!(seen(Err(busy()), now), Ok(Seen::Busy)));
+        assert!(matches!(seen(Ok(false), now), Ok(Seen::Nothing)));
+        assert!(matches!(seen(Ok(true), now), Ok(Seen::Changed(at)) if at == "10:15:03"));
+        let gone = StoreError::Io(io::Error::from(io::ErrorKind::NotFound));
+        assert!(matches!(seen(Err(gone), now), Err(Ended::Store(_))));
     }
 }
