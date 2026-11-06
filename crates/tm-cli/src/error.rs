@@ -385,7 +385,9 @@ impl CliError {
                     .with("supported", supported)
                     .fix(RECORDS_FIX)
             }
-            StoreError::Io(_) | StoreError::Snapshot { .. } => Self::new("io", message),
+            StoreError::Io(_) | StoreError::Snapshot { .. } | StoreError::StoreGone { .. } => {
+                Self::new("io", message)
+            }
             other => Self::internal(variant(&other), message),
         }
     }
@@ -426,7 +428,8 @@ impl From<StoreError> for CliError {
             | StoreError::InvalidExport { .. }
             | StoreError::ExportFormat { .. }
             | StoreError::Io(_)
-            | StoreError::Snapshot { .. }) => Self::unusable(err, message),
+            | StoreError::Snapshot { .. }
+            | StoreError::StoreGone { .. }) => Self::unusable(err, message),
             StoreError::UnknownField { field, valid } => Self::new("unknown_field", message)
                 .with("field", field)
                 .with("valid", valid),

@@ -1,6 +1,6 @@
 # The CLI speaks one JSON envelope and flat, coded errors
 
-- Status: accepted
+- Status: accepted; its one-document rule holds per read under `--watch`, as [ADR 0018](0018-the-tui-opens-with-tm-tui-reads-the-store-and-writes-through-the-cli.md) amends it
 - Date: 2026-10-18
 - Deciders: Jace Babin
 

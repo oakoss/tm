@@ -35,7 +35,7 @@ impl Watch {
     ///
     /// # Errors
     ///
-    /// Any SQLite failure opening it, or [`StoreError::Snapshot`] when its
+    /// Any SQLite failure opening it, or [`StoreError::StoreGone`] when its
     /// metadata cannot be read.
     pub fn store(path: &Path) -> Result<Self, StoreError> {
         Ok(Self {
@@ -73,8 +73,7 @@ impl Watch {
                 version,
                 file,
             } => {
-                let (metadata, _) = metadata(&self.path)?;
-                if (metadata.dev(), metadata.ino()) != *file {
+                if store_id(&self.path)? != *file {
                     self.seen = opened(&self.path)?;
                     return Ok(true);
                 }
@@ -93,15 +92,14 @@ impl Watch {
 /// Opens the file at `path`, again if another replaced it meanwhile, so the
 /// identity kept is the connection's.
 fn opened(path: &Path) -> Result<Seen, StoreError> {
-    let id = |path| metadata(path).map(|(metadata, _)| (metadata.dev(), metadata.ino()));
     loop {
-        let file = id(path)?;
+        let file = store_id(path)?;
         let conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         let version = data_version(&conn)?;
-        if id(path)? == file {
+        if store_id(path)? == file {
             return Ok(Seen::Store {
                 conn,
                 version,
@@ -113,6 +111,14 @@ fn opened(path: &Path) -> Result<Seen, StoreError> {
 
 fn data_version(conn: &Connection) -> Result<i64, StoreError> {
     Ok(conn.query_row("PRAGMA data_version", [], |row| row.get(0))?)
+}
+
+fn store_id(path: &Path) -> Result<(u64, u64), StoreError> {
+    let metadata = fs::metadata(path).map_err(|source| StoreError::StoreGone {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok((metadata.dev(), metadata.ino()))
 }
 
 fn metadata(path: &Path) -> Result<(fs::Metadata, SystemTime), StoreError> {

@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime};
 
 use tm_core::Actor;
 use tm_store::workspace::Workspace;
-use tm_store::{Store, Watch};
+use tm_store::{Store, StoreError, Watch};
 use uuid::Uuid;
 
 use crate::support::TempDir;
@@ -30,18 +30,26 @@ fn a_store_replaced_by_another_file_is_a_change_and_one_removed_an_error() {
     let jace = Actor::human("jace");
     let (project, _) = store.create_project(&jace, "TM", "Core").unwrap();
     let path = workspace.store_path();
-    let mut watch = Watch::store(&path).unwrap();
+    // Closed first, so its last close checkpoints the log into the file.
     drop(store);
+    let mut watch = Watch::store(&path).unwrap();
     let copy = home.path().join("copy.db");
     fs::copy(&path, &copy).unwrap();
     fs::rename(&copy, &path).unwrap();
+    // The old connection keeps the unlinked -shm, so only a fresh one sees
+    // the writes below.
+    for suffix in ["-wal", "-shm"] {
+        let _ = fs::remove_file(format!("{}{suffix}", path.display()));
+    }
     assert!(watch.changed().unwrap());
     let mut store = Store::open(&path).unwrap();
-    store.create_issue(&jace, project, "task", "t").unwrap();
-    assert!(watch.changed().unwrap(), "watches the file now at the path");
+    for title in ["a", "b"] {
+        store.create_issue(&jace, project, "task", title).unwrap();
+        assert!(watch.changed().unwrap(), "watches the file now at the path");
+    }
     drop(store);
     fs::remove_file(&path).unwrap();
-    assert!(watch.changed().is_err());
+    assert!(matches!(watch.changed(), Err(StoreError::StoreGone { .. })));
 }
 
 #[test]

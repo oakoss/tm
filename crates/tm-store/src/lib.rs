@@ -164,6 +164,11 @@ pub enum StoreError {
         path: std::path::PathBuf,
         source: std::io::Error,
     },
+    #[error("{}: the store being watched was moved or deleted ({source})", path.display())]
+    StoreGone {
+        path: std::path::PathBuf,
+        source: std::io::Error,
+    },
     #[error(
         "line {line} of the import, {record}: {cause}; {}",
         import::kept(written)

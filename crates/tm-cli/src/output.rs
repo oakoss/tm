@@ -257,8 +257,9 @@ pub(crate) fn finish_again(
     json: bool,
     result: Result<Output, CliError>,
     before: &str,
+    warnings: &[String],
 ) -> Option<ExitCode> {
-    let (text, code) = match rendered(json, result, &[]) {
+    let (text, code) = match rendered(json, result, warnings) {
         Ok((text, code)) if json => (text, code),
         Ok((text, code)) => (format!("{before}{text}"), code),
         Err(code) => return Some(code),
