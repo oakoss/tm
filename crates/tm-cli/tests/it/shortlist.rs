@@ -103,6 +103,30 @@ fn a_session_sees_the_lists_that_name_it() {
 }
 
 #[test]
+fn ready_shows_an_agent_its_lists_without_reading_an_email() {
+    let scratch = Scratch::new();
+    let repo = with_list(&scratch);
+    let (code, doc) = run(&scratch, &repo, "shortlist add docs TM-1");
+    assert_eq!(code, Some(0), "{doc}");
+    let (bin, log) = scratch.logged_git();
+    let out = tm_command()
+        .args(["--json", "ready"])
+        .current_dir(&repo)
+        .env("TM_HOME", scratch.home())
+        .env_remove("TM_ACTOR")
+        .env("TM_AGENT", "claude")
+        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("PATH", &bin)
+        .output()
+        .unwrap();
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(keys(&doc), ["TM-1"], "{doc}");
+    let ran = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(!ran.contains("user.email"), "{ran}");
+}
+
+#[test]
 fn members_that_wait_are_marked_with_why() {
     let scratch = Scratch::new();
     let repo = with_list(&scratch);

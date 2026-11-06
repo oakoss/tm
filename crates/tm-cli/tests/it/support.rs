@@ -36,6 +36,29 @@ impl Scratch {
         }
         path
     }
+
+    /// A folder for `PATH` whose `git` runs the real one, logging each call's
+    /// arguments to the file returned.
+    pub(crate) fn logged_git(&self) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let real = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|dir| dir.join("git"))
+            .find(|git| git.is_file())
+            .unwrap();
+        let bin = self.0.join("logged-git");
+        fs::create_dir_all(&bin).unwrap();
+        let log = self.0.join("git-calls");
+        let git = bin.join("git");
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\nexec '{}' \"$@\"\n",
+            log.display(),
+            real.display()
+        );
+        fs::write(&git, script).unwrap();
+        fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
+        (bin, log)
+    }
 }
 
 impl Drop for Scratch {

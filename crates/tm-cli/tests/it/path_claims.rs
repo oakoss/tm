@@ -173,6 +173,35 @@ fn the_edit_hook_is_silent_outside_a_workspace_and_without_input() {
     }
 }
 
+#[test]
+fn the_edit_hook_reads_no_email_for_an_agent() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    store
+        .create_issue(&Actor::human("jace"), project, "task", "docs")
+        .unwrap();
+    drop(store);
+    let repo = fs::canonicalize(&repo).unwrap();
+    let took = in_session(
+        &scratch,
+        &repo,
+        "s1",
+        &["claim", "TM-1", "--paths", "README.md"],
+    );
+    assert!(took.status.success(), "{took:?}");
+    let (bin, log) = scratch.logged_git();
+    let file = repo.join("README.md").display().to_string();
+    let input =
+        json!({ "session_id": "s2", "tool_name": "Edit", "tool_input": { "file_path": file } });
+    let mut command = session_command(&scratch, &repo, "s2", &["hook", "pre-edit", "claude"]);
+    command.env_remove("TM_ACTOR").env("PATH", &bin);
+    let out = piped(command, input.to_string());
+    assert!(out.status.success(), "{out:?}");
+    assert!(text(&out.stdout).contains("TM-1's Claim"), "{out:?}");
+    let ran = fs::read_to_string(&log).unwrap_or_default();
+    assert!(!ran.contains("user.email"), "{ran}");
+}
+
 /// TM-1 claimed by s1 on `src/lib.rs`; TM-2 by s2 and TM-3 by s4 on
 /// `feat/x`, which commits `café.rs` and `nb/a.ipynb`.
 fn three_claims(scratch: &Scratch) -> std::path::PathBuf {
