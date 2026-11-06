@@ -60,7 +60,7 @@ pub(crate) fn run(reference: &str, limit: Comments) -> Result<Output, CliError> 
     let here = here::read()?;
     match here
         .find(reference)
-        .and_then(|(id, named)| render_with(&here, id, limit, named))
+        .and_then(|(id, named)| render_with(&here.store, id, limit, named))
     {
         Ok(mut output) => {
             output.warnings = here.warnings;
@@ -72,16 +72,16 @@ pub(crate) fn run(reference: &str, limit: Comments) -> Result<Output, CliError> 
 
 /// An Issue as `show` prints it; `create` prints the Issue it made the same way.
 pub(crate) fn render(here: &Here, id: Uuid) -> Result<Output, CliError> {
-    render_with(here, id, Comments::default(), None)
+    render_with(&here.store, id, Comments::default(), None)
 }
 
-fn render_with(
-    here: &Here,
+/// `named` is a comment printed whatever `limit` leaves out.
+pub(crate) fn render_with(
+    store: &Store,
     id: Uuid,
     limit: Comments,
     named: Option<Uuid>,
 ) -> Result<Output, CliError> {
-    let store = &here.store;
     let (view, project, parent, (claim, now_ms), links, below) = store.read(|store| {
         let view = store.issue(id)?.ok_or_else(|| {
             CliError::new("not_found", format!("Issue {id} does not exist"))

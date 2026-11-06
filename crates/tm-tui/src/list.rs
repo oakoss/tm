@@ -9,6 +9,7 @@ use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState};
 use tm_core::filter::{Context, FilterError, open_unless_named};
 use tm_core::text::printable;
 use tm_store::{IssueView, Store, StoreError};
+use uuid::Uuid;
 
 /// Rows a page key moves.
 const PAGE: usize = 10;
@@ -18,6 +19,8 @@ const PAGE: usize = 10;
 pub(crate) enum Done {
     /// The filter changed, so the list must be read again.
     Reload,
+    /// Open the selected Issue: its id and Key.
+    Open(Uuid, String),
     Handled,
     /// Not a list key.
     Passed,
@@ -38,6 +41,7 @@ pub(crate) struct List {
 
 /// One Issue as a row shows it, its text already safe for the terminal.
 struct Shown {
+    id: Uuid,
     key: String,
     status: String,
     priority: String,
@@ -56,6 +60,7 @@ impl Shown {
             printable(text).replace('\t', " ")
         };
         Self {
+            id: view.id,
             key: view.key.clone().unwrap_or_else(|| view.id.to_string()),
             status: field("status"),
             priority: field("priority"),
@@ -108,10 +113,15 @@ impl List {
     }
 
     pub(crate) fn selected_key(&self) -> Option<String> {
+        self.selected().map(|(_, key)| key)
+    }
+
+    /// The selected Issue's id and Key.
+    fn selected(&self) -> Option<(Uuid, String)> {
         self.table
             .selected()
             .and_then(|at| self.rows.get(at))
-            .map(|row| row.key.clone())
+            .map(|row| (row.id, row.key.clone()))
     }
 
     pub(crate) fn key(&mut self, key: KeyEvent) -> Done {
@@ -143,6 +153,11 @@ impl List {
             KeyCode::Char('a') => {
                 self.all = !self.all;
                 return Done::Reload;
+            }
+            KeyCode::Enter => {
+                return self
+                    .selected()
+                    .map_or(Done::Handled, |(id, key)| Done::Open(id, key));
             }
             KeyCode::Char('j') | KeyCode::Down => at.saturating_add(1).min(last),
             KeyCode::Char('k') | KeyCode::Up => at.saturating_sub(1),

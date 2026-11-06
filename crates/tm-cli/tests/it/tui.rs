@@ -122,6 +122,30 @@ fn the_list_shows_open_issues_and_a_typed_filter_narrows_it() {
 }
 
 #[test]
+fn enter_shows_the_issue_as_tm_show_and_history_do_and_reads_a_write_in_place() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    let made = tm(
+        &scratch,
+        &repo,
+        &["create", "--type", "task", "--title", "alpha"],
+    );
+    assert!(made.status.success(), "{made:?}");
+    let mut tui = sized(&scratch, &repo, "tui");
+    tui.exp_string("alpha").unwrap();
+    press(&mut tui, "\r");
+    tui.exp_string("History").unwrap();
+    let said = tm(&scratch, &repo, &["comment", "TM-1", "plotted"]);
+    assert!(said.status.success(), "{said:?}");
+    tui.exp_string("plotted").unwrap();
+    press(&mut tui, "\x1b");
+    tui.exp_string("filter").unwrap();
+    press(&mut tui, "q");
+    tui.exp_eof().unwrap();
+    assert_eq!(exit_code(&tui), 0);
+}
+
+#[test]
 fn a_store_removed_while_open_restores_the_terminal_then_says_so() {
     let scratch = Scratch::new();
     let (repo, store, _project) = initialized(&scratch);

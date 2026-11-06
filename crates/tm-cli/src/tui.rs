@@ -5,10 +5,11 @@ use std::process::ExitCode;
 
 use tm_store::{Store, StoreError};
 use tm_tui::Seen;
+use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::output;
-use crate::{here, identity, watch};
+use crate::{here, history, identity, show, watch};
 
 pub(crate) fn run(json: bool) -> ExitCode {
     match open(json) {
@@ -60,7 +61,8 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
     let store = open()?;
     let me = me.as_deref().map_err(String::as_str);
     let mut pending = false;
-    tm_tui::run(place, store, me, |store| {
+    let actions = Cli { me: me.ok() };
+    tm_tui::run(place, store, me, &actions, |store| {
         let (opened, seen) = refresh(watch.changed(), &mut pending, open, || {
             jiff::Zoned::now().strftime("%H:%M:%S").to_string()
         })?;
@@ -73,6 +75,29 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
         Ended::Terminal(err) => CliError::new("io", format!("the terminal: {err}")),
         Ended::Store(err) => err,
     })
+}
+
+/// The screens' text from the CLI's own commands, `me` the person at the
+/// terminal.
+struct Cli<'a> {
+    me: Option<&'a str>,
+}
+
+impl tm_tui::Actions for Cli<'_> {
+    fn detail(&self, store: &Store, id: Uuid) -> Result<String, String> {
+        let me = || self.me.map(str::to_owned);
+        let shown = show::render_with(store, id, show::Comments::All, None);
+        let written = history::render(store, id, None, false, &me);
+        let (shown, written) = shown
+            .and_then(|shown| Ok((shown, written?)))
+            .map_err(|err| err.message)?;
+        // History's first line names the Issue, as show's does.
+        let writes = written
+            .text
+            .split_once('\n')
+            .map_or("", |(_, writes)| writes);
+        Ok(format!("{}\nHistory\n{writes}", shown.text))
+    }
 }
 
 /// A look at the store: on a change the list's reader is opened again, and a
@@ -129,7 +154,41 @@ impl From<io::Error> for Ended {
 
 #[cfg(test)]
 mod tests {
+    use tm_core::{Actor, Change};
+    use tm_store::Draft;
+    use tm_tui::Actions as _;
+
     use super::*;
+
+    #[test]
+    fn the_detail_is_show_with_every_comment_then_history_naming_the_issue_once() {
+        let dir = std::env::temp_dir().join(format!("tm-detail-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut store = Store::open(&dir.join("store.db")).unwrap();
+        let jace = Actor::human("jace");
+        let (project, _) = store.create_project(&jace, "TM", "Core").unwrap();
+        let (id, _) = store.create_issue(&jace, project, "task", "alpha").unwrap();
+        for n in 1..=6 {
+            let change = Change::Comment {
+                body: format!("note {n}"),
+            };
+            let draft = Draft {
+                actor: jace.clone(),
+                project,
+                subject: id,
+                change,
+            };
+            store.append(draft).unwrap();
+        }
+        let text = Cli { me: Some("jace") }.detail(&store, id).unwrap();
+        let (shown, writes) = text.split_once("\nHistory\n").expect("a History heading");
+        assert!(shown.contains("note 1"), "every comment: {shown}");
+        assert!(
+            writes.contains("commented: note 6"),
+            "history's writes: {writes}"
+        );
+        assert_eq!(text.matches("TM-1  alpha").count(), 1, "{text}");
+    }
 
     fn busy() -> StoreError {
         StoreError::Busy(rusqlite::Error::SqliteFailure(

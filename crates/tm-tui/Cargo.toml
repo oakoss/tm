@@ -10,14 +10,15 @@ rust-version.workspace = true
 description = "Ratatui screens, opened by tm tui (ADR 0018)."
 
 [dependencies]
-ratatui.workspace = true
+# Paragraph::line_count, to scroll wrapped text no further than its end.
+ratatui = { workspace = true, features = ["unstable-rendered-line-info"] }
 signal-hook.workspace = true
 tm-core.workspace = true
 tm-store.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
-uuid.workspace = true
 
 [lints]
 workspace = true
