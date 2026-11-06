@@ -59,7 +59,33 @@ A move or edit is assembled in `tm-cli`, not in `tm-store`: `moves.rs` and `edit
 - **Cold start:** `hyperfine -N --warmup 10 -m 150` on this machine, which was busy, gave `tm list` 10.8 ± 5.7 ms without and 11.4 ± 5.7 ms with, and `tm prime` 43.8 ± 12.6 against 44.4 ± 11.6 ms: no difference beyond the noise. CI's cold-start job is the gate.
 - **cargo-deny:** advisories, licenses and sources pass; bans fail on two versions of `syn`, since crossterm's `derive_more` uses `syn` 2 at build time while the workspace uses 3. `cargo tree -p tm-cli -e normal --prefix none | sed 's/ (\*)//;s/ (proc-macro)//' | sort -u | wc -l` counts 58 crates at HEAD and 111 with Ratatui.
 
-## Open
+### Widget crates beyond Ratatui's own
+
+Ratatui ships `List`, `Table`, `Tabs`, `Scrollbar` and `Paragraph`; the first screens are lists, tables and a scrolling detail. What it lacks, from `cargo info` and crates.io's dependency lists on 2026-11-06; `tui-input` depends on `ratatui` ^0.30.2, and `ratatui-textarea`, `tui-tree-widget`, `tui-scrollview` and `tui-popup` on Ratatui 0.30's `ratatui-core` ^0.1 and `ratatui-widgets` ^0.3:
+
+| Crate | Licence | Gives | Fits |
+|---|---|---|---|
+| `ratatui-textarea` 0.9.4 | MIT | A multi-line editor, from the ratatui organisation | Editing a description or comment, completing an `@mention` |
+| `tui-input` 0.15.5 | MIT | A single-line input | A filter bar |
+| `tui-widgets` 0.7.12 | MIT or Apache-2.0 | A collection from the ratatui organisation, `tui-scrollview` 0.6.8 and `tui-popup` 0.7.7 among it | A long history, help and confirmation popups |
+| `tui-tree-widget` 0.24.1 | MIT | A collapsible tree | Parents and children |
+| `nucleo` 0.5.0 | MPL-2.0, which `deny.toml` does not allow | Fuzzy matching | Phase 7's search palette |
+
+`tuirealm` 4.1.0 (components after React and Elm) and `rat-salsa` 4.0.3 with `rat-widget` 3.2.1 (an event loop and widget set) are frameworks: each brings its own structure for a screen's state and events, which the first screens, built from the widgets above, do not need.
+
+## Conclusions
+
+- Polling `data_version` on one long-lived connection, with a new read transaction per refresh, sees every other process's write within a poll and keeps the WAL bounded: 4,031 KiB, against 21,903 with a read held across writes.
+- The screens can read through `tm-store` and `tm-core` alone; their writes need the CLI's move and edit paths, which `tm-tui` cannot depend on directly.
+- Ratatui costs at least 179 KiB and 53 crates, and no cold start this machine could measure.
+
+## Implications / actions
+
+- [ADR 0018](../../decisions/0018-the-tui-opens-with-tm-tui-reads-the-store-and-writes-through-the-cli.md) records the choices; TM-84 builds the polling primitive for `--watch` and the screens.
+- `deny.toml` gains a `skip` for build-time `syn` 2 when Ratatui lands (TM-141).
+- The first screens use Ratatui's built-in widgets only. `ratatui-textarea` joins with the first screen that edits a description or comment or completes an `@mention` (TM-82), and `tui-widgets` if the detail screen's scrolling needs it; each is checked for size, `cargo-deny` and its Ratatui version when added. No framework.
+
+## Open questions
 
 - What the first screen costs to draw at 10,000 Issues is measured when it exists (TM-142), against the same fixture as the cold-start test.
 - Mouse support, and whether `tm` alone should one day open the TUI, wait for the screens.
