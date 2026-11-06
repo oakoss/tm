@@ -40,6 +40,7 @@ mod shortlist;
 mod show;
 mod start;
 mod undo;
+mod watch;
 
 use std::fmt::Write as _;
 use std::process::ExitCode;
@@ -178,6 +179,9 @@ enum Command {
         /// open work.
         #[arg(long)]
         all: bool,
+        /// List again each time another process writes, until interrupted.
+        #[arg(long)]
+        watch: bool,
     },
     /// List the work that can start now, most urgent first.
     ///
@@ -187,6 +191,9 @@ enum Command {
         /// Show at most this many.
         #[arg(long)]
         limit: Option<usize>,
+        /// List again each time another process writes, until interrupted.
+        #[arg(long)]
+        watch: bool,
     },
     /// Show an Issue's fields, Claim and latest comments.
     Show {
@@ -330,7 +337,11 @@ enum Command {
     ///
     /// Every held Claim with its time left, and the lapsed ones another Agent
     /// may take.
-    Claims,
+    Claims {
+        /// List again each time another process writes, until interrupted.
+        #[arg(long)]
+        watch: bool,
+    },
     /// List the most recently active Agent sessions.
     ///
     /// Each with the Issues it wrote and the command that resumes it.
@@ -612,7 +623,17 @@ fn main() -> ExitCode {
         };
         return output::finish(false, result, &[]);
     }
-    output::finish(json, run(cli.command, json), &[])
+    match cli.command {
+        Some(Command::List {
+            filter,
+            limit,
+            all,
+            watch: true,
+        }) => watch::run(json, || list::run(&filter, limit, all, json)),
+        Some(Command::Ready { limit, watch: true }) => watch::run(json, || ready::run(limit, json)),
+        Some(Command::Claims { watch: true }) => watch::run(json, claim::list),
+        command => output::finish(json, run(command, json), &[]),
+    }
 }
 
 fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
@@ -678,12 +699,14 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Edit(args)) => edit::run(&args),
         Some(Command::Link { words }) => link::run(&words, true),
         Some(Command::Unlink { words }) => link::run(&words, false),
-        Some(Command::List { filter, limit, all }) => list::run(&filter, limit, all, json),
+        Some(Command::List {
+            filter, limit, all, ..
+        }) => list::run(&filter, limit, all, json),
         Some(Command::Move(args)) => moves::run(&args),
         Some(Command::Prime) => prime::run(json),
         Some(Command::Guide) => Ok(guide::run()),
-        Some(Command::Ready { limit }) => ready::run(limit, json),
-        Some(Command::Claims) => claim::list(),
+        Some(Command::Ready { limit, .. }) => ready::run(limit, json),
+        Some(Command::Claims { .. }) => claim::list(),
         Some(Command::Sessions { limit }) => session::list(limit, json),
         Some(Command::Shortlist(args)) => shortlist::run(&args, json),
         Some(Command::Show { issue, comments }) => show::run(&issue, comments.unwrap_or_default()),

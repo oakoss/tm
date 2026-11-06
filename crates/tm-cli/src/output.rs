@@ -236,7 +236,53 @@ pub(crate) fn finish(
     result: Result<Output, CliError>,
     warnings: &[String],
 ) -> ExitCode {
-    let (text, code) = match (json, result) {
+    let (text, code) = match rendered(json, result, warnings) {
+        Ok(rendered) => rendered,
+        Err(code) => return code,
+    };
+    match write(&text) {
+        Ok(()) => code,
+        Err(err) => {
+            if !json {
+                eprintln!("tm: cannot write output: {err}");
+            }
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// As [`finish`] for a command that prints again, text after `before`:
+/// `None` once the reader has closed the pipe, so it stops.
+pub(crate) fn finish_again(
+    json: bool,
+    result: Result<Output, CliError>,
+    before: &str,
+) -> Option<ExitCode> {
+    let (text, code) = match rendered(json, result, &[]) {
+        Ok((text, code)) if json => (text, code),
+        Ok((text, code)) => (format!("{before}{text}"), code),
+        Err(code) => return Some(code),
+    };
+    match stdout().and_then(|mut stdout| stdout.write_all(text.as_bytes())) {
+        Ok(()) => Some(code),
+        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => None,
+        Err(err) => {
+            if !json {
+                eprintln!("tm: cannot write output: {err}");
+            }
+            Some(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// The text to print and its exit code, or the code alone once a text
+/// error has gone to stderr.
+fn rendered(
+    json: bool,
+    result: Result<Output, CliError>,
+    warnings: &[String],
+) -> Result<(String, ExitCode), ExitCode> {
+    Ok(match (json, result) {
         // The keys in the order a JSON value sorts them, so the bytes match.
         (
             true,
@@ -278,18 +324,9 @@ pub(crate) fn finish(
             if let Some(fix) = &err.fix {
                 eprintln!("  fix: {fix}");
             }
-            return err.exit_code();
+            return Err(err.exit_code());
         }
-    };
-    match write(&text) {
-        Ok(()) => code,
-        Err(err) => {
-            if !json {
-                eprintln!("tm: cannot write output: {err}");
-            }
-            ExitCode::FAILURE
-        }
-    }
+    })
 }
 
 /// A reader that stops early, as `head` does, is not an error, but a full
