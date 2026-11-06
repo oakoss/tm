@@ -33,4 +33,5 @@ mod support;
 mod trekker;
 mod undo;
 mod versions;
+mod watch;
 mod workspace;

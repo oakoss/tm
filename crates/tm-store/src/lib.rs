@@ -32,6 +32,7 @@ mod trekker;
 mod undo;
 mod validate;
 mod version;
+mod watch;
 pub mod workspace;
 
 use std::collections::btree_map::Entry;
@@ -78,6 +79,7 @@ pub use session::{RecentSession, SessionPlace, SessionWork};
 pub use shortlist::{Shortlist, ShortlistEdit};
 pub use trekker::{TrekkerExport, TrekkerImported, read_trekker};
 pub use undo::{Restore, Target, UndoPlan};
+pub use watch::Watch;
 
 /// How long a writer waits for another writer before giving up.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -159,6 +161,11 @@ pub enum StoreError {
     Io(#[source] std::io::Error),
     #[error("{}: {source}", path.display())]
     Snapshot {
+        path: std::path::PathBuf,
+        source: std::io::Error,
+    },
+    #[error("{}: the store being watched was moved or deleted ({source})", path.display())]
+    StoreGone {
         path: std::path::PathBuf,
         source: std::io::Error,
     },

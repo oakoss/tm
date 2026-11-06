@@ -38,3 +38,4 @@ mod subagent;
 mod support;
 mod undo;
 mod versions;
+mod watch;
