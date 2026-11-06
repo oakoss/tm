@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use serde::{Serialize, Serializer};
 use serde_json::{Value, json};
 use tm_core::ProjectId;
-use tm_core::filter::{Context, FilterError, OPEN, Query, Term, parse, same_field};
+use tm_core::filter::{Context, FilterError, open_unless_named};
 use tm_core::scheme::Category;
 use tm_store::{IssueView, Store, StoreError};
 use uuid::Uuid;
@@ -34,17 +34,6 @@ pub(crate) fn run(
     }
 }
 
-/// Whether a term asks about status, category or archived, so the open-work
-/// default would contradict what was typed.
-fn names_state(query: &Query) -> bool {
-    query.terms.iter().any(|term| {
-        let (Term::Match { field, .. } | Term::Has { field, .. }) = term;
-        ["status", "category", "archived"]
-            .iter()
-            .any(|name| same_field(&field.0, name))
-    })
-}
-
 fn list(
     here: &Here,
     filter: &[String],
@@ -52,14 +41,7 @@ fn list(
     all: bool,
     json: bool,
 ) -> Result<Output, CliError> {
-    let filter = filter.join(" ");
-    // A filter narrows the open work unless it names a state or `--all` is
-    // given. The default goes last so error spans still point into what was
-    // typed.
-    let filter = match parse(&filter) {
-        Ok(query) if !all && !names_state(&query) => format!("{filter} {OPEN}"),
-        _ => filter,
-    };
+    let filter = open_unless_named(&filter.join(" "), all);
     let (total, views, projects, blockers) = here.store.read(|store| {
         let ids = find(here, &filter)?;
         let shown = &ids[..limit.map_or(ids.len(), |limit| limit.min(ids.len()))];
