@@ -191,13 +191,17 @@ fn the_edit_hook_reads_no_email_for_an_agent() {
     assert!(took.status.success(), "{took:?}");
     let (bin, log) = scratch.logged_git();
     let file = repo.join("README.md").display().to_string();
-    let input =
-        json!({ "session_id": "s2", "tool_name": "Edit", "tool_input": { "file_path": file } });
-    let mut command = session_command(&scratch, &repo, "s2", &["hook", "pre-edit", "claude"]);
-    command.env_remove("TM_ACTOR").env("PATH", &bin);
-    let out = piped(command, input.to_string());
-    assert!(out.status.success(), "{out:?}");
-    assert!(text(&out.stdout).contains("TM-1's Claim"), "{out:?}");
+    let edit = |session: &str| {
+        let input = json!({ "session_id": session, "tool_name": "Edit", "tool_input": { "file_path": file } });
+        let mut command =
+            session_command(&scratch, &repo, session, &["hook", "pre-edit", "claude"]);
+        command.env_remove("TM_ACTOR").env("PATH", &bin);
+        let out = piped(command, input.to_string());
+        assert!(out.status.success(), "{out:?}");
+        text(&out.stdout)
+    };
+    assert!(edit("s2").contains("TM-1's Claim"));
+    assert_eq!(edit("s1"), "", "a session's own Claim never warns it");
     let ran = fs::read_to_string(&log).unwrap_or_default();
     assert!(!ran.contains("user.email"), "{ran}");
 }
