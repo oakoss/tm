@@ -59,6 +59,15 @@
       ]
     },
     {
+      "automerge": false,
+      "description": "release.yml's actions and dist-workspace.toml's [dist.github-action-commits] table name the same pins, so they move in one PR. Only a release runs that workflow in full, so a human merges it. Ordered after the grouping rule, since later packageRules win.",
+      "groupName": "release workflow actions",
+      "matchFileNames": [
+        ".github/workflows/release.yml",
+        "dist-workspace.toml"
+      ]
+    },
+    {
       "description": "Research probes record what was measured with the versions they name; bumping them would change the evidence.",
       "enabled": false,
       "matchFileNames": [
@@ -86,6 +95,19 @@
       ],
       "depNameTemplate": "rust",
       "datasourceTemplate": "rust-version"
+    },
+    {
+      "customType": "regex",
+      "description": "dist-workspace.toml's [dist.github-action-commits] pins the actions `dist generate` writes into release.yml; no native manager reads it.",
+      "managerFilePatterns": [
+        "/(^|/)dist-workspace\\.toml$/"
+      ],
+      "matchStrings": [
+        "\"(?<depName>[^\"]+/[^\"]+)\" = \"(?<currentDigest>[a-f0-9]{40})\" # (?<currentValue>v[0-9.]+)"
+      ],
+      "datasourceTemplate": "github-tags",
+      "depTypeTemplate": "action",
+      "autoReplaceStringTemplate": "\"{{depName}}\" = \"{{newDigest}}\" # {{newValue}}"
     }
   ]
 }
