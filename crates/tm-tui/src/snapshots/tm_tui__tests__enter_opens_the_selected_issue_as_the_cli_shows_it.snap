@@ -1,0 +1,14 @@
+---
+source: crates/tm-tui/src/lib.rs
+expression: drawn(&mut shell)
+---
+"tm · TM                                                     "
+"┌ TM-2 ────────────────────────────────────────────────────┐"
+"│TM-2    shown \u{1b}[2Jsafe                               │"
+"│line 1                                                    │"
+"│line 2                                                    │"
+"│line 3                                                    │"
+"│line 4                                                    │"
+"│line 5                                                    │"
+"└──────────────────────────────────────────────────────────┘"
+"q back · j k scroll · ? keys                                "

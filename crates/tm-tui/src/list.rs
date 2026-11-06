@@ -9,6 +9,7 @@ use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState};
 use tm_core::filter::{Context, FilterError, open_unless_named};
 use tm_core::text::printable;
 use tm_store::{IssueView, Store, StoreError};
+use uuid::Uuid;
 
 /// Rows a page key moves.
 const PAGE: usize = 10;
@@ -38,6 +39,7 @@ pub(crate) struct List {
 
 /// One Issue as a row shows it, its text already safe for the terminal.
 struct Shown {
+    id: Uuid,
     key: String,
     status: String,
     priority: String,
@@ -56,6 +58,7 @@ impl Shown {
             printable(text).replace('\t', " ")
         };
         Self {
+            id: view.id,
             key: view.key.clone().unwrap_or_else(|| view.id.to_string()),
             status: field("status"),
             priority: field("priority"),
@@ -108,10 +111,15 @@ impl List {
     }
 
     pub(crate) fn selected_key(&self) -> Option<String> {
+        self.selected().map(|(_, key)| key)
+    }
+
+    /// The selected Issue's id and Key.
+    pub(crate) fn selected(&self) -> Option<(Uuid, String)> {
         self.table
             .selected()
             .and_then(|at| self.rows.get(at))
-            .map(|row| row.key.clone())
+            .map(|row| (row.id, row.key.clone()))
     }
 
     pub(crate) fn key(&mut self, key: KeyEvent) -> Done {
