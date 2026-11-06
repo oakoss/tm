@@ -26,12 +26,15 @@ clap = { version = "4.6.7", features = ["derive"] }
 insta = { version = "1.49.0", features = ["json", "redactions"] }
 jiff = "0.2.38"
 proptest = "1.12.0"
+ratatui = "0.30.2"
 rusqlite = { version = "0.41.0", features = ["backup", "bundled", "collation"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # 0.11 detects the SHA-2 instructions at run time; 0.10 needs its `asm`
 # feature to be fast on aarch64 (ADR 0006).
 sha2 = "0.11.1"
+# The version crossterm already builds, so the TUI adds no second copy.
+signal-hook = "0.3.18"
 thiserror = "2.0.21"
 toml = "1.1.8"
 uuid = { version = "1.28.0", features = ["serde", "v7"] }

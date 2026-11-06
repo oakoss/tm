@@ -1,0 +1,14 @@
+---
+source: crates/tm-tui/src/lib.rs
+expression: drawn(&shell)
+---
+"tm · TM                                     "
+"┌──────────────────────────────────────────┐"
+"│Not┌Keys──────────────────────────────┐   │"
+"│   │     q  quit                      │   │"
+"│   │Ctrl-C  quit                      │   │"
+"│   │     ?  show or hide these keys   │   │"
+"│   │   Esc  hide these keys           │   │"
+"│   └──────────────────────────────────┘   │"
+"└──────────────────────────────────────────┘"
+"q quit · ? keys                             "

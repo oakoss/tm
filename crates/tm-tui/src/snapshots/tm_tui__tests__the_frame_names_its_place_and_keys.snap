@@ -1,0 +1,14 @@
+---
+source: crates/tm-tui/src/lib.rs
+expression: drawn(&shell)
+---
+"tm · TM                                     "
+"┌──────────────────────────────────────────┐"
+"│Nothing to show yet.                      │"
+"│                                          │"
+"│                                          │"
+"│                                          │"
+"│                                          │"
+"│                                          │"
+"└──────────────────────────────────────────┘"
+"q quit · ? keys                             "

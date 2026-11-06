@@ -37,6 +37,11 @@ unused-allowed-license = "deny"
 [bans]
 multiple-versions = "deny"
 wildcards = "allow"
+# crossterm's derive_more and ratatui's strum still build with syn 2, which
+# runs at build time only and ships nothing in tm.
+skip = [
+  { crate = "syn@2", reason = "build-time only, through crossterm and ratatui" },
+]
 
 [sources]
 # A dependency resolved from anywhere but crates.io is a question about the

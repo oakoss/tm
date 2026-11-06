@@ -17,6 +17,7 @@ serde.workspace = true
 serde_json.workspace = true
 tm-core.workspace = true
 tm-store.workspace = true
+tm-tui.workspace = true
 toml.workspace = true
 uuid.workspace = true
 
