@@ -194,11 +194,18 @@ fn json_carries_a_busy_store_in_the_next_documents_warnings_not_on_stderr() {
     let (repo, store, _project) = initialized(&scratch);
     drop(store);
     create(&scratch, &repo, "a");
-    let lock = rusqlite::Connection::open(store_path(&scratch)).unwrap();
-    lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
     let watching = Watching::start(&scratch, &repo, &["--json", "list", "--watch"]);
-    // Past the store's 5 s busy timeout, so the start meets a busy store.
-    thread::sleep(Duration::from_millis(6500));
+    watching.next();
+    // A write, then the lock at once, so the read that write prompts meets a
+    // busy store however slowly tm started.
+    let lock = rusqlite::Connection::open(store_path(&scratch)).unwrap();
+    lock.execute_batch(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('probe', 1);
+         BEGIN EXCLUSIVE;",
+    )
+    .unwrap();
+    // Past the store's 5 s busy timeout, from a read starting within a poll.
+    thread::sleep(Duration::from_secs(7));
     lock.execute_batch("COMMIT").unwrap();
     let doc: Value = serde_json::from_str(&watching.next()).unwrap();
     let warnings = doc["warnings"].as_array().unwrap();
