@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::edit::{self, Changed};
 use crate::error::CliError;
-use crate::here::{self, Here};
+use crate::here;
 use crate::identity;
 use crate::output::{Output, local_offset_min, local_time, printable, short, span, time_at};
 
@@ -53,24 +53,6 @@ const RANK: &str = "shortlist_rank";
 
 pub(crate) fn run(reference: &str, limit: Option<usize>, all: bool) -> Result<Output, CliError> {
     let here = here::read()?;
-    let shown = here.issue(reference);
-    match shown.and_then(|id| render(&here, id, limit, all)) {
-        Ok(mut output) => {
-            output.warnings = here.warnings;
-            Ok(output)
-        }
-        Err(err) => Err(err.warned(here.warnings)),
-    }
-}
-
-fn render(here: &Here, id: Uuid, limit: Option<usize>, all: bool) -> Result<Output, CliError> {
-    let store = &here.store;
-    let view = store.issue(id)?.ok_or_else(|| {
-        CliError::new("not_found", format!("Issue {id} does not exist"))
-            .with("kind", "issue")
-            .with("id", id.to_string())
-    })?;
-    let entries = store.history(id)?;
     // Resolved only for a write at another offset, since it may run git.
     let me = OnceCell::new();
     let me = || {
@@ -83,6 +65,31 @@ fn render(here: &Here, id: Uuid, limit: Option<usize>, all: bool) -> Result<Outp
         })
         .clone()
     };
+    let shown = here.issue(reference);
+    match shown.and_then(|id| render(&here.store, id, limit, all, &me)) {
+        Ok(mut output) => {
+            output.warnings = here.warnings;
+            Ok(output)
+        }
+        Err(err) => Err(err.warned(here.warnings)),
+    }
+}
+
+/// An Issue's history as `tm history` prints it, `me` naming the viewer, whose
+/// own writes show in local time.
+pub(crate) fn render(
+    store: &Store,
+    id: Uuid,
+    limit: Option<usize>,
+    all: bool,
+    me: &dyn Fn() -> Option<String>,
+) -> Result<Output, CliError> {
+    let view = store.issue(id)?.ok_or_else(|| {
+        CliError::new("not_found", format!("Issue {id} does not exist"))
+            .with("kind", "issue")
+            .with("id", id.to_string())
+    })?;
+    let entries = store.history(id)?;
     let mut names = Names::new(store);
     // A new Issue is unarchived without an operation saying so.
     let unarchived = Before {
@@ -150,7 +157,7 @@ fn render(here: &Here, id: Uuid, limit: Option<usize>, all: bool) -> Result<Outp
     let title = view.fields.get("title").and_then(Value::as_str);
     let mut text = format!("{name}  {}\n", printable(title.unwrap_or_default()));
     for write in shown {
-        let _ = writeln!(text, "{}", header(write.first, &me));
+        let _ = writeln!(text, "{}", header(write.first, me));
         for line in &write.lines {
             let _ = writeln!(text, "  {line}");
         }
