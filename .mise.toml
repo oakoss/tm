@@ -29,7 +29,7 @@ gitleaks = "8.30.1"
 # release.yml installs dist from this pin. Same number as `cargo-dist-version`
 # in dist-workspace.toml; `mise run check` fails when they differ. Run it as
 # `mise exec -- dist` where Homebrew's dist comes first on PATH.
-"aqua:axodotdev/cargo-dist" = "0.33.1"
+"aqua:axodotdev/cargo-dist" = "0.34.0"
 # Embeds the dependency tree in release binaries (`cargo-auditable = true` in
 # dist-workspace.toml); release.yml installs it from here.
 "github:rust-secure-code/cargo-auditable" = "0.7.7"
