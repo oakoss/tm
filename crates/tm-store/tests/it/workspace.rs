@@ -887,3 +887,18 @@ fn a_failed_create_leaves_nothing_behind() {
     assert!(!Workspace::at(&home, id).dir.exists());
     Workspace::create(&home, id).unwrap();
 }
+
+#[test]
+fn opening_a_store_that_holds_its_id_waits_on_no_writer() {
+    let home = TempDir::new();
+    let (workspace, store) = Workspace::create(home.path(), Uuid::now_v7()).unwrap();
+    drop(store);
+    let writer = rusqlite::Connection::open(workspace.store_path()).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let at = std::time::Instant::now();
+    let opened = tm_store::Store::open_existing(&workspace.store_path(), workspace.id);
+    let took = at.elapsed();
+    writer.execute_batch("COMMIT").unwrap();
+    assert!(opened.is_ok(), "{:?}", opened.err());
+    assert!(took < std::time::Duration::from_secs(1), "{took:?}");
+}
