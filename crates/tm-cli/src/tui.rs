@@ -169,6 +169,15 @@ mod tests {
             matches!(busy_watch, Ok((Some(_), Seen::Changed(_)))) && !pending,
             "a reopen that succeeds reports the change while the Watch is busy"
         );
+        let mut pending = true;
+        let watch_gone = Err(StoreError::Io(io::Error::from(io::ErrorKind::NotFound)));
+        assert!(
+            matches!(
+                refresh(watch_gone, &mut pending, || Store::open(&path), now),
+                Err(Ended::Store(_))
+            ),
+            "any other Watch error ends the TUI, reopened or not"
+        );
         let gone = || Err(StoreError::Io(io::Error::from(io::ErrorKind::NotFound)));
         assert!(matches!(
             refresh(Ok(true), &mut pending, gone, now),
