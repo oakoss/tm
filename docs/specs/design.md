@@ -199,7 +199,7 @@ Off by default. An Issue can carry **Checks**: commands with an expected result.
 ## Views and UIs
 
 - A **View** is a saved, named filter and layout, picked from a sidebar. A **Board** is a View laid out as status columns, each column optionally with its own filter. **Swimlanes** are optional (off by default), group by any field and can have their own filter. Any number of Views per Project, defined in config and editable from the TUI and web UI, which write back to the same config.
-- **First TUI screens**: Issue list with filters, Issue detail with history, Triage, Board, ready queue. A release view, the Development panel and a dependency graph with critical path follow.
+- **First TUI screens**: Issue list with filters, Issue detail with history, Triage, Board, ready queue, opened with `tm tui`. A release view, the Development panel and a dependency graph with critical path follow. Screens re-read when another process writes and write through the CLI's own paths ([ADR 0018](../decisions/0018-the-tui-opens-with-tm-tui-reads-the-store-and-writes-through-the-cli.md)).
 - The web UI encodes a View's filter in its URL so it can be shared or bookmarked.
 - **`tm ui`** binds to `127.0.0.1` only and opens a URL carrying a random token.
 
@@ -219,7 +219,7 @@ Off by default. An Issue can carry **Checks**: commands with an expected result.
 
 ## Open items and risks
 
-- Sandboxed agents see data as of the last Snapshot, and a writer that crashes or fails to publish delays the next one. A long-lived sandboxed reader, such as a TUI an Agent runs, keeps the Snapshot it opened until it reopens it.
+- Sandboxed agents see data as of the last Snapshot, and a writer that crashes or fails to publish delays the next one. A long-lived sandboxed reader reopens the Snapshot when a publish replaces it, as the TUI does ([ADR 0018](../decisions/0018-the-tui-opens-with-tm-tui-reads-the-store-and-writes-through-the-cli.md)).
 - Replaying offline operations on top of the server's and compacting the operation log are not yet designed.
 - Copilot and Cursor identity variables are unverified.
 - Many users alias `tm` to `tmux`; ship a longer second binary name as a fallback.
