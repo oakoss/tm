@@ -57,9 +57,9 @@ Scoped npm names are the exception and must be quoted, because `@` starts a rese
 
 ## What you do not write
 
-**You never write a bump file for a package that merely depends on what you changed.** Oakum works that out from the dependency graph, including whether the dependent actually needs releasing at all. A library whose published range still covers the new version usually does not; a binary that bakes its dependencies in at build time always does.
+**A package that merely depends on what you changed releases without being named.** Oakum works that out from the dependency graph, including whether the dependent needs releasing at all: a library whose published range still covers the new version does not, and a binary that bakes its dependencies in at build time always does, at patch. Name a dependent only to give it more than that, such as a binary whose users see a library's new feature: name the binary at `minor` beside the library.
 
-Dependents that will release appear in `oakum status`. If you find yourself adding a bump file because something downstream also needs releasing, that is a bug in oakum. Paste the status table and report it.
+Dependents that will release appear in `oakum status`. If one you expected is missing, paste the status table and report it.
 
 ## Choosing a level
 
@@ -71,14 +71,14 @@ Only these three, plus `none` for coverage without a direct bump. For an applica
 
 ## Changes that ship no release
 
-Under `oakum check --strict` (the printed workflow's mode), a pull request that changes a package must carry a bump file even when nothing releases; without `--strict`, the gap is reported and the run still passes.
+Under `oakum check --strict` (the printed workflow's mode), a pull request that changes a package must carry a bump file even when nothing releases, unless conventional commits are on and every commit on the branch that reaches the package releases nothing (`refactor:`, `test:`, `chore:`, `docs:` and the like). Without `--strict`, the gap is reported and the run still passes. [What covers a change](https://github.com/oakoss/oakum/blob/main/docs/guide/coverage.md) has the full rules.
 
 When you need a file, for example to cover packages under a strict coverage gate without releasing them, use the same shapes as bumpy and changesets:
 
 - Empty frontmatter (`---` then `---` with no package lines) for an intentionally releaseless change
 - `package: none` for a package that takes no direct bump but still accepts a cascade
 
-`oakum add` writes these with `--empty` / `--none`. `@changesets/cli` and bumpy read both shapes. knope does not: it treats `none` as a patch and rejects empty frontmatter, so do not introduce them while knope still reads this directory.
+`oakum add` writes these with `--empty` / `--none`. `@changesets/cli` and bumpy read both shapes.
 
 ## Keeping them current
 

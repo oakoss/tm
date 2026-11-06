@@ -6,7 +6,7 @@ PR bodies follow [`.github/PULL_REQUEST_TEMPLATE.md`](../../.github/PULL_REQUEST
 - The PR title is the commit subject: `type(scope): summary`.
 - No Claude session links in PR bodies or commit messages.
 - No Test plan checklist. Verification is the PR's Checks tab and `mise run ci`, which runs `check`, `test`, `audit`, `scan-secrets` and `coldstart` in turn.
-- A PR that changes what the `tm` binary does carries a bump file for `tm-cli`, the one versioned crate: `oakum add --packages "tm-cli:patch" --message "..."` writes one under `.changeset/`, and its message becomes the release note. CI's `Bump files` job fails a pull request that changes anything under `crates/` without adding or editing a bump file of its own, internal crates included, and runs `oakum check --strict`. `oakum add --empty` marks a change that releases nothing.
+- A PR that changes what the `tm` binary does carries a bump file for `tm-cli`, the one versioned crate: `oakum add --packages "tm-cli:patch" --message "..."` writes one under `.changeset/`, and its message becomes the release note. CI's `Bump files` job runs `oakum check --strict`, which counts a change to an internal crate as a change to `tm-cli` and fails a pull request whose commits ask for a release (`fix:`, `feat:`, any breaking change marked with `!` or a `BREAKING CHANGE` footer, or a subject that is not conventional, such as git's `Revert "…"`) without a bump file, naming the `oakum add` command; commits that release nothing, `perf:`, `refactor:`, `test:`, `chore:` and `docs:` among them, need none, so a `perf:` change users should see still needs one. `oakum add --none --packages tm-cli:none` marks a change that releases nothing.
 
 ## Releases
 
