@@ -23,7 +23,15 @@ pub(crate) fn run(json: bool) -> ExitCode {
 }
 
 fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
-    if json || !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
+    if json {
+        return Err(CliError::new(
+            "usage",
+            "tm tui draws screens, so it has no JSON form (--json or TM_JSON=1); \
+             tm list, tm ready and tm show give a script the same",
+        )
+        .fix("tm list --json"));
+    }
+    if !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
         return Err(CliError::new(
             "not_a_terminal",
             "tm tui draws screens, so it needs a terminal for its input and output",

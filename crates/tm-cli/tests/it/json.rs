@@ -38,6 +38,96 @@ fn a_usage_error_is_a_document_and_exits_2() {
 }
 
 #[test]
+fn the_version_is_a_document_naming_it() {
+    let doc = document(&tm(&["--version", "--json"], &[]));
+    assert_eq!(doc["data"], json!({ "version": env!("CARGO_PKG_VERSION") }));
+}
+
+#[test]
+fn a_usage_error_names_the_missing_arguments() {
+    let doc = document(&tm(&["handoff", "X-1", "--json"], &[]));
+    assert_eq!(
+        doc["message"],
+        "the following required arguments were not provided: --to <AGENT>, <NOTE>"
+    );
+}
+
+#[test]
+fn next_refuses_paths_with_peek_since_a_peek_takes_no_claim() {
+    let doc = document(&tm(&["next", "--peek", "--paths", "src/**", "--json"], &[]));
+    assert_eq!(doc["error"], "usage");
+    assert!(
+        doc["message"].as_str().unwrap().contains("--paths"),
+        "{doc}"
+    );
+}
+
+#[test]
+fn the_version_without_json_is_text() {
+    let output = tm(&["--version"], &[]);
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(text, format!("tm {}\n", env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn a_usage_error_carries_clap_s_tip_but_no_fix() {
+    let doc = document(&tm(&["list", "--limt", "3", "--json"], &[]));
+    assert_eq!(doc["tip"], "a similar argument exists: '--limit'");
+    assert_eq!(doc["fix"], Value::Null, "{doc}");
+}
+
+#[test]
+fn a_usage_error_keeps_the_values_clap_allows() {
+    let doc = document(&tm(&["setup", "bogus", "--json"], &[]));
+    assert_eq!(
+        doc["message"],
+        "invalid value 'bogus' for '<HARNESS>' [possible values: claude, codex]"
+    );
+}
+
+#[test]
+fn a_hook_that_fails_to_parse_under_json_says_why_in_text() {
+    for (args, envs) in [
+        (&["hook", "pre-edit"][..], &[("TM_JSON", "1")][..]),
+        (&["--json", "hook", "pre-edit"], &[]),
+    ] {
+        let output = tm(args, envs);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        assert!(output.stdout.is_empty(), "{args:?}: {output:?}");
+        let said = String::from_utf8(output.stderr).unwrap();
+        assert!(said.contains("<HARNESS>"), "{args:?}: {said}");
+    }
+}
+
+#[test]
+fn json_mode_stays_on_where_no_hook_runs() {
+    for args in [
+        &["--json", "--", "hook"][..],
+        &["--json", "-V", "hook"],
+        &["--json", "--help", "hook"],
+        &["--json", "-hV", "hook"],
+        &["--json", "--bogus", "hook"],
+        &["--json", "--json", "hook", "pre-edit", "claude"],
+    ] {
+        document(&tm(args, &[]));
+    }
+}
+
+#[test]
+fn a_hook_still_accepts_json_after_its_action() {
+    let scratch = crate::support::Scratch::new();
+    let output = crate::support::tm_piped(
+        &scratch,
+        &scratch.0,
+        &["hook", "pre-edit", "claude", "--json"],
+        r#"{"tool_input":{"file_path":"/x"}}"#,
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+}
+
+#[test]
 fn tm_json_selects_json_mode_without_the_flag() {
     let output = tm(&["scheme", "show"], &[("TM_JSON", "1")]);
     assert!(output.status.success());

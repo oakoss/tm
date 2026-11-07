@@ -110,7 +110,22 @@ fn cli() -> clap::Command {
     // expands `tm help help`; only a copy is built.
     let mut built = Cli::command();
     built.build();
-    Cli::command().help_template(grouped_help(&built))
+    // tm tui refuses --json and a hook prints its harness's format, so their
+    // help leaves the flag out; a subcommand's own `json` takes the global
+    // one's place there and below, still accepted.
+    let hidden_json = |command: clap::Command| {
+        command.arg(
+            clap::Arg::new("json")
+                .long("json")
+                .action(clap::ArgAction::SetTrue)
+                .global(true)
+                .hide(true),
+        )
+    };
+    Cli::command()
+        .help_template(grouped_help(&built))
+        .mut_subcommand("tui", hidden_json)
+        .mut_subcommand("hook", hidden_json)
 }
 
 /// A help template listing `command`'s subcommands under [`GROUPS`], each by
@@ -282,7 +297,7 @@ enum Command {
     /// ready Issue when you have none; with nothing to take, says why.
     Next {
         /// Show the Issue it would take, without taking it.
-        #[arg(long, conflicts_with_all = ["ttl_ms", "no_expiry"])]
+        #[arg(long, conflicts_with_all = ["paths", "ttl_ms", "no_expiry"])]
         peek: bool,
         #[command(flatten)]
         lasts: claim::Lasts,
@@ -578,7 +593,15 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args_os()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
-    let json = output::json_mode(&args, std::env::var("TM_JSON").ok().as_deref());
+    // The harness reads only its own hook format, which JSON mode must not
+    // wrap, even when the hook's arguments fail to parse. Before a command,
+    // clap takes --json once; anything else ends parsing or is refused.
+    let command = match args.get(1).map(String::as_str) {
+        Some("--json") => args.get(2),
+        _ => args.get(1),
+    };
+    let json = output::json_mode(&args, std::env::var("TM_JSON").ok().as_deref())
+        && command.is_none_or(|arg| arg != "hook");
     if json {
         output::install_panic_hook();
     }
@@ -602,7 +625,6 @@ fn main() -> ExitCode {
             Err(err) => output::finish(json, Err(err), &[]),
         };
     }
-    // The harness reads only its own hook format, which TM_JSON must not wrap.
     if let Some(Command::Hook { action }) = &cli.command {
         let input = hook::input();
         let enter = |harness| {
@@ -762,6 +784,10 @@ fn parse_failed(json: bool, err: &clap::Error, args: Option<&[String]>) -> ExitC
             ExitCode::from(2)
         };
     }
+    if err.kind() == ErrorKind::DisplayVersion {
+        let version = json!({ "version": env!("CARGO_PKG_VERSION") });
+        return output::finish(true, Ok(Output::new(String::new(), version)), &[]);
+    }
     let rendered = err.render().to_string();
     if shown {
         return output::finish(
@@ -770,9 +796,36 @@ fn parse_failed(json: bool, err: &clap::Error, args: Option<&[String]>) -> ExitC
             &[],
         );
     }
-    let message = rendered.lines().next().unwrap_or_default();
-    let message = message.strip_prefix("error: ").unwrap_or(message);
-    output::finish(true, Err(CliError::new("usage", message)), &[])
+    let (message, tips) = usage_message(&rendered);
+    let mut err = CliError::new("usage", message);
+    if let Some(tips) = tips {
+        err = err.with("tip", tips);
+    }
+    output::finish(true, Err(err), &[])
+}
+
+/// Clap's rendered error as one line, and its tips, which are hints rather
+/// than a runnable fix (ADR 0011): its message,
+/// then what it names, such as missing arguments, from the indented lines
+/// after it; a blank line, then the tips.
+fn usage_message(rendered: &str) -> (String, Option<String>) {
+    let mut lines = rendered.lines();
+    let first = lines.next().unwrap_or_default();
+    let message = first.strip_prefix("error: ").unwrap_or(first);
+    let named: Vec<&str> = lines
+        .by_ref()
+        .take_while(|line| line.starts_with("  "))
+        .map(str::trim)
+        .collect();
+    let tips: Vec<&str> = lines
+        .filter_map(|line| line.trim().strip_prefix("tip: "))
+        .collect();
+    let message = if named.is_empty() {
+        message.to_owned()
+    } else {
+        format!("{message} {}", named.join(", "))
+    };
+    (message, (!tips.is_empty()).then(|| tips.join("; ")))
 }
 
 fn scheme_json(scheme: &Scheme) -> serde_json::Value {
@@ -908,6 +961,51 @@ mod tests {
         let mut out = Vec::new();
         walk("tm", &Cli::command(), true, &mut out);
         out
+    }
+
+    #[test]
+    fn only_commands_with_a_json_form_offer_json_in_their_help() {
+        fn walk(path: &str, command: &mut clap::Command, out: &mut Vec<(String, String)>) {
+            out.push((path.to_owned(), command.render_help().to_string()));
+            for sub in command.get_subcommands_mut() {
+                walk(&format!("{path} {}", sub.get_name()), sub, out);
+            }
+        }
+        let mut built = cli();
+        built.build();
+        let mut helps = Vec::new();
+        walk("tm", &mut built, &mut helps);
+        // Clap's own help commands take no flags.
+        helps.retain(|(path, _)| !path.contains(" help"));
+        for (path, help) in &helps {
+            let without = path.starts_with("tm hook") || path == "tm tui";
+            assert_eq!(!help.contains("--json"), without, "{path}:\n{help}");
+        }
+        for checked in ["tm tui", "tm hook session-start", "tm list"] {
+            assert!(helps.iter().any(|(path, _)| path == checked), "{checked}");
+        }
+    }
+
+    #[test]
+    fn a_usage_message_names_what_clap_lists_and_keeps_its_tips() {
+        let message = |args: &[&str]| {
+            let err = cli().try_get_matches_from(args).unwrap_err();
+            super::usage_message(&err.render().to_string())
+        };
+        assert_eq!(
+            message(&["tm", "handoff", "X-1"]),
+            (
+                "the following required arguments were not provided: --to <AGENT>, <NOTE>".into(),
+                None
+            )
+        );
+        assert_eq!(
+            message(&["tm", "list", "--limt", "3"]),
+            (
+                "unexpected argument '--limt' found".into(),
+                Some("a similar argument exists: '--limit'".into())
+            )
+        );
     }
 
     #[test]
