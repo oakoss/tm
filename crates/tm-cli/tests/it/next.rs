@@ -243,6 +243,9 @@ fn tm_shortlist_binds_a_session_to_one_list_and_never_falls_back() {
         "{message}"
     );
     assert_eq!(doc["fix"], "TM_SHORTLIST='<name>' tm --json next", "{doc}");
+    let by_env = [("TM_SHORTLIST", "nope"), ("TM_JSON", "1")];
+    let doc = json_of(&claude(&scratch, &repo, &by_env, "next"));
+    assert_eq!(doc["fix"], "TM_SHORTLIST='<name>' tm --json next", "{doc}");
 
     let out = claude(
         &scratch,

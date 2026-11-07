@@ -27,14 +27,26 @@ const BOUND: &str = "TM_SHORTLIST";
 const BOUND_HINT: &str = "unset it, or set it to a list tm shortlist shows";
 
 /// The command that ran, `--peek` and `--json` kept, with `TM_SHORTLIST`
-/// to be named.
-fn bound_fix(args: impl IntoIterator<Item = String>) -> String {
-    let line: Vec<String> = args.into_iter().skip(1).map(|arg| quoted(&arg)).collect();
+/// to be named; `--json` added when `TM_JSON` chose JSON mode.
+fn bound_fix(args: &[String], json: bool) -> String {
+    let mut line: Vec<String> = args.iter().skip(1).map(|arg| quoted(arg)).collect();
+    if json
+        && !line
+            .iter()
+            .take_while(|arg| *arg != "--")
+            .any(|arg| arg == "--json")
+    {
+        line.insert(0, "--json".into());
+    }
     format!("{BOUND}='<name>' tm {}", line.join(" "))
 }
 
-fn ran() -> impl Iterator<Item = String> {
-    std::env::args_os().map(|arg| arg.to_string_lossy().into_owned())
+fn ran_fix() -> String {
+    let args: Vec<String> = std::env::args_os()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let json = crate::output::json_mode(&args, std::env::var("TM_JSON").ok().as_deref());
+    bound_fix(&args, json)
 }
 
 /// Where `tm next` takes from, each candidate with why it would be passed
@@ -451,7 +463,7 @@ fn bound() -> Result<Option<String>, CliError> {
     let invalid = |why: &str| {
         CliError::new("invalid_value", format!("{BOUND} {why}; {BOUND_HINT}"))
             .with("field", BOUND)
-            .fix(bound_fix(ran()))
+            .fix(ran_fix())
     };
     let Some(text) = value.to_str() else {
         return Err(invalid("is not valid UTF-8"));
@@ -485,7 +497,7 @@ fn unbound(bound: &str, actor: &Actor, lists: &[Shortlist], matched: usize) -> C
         .with("kind", "shortlist")
         .with("name", bound)
         .with("valid", names)
-        .fix(bound_fix(ran()));
+        .fix(ran_fix());
     if matched > 1 {
         err.with("count", matched)
     } else {
@@ -600,8 +612,17 @@ mod tests {
     fn the_bound_fix_keeps_the_command_that_ran() {
         let ran = ["tm", "--json", "next", "--peek", "--paths", "src/a b"].map(String::from);
         assert_eq!(
-            bound_fix(ran),
+            bound_fix(&ran, true),
             "TM_SHORTLIST='<name>' tm --json next --peek --paths 'src/a b'"
+        );
+        let by_env = ["tm", "next", "--paths", "=ls"].map(String::from);
+        assert_eq!(
+            bound_fix(&by_env, true),
+            "TM_SHORTLIST='<name>' tm --json next --paths '=ls'"
+        );
+        assert_eq!(
+            bound_fix(&by_env, false),
+            "TM_SHORTLIST='<name>' tm next --paths '=ls'"
         );
     }
 
