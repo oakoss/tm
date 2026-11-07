@@ -58,6 +58,34 @@ pub(crate) struct Edit {
     if_version: Option<u64>,
 }
 
+impl Edit {
+    /// `tm edit ISSUE --set FIELD=VALUE`, or `--unset FIELD` with no value,
+    /// with `--if-version VERSION`, as `tm tui` makes it.
+    pub(crate) fn field(
+        issue: &str,
+        field: &str,
+        value: Option<&str>,
+        if_version: Option<u64>,
+    ) -> Self {
+        let (set, unset) = match value {
+            Some(value) => (vec![(field.to_owned(), value.to_owned())], Vec::new()),
+            None => (Vec::new(), vec![field.to_owned()]),
+        };
+        Self {
+            issue: issue.to_owned(),
+            set,
+            append: Vec::new(),
+            unset,
+            labels: Vec::new(),
+            remove_labels: Vec::new(),
+            parent: None,
+            no_parent: false,
+            force: false,
+            if_version,
+        }
+    }
+}
+
 /// `--set FIELD=VALUE`. Labels and parent have their own flags; a Status is
 /// refused when the command runs, with the move that changes it.
 pub(crate) fn field_value(pair: &str) -> Result<(String, String), String> {

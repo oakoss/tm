@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::error::CliError;
 use crate::identity::Identity;
 use crate::output;
-use crate::{here, history, identity, ready, show, watch};
+use crate::{edit, here, history, identity, moves, ready, show, undo, watch};
 
 pub(crate) fn run(json: bool) -> ExitCode {
     match open(json) {
@@ -65,11 +65,11 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
     let me = me.as_deref().map_err(String::as_str);
     let mut pending = false;
     let actions = Cli {
-        me: me.ok(),
+        me,
         project,
         reader: reader.as_ref().map_err(String::as_str),
     };
-    tm_tui::run(place, store, me, &actions, |store| {
+    tm_tui::run(place, store, &actions, |store| {
         let (opened, seen) = refresh(watch.changed(), &mut pending, open, || {
             jiff::Zoned::now().strftime("%H:%M:%S").to_string()
         })?;
@@ -102,17 +102,21 @@ fn session(
 }
 
 /// The screens' text from the CLI's own commands, `me` the person at the
-/// terminal, `reader` the session as `tm ready` reads it or why it cannot,
-/// and `project` the one this directory maps to.
+/// terminal or why no one can be named, `reader` the session as `tm ready`
+/// reads it or why it cannot, and `project` the one this directory maps to.
 struct Cli<'a> {
-    me: Option<&'a str>,
+    me: Result<&'a str, &'a str>,
     project: ProjectId,
     reader: Result<&'a Identity, &'a str>,
 }
 
 impl tm_tui::Actions for Cli<'_> {
+    fn me(&self) -> Result<&str, &str> {
+        self.me
+    }
+
     fn detail(&self, store: &Store, id: Uuid) -> Result<String, String> {
-        let me = || self.me.map(str::to_owned);
+        let me = || self.me.ok().map(str::to_owned);
         let shown = show::render_with(store, id, show::Comments::All, None);
         let written = history::render(store, id, None, false, &me);
         let (shown, written) = shown
@@ -149,6 +153,71 @@ impl tm_tui::Actions for Cli<'_> {
         }
         Ok(lead + &text)
     }
+
+    fn write(&self, write: &tm_tui::Write) -> Result<tm_tui::Written, String> {
+        let output = match write {
+            tm_tui::Write::Move {
+                key,
+                status,
+                version,
+            } => moves::run(&moves::Move::to(key, status, if_version(*version))),
+            tm_tui::Write::Set {
+                key,
+                field,
+                value,
+                version,
+            } => edit::run(&edit::Edit::field(
+                key,
+                field,
+                value.as_deref(),
+                if_version(*version),
+            )),
+        };
+        output.map(|output| written(&output)).map_err(refusal)
+    }
+
+    fn undo(&self, batch: Uuid) -> Result<tm_tui::Written, String> {
+        let output = undo::run(Some(&batch.to_string()), false, false).map_err(refusal)?;
+        // The first line names the batch; the ones after say what reverted.
+        let reverted: Vec<&str> = output.text.lines().skip(1).map(str::trim).collect();
+        let said = if reverted.is_empty() {
+            output.text.lines().next().unwrap_or_default().to_owned()
+        } else {
+            format!("undid {}", reverted.join("; "))
+        };
+        Ok(tm_tui::Written {
+            said,
+            batch: None,
+            warnings: output.warnings,
+        })
+    }
+}
+
+/// A refused write as the status line says it: the CLI's message, then the
+/// command that fixes it when the CLI gives one.
+fn refusal(err: CliError) -> String {
+    match err.fix {
+        Some(fix) => format!("{} — try: {fix}", err.message),
+        None => err.message,
+    }
+}
+
+/// The first line the CLI printed for a write, and the batch it named.
+fn written(output: &output::Output) -> tm_tui::Written {
+    let said = output.text.lines().next().unwrap_or_default().to_owned();
+    let batch = output.data["batch"]
+        .as_str()
+        .and_then(|batch| batch.parse().ok());
+    tm_tui::Written {
+        said,
+        batch,
+        warnings: output.warnings.clone(),
+    }
+}
+
+/// A version the store read, as `--if-version` takes it.
+fn if_version(version: i64) -> Option<u64> {
+    u64::try_from(version).ok()
 }
 
 /// A look at the store: on a change the list's reader is opened again, and a
@@ -232,7 +301,7 @@ mod tests {
             store.append(draft).unwrap();
         }
         let cli = Cli {
-            me: Some("jace"),
+            me: Ok("jace"),
             project,
             reader: Err("unused"),
         };
@@ -266,7 +335,7 @@ mod tests {
             warnings: vec!["found two harnesses".into()],
         };
         let cli = Cli {
-            me: Some("jace"),
+            me: Ok("jace"),
             project,
             reader: Ok(&identity),
         };
@@ -277,7 +346,7 @@ mod tests {
         assert!(lists.is_some() && queue > lists, "{text}");
         assert!(text.contains("\nTM-2  todo  none  beta\n"), "{text}");
         let nobody = Cli {
-            me: None,
+            me: Err("unused"),
             project,
             reader: Err("set TM_ACTOR"),
         };
@@ -301,6 +370,14 @@ mod tests {
             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
             None,
         ))
+    }
+
+    #[test]
+    fn a_refusal_carries_the_command_that_fixes_it() {
+        let plain = CliError::new("not_found", "no Issue is TM-9");
+        assert_eq!(refusal(plain), "no Issue is TM-9");
+        let fixable = CliError::new("claimed", "TM-2 is claimed").fix("tm take TM-2");
+        assert_eq!(refusal(fixable), "TM-2 is claimed — try: tm take TM-2");
     }
 
     #[test]

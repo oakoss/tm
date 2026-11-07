@@ -2,7 +2,7 @@
 source: crates/tm-tui/src/lib.rs
 expression: drawn(&mut shell)
 ---
-"tm · TM                                                     "
+"tm · TM › Issues › TM-2                                     "
 "┌ TM-2 ────────────────────────────────────────────────────┐"
 "│TM-2    shown \u{1b}[2Jsafe                               │"
 "│line 1                                                    │"
