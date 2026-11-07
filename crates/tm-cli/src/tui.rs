@@ -173,14 +173,11 @@ impl tm_tui::Actions for Cli<'_> {
                 if_version(*version),
             )),
         };
-        output
-            .map(|output| written(&output))
-            .map_err(|err| err.message)
+        output.map(|output| written(&output)).map_err(refusal)
     }
 
     fn undo(&self, batch: Uuid) -> Result<tm_tui::Written, String> {
-        let output =
-            undo::run(Some(&batch.to_string()), false, false).map_err(|err| err.message)?;
+        let output = undo::run(Some(&batch.to_string()), false, false).map_err(refusal)?;
         // The first line names the batch; the ones after say what reverted.
         let reverted: Vec<&str> = output.text.lines().skip(1).map(str::trim).collect();
         let said = if reverted.is_empty() {
@@ -193,6 +190,15 @@ impl tm_tui::Actions for Cli<'_> {
             batch: None,
             warnings: output.warnings,
         })
+    }
+}
+
+/// A refused write as the status line says it: the CLI's message, then the
+/// command that fixes it when the CLI gives one.
+fn refusal(err: CliError) -> String {
+    match err.fix {
+        Some(fix) => format!("{} — try: {fix}", err.message),
+        None => err.message,
     }
 }
 
@@ -364,6 +370,14 @@ mod tests {
             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
             None,
         ))
+    }
+
+    #[test]
+    fn a_refusal_carries_the_command_that_fixes_it() {
+        let plain = CliError::new("not_found", "no Issue is TM-9");
+        assert_eq!(refusal(plain), "no Issue is TM-9");
+        let fixable = CliError::new("claimed", "TM-2 is claimed").fix("tm take TM-2");
+        assert_eq!(refusal(fixable), "TM-2 is claimed — try: tm take TM-2");
     }
 
     #[test]

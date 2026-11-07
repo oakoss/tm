@@ -270,6 +270,9 @@ pub struct Shell {
     written: Vec<Vec<Uuid>>,
     /// What the last action did, until the next key.
     said: Option<String>,
+    /// Whether the last action wrote anything, so `u` can say when it
+    /// reaches back past one that did not.
+    last_wrote: bool,
 }
 
 /// What the TUI does after a key.
@@ -297,6 +300,7 @@ impl Shell {
             pending: None,
             written: Vec::new(),
             said: None,
+            last_wrote: true,
         }
     }
 
@@ -317,50 +321,52 @@ impl Shell {
     fn make(&mut self, writes: &[Write], actions: &dyn Actions) -> String {
         let mut batches = Vec::new();
         let mut landed = Vec::new();
-        let mut lines = Vec::new();
+        let mut written_lines = Vec::new();
+        let mut unchanged = Vec::new();
         let mut warnings = Vec::new();
-        let mut refused = None;
+        let mut refused = Vec::new();
         for write in writes {
             match actions.write(write) {
                 Ok(written) => {
-                    if let Some(batch) = written.batch {
-                        batches.push(batch);
-                        landed.push(write.key().to_owned());
+                    match written.batch {
+                        Some(batch) => {
+                            batches.push(batch);
+                            landed.push(write.key().to_owned());
+                            written_lines.push(written.said);
+                        }
+                        None => unchanged.push(written.said),
                     }
-                    lines.push(written.said);
                     warnings.extend(written.warnings);
                 }
-                Err(why) => {
-                    refused.get_or_insert_with(|| format!("{}: {why}", write.key()));
-                }
+                Err(why) => refused.push(format!("{}: {why}", write.key())),
             }
         }
-        self.shown().wrote(&landed, refused.is_some());
+        self.shown().wrote(&landed, !refused.is_empty());
         let count = batches.len();
+        self.last_wrote = count > 0;
         if count > 0 {
             self.written.push(batches);
         }
-        let warned = warnings
-            .first()
+        let warned = first_of(&warnings, "more warnings")
             .map(|warning| format!(" · warning: {warning}"))
             .unwrap_or_default();
-        if let Some(refused) = refused {
+        if let Some(refused) = first_of(&refused, "more refused") {
             let landed = match count {
                 0 => String::new(),
                 n => format!(" ({n} written; u undoes them)"),
             };
             return format!("✗ {refused}{landed}{warned}");
         }
-        let first = lines.first().map_or("", String::as_str);
-        let more = match lines.len() {
-            0 | 1 => String::new(),
-            n => format!(" and {} more", n - 1),
-        };
         if count == 0 {
-            format!("{first}{more}{warned}")
-        } else {
-            format!("✓ {first}{more} · u undo{warned}")
+            let said = first_of(&unchanged, "more unchanged").unwrap_or_default();
+            return format!("{said}{warned}");
         }
+        let said = first_of(&written_lines, "more written").unwrap_or_default();
+        let unchanged = match unchanged.len() {
+            0 => String::new(),
+            n => format!(" · {n} unchanged"),
+        };
+        format!("✓ {said}{unchanged} · u undo{warned}")
     }
 
     /// Undoes this session's last action, newest batch first; a batch that
@@ -368,6 +374,12 @@ impl Shell {
     fn undo(&mut self, actions: &dyn Actions) -> String {
         let Some(batches) = self.written.pop() else {
             return "nothing written here to undo".to_owned();
+        };
+        // The action shown last wrote nothing, so this one came before it.
+        let earlier = if std::mem::replace(&mut self.last_wrote, true) {
+            ""
+        } else {
+            "the earlier action: "
         };
         let mut undone = Vec::new();
         let mut warnings = Vec::new();
@@ -385,19 +397,20 @@ impl Shell {
                 }
             }
         }
-        let warned = warnings
-            .first()
+        let warned = first_of(&warnings, "more warnings")
             .map(|warning| format!(" · warning: {warning}"))
             .unwrap_or_default();
         let Some(why) = refused else {
-            return format!("✓ {}{warned}", undone.join("; "));
+            return format!("✓ {earlier}{}{warned}", undone.join("; "));
         };
         let total = batches.len();
         kept.reverse();
         self.written.push(kept);
         match undone.len() {
-            0 => format!("✗ not undone: {why}"),
-            n => format!("✗ {why} ({n} of {total} undone; u tries the rest again){warned}"),
+            0 => format!("✗ {earlier}not undone: {why}"),
+            n => {
+                format!("✗ {earlier}{why} ({n} of {total} undone; u tries the rest again){warned}")
+            }
         }
     }
 
@@ -474,9 +487,9 @@ impl Shell {
             Constraint::Length(1),
         ])
         .areas(frame.area());
-        let crumbs: Vec<String> = self.screens.iter().map(Screen::title).collect();
-        let crumbs = crumbs.join(" › ");
-        frame.render_widget(Line::from(format!("tm · {} › {crumbs}", self.place)), top);
+        let titles: Vec<String> = self.screens.iter().map(Screen::title).collect();
+        let crumbs = crumbs(&self.place, &titles, usize::from(top.width));
+        frame.render_widget(Line::from(crumbs), top);
         self.shown().render(frame, body);
         if let Some(text) = &self.said {
             frame.render_widget(Line::from(cut(text, usize::from(said.width))), said);
@@ -524,13 +537,64 @@ impl Shell {
     }
 }
 
-/// `text` cut to `width` columns, ending in `…` when it was longer.
+/// `items`' first, with how many others there are, a repeat counted once.
+fn first_of(items: &[String], more: &str) -> Option<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let items: Vec<&String> = items.iter().filter(|item| seen.insert(*item)).collect();
+    let first = *items.first()?;
+    Some(match items.len() {
+        1 => first.clone(),
+        n => format!("{first} (+{} {more})", n - 1),
+    })
+}
+
+/// Columns `text` takes on a terminal, a wide character two.
+fn columns(text: &str) -> usize {
+    ratatui::text::Span::raw(text).width()
+}
+
+/// `text` cut to `width` terminal columns, ending in `…` when it was longer.
 fn cut(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
+    if columns(text) <= width {
         return text.to_owned();
     }
-    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
+    let mut kept = String::new();
+    for c in text.chars() {
+        let mut next = kept.clone();
+        next.push(c);
+        if columns(&next) + 1 > width {
+            break;
+        }
+        kept = next;
+    }
     format!("{kept}…")
+}
+
+/// The breadcrumb: the place, then the screens open; the oldest screens
+/// give way to `…` first, so the one shown keeps its name.
+fn crumbs(place: &str, titles: &[String], width: usize) -> String {
+    let full = format!("tm · {place} › {}", titles.join(" › "));
+    let Some((shown, earlier)) = titles.split_last() else {
+        return full;
+    };
+    if columns(&full) <= width {
+        return full;
+    }
+    for skip in 1..=earlier.len() {
+        let kept = &earlier[skip..];
+        let mut line = format!("tm · {place} › … › ");
+        for title in kept {
+            line.push_str(title);
+            line.push_str(" › ");
+        }
+        line.push_str(shown);
+        if columns(&line) <= width {
+            return line;
+        }
+    }
+    // Too narrow for the place: the screen shown keeps what room there is.
+    let hidden = if earlier.is_empty() { "" } else { "… › " };
+    cut(&format!("{hidden}{shown}"), width)
 }
 
 /// Runs the TUI over `store` until a key quits it. Between keys `look` finds
@@ -1764,5 +1828,146 @@ mod tests {
             screen.contains("✓ undid the write · warning: a backup was not made"),
             "{screen}"
         );
+    }
+
+    #[test]
+    fn a_cut_counts_terminal_columns_and_keeps_its_ellipsis() {
+        assert_eq!(cut("abc", 5), "abc");
+        let wide = cut("名前名前名前", 5);
+        assert!(columns(&wide) <= 5 && wide.ends_with('…'), "{wide}");
+        assert_eq!(wide, "名前…");
+    }
+
+    #[test]
+    fn the_crumbs_drop_the_oldest_screens_first() {
+        let titles = ["Issues".to_owned(), "Triage".to_owned(), "TM-5".to_owned()];
+        assert_eq!(
+            crumbs("TM", &titles, 80),
+            "tm · TM › Issues › Triage › TM-5"
+        );
+        assert_eq!(crumbs("TM", &titles, 28), "tm · TM › … › Triage › TM-5");
+        assert_eq!(crumbs("TM", &titles, 20), "tm · TM › … › TM-5");
+        assert_eq!(crumbs("TM", &titles, 8), "… › TM-5");
+        let one = ["Issues".to_owned()];
+        assert_eq!(crumbs("TM", &one, 12), "Issues");
+        for width in 0..30 {
+            for listed in [&titles[..], &one[..]] {
+                let line = crumbs("TM", listed, width);
+                assert!(columns(&line) <= width.max(1), "{width}: {line}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_mixed_action_names_what_landed_and_counts_what_did_not_change() {
+        let store = triage_store();
+        let mut record = Record::new();
+        let mut shell = triaging(&store, &record);
+        let first = queue_key(&mut shell).unwrap();
+        shell.key(press(KeyCode::Char(' ')));
+        let second = queue_key(&mut shell).unwrap();
+        shell.key(press(KeyCode::Char(' ')));
+        record.unchanged_key = Some(first);
+        pick(&mut shell, 'p', "high");
+        shell.write(&record);
+        let screen = drawn_sized(&mut shell, 140, 10);
+        let said = format!("✓ {second}  written · 1 unchanged · u undo");
+        assert!(screen.contains(&said), "{screen}");
+    }
+
+    #[test]
+    fn u_after_an_action_that_wrote_nothing_says_it_reaches_back() {
+        let store = triage_store();
+        let mut record = Record::new();
+        let mut shell = triaging(&store, &record);
+        pick(&mut shell, 'p', "high");
+        shell.write(&record);
+        shell.load(&store, &record);
+        record.unchanged_key = queue_key(&mut shell);
+        pick(&mut shell, 'p', "high");
+        shell.write(&record);
+        shell.key(press(KeyCode::Char('u')));
+        shell.write(&record);
+        let screen = drawn_sized(&mut shell, 140, 10);
+        assert!(
+            screen.contains("✓ the earlier action: undid the write"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn every_refusal_and_warning_is_counted() {
+        let store = triage_store();
+        let record = Record {
+            refuse: true,
+            ..Record::new()
+        };
+        let mut shell = triaging(&store, &record);
+        shell.key(press(KeyCode::Char(' ')));
+        shell.key(press(KeyCode::Char(' ')));
+        pick(&mut shell, 'p', "high");
+        shell.write(&record);
+        let screen = drawn_sized(&mut shell, 140, 10);
+        assert!(screen.contains("(+1 more refused)"), "{screen}");
+        let items = ["a", "b", "a", "c"].map(str::to_owned);
+        assert_eq!(
+            first_of(&items, "more warnings"),
+            Some("a (+2 more warnings)".to_owned()),
+            "a repeat counts once"
+        );
+    }
+
+    #[test]
+    fn a_refused_undo_of_an_earlier_action_says_so() {
+        let store = triage_store();
+        let mut record = Record::new();
+        let mut shell = triaging(&store, &record);
+        pick(&mut shell, 'p', "high");
+        shell.write(&record);
+        shell.load(&store, &record);
+        record.unchanged_key = queue_key(&mut shell);
+        pick(&mut shell, 'p', "high");
+        shell.write(&record);
+        record.refuse_undo.set(true);
+        shell.key(press(KeyCode::Char('u')));
+        shell.write(&record);
+        let screen = drawn_sized(&mut shell, 140, 10);
+        assert!(
+            screen.contains("✗ the earlier action: not undone"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn a_detail_that_cannot_be_read_says_so_beside_the_queue() {
+        struct Unreadable;
+
+        impl Actions for Unreadable {
+            fn me(&self) -> Result<&str, &str> {
+                NOBODY
+            }
+
+            fn detail(&self, _: &Store, _: Uuid) -> Result<String, String> {
+                Err("database is locked".into())
+            }
+
+            fn ready(&self, store: &Store) -> Result<String, String> {
+                Fake.ready(store)
+            }
+
+            fn write(&self, write: &Write) -> Result<Written, String> {
+                Fake.write(write)
+            }
+
+            fn undo(&self, batch: Uuid) -> Result<Written, String> {
+                Fake.undo(batch)
+            }
+        }
+
+        let store = triage_store();
+        let mut shell = triaging(&store, &Unreadable);
+        let screen = drawn_sized(&mut shell, 140, 10);
+        assert!(screen.contains("✗ cannot show TM-"), "{screen}");
+        assert!(screen.contains("database is locked"), "{screen}");
     }
 }

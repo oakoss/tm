@@ -531,32 +531,35 @@ impl Triage {
         Outcome::Write(writes)
     }
 
-    pub(crate) fn render(&mut self, frame: &mut Frame, whole: Rect) {
-        // The selected Issue sits beside the queue on a wide terminal and
-        // below it on a narrow one.
-        let area = match &self.detail {
-            Some(detail) => {
-                let split = if whole.width >= WIDE {
-                    Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)])
-                } else {
-                    Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)])
-                };
-                let [area, beside] = split.areas(whole);
-                let text = match detail {
-                    Ok(text) | Err(text) => text.as_str(),
-                };
-                let title = self
-                    .selected_key()
-                    .map(|key| printable(&key))
-                    .unwrap_or_default();
-                let shown = Paragraph::new(text)
-                    .wrap(Wrap { trim: false })
-                    .block(Block::bordered().title(Line::from(format!(" {title} "))));
-                frame.render_widget(shown, beside);
-                area
-            }
-            None => whole,
+    /// Draws the selected Issue beside the queue on a wide terminal and
+    /// below it on a narrow one, and returns the queue's area.
+    fn render_detail(&self, frame: &mut Frame, whole: Rect) -> Rect {
+        let Some(detail) = &self.detail else {
+            return whole;
         };
+        let split = if whole.width >= WIDE {
+            Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)])
+        } else {
+            Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)])
+        };
+        let [area, beside] = split.areas(whole);
+        let title = self
+            .selected_key()
+            .map(|key| printable(&key))
+            .unwrap_or_default();
+        let text = match detail {
+            Ok(text) => text.clone(),
+            Err(why) => format!("✗ cannot show {title}: {why}\nMove the cursor to read it again."),
+        };
+        let shown = Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .block(Block::bordered().title(Line::from(format!(" {title} "))));
+        frame.render_widget(shown, beside);
+        area
+    }
+
+    pub(crate) fn render(&mut self, frame: &mut Frame, whole: Rect) {
+        let area = self.render_detail(frame, whole);
         let count = match self.rows.len() {
             1 => "1 Issue".to_owned(),
             n => format!("{n} Issues"),
