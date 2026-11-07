@@ -756,10 +756,40 @@ mod tests {
         assert_eq!(shell.key(press(KeyCode::Char('r'))), Flow::Reload);
         shell.load(&store, NOBODY, &Fake);
         insta::assert_snapshot!(drawn(&mut shell));
-        assert_eq!(shell.key(press(KeyCode::Char('q'))), Flow::Reload);
+        for back in [KeyCode::Char('q'), KeyCode::Esc, KeyCode::Backspace] {
+            if shell.detail.is_none() {
+                shell.key(press(KeyCode::Char('r')));
+                shell.load(&store, NOBODY, &Fake);
+            }
+            assert_eq!(shell.key(press(back)), Flow::Reload, "{back:?}");
+            shell.load(&store, NOBODY, &Fake);
+            assert!(drawn(&mut shell).contains("open Issues"), "{back:?}");
+            assert_eq!(shell.list.selected_key().as_deref(), Some("TM-2"));
+        }
+    }
+
+    #[test]
+    fn r_with_an_issue_open_leaves_it_open() {
+        let store = store();
+        let mut shell = opened(&store, &Fake);
+        assert_eq!(shell.key(press(KeyCode::Char('r'))), Flow::Stay);
+        assert!(drawn(&mut shell).contains("┌ TM-2 "));
+    }
+
+    #[test]
+    fn the_ready_queue_reads_a_change_in_place() {
+        let mut store = store();
+        let mut shell = Shell::new("TM");
+        shell.key(press(KeyCode::Char('r')));
         shell.load(&store, NOBODY, &Fake);
-        assert!(drawn(&mut shell).contains("open Issues"));
-        assert_eq!(shell.list.selected_key().as_deref(), Some("TM-2"));
+        assert!(drawn(&mut shell).contains("3 ready"));
+        let jace = Actor::human("jace");
+        let project = store.project_by_key("TM").unwrap().unwrap();
+        store
+            .create_issue(&jace, project, "task", "fourth")
+            .unwrap();
+        shell.load(&store, NOBODY, &Fake);
+        assert!(drawn(&mut shell).contains("4 ready"));
     }
 
     #[test]
