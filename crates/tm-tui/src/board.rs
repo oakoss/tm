@@ -12,12 +12,13 @@ use ratatui::widgets::{Block, List as Cards, ListState, Paragraph};
 use tm_core::filter::{Context, open_unless_named};
 use tm_core::scheme::{Category, Scheme};
 use tm_core::text::printable;
-use tm_store::{Store, StoreError};
+use tm_store::Store;
 use uuid::Uuid;
 
 use crate::detail::Detail;
 use crate::keys::{self, Binding, ch, plain};
 use crate::picker::{Choice, Field, Picked, Picker, statuses, writes};
+use crate::read;
 use crate::{Actions, Outcome, Screen, Write};
 
 /// Rows a page key moves.
@@ -220,31 +221,19 @@ impl Board {
     pub(crate) fn load(&mut self, store: &Store, actions: &dyn Actions) {
         let kept = self.selected().map(|card| card.key.clone());
         let filter = open_unless_named("", self.all);
-        let read = store.read(|store| {
-            let ids = store.find(
-                &filter,
-                Context {
-                    me: actions.me().ok(),
-                },
-            )?;
-            let mut cards = Vec::with_capacity(ids.len());
-            for id in ids {
-                if let Some((view, version)) = store.issue_with_version(id)? {
-                    let field = |name: &str| {
-                        let text = view.fields.get(name).and_then(|value| value.as_str());
-                        printable(text.unwrap_or("-")).replace('\t', " ")
-                    };
-                    cards.push(Card {
-                        id,
-                        key: view.key.clone().unwrap_or_else(|| id.to_string()),
-                        version,
-                        issue_type: field("type"),
-                        status: field("status"),
-                        title: field("title"),
-                    });
-                }
-            }
-            Ok::<_, StoreError>(cards)
+        let me = actions.me().ok();
+        let read = read::issues(store, &filter, Context { me }).map(|issues| {
+            issues
+                .into_iter()
+                .map(|issue| Card {
+                    issue_type: issue.field("type"),
+                    status: issue.field("status"),
+                    title: issue.field("title"),
+                    id: issue.id,
+                    key: issue.key,
+                    version: issue.version,
+                })
+                .collect::<Vec<_>>()
         });
         let cards = match read {
             Ok(cards) => cards,

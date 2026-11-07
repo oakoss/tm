@@ -5,6 +5,7 @@ mod detail;
 mod keys;
 mod list;
 mod picker;
+mod read;
 mod stack;
 mod triage;
 
@@ -1511,6 +1512,16 @@ mod tests {
             screen.contains("s status") && screen.contains("u undo"),
             "{screen}"
         );
+    }
+
+    #[test]
+    fn the_queue_shows_an_issues_text_made_safe() {
+        let mut store = triage_store();
+        set(&mut store, "TM-5", "title", "tabbed\there \u{1b}[31mred");
+        let mut shell = triaging(&store, &Record::new());
+        let screen = drawn_sized(&mut shell, 70, 10);
+        assert!(screen.contains("tabbed here \\u{1b}[31mred"), "{screen}");
+        assert!(!screen.contains(['\t', '\u{1b}']), "{screen}");
     }
 
     #[test]

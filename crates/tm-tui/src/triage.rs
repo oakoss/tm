@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::detail::Detail;
 use crate::keys::{self, Binding, ch, plain};
 use crate::picker::{Choice, Field, Picked, Picker, shared, statuses, writes};
+use crate::read;
 use crate::{Actions, Outcome, Screen};
 
 /// Rows a page key moves.
@@ -171,25 +172,18 @@ impl Triage {
         let me = actions.me();
         self.me = me.ok().map(str::to_owned);
         let read = store.read(|store| {
-            let ids = store.find(QUEUE, Context { me: me.ok() })?;
-            let mut rows = Vec::with_capacity(ids.len());
-            for id in ids {
-                if let Some((view, version)) = store.issue_with_version(id)? {
-                    let field = |name: &str| {
-                        let text = view.fields.get(name).and_then(|value| value.as_str());
-                        printable(text.unwrap_or("-")).replace('\t', " ")
-                    };
-                    rows.push(Shown {
-                        id,
-                        key: view.key.clone().unwrap_or_else(|| id.to_string()),
-                        version,
-                        issue_type: field("type"),
-                        priority: field("priority"),
-                        assignee: field("assignee"),
-                        title: field("title"),
-                    });
-                }
-            }
+            let rows: Vec<Shown> = read::issues(store, QUEUE, Context { me: me.ok() })?
+                .into_iter()
+                .map(|issue| Shown {
+                    issue_type: issue.field("type"),
+                    priority: issue.field("priority"),
+                    assignee: issue.field("assignee"),
+                    title: issue.field("title"),
+                    id: issue.id,
+                    key: issue.key,
+                    version: issue.version,
+                })
+                .collect();
             let assigned =
                 store.find("has:assignee -category:done,cancelled", Context::default())?;
             let mut people = BTreeSet::new();

@@ -14,6 +14,7 @@ use uuid::Uuid;
 use crate::board::Board;
 use crate::detail::Detail;
 use crate::keys::{self, Binding, ch, plain};
+use crate::read;
 use crate::triage::Triage;
 use crate::{Outcome, Screen};
 
@@ -142,21 +143,12 @@ struct Shown {
 
 impl Shown {
     fn of(view: &IssueView) -> Self {
-        let field = |name: &str| {
-            let text = view
-                .fields
-                .get(name)
-                .and_then(|value| value.as_str())
-                .unwrap_or("-");
-            // A tab passes `printable` but would move a screen cell's cursor.
-            printable(text).replace('\t', " ")
-        };
         Self {
             id: view.id,
-            key: view.key.clone().unwrap_or_else(|| view.id.to_string()),
-            status: field("status"),
-            priority: field("priority"),
-            title: field("title"),
+            key: read::key(view),
+            status: read::field(view, "status"),
+            priority: read::field(view, "priority"),
+            title: read::field(view, "title"),
         }
     }
 }
