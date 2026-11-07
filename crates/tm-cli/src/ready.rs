@@ -1,24 +1,82 @@
 //! `tm ready`: the work an Agent can start now, and what each would unblock,
 //! after the session's Short-lists (ADR 0016).
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use serde_json::Value;
-use tm_core::ProjectId;
-use tm_store::{Member, Shortlist};
+use tm_core::{Actor, ProjectId};
+use tm_store::{IssueView, Member, Shortlist, Store};
 use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::here::{self, Here};
 use crate::identity;
-use crate::list::{Item, Listed, joined, line, named, project_keys, shortlists_of};
+use crate::list::{Item, Listed, Named, joined, line, named, project_keys, shortlists_of};
 use crate::next;
 use crate::output::Output;
 
 pub(crate) fn run(limit: Option<usize>, json: bool) -> Result<Output, CliError> {
     let mut here = here::read()?;
     let lists = session_lists(&mut here);
-    let read = here.store.read(|store| {
+    let queue = match here.store.read(|store| Queue::read(store, limit)) {
+        Ok(queue) => queue,
+        Err(err) => return Err(err.warned(here.warnings)),
+    };
+
+    // Only the form printed is built, as for `tm list`.
+    if json {
+        let mut text = String::new();
+        let shown = next::lists_section(&mut text, &lists, next::Room::WHOLE);
+        let issues = queue
+            .views
+            .iter()
+            .map(|view| {
+                let mut item = Item::of(view, &queue.projects);
+                item.unblocks = Some(queue.unblocks.get(&view.id).map_or(&[], Vec::as_slice));
+                item
+            })
+            .collect();
+        let listed = Listed {
+            issues,
+            shortlists: (!lists.is_empty()).then_some(shown),
+            total: queue.total,
+        };
+        return match listed.output() {
+            Ok(mut output) => {
+                output.warnings = here.warnings;
+                Ok(output)
+            }
+            Err(err) => Err(err.warned(here.warnings)),
+        };
+    }
+    let mut output = Output::new(queue.text(&lists), Value::Null);
+    output.warnings = here.warnings;
+    Ok(output)
+}
+
+/// What `tm ready` prints, read from `store`: `lists` first, then the queue.
+pub(crate) fn render(
+    store: &Store,
+    lists: &[(Shortlist, Vec<Member>)],
+) -> Result<String, CliError> {
+    store
+        .read(|store| Queue::read(store, None))
+        .map(|queue| queue.text(lists))
+}
+
+/// The ready queue, cut to a limit, with what each Issue unblocks, its
+/// Project's Key and the Short-list it is on.
+struct Queue {
+    total: usize,
+    views: Vec<IssueView>,
+    unblocks: HashMap<Uuid, Vec<Named>>,
+    projects: HashMap<ProjectId, Option<String>>,
+    on: HashMap<Uuid, String>,
+}
+
+impl Queue {
+    fn read(store: &Store, limit: Option<usize>) -> Result<Self, CliError> {
         let mut ready = store.ready()?;
         let total = ready.len();
         ready.truncate(limit.unwrap_or(total));
@@ -31,60 +89,43 @@ pub(crate) fn run(limit: Option<usize>, json: bool) -> Result<Output, CliError> 
         let unblocks = named(store, unblocks)?;
         let projects = project_keys(store, &views)?;
         let on = shortlists_of(store, &views)?;
-        Ok::<_, CliError>((total, views, unblocks, projects, on))
-    });
-    let (total, views, unblocks, projects, on) = match read {
-        Ok(read) => read,
-        Err(err) => return Err(err.warned(here.warnings)),
-    };
-    let mut text = String::new();
-    let shown = next::lists_section(&mut text, &lists, next::Room::WHOLE);
-    let shortlists = (!lists.is_empty()).then_some(shown);
-
-    // Only the form printed is built, as for `tm list`.
-    if json {
-        let issues = views
-            .iter()
-            .map(|view| {
-                let mut item = Item::of(view, &projects);
-                item.unblocks = Some(unblocks.get(&view.id).map_or(&[], Vec::as_slice));
-                item
-            })
-            .collect();
-        let listed = Listed {
-            issues,
-            shortlists,
+        Ok(Self {
             total,
-        };
-        return match listed.output() {
-            Ok(mut output) => {
-                output.warnings = here.warnings;
-                Ok(output)
+            views,
+            unblocks,
+            projects,
+            on,
+        })
+    }
+
+    fn text(&self, lists: &[(Shortlist, Vec<Member>)]) -> String {
+        let mut text = String::new();
+        next::lists_section(&mut text, lists, next::Room::WHOLE);
+        let total = self.total;
+        if !lists.is_empty() {
+            let _ = writeln!(text, "Ready ({total}):");
+        }
+        for view in &self.views {
+            let _ = write!(text, "{}", line(view));
+            if let Some(found) = self
+                .unblocks
+                .get(&view.id)
+                .filter(|found| !found.is_empty())
+            {
+                let _ = write!(text, "  (unblocks {})", joined(found));
             }
-            Err(err) => Err(err.warned(here.warnings)),
-        };
-    }
-    if shortlists.is_some() {
-        let _ = writeln!(text, "Ready ({total}):");
-    }
-    for view in &views {
-        let _ = write!(text, "{}", line(view));
-        if let Some(found) = unblocks.get(&view.id).filter(|found| !found.is_empty()) {
-            let _ = write!(text, "  (unblocks {})", joined(found));
+            if let Some(list) = self.on.get(&view.id) {
+                let _ = write!(text, "  [on {list}]");
+            }
+            text.push('\n');
         }
-        if let Some(list) = on.get(&view.id) {
-            let _ = write!(text, "  [on {list}]");
+        if total == 0 {
+            text.push_str("nothing is ready\n");
+        } else if self.views.len() < total {
+            let _ = writeln!(text, "({} of {total} shown)", self.views.len());
         }
-        text.push('\n');
+        text
     }
-    if total == 0 {
-        text.push_str("nothing is ready\n");
-    } else if views.len() < total {
-        let _ = writeln!(text, "({} of {total} shown)", views.len());
-    }
-    let mut output = Output::new(text, Value::Null);
-    output.warnings = here.warnings;
-    Ok(output)
 }
 
 /// The session's lists, which `tm ready` leads with. Who the session is, which
@@ -103,25 +144,42 @@ fn session_lists(here: &mut Here) -> Vec<(Shortlist, Vec<Member>)> {
             return Vec::new();
         }
     };
-    let read = match here.store.shortlists(project) {
-        Ok(lists) if lists.is_empty() && std::env::var_os("TM_SHORTLIST").is_none() => {
-            return Vec::new();
+    let Here {
+        store,
+        found,
+        warnings,
+        ..
+    } = here;
+    let actor = || match identity::reader(identity::env, || identity::git_email(&found.dir)) {
+        Ok(identity) => {
+            warnings.extend(identity.warnings);
+            Ok(identity.actor)
         }
-        Ok(_) => read(here, project),
-        Err(err) => Err(format!("no Short-lists: {err}")),
+        Err(message) => Err(format!("no identity, so no Short-lists: {message}")),
     };
+    let read = lists_in(store, project, actor);
     read.unwrap_or_else(|warning| {
         here.warnings.push(warning);
         Vec::new()
     })
 }
 
-fn read(here: &mut Here, project: ProjectId) -> Result<Vec<(Shortlist, Vec<Member>)>, String> {
-    match identity::reader(identity::env, || identity::git_email(&here.found.dir)) {
-        Ok(identity) => {
-            here.warnings.extend(identity.warnings);
-            next::session_lists(here, project, &identity.actor).map_err(|err| next::unread(&err))
+/// `actor`'s lists in `project` as `tm ready` leads with them, `actor` asked
+/// only when the Project has a list or `TM_SHORTLIST` names one; why they
+/// cannot be read.
+pub(crate) fn lists_in(
+    store: &Store,
+    project: ProjectId,
+    actor: impl FnOnce() -> Result<Actor, String>,
+) -> Result<Vec<(Shortlist, Vec<Member>)>, String> {
+    match store.shortlists(project) {
+        Ok(lists) if lists.is_empty() && std::env::var_os("TM_SHORTLIST").is_none() => {
+            Ok(Vec::new())
         }
-        Err(message) => Err(format!("no identity, so no Short-lists: {message}")),
+        Ok(_) => {
+            let actor = actor()?;
+            next::session_lists(store, project, &actor).map_err(|err| next::unread(&err))
+        }
+        Err(err) => Err(format!("no Short-lists: {err}")),
     }
 }

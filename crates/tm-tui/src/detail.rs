@@ -1,4 +1,5 @@
-//! One Issue as `tm show` and `tm history` print it, scrolled in place.
+//! A command's text scrolled in place: one Issue as `tm show` and `tm
+//! history` print it, or the ready queue as `tm ready` prints it.
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -14,9 +15,14 @@ use crate::Actions;
 /// Rows a page key scrolls.
 const PAGE: u16 = 10;
 
+/// What the screen shows.
+enum Shows {
+    Issue { id: Uuid, key: String },
+    Ready,
+}
+
 pub(crate) struct Detail {
-    id: Uuid,
-    key: String,
+    shows: Shows,
     /// The text, or why it could not be read.
     text: Result<String, String>,
     scroll: u16,
@@ -25,17 +31,24 @@ pub(crate) struct Detail {
 }
 
 impl Detail {
-    pub(crate) const fn new(id: Uuid, key: String) -> Self {
+    pub(crate) const fn issue(id: Uuid, key: String) -> Self {
+        Self::new(Shows::Issue { id, key })
+    }
+
+    pub(crate) const fn ready() -> Self {
+        Self::new(Shows::Ready)
+    }
+
+    const fn new(shows: Shows) -> Self {
         Self {
-            id,
-            key,
+            shows,
             text: Ok(String::new()),
             scroll: 0,
             bottom: 0,
         }
     }
 
-    /// Reads the Issue again, keeping the place scrolled to.
+    /// Reads the text again, keeping the place scrolled to.
     pub(crate) fn load(&mut self, store: &Store, actions: &dyn Actions) {
         // A tab passes `printable` but would move a screen cell's cursor.
         let safe = |text: &str| {
@@ -44,10 +57,11 @@ impl Detail {
                 .map(|line| printable(line).replace('\t', "    "));
             lines.collect::<Vec<_>>().join("\n")
         };
-        self.text = actions
-            .detail(store, self.id)
-            .map(|text| safe(&text))
-            .map_err(|why| safe(&why));
+        let read = match &self.shows {
+            Shows::Issue { id, .. } => actions.detail(store, *id),
+            Shows::Ready => actions.ready(store),
+        };
+        self.text = read.map(|text| safe(&text)).map_err(|why| safe(&why));
     }
 
     /// Scrolls for a scroll key; false for any other key.
@@ -66,7 +80,11 @@ impl Detail {
     }
 
     pub(crate) fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let block = Block::bordered().title(Line::from(format!(" {} ", printable(&self.key))));
+        let title = match &self.shows {
+            Shows::Issue { key, .. } => printable(key),
+            Shows::Ready => "Ready".to_owned(),
+        };
+        let block = Block::bordered().title(Line::from(format!(" {title} ")));
         let text = match &self.text {
             Ok(text) | Err(text) => text.as_str(),
         };

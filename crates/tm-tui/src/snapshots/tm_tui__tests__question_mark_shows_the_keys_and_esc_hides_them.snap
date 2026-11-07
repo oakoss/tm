@@ -1,6 +1,6 @@
 ---
 source: crates/tm-tui/src/lib.rs
-expression: "drawn_sized(&mut shell, 60, 16)"
+expression: "drawn_sized(&mut shell, 60, 17)"
 ---
 "tm · TM                                                     "
 "┌ open Issues ─────────────────────────────────── 0 Issues ┐"
@@ -11,10 +11,11 @@ expression: "drawn_sized(&mut shell, 60, 16)"
 "│        │ Enter  open an Issue, or apply a filter│        │"
 "│        │     /  type a filter, as tm list       │        │"
 "│        │     a  open work or every status       │        │"
+"│        │     r  the ready queue, as tm ready    │        │"
 "│        │     q  back to the list, or quit       │        │"
 "│        │Ctrl-C  quit                            │        │"
 "│        │     ?  show or hide these keys         │        │"
-"│        │   Esc  hide keys, a filter, an Issue   │        │"
+"│        │   Esc  hide keys or a filter; go back  │        │"
 "│        └────────────────────────────────────────┘        │"
 "└──────────────────────────────────────────────────────────┘"
-"q quit · / filter · ? keys                                  "
+"q quit · / filter · r ready · ? keys                        "

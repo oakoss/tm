@@ -166,6 +166,33 @@ fn enter_shows_the_issue_as_tm_show_and_history_do_and_reads_a_write_in_place() 
 }
 
 #[test]
+fn r_shows_the_ready_queue_as_tm_ready_does_and_reads_a_write_in_place() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    for title in ["alpha", "beta"] {
+        let made = tm(
+            &scratch,
+            &repo,
+            &["create", "--type", "task", "--title", title],
+        );
+        assert!(made.status.success(), "{made:?}");
+    }
+    let mut tui = sized(&scratch, &repo, "tui");
+    tui.exp_string("alpha").unwrap();
+    press(&mut tui, "r");
+    tui.exp_string("Ready").unwrap();
+    tui.exp_string("beta").unwrap();
+    let linked = tm(&scratch, &repo, &["link", "TM-1", "blocks", "TM-2"]);
+    assert!(linked.status.success(), "{linked:?}");
+    tui.exp_string("(unblocks").unwrap();
+    press(&mut tui, "q");
+    tui.exp_string("filter").unwrap();
+    press(&mut tui, "q");
+    tui.exp_eof().unwrap();
+    assert_eq!(exit_code(&tui), 0);
+}
+
+#[test]
 fn a_store_removed_while_open_restores_the_terminal_then_says_so() {
     let scratch = Scratch::new();
     let (repo, store, _project) = initialized(&scratch);
