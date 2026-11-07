@@ -19,20 +19,63 @@ use crate::hook::Harness;
 use crate::identity;
 use crate::instructions;
 use crate::output::Output;
-use crate::prompt::{ask, human, print_now};
+use crate::prompt::{ask, human, print_now, prompt, stopped};
 
-/// The repo file `harness` reads its hooks from.
-fn settings(harness: Harness) -> &'static str {
-    match harness {
-        Harness::Claude => ".claude/settings.json",
-        Harness::Codex => ".codex/hooks.json",
-    }
+/// Claude Code's settings for one person in this repo, kept out of commits;
+/// tm's hooks go here unless a person chooses the shared file.
+pub(crate) const CLAUDE_LOCAL: &str = ".claude/settings.local.json";
+const CLAUDE_SHARED: &str = ".claude/settings.json";
+const CODEX: &str = ".codex/hooks.json";
+
+#[derive(clap::Args)]
+pub(crate) struct Setup {
+    /// The harness whose settings get the hooks.
+    harness: Harness,
+    /// Remove the hooks tm setup adds, and nothing else.
+    #[arg(long)]
+    undo: bool,
+    /// Write without asking, for a person not at a terminal.
+    #[arg(long)]
+    yes: bool,
+    /// Claude Code's .claude/settings.json, which everyone who clones the
+    /// repo runs, rather than your own .claude/settings.local.json.
+    #[arg(long)]
+    shared: bool,
 }
 
-pub(crate) struct Setup {
-    pub(crate) harness: Harness,
-    pub(crate) undo: bool,
-    pub(crate) yes: bool,
+/// Which of Claude Code's settings files hold any of tm's hooks.
+#[derive(Clone, Copy)]
+struct Held {
+    shared: bool,
+    local: bool,
+}
+
+/// Which Claude Code settings file a setup acts on.
+#[derive(Debug, PartialEq, Eq)]
+enum Where {
+    Local,
+    Shared,
+    /// A person at a terminal chooses, local first.
+    Ask,
+}
+
+fn decide(setup: &Setup, held: Held, can_ask: bool) -> Where {
+    if setup.undo {
+        return if held.shared || (setup.shared && !held.local) {
+            Where::Shared
+        } else {
+            Where::Local
+        };
+    }
+    if setup.shared || held.shared {
+        Where::Shared
+    } else if held.local {
+        Where::Local
+    } else if can_ask {
+        Where::Ask
+    } else {
+        Where::Local
+    }
 }
 
 fn refused(message: impl Into<String>) -> CliError {
@@ -52,9 +95,96 @@ pub(crate) fn run(setup: &Setup, json: bool) -> Result<Output, CliError> {
     let root = workspace::repo_root(&cwd)?.ok_or_else(|| {
         refused("tm setup runs inside a git repository; none contains this directory")
     })?;
-    let file = settings(setup.harness);
+    let file = target(setup, &root, json)?;
+    let mut files = vec![file];
+    // Undo takes tm's hooks out of both of Claude Code's files, under one yes.
+    if setup.undo && file == CLAUDE_SHARED && held(&root, CLAUDE_LOCAL)? {
+        files.push(CLAUDE_LOCAL);
+    }
+    let mut plans = files
+        .into_iter()
+        .map(|file| plan(setup, &root, file))
+        .collect::<Result<Vec<_>, _>>()?;
+    plans.retain(|plan| !plan.changed.is_empty());
+    if plans.is_empty() {
+        let mut output = unchanged(setup.undo, file);
+        output.warnings.extend(also_held(setup, &root, file)?);
+        if !setup.undo {
+            output.warnings.extend(inline_hooks(&root, setup.harness));
+        }
+        return Ok(output);
+    }
+    for plan in &plans {
+        writable(&plan.path, plan.file)?;
+    }
+    let shown: String = plans.iter().map(|plan| plan.shown.as_str()).collect();
+    let names = plans
+        .iter()
+        .map(|plan| plan.file)
+        .collect::<Vec<_>>()
+        .join(" and ");
+    let question = match plans.as_slice() {
+        [plan] if plan.after.is_none() => format!("Remove {}?", plan.file),
+        [plan] => format!("Write {}?", plan.file),
+        _ => format!("Remove tm's hooks from {names}?"),
+    };
+    confirmed(&shown, &question, setup, &names, json)?;
+    // A file may have been edited while tm asked; writing the text computed
+    // before would lose that edit.
+    for plan in &plans {
+        if read(&plan.path, plan.file)? != plan.before {
+            return Err(refused(format!(
+                "{} changed while tm asked; nothing written",
+                plan.file
+            )));
+        }
+        writable(&plan.path, plan.file)?;
+    }
+    let mut done: Vec<&Plan> = Vec::new();
+    for plan in &plans {
+        plan.write(&root).map_err(|err| {
+            let warnings = done
+                .iter()
+                .map(|before| {
+                    let what = if before.after.is_none() {
+                        "removed"
+                    } else {
+                        "changed"
+                    };
+                    format!(
+                        "{} was {what}; run tm setup claude --undo again once {} can be changed",
+                        before.file, plan.file
+                    )
+                })
+                .collect();
+            err.warned(warnings)
+        })?;
+        done.push(plan);
+    }
+    let mut outputs = plans.iter().map(|plan| finished(setup, &root, plan));
+    let mut output = outputs.next().expect("a plan with changes");
+    if let Some(also) = outputs.next() {
+        output.text.push_str(&also.text);
+        output.warnings.extend(also.warnings);
+        output.data["also"] = also.data;
+    }
+    Ok(output)
+}
+
+/// One settings file's change, worked out before anything is written.
+struct Plan {
+    file: &'static str,
+    path: std::path::PathBuf,
+    before: Option<String>,
+    /// The new text, or `None` to remove the file.
+    after: Option<String>,
+    changed: Vec<String>,
+    shown: String,
+}
+
+fn plan(setup: &Setup, root: &Path, file: &'static str) -> Result<Plan, CliError> {
     let path = root.join(file);
-    let before = read(&path)?;
+    let before = read(&path, file)?;
     let mut settings = parse(before.as_deref(), file)?;
     let handlers = handlers(setup.harness);
     let changed = if setup.undo {
@@ -62,48 +192,160 @@ pub(crate) fn run(setup: &Setup, json: bool) -> Result<Output, CliError> {
     } else {
         add(&mut settings, &handlers, file)?
     };
-    if changed.is_empty() {
-        let mut output = unchanged(setup.undo, file);
-        if !setup.undo {
-            output.warnings.extend(inline_hooks(&root, setup.harness));
-        }
-        return Ok(output);
-    }
-    writable(&path, file)?;
     let emptied = setup.undo && settings == Json::Object(Vec::new());
     let after = (!emptied).then(|| render(&settings, before.as_deref()));
-    let shown = diff::unified(file, before.as_deref(), after.as_deref().unwrap_or(""));
-    confirmed(&shown, emptied, setup, json)?;
-    // The file may have been edited while tm asked; writing the text
-    // computed before would lose that edit.
-    if read(&path)? != before {
-        return Err(refused(format!(
-            "{file} changed while tm asked; nothing written"
-        )));
-    }
-    writable(&path, file)?;
-    match &after {
-        Some(text) => {
-            let create = before.is_none();
-            let dir = path.parent().unwrap_or(&root).to_path_buf();
-            let made_dir = create && !dir.exists();
-            if made_dir {
-                fs::create_dir_all(&dir).map_err(|err| io_failed(&dir, &err))?;
-            }
-            instructions::write(&path, text, create).map_err(|err| {
+    let shown = if changed.is_empty() {
+        String::new()
+    } else {
+        diff::unified(file, before.as_deref(), after.as_deref().unwrap_or(""))
+    };
+    Ok(Plan {
+        file,
+        path,
+        before,
+        after,
+        changed,
+        shown,
+    })
+}
+
+impl Plan {
+    fn write(&self, root: &Path) -> Result<(), CliError> {
+        let path = &self.path;
+        match &self.after {
+            Some(text) => {
+                let create = self.before.is_none();
+                let dir = path.parent().unwrap_or(root).to_path_buf();
+                let made_dir = create && !dir.exists();
                 if made_dir {
-                    let _ = fs::remove_dir(&dir);
+                    fs::create_dir_all(&dir).map_err(|err| io_failed(&dir, &err))?;
                 }
-                io_failed(&path, &err)
-            })?;
+                instructions::write(path, text, create).map_err(|err| {
+                    if made_dir {
+                        let _ = fs::remove_dir(&dir);
+                    }
+                    io_failed(path, &err)
+                })
+            }
+            None => fs::remove_file(path).map_err(|err| io_failed(path, &err)),
         }
-        None => fs::remove_file(&path).map_err(|err| io_failed(&path, &err))?,
     }
-    let mut output = written(setup.harness, setup.undo, emptied, &changed, &shown);
+}
+
+/// What [`run`] reports for a plan it wrote.
+fn finished(setup: &Setup, root: &Path, plan: &Plan) -> Output {
+    let file = plan.file;
+    let emptied = plan.after.is_none();
+    let mut output = written(
+        setup.harness,
+        file,
+        setup.undo,
+        emptied,
+        &plan.changed,
+        &plan.shown,
+    );
+    // The write is done, so a failed check is reported, not returned.
+    match also_held(setup, root, file) {
+        Ok(warning) => output.warnings.extend(warning),
+        Err(err) => output.warnings.push(format!(
+            "cannot tell whether {CLAUDE_LOCAL} holds tm's hooks too: {}",
+            err.message
+        )),
+    }
     if !setup.undo {
-        output.warnings.extend(inline_hooks(&root, setup.harness));
+        output.warnings.extend(inline_hooks(root, setup.harness));
+        if file == CLAUDE_LOCAL {
+            output.warnings.extend(match ignored(root, file) {
+                Some(true) => None,
+                Some(false) => Some(format!(
+                    "git does not ignore {file}, so it could be committed; add it to .gitignore"
+                )),
+                None => Some(format!(
+                    "cannot tell whether git ignores {file}; check it stays out of commits"
+                )),
+            });
+        }
     }
-    Ok(output)
+    output
+}
+
+/// The settings file this setup acts on, asking a person at a terminal
+/// where Claude Code's hooks go when nothing settles it.
+fn target(setup: &Setup, root: &Path, json: bool) -> Result<&'static str, CliError> {
+    if setup.harness == Harness::Codex {
+        if setup.shared {
+            return Err(CliError::new(
+                "usage",
+                format!("Codex has one hooks file, {CODEX}, so tm setup codex takes no --shared"),
+            ));
+        }
+        return Ok(CODEX);
+    }
+    let can_ask = !json && !setup.yes && human();
+    let found = Held {
+        shared: held(root, CLAUDE_SHARED)?,
+        local: held(root, CLAUDE_LOCAL)?,
+    };
+    let place = decide(setup, found, can_ask);
+    match place {
+        Where::Local => Ok(CLAUDE_LOCAL),
+        Where::Shared => Ok(CLAUDE_SHARED),
+        Where::Ask => ask_where(),
+    }
+}
+
+/// Whether `file` holds any of tm's Claude Code hooks; one tm cannot read
+/// or parse is refused, since where the hooks are cannot be told.
+fn held(root: &Path, file: &str) -> Result<bool, CliError> {
+    let text = read(&root.join(file), file)?;
+    let settings = parse(text.as_deref(), file)?;
+    Ok(handlers(Harness::Claude)
+        .iter()
+        .any(|handler| holds(&settings, handler)))
+}
+
+fn ask_where() -> Result<&'static str, CliError> {
+    eprintln!(
+        "Where should tm's hooks go?\n  1) {CLAUDE_LOCAL}  just you; not committed\n  \
+         2) {CLAUDE_SHARED}        everyone who clones the repo"
+    );
+    loop {
+        match prompt("Choose 1 or 2 [1]: ").map_err(|err| CliError::new("io", err))? {
+            None => return Err(refused(stopped())),
+            Some(choice) if choice.is_empty() || choice == "1" => return Ok(CLAUDE_LOCAL),
+            Some(choice) if choice == "2" => return Ok(CLAUDE_SHARED),
+            Some(_) => {}
+        }
+    }
+}
+
+/// A warning, on adding to the shared file, that the local one holds tm's
+/// hooks too.
+fn also_held(setup: &Setup, root: &Path, file: &str) -> Result<Option<String>, CliError> {
+    let warn = !setup.undo && file == CLAUDE_SHARED && held(root, CLAUDE_LOCAL)?;
+    Ok(warn.then(|| {
+        format!(
+            "{CLAUDE_LOCAL} holds tm's hooks too; Claude Code runs a hook defined in both once, \
+             and tm setup claude --undo removes them from both"
+        )
+    }))
+}
+
+/// Whether git ignores `file` in the repo at `root`, or `None` where git
+/// cannot say.
+fn ignored(root: &Path, file: &str) -> Option<bool> {
+    let status = std::process::Command::new("git")
+        .args(["check-ignore", "--quiet", "--", file])
+        .current_dir(root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+    match status.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
 }
 
 /// Codex also reads hooks inline from `.codex/config.toml`, loading both
@@ -135,20 +377,62 @@ fn inline_hooks(root: &Path, harness: Harness) -> Option<String> {
     }
 }
 
-/// Whether `tm setup claude` would add anything to the repo at `root`; an
+/// The settings file `tm setup claude` would add to in the repo at `root`,
+/// without asking, or `None` where both files hold all of tm's hooks; an
 /// error names a settings file it cannot read, merge into or write.
-pub(crate) fn needed(root: &Path) -> Result<bool, String> {
-    let file = settings(Harness::Claude);
+pub(crate) fn needed(root: &Path) -> Result<Option<&'static str>, String> {
+    let read_file = |file: &str| {
+        let before = read(&root.join(file), file).map_err(|err| err.message)?;
+        parse(before.as_deref(), file).map_err(|err| err.message)
+    };
+    let shared = read_file(CLAUDE_SHARED)?;
+    let local = read_file(CLAUDE_LOCAL)?;
+    let in_shared = handlers(Harness::Claude)
+        .iter()
+        .any(|handler| holds(&shared, handler));
+    let (file, mut settings) = if in_shared {
+        (CLAUDE_SHARED, shared.clone())
+    } else {
+        (CLAUDE_LOCAL, local.clone())
+    };
     let path = root.join(file);
-    let before = read(&path).map_err(|err| err.message)?;
-    let mut settings = parse(before.as_deref(), file).map_err(|err| err.message)?;
-    let added = add(&mut settings, &handlers(Harness::Claude), file).map_err(|err| err.message)?;
+    // A handler an older tm wrote still runs, so it is not missing.
+    let missing: Vec<Handler> = handlers(Harness::Claude)
+        .into_iter()
+        .filter(|handler| !holds(&shared, handler) && !holds(&local, handler))
+        .collect();
+    let added = add(&mut settings, &missing, file).map_err(|err| err.message)?;
     if added.is_empty() {
-        return Ok(false);
+        return Ok(None);
     }
     writable(&path, file)
-        .map(|()| true)
+        .map(|()| Some(file))
         .map_err(|err| err.message)
+}
+
+/// Whether `settings` holds `handler` under its event, as written now or by
+/// an older tm.
+fn holds(settings: &Json, handler: &Handler) -> bool {
+    let Json::Object(root) = settings else {
+        return false;
+    };
+    let groups = root
+        .iter()
+        .find(|(key, _)| key == "hooks")
+        .and_then(|(_, events)| match events {
+            Json::Object(events) => events.iter().find(|(key, _)| key == handler.event),
+            _ => None,
+        });
+    let Some((_, Json::Array(groups))) = groups else {
+        return false;
+    };
+    groups
+        .iter()
+        .flat_map(Json::group_handlers)
+        .filter_map(Json::command)
+        .any(|command| {
+            command == handler.command || handler.replaces.iter().any(|old| old == command)
+        })
 }
 
 /// Refuses a file tm would write through a symlink, whose rename would
@@ -177,11 +461,14 @@ fn parse(text: Option<&str>, file: &str) -> Result<Json, CliError> {
 }
 
 /// The file's text, through a symlink, `None` where there is none.
-fn read(path: &Path) -> Result<Option<String>, CliError> {
+fn read(path: &Path, file: &str) -> Result<Option<String>, CliError> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(io_failed(path, &err)),
+        Err(err) => Err(refused(format!(
+            "cannot read {file} ({err}); fix it, then run tm setup again"
+        ))
+        .with("path", path.display().to_string())),
     }
 }
 
@@ -189,8 +476,13 @@ fn read(path: &Path) -> Result<Option<String>, CliError> {
 /// shows and asks nothing; its refusal carries the diff. An Agent is only
 /// shown it, `--yes` or not: the hooks run commands in every session, so a
 /// person writes them (ADR 0014).
-fn confirmed(shown: &str, emptied: bool, setup: &Setup, json: bool) -> Result<(), CliError> {
-    let file = settings(setup.harness);
+fn confirmed(
+    shown: &str,
+    question: &str,
+    setup: &Setup,
+    file: &str,
+    json: bool,
+) -> Result<(), CliError> {
     let not_written = |why: &str| refused(format!("{file} not written{why}")).with("diff", shown);
     if identity::agent_detected(identity::env) {
         let unshown = if json { None } else { print_now(shown).err() };
@@ -223,12 +515,7 @@ fn confirmed(shown: &str, emptied: bool, setup: &Setup, json: bool) -> Result<()
             ": confirm with --yes when not a person at a terminal",
         ));
     }
-    let question = if emptied {
-        format!("Remove {file}?")
-    } else {
-        format!("Write {file}?")
-    };
-    match ask(shown, &question) {
+    match ask(shown, question) {
         Ok(true) => Ok(()),
         Ok(false) => Err(not_written("")),
         Err(err) => Err(CliError::new("io", err)),
@@ -247,8 +534,14 @@ fn unchanged(undo: bool, file: &str) -> Output {
     )
 }
 
-fn written(harness: Harness, undo: bool, deleted: bool, changed: &[String], shown: &str) -> Output {
-    let file = settings(harness);
+fn written(
+    harness: Harness,
+    file: &str,
+    undo: bool,
+    deleted: bool,
+    changed: &[String],
+    shown: &str,
+) -> Output {
     let (hooks, runs) = match harness {
         Harness::Claude => (
             "tm prime when a session starts, each sub-agent's tm commands written under its own \
@@ -270,14 +563,24 @@ fn written(harness: Harness, undo: bool, deleted: bool, changed: &[String], show
         (true, false) => format!("Removed tm's hooks from {file}\n"),
         (false, _) => format!("Added tm's hooks to {file}: {hooks}. {runs}\n"),
     };
+    let (commit, commit_line): (Vec<&str>, String) = if file == CLAUDE_LOCAL {
+        let line = if undo {
+            String::new()
+        } else {
+            format!("{file} stays on this machine; it is not committed\n")
+        };
+        (Vec::new(), line)
+    } else {
+        (vec![file], format!("Commit {file}\n"))
+    };
     Output::new(
-        format!("{text}Commit {file}\n"),
+        format!("{text}{commit_line}"),
         json!({
             "file": file,
             "changed": changed,
             "deleted": deleted,
             "diff": shown,
-            "commit": [file],
+            "commit": commit,
         }),
     )
 }
@@ -288,8 +591,8 @@ struct Handler {
     matcher: Option<&'static str>,
     command: String,
     extra: Vec<(&'static str, Json)>,
-    /// The command an older tm wrote for this handler, rewritten in place.
-    replaces: Option<String>,
+    /// Commands older tms wrote for this handler, rewritten in place.
+    replaces: Vec<String>,
 }
 
 impl Handler {
@@ -328,49 +631,57 @@ fn handlers(harness: Harness) -> Vec<Handler> {
             // and a tm older than these hooks exits 2 for a subcommand it does
             // not know; exit 1 shows the failure without blocking.
             let unblocking = |command: String| format!("{command} || exit 1");
+            // A clone without tm runs every hook quietly, as shared settings
+            // reach everyone who clones the repo.
+            let guarded = |command: &str| format!("command -v tm >/dev/null || exit 0; {command}");
+            let handler = |event, matcher, unguarded: String, extra, older: &[String]| {
+                let mut replaces = vec![unguarded.clone()];
+                replaces.extend(older.iter().cloned());
+                Handler {
+                    event,
+                    matcher,
+                    command: guarded(&unguarded),
+                    extra,
+                    replaces,
+                }
+            };
             vec![
-                Handler {
-                    event: "SessionStart",
-                    matcher: None,
-                    command: "tm prime".into(),
-                    extra: Vec::new(),
-                    replaces: None,
-                },
-                Handler {
-                    event: "PreToolUse",
-                    matcher: Some("Bash"),
-                    command: unblocking("tm hook pre-bash claude".into()),
-                    extra: Vec::new(),
-                    replaces: None,
-                },
-                Handler {
-                    event: "PreToolUse",
-                    matcher: Some("Edit|MultiEdit|Write|NotebookEdit"),
-                    command: unblocking(from_project("hook pre-edit claude")),
-                    extra: vec![timeout()],
-                    replaces: None,
-                },
-                Handler {
-                    event: "PostToolUse",
-                    matcher: Some("*"),
-                    command: from_project("hook heartbeat claude"),
-                    extra: vec![("async", Json::Bool(true))],
-                    replaces: None,
-                },
-                Handler {
-                    event: "SubagentStop",
-                    matcher: None,
-                    command: unblocking(from_project("hook subagent-stop claude")),
-                    extra: vec![timeout()],
-                    replaces: None,
-                },
-                Handler {
-                    event: "SessionEnd",
-                    matcher: None,
-                    command: from_project("hook session-end claude"),
-                    extra: vec![timeout()],
-                    replaces: Some(from_project("release --mine")),
-                },
+                handler("SessionStart", None, "tm prime".into(), Vec::new(), &[]),
+                handler(
+                    "PreToolUse",
+                    Some("Bash"),
+                    unblocking("tm hook pre-bash claude".into()),
+                    vec![timeout()],
+                    &[],
+                ),
+                handler(
+                    "PreToolUse",
+                    Some("Edit|MultiEdit|Write|NotebookEdit"),
+                    unblocking(from_project("hook pre-edit claude")),
+                    vec![timeout()],
+                    &[],
+                ),
+                handler(
+                    "PostToolUse",
+                    Some("*"),
+                    from_project("hook heartbeat claude"),
+                    vec![("async", Json::Bool(true))],
+                    &[],
+                ),
+                handler(
+                    "SubagentStop",
+                    None,
+                    unblocking(from_project("hook subagent-stop claude")),
+                    vec![timeout()],
+                    &[],
+                ),
+                handler(
+                    "SessionEnd",
+                    None,
+                    from_project("hook session-end claude"),
+                    vec![timeout()],
+                    &[from_project("release --mine")],
+                ),
             ]
         }
         // Codex runs hooks in the session's directory and caps SessionEnd at
@@ -383,14 +694,14 @@ fn handlers(harness: Harness) -> Vec<Handler> {
                     matcher: None,
                     command: "tm hook session-start codex".into(),
                     extra: vec![status("tm: priming the session")],
-                    replaces: None,
+                    replaces: Vec::new(),
                 },
                 Handler {
                     event: "PostToolUse",
                     matcher: Some("*"),
                     command: "tm hook heartbeat codex".into(),
                     extra: vec![("async", Json::Bool(true)), status("tm: renewing Claims")],
-                    replaces: None,
+                    replaces: Vec::new(),
                 },
                 Handler {
                     event: "SessionEnd",
@@ -400,7 +711,7 @@ fn handlers(harness: Harness) -> Vec<Handler> {
                         ("timeout", Json::Number(3.into())),
                         status("tm: releasing Claims"),
                     ],
-                    replaces: None,
+                    replaces: Vec::new(),
                 },
             ]
         }
@@ -408,8 +719,8 @@ fn handlers(harness: Harness) -> Vec<Handler> {
 }
 
 /// Adds each handler `settings` lacks, in a group of its own at the end of
-/// its event, or in place of the older command it replaces; returns the
-/// commands added.
+/// its event, or in place of an older command it replaces, adding the
+/// options that one lacks; returns the commands added.
 fn add(settings: &mut Json, handlers: &[Handler], file: &str) -> Result<Vec<String>, CliError> {
     let Json::Object(root) = settings else {
         return Err(refused(format!("{file} is not a JSON object")));
@@ -440,11 +751,18 @@ fn add(settings: &mut Json, handlers: &[Handler], file: &str) -> Result<Vec<Stri
             })
             .flatten()
             .find(|found| {
-                found.command().is_some() && found.command() == handler.replaces.as_deref()
+                found
+                    .command()
+                    .is_some_and(|command| handler.replaces.iter().any(|old| old == command))
             });
-        match old.and_then(|found| found.field_mut("command")) {
-            Some(command) => *command = Json::String(handler.command.clone()),
-            None => groups.push(handler.group()),
+        match old {
+            Some(Json::Object(found)) => {
+                *field(found, "command", || Json::Null) = Json::String(handler.command.clone());
+                for (key, value) in &handler.extra {
+                    field(found, key, || value.clone());
+                }
+            }
+            _ => groups.push(handler.group()),
         }
         added.push(handler.command.clone());
     }
@@ -461,8 +779,10 @@ fn remove(settings: &mut Json, handlers: &[Handler], file: &str) -> Result<Vec<S
     };
     let ours: Vec<&str> = handlers
         .iter()
-        .flat_map(|handler| [Some(handler.command.as_str()), handler.replaces.as_deref()])
-        .flatten()
+        .flat_map(|handler| {
+            std::iter::once(handler.command.as_str())
+                .chain(handler.replaces.iter().map(String::as_str))
+        })
         .collect();
     let mut removed = Vec::new();
     let Some(Json::Object(events)) = root
@@ -681,7 +1001,7 @@ impl<'de> Visitor<'de> for JsonVisitor {
 
 #[cfg(test)]
 mod tests {
-    use super::{Json, add, handlers, remove, render};
+    use super::{Held, Json, Setup, Where, add, decide, handlers, holds, remove, render};
     use crate::hook::Harness;
 
     const FILE: &str = ".claude/settings.json";
@@ -787,12 +1107,89 @@ mod tests {
             ended[0]["hooks"][0],
             serde_json::json!({
                 "type": "command",
-                "command": "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm hook session-end claude",
+                "command": "command -v tm >/dev/null || exit 0; \
+                            cd \"${CLAUDE_PROJECT_DIR:?}\" && tm hook session-end claude",
                 "timeout": 30,
             })
         );
         let (_, removed) = removed(before);
         assert_eq!(removed.len(), 1, "{removed:?}");
+    }
+
+    #[test]
+    fn hooks_stay_where_they_are_else_go_where_a_person_says_else_local() {
+        use Where::{Ask, Local, Shared};
+        // (--shared, --undo, in shared, in local, can ask) → where
+        for (shared, undo, in_shared, in_local, can_ask, expected) in [
+            (false, false, false, false, true, Ask),
+            (false, false, false, false, false, Local),
+            (true, false, false, false, true, Shared),
+            (true, false, false, true, false, Shared),
+            (false, false, true, false, true, Shared),
+            (false, false, false, true, true, Local),
+            (false, false, true, true, true, Shared),
+            (false, true, false, false, true, Local),
+            (true, true, false, false, false, Shared),
+            (false, true, false, true, true, Local),
+            (true, true, false, true, true, Local),
+            (false, true, true, true, true, Shared),
+        ] {
+            let setup = Setup {
+                harness: Harness::Claude,
+                undo,
+                yes: false,
+                shared,
+            };
+            let held = Held {
+                shared: in_shared,
+                local: in_local,
+            };
+            assert_eq!(
+                decide(&setup, held, can_ask),
+                expected,
+                "{shared} {undo} {in_shared} {in_local} {can_ask}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_install_from_before_the_guard_is_guarded_in_place_and_undone() {
+        let project = r#"cd \"${CLAUDE_PROJECT_DIR:?}\" && tm hook"#;
+        let before = format!(
+            r#"{{
+  "hooks": {{
+    "SessionStart": [{{ "hooks": [{{ "type": "command", "command": "tm prime", "timeout": 10 }}] }}],
+    "PreToolUse": [
+      {{ "matcher": "Bash", "hooks": [{{ "type": "command", "command": "tm hook pre-bash claude || exit 1" }}] }},
+      {{ "matcher": "Edit|MultiEdit|Write|NotebookEdit", "hooks": [{{ "type": "command", "command": "{project} pre-edit claude || exit 1", "timeout": 10 }}] }}
+    ],
+    "PostToolUse": [{{ "matcher": "*", "hooks": [{{ "type": "command", "command": "{project} heartbeat claude", "async": true }}] }}],
+    "SubagentStop": [{{ "hooks": [{{ "type": "command", "command": "{project} subagent-stop claude || exit 1", "timeout": 10 }}] }}],
+    "SessionEnd": [{{ "hooks": [{{ "type": "command", "command": "{project} session-end claude", "timeout": 10 }}] }}]
+  }}
+}}
+"#
+        );
+        let (after, added) = added(&before);
+        assert_eq!(added.len(), 6, "{added:?}");
+        let hooks = &serde_json::from_str::<serde_json::Value>(&after).unwrap()["hooks"];
+        for (event, groups) in hooks.as_object().unwrap() {
+            let groups_before = if event == "PreToolUse" { 2 } else { 1 };
+            assert_eq!(groups.as_array().unwrap().len(), groups_before, "{after}");
+            for group in groups.as_array().unwrap() {
+                let command = group["hooks"][0]["command"].as_str().unwrap();
+                assert!(
+                    command.starts_with("command -v tm >/dev/null || exit 0; "),
+                    "{command}"
+                );
+            }
+        }
+        assert_eq!(hooks["PreToolUse"][0]["hooks"][0]["timeout"], 10, "{after}");
+        assert!(holds(&parse(&before), &handlers(Harness::Claude)[1]));
+        let (_, unguarded) = removed(&before);
+        assert_eq!(unguarded.len(), 6, "{unguarded:?}");
+        let (_, guarded) = removed(&after);
+        assert_eq!(guarded.len(), 6, "{guarded:?}");
     }
 
     #[test]

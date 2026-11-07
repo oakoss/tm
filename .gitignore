@@ -1,5 +1,6 @@
 .DS_Store
 /target/
+.claude/settings.local.json
 
 # Beads / Dolt files (added by bd init)
 .dolt/

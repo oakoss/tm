@@ -16,7 +16,6 @@ use crate::output::Output;
 const START: &str = "<!-- tm:start -->";
 const END: &str = "<!-- tm:end -->";
 const LINE: &str = "This repo tracks its work in tm. Run `tm guide` for how to work with it.";
-const SETTINGS: &str = ".claude/settings.json";
 
 fn block() -> String {
     ending_lines("\n")
@@ -127,7 +126,8 @@ pub(crate) struct Offer {
     replace: bool,
     state: State,
     change: Option<Change>,
-    hook: bool,
+    /// The settings file `tm setup claude` would add tm's hooks to.
+    hook: Option<&'static str>,
     warnings: Vec<String>,
 }
 
@@ -327,13 +327,13 @@ pub(crate) fn write(path: &Path, text: &str, create: bool) -> io::Result<()> {
     written
 }
 
-/// Whether `tm setup claude` would add any of tm's hooks. A settings file it
-/// cannot read or merge into is named in `warnings`, and setup still pointed
-/// at.
-fn needs_hook(root: &Path, warnings: &mut Vec<String>) -> bool {
+/// The file `tm setup claude` would add tm's hooks to, if any. A settings
+/// file it cannot read or merge into is named in `warnings`, and setup still
+/// pointed at.
+fn needs_hook(root: &Path, warnings: &mut Vec<String>) -> Option<&'static str> {
     crate::setup::needed(root).unwrap_or_else(|err| {
         warnings.push(err);
-        true
+        Some(crate::setup::CLAUDE_LOCAL)
     })
 }
 
@@ -396,11 +396,11 @@ pub(crate) fn report(output: &mut Output, offer: Offer) {
             todo("it")
         ),
     };
-    if hook {
+    if let Some(settings) = hook {
         let _ = writeln!(
             text,
             "For Claude Code to start each session from tm prime, a person runs tm setup claude \
-             from their own terminal, which adds tm's hooks to {SETTINGS}"
+             from their own terminal, which adds tm's hooks to {settings}"
         );
     }
     output.data["instructions"] = json!({
@@ -410,10 +410,9 @@ pub(crate) fn report(output: &mut Output, offer: Offer) {
         "lines": lines,
         "state": state,
     });
-    output.data["hook"] = if hook {
-        json!({ "file": SETTINGS, "setup": "tm setup claude" })
-    } else {
-        Value::Null
+    output.data["hook"] = match hook {
+        Some(settings) => json!({ "file": settings, "setup": "tm setup claude" }),
+        None => Value::Null,
     };
 }
 
@@ -423,6 +422,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    const SETTINGS: &str = ".claude/settings.json";
 
     fn scratch() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("tm-instructions-{}", Uuid::now_v7()));
@@ -849,14 +850,16 @@ mod tests {
     fn setup_is_pointed_at_until_every_hook_is_in_and_an_unreadable_file_is_named() {
         let dir = scratch();
         let mut warnings = Vec::new();
-        assert!(needs_hook(&dir, &mut warnings));
+        let local_file = Some(crate::setup::CLAUDE_LOCAL);
+        assert_eq!(needs_hook(&dir, &mut warnings), local_file);
         fs::create_dir(dir.join(".claude")).unwrap();
         let group = |command: &str| format!(r#"[{{"hooks":[{{"command":{command:?}}}]}}]"#);
         let prime = format!(r#"{{"hooks":{{"SessionStart":{}}}}}"#, group("tm prime"));
         fs::write(dir.join(SETTINGS), prime).unwrap();
-        assert!(
+        assert_eq!(
             needs_hook(&dir, &mut warnings),
-            "a tm prime alone lacks the heartbeat"
+            Some(SETTINGS),
+            "a tm prime alone lacks the heartbeat, which setup adds beside it"
         );
         let pre_edit = r#"cd "${CLAUDE_PROJECT_DIR:?}" && tm hook pre-edit claude || exit 1"#;
         let pre_tool = format!(
@@ -870,7 +873,7 @@ mod tests {
             group(r#"cd "${CLAUDE_PROJECT_DIR:?}" && tm hook session-end claude"#),
         );
         fs::write(dir.join(SETTINGS), &all).unwrap();
-        assert!(!needs_hook(&dir, &mut warnings));
+        assert_eq!(needs_hook(&dir, &mut warnings), None);
         assert!(warnings.is_empty(), "{warnings:?}");
 
         // A symlinked file is read through; only one setup must write to is
@@ -879,15 +882,24 @@ mod tests {
         fs::write(&shared, &all).unwrap();
         fs::remove_file(dir.join(SETTINGS)).unwrap();
         symlink(&shared, dir.join(SETTINGS)).unwrap();
-        assert!(!needs_hook(&dir, &mut warnings));
+        assert_eq!(needs_hook(&dir, &mut warnings), None);
         assert!(warnings.is_empty(), "{warnings:?}");
         fs::write(&shared, "{}").unwrap();
-        assert!(needs_hook(&dir, &mut warnings));
+        let local = dir.join(crate::setup::CLAUDE_LOCAL);
+        symlink(&shared, &local).unwrap();
+        assert_eq!(needs_hook(&dir, &mut warnings), local_file);
         assert!(warnings.remove(0).contains("is a symlink"));
+        fs::remove_file(&local).unwrap();
+
+        // Hooks in the local file count as much as in the shared one.
+        fs::write(&local, &all).unwrap();
+        assert_eq!(needs_hook(&dir, &mut warnings), None);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        fs::remove_file(&local).unwrap();
 
         fs::remove_file(dir.join(SETTINGS)).unwrap();
         fs::create_dir(dir.join(SETTINGS)).unwrap();
-        assert!(needs_hook(&dir, &mut warnings));
+        assert_eq!(needs_hook(&dir, &mut warnings), local_file);
         assert!(
             warnings[0].contains(".claude/settings.json"),
             "{warnings:?}"

@@ -916,7 +916,7 @@ fn an_agent_is_given_the_lines_and_hook_and_writes_neither() {
     assert!(
         shown.contains(
             "a person runs tm setup claude from their own terminal, which adds tm's hooks to \
-             .claude/settings.json"
+             .claude/settings.local.json"
         ),
         "{shown}"
     );
@@ -950,7 +950,7 @@ fn json_init_names_the_file_lines_hook_and_what_to_commit() {
     );
     assert_eq!(
         data["hook"],
-        serde_json::json!({ "file": ".claude/settings.json", "setup": "tm setup claude" })
+        serde_json::json!({ "file": ".claude/settings.local.json", "setup": "tm setup claude" })
     );
     assert_eq!(
         data["commit"],

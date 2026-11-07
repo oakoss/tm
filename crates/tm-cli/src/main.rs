@@ -447,17 +447,10 @@ enum Command {
     /// The hooks run tm prime when a session starts, a heartbeat after each
     /// tool use, and release the session's Claims when it ends; Claude Code's
     /// also warn before an edit to a file another session's Claim covers. Shows the
-    /// diff and writes only on a person's yes; an Agent is only shown it.
-    Setup {
-        /// The harness whose settings get the hooks.
-        harness: hook::Harness,
-        /// Remove the hooks tm setup adds, and nothing else.
-        #[arg(long)]
-        undo: bool,
-        /// Write without asking, for a person not at a terminal.
-        #[arg(long)]
-        yes: bool,
-    },
+    /// diff and writes only on a person's yes; an Agent is only shown it. Claude
+    /// Code's go in .claude/settings.local.json, yours alone, unless you choose
+    /// the shared .claude/settings.json.
+    Setup(setup::Setup),
     /// Inspect the Scheme.
     ///
     /// With no subcommand, print it as `tm scheme show` does.
@@ -698,9 +691,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Remember(args)) => memory::remember(&args),
         Some(Command::Memories(args)) => memory::memories(&args),
         Some(Command::Forget(args)) => memory::forget(&args),
-        Some(Command::Setup { harness, undo, yes }) => {
-            setup::run(&setup::Setup { harness, undo, yes }, json)
-        }
+        Some(Command::Setup(setup)) => setup::run(&setup, json),
         Some(Command::Hook { .. }) => unreachable!("main runs hooks outside JSON mode"),
         Some(Command::Git {
             action: GitAction::Scan { dry_run },
