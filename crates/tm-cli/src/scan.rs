@@ -25,7 +25,11 @@ use crate::output::{Output, printable, short};
 #[derive(Debug, PartialEq, Eq)]
 struct Closing {
     key: String,
+    /// The Key as the line wrote it, which may be an imported tracker's id.
+    written: String,
     commit: String,
+    /// The commit's committer time, in Unix seconds.
+    at: i64,
     /// The pull request a squash merge's subject names, such as `(#55)`.
     pr: Option<u64>,
 }
@@ -94,7 +98,7 @@ fn write(here: &mut Here, dry_run: bool) -> Result<(Output, Vec<String>), CliErr
             "--regexp-ignore-case",
             "--grep=^[[:space:]]*closes:?[[:space:]]",
             // %B, not %s and %b: %s joins a first paragraph's lines.
-            "--format=%H%n%B%x00",
+            "--format=%H %ct%n%B%x00",
             &branch.full,
             "--",
         ],
@@ -159,13 +163,7 @@ fn by_issue(
 ) -> Result<Vec<(Uuid, Vec<Closing>)>, CliError> {
     let mut grouped: Vec<(Uuid, Vec<Closing>)> = Vec::new();
     for closing in closings {
-        let Some(id) = here.store.issue_by_key(&closing.key)? else {
-            let (prefix, _) = closing.key.rsplit_once('-').unwrap_or_default();
-            // A Key of no Project here belongs to some other tracker.
-            if here.store.project_by_key(prefix)?.is_some() {
-                let (shipped, key) = (closing.shipped(), &closing.key);
-                warnings.push(format!("{shipped} closes {key}, which is no Issue"));
-            }
+        let Some(id) = named(here, &closing, warnings)? else {
             continue;
         };
         match grouped.iter_mut().find(|(issue, _)| *issue == id) {
@@ -174,6 +172,57 @@ fn by_issue(
         }
     }
     Ok(grouped)
+}
+
+/// The Issue `closing` names, if it can close one. A commit written before
+/// the Project or the Issue cannot mean it, so its line is another
+/// tracker's id; an id an import came from names the Issue it became.
+fn named(
+    here: &Here,
+    closing: &Closing,
+    warnings: &mut Vec<String>,
+) -> Result<Option<Uuid>, CliError> {
+    let (prefix, _) = closing.key.rsplit_once('-').unwrap_or_default();
+    // A Key of no Project here belongs to some other tracker.
+    let Some(project) = here.store.project_by_key(prefix)? else {
+        return Ok(None);
+    };
+    let before = |created_ms: i64| written_before(closing.at, created_ms);
+    if here.store.project_created_ms(project)?.is_some_and(before) {
+        return Ok(None);
+    }
+    let shipped = closing.shipped();
+    let id = match here.store.issues_imported_as(&closing.written)?.as_slice() {
+        [imported] => *imported,
+        [] => {
+            if let Some(id) = here.store.issue_by_key(&closing.key)? {
+                id
+            } else {
+                let key = &closing.key;
+                warnings.push(format!("{shipped} closes {key}, which is no Issue"));
+                return Ok(None);
+            }
+        }
+        _ => {
+            let written = printable(&closing.written);
+            let why = "more than one imported Issue came from that id";
+            warnings.push(format!(
+                "{shipped} closes {written}, but {why}, so none moved"
+            ));
+            return Ok(None);
+        }
+    };
+    let created = here
+        .store
+        .issue(id)?
+        .and_then(|view| view.fields.get("created").and_then(Value::as_i64));
+    Ok((!created.is_some_and(before)).then_some(id))
+}
+
+/// Whether a commit at `at` seconds was written before `created_ms`. git
+/// keeps whole seconds, so a commit in the creation's second is not.
+fn written_before(at: i64, created_ms: i64) -> bool {
+    (at + 1).saturating_mul(1000) <= created_ms
 }
 
 /// The commits of `closings` no scan's comment on `id` records yet, each
@@ -438,17 +487,21 @@ fn closings(log: &str) -> (Vec<Closing>, Vec<String>) {
     for record in log.split('\0') {
         let record = record.trim_start_matches('\n');
         let mut lines = record.splitn(3, '\n');
-        let (Some(commit), subject) = (lines.next(), lines.next().unwrap_or_default()) else {
+        let (Some(head), subject) = (lines.next(), lines.next().unwrap_or_default()) else {
             continue;
         };
-        if commit.is_empty() {
+        if head.is_empty() {
             continue;
         }
-        if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
-            let warning = format!("skipped a commit git printed as {}", printable(commit));
+        let (commit, at) = head.split_once(' ').unwrap_or((head, ""));
+        let at = at.parse::<i64>().ok();
+        let Some(at) = at.filter(|_| {
+            matches!(commit.len(), 40 | 64) && commit.bytes().all(|b| b.is_ascii_hexdigit())
+        }) else {
+            let warning = format!("skipped a commit git printed as {}", printable(head));
             warnings.push(warning);
             continue;
-        }
+        };
         let pr = subject
             .trim_end()
             .strip_suffix(')')
@@ -480,10 +533,14 @@ fn closings(log: &str) -> (Vec<Closing>, Vec<String>) {
                     }
                     break;
                 }
-                if seen.insert((key.clone(), commit)) {
+                // By the word as written: `tm-2` may be an import's id where
+                // `TM-2` is a Key.
+                if seen.insert((bare, commit)) {
                     closings.push(Closing {
                         key,
+                        written: bare.to_owned(),
                         commit: commit.to_owned(),
+                        at,
                         pr,
                     });
                 }
@@ -504,7 +561,7 @@ mod tests {
     const TWICE: &str = "closes: tm-2, (TM-3);\n  Closes TM-1\nCloses TM-1\n";
 
     fn record(commit: &str, subject: &str, body: &str) -> String {
-        format!("{commit}\n{subject}\n{body}\0\n")
+        format!("{commit} 1700000000\n{subject}\n{body}\0\n")
     }
 
     #[test]
@@ -519,21 +576,23 @@ mod tests {
             record("Good signature", "s", "Closes TM-9\n"),
         ]
         .concat();
-        let closing = |key: &str, commit: &str, pr| Closing {
+        let closing = |key: &str, written: &str, commit: &str, pr| Closing {
             key: key.into(),
+            written: written.into(),
             commit: commit.into(),
+            at: 1_700_000_000,
             pr,
         };
         let (closings, warnings) = closings(&log);
         assert_eq!(
             closings,
             [
-                closing("TM-1", A, Some(7)),
-                closing("TM-2", B, None),
-                closing("TM-3", B, None),
-                closing("TM-1", B, None),
-                closing("TM-4", C, None),
-                closing("TM-7", C, None),
+                closing("TM-1", "TM-1", A, Some(7)),
+                closing("TM-2", "tm-2", B, None),
+                closing("TM-3", "TM-3", B, None),
+                closing("TM-1", "TM-1", B, None),
+                closing("TM-4", "TM-4", C, None),
+                closing("TM-7", "TM-7", C, None),
             ]
         );
         let line = "\"Closes TM-7, see TM-8\"";
@@ -543,5 +602,22 @@ mod tests {
         assert_eq!(warnings[1], subject);
         assert!(warnings[2].starts_with("skipped a commit git printed as"));
         assert_eq!(warnings.len(), 3);
+    }
+
+    #[test]
+    fn a_commit_git_printed_without_a_time_is_skipped_with_a_warning() {
+        for head in [A.to_owned(), format!("{A} soon")] {
+            let (closings, warnings) = closings(&format!("{head}\nfix\nCloses TM-1\0\n"));
+            assert_eq!(closings, [], "{head}");
+            let skipped = format!("skipped a commit git printed as {head}");
+            assert_eq!(warnings, [skipped]);
+        }
+    }
+
+    #[test]
+    fn a_commit_is_written_before_only_what_was_created_after_its_second() {
+        assert!(written_before(10, 11_000));
+        assert!(!written_before(10, 10_999));
+        assert!(!written_before(10, 10_000));
     }
 }
