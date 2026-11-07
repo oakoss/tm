@@ -439,7 +439,7 @@ fn lists(
     let (Some(actor), Some((project, _))) = (actor, mapped) else {
         return Vec::new();
     };
-    next::session_lists(here, *project, actor).unwrap_or_else(|err| {
+    next::session_lists(&here.store, *project, actor).unwrap_or_else(|err| {
         warnings.push(next::unread(&err));
         Vec::new()
     })

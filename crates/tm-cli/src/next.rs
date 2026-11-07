@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 use tm_core::scheme::Category;
 use tm_core::{Actor, ProjectId};
-use tm_store::{Member, PassedOver, Shortlist, StoreError};
+use tm_store::{Member, PassedOver, Shortlist, Store, StoreError};
 use uuid::Uuid;
 
 use crate::claim::Lasts;
@@ -196,7 +196,7 @@ fn take(here: &mut Here, actor: &Actor, lasts: &Lasts) -> Result<Output, CliErro
 /// The session's lists, or the Project's ready queue when it has none.
 fn source(here: &Here, actor: &Actor) -> Result<Source, CliError> {
     let project = here.project()?;
-    let lists = session_lists(here, project, actor)?;
+    let lists = session_lists(&here.store, project, actor)?;
     if lists.is_empty() {
         return ready(here, project);
     }
@@ -206,11 +206,11 @@ fn source(here: &Here, actor: &Actor) -> Result<Source, CliError> {
 /// The session's lists in `project`, oldest first, each with its members,
 /// or the one `TM_SHORTLIST` names, which never falls back to the others.
 pub(crate) fn session_lists(
-    here: &Here,
+    store: &Store,
     project: ProjectId,
     actor: &Actor,
 ) -> Result<Vec<(Shortlist, Vec<Member>)>, CliError> {
-    let mut lists = here.store.shortlists_of(project, actor)?;
+    let mut lists = store.shortlists_of(project, actor)?;
     if let Some(bound) = bound()? {
         let named: Vec<Shortlist> = lists
             .iter()
@@ -228,7 +228,7 @@ pub(crate) fn session_lists(
     }
     let mut read = Vec::with_capacity(lists.len());
     for list in lists {
-        let members = here.store.shortlist_view(list.id)?;
+        let members = store.shortlist_view(list.id)?;
         read.push((list, members));
     }
     Ok(read)
