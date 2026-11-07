@@ -110,7 +110,22 @@ fn cli() -> clap::Command {
     // expands `tm help help`; only a copy is built.
     let mut built = Cli::command();
     built.build();
-    Cli::command().help_template(grouped_help(&built))
+    // tm tui refuses --json and a hook prints its harness's format, so their
+    // help leaves the flag out; a subcommand's own `json` takes the global
+    // one's place there and below, still accepted.
+    let hidden_json = |command: clap::Command| {
+        command.arg(
+            clap::Arg::new("json")
+                .long("json")
+                .action(clap::ArgAction::SetTrue)
+                .global(true)
+                .hide(true),
+        )
+    };
+    Cli::command()
+        .help_template(grouped_help(&built))
+        .mut_subcommand("tui", hidden_json)
+        .mut_subcommand("hook", hidden_json)
 }
 
 /// A help template listing `command`'s subcommands under [`GROUPS`], each by
@@ -282,7 +297,7 @@ enum Command {
     /// ready Issue when you have none; with nothing to take, says why.
     Next {
         /// Show the Issue it would take, without taking it.
-        #[arg(long, conflicts_with_all = ["ttl_ms", "no_expiry"])]
+        #[arg(long, conflicts_with_all = ["paths", "ttl_ms", "no_expiry"])]
         peek: bool,
         #[command(flatten)]
         lasts: claim::Lasts,
@@ -762,6 +777,10 @@ fn parse_failed(json: bool, err: &clap::Error, args: Option<&[String]>) -> ExitC
             ExitCode::from(2)
         };
     }
+    if err.kind() == ErrorKind::DisplayVersion {
+        let version = json!({ "version": env!("CARGO_PKG_VERSION") });
+        return output::finish(true, Ok(Output::new(String::new(), version)), &[]);
+    }
     let rendered = err.render().to_string();
     if shown {
         return output::finish(
@@ -770,8 +789,18 @@ fn parse_failed(json: bool, err: &clap::Error, args: Option<&[String]>) -> ExitC
             &[],
         );
     }
-    let message = rendered.lines().next().unwrap_or_default();
-    let message = message.strip_prefix("error: ").unwrap_or(message);
+    // Clap lists what a message names, such as missing arguments, on the
+    // indented lines after it.
+    let mut lines = rendered.lines();
+    let first = lines.next().unwrap_or_default();
+    let mut message = first.strip_prefix("error: ").unwrap_or(first).to_owned();
+    let named: Vec<&str> = lines
+        .take_while(|line| line.starts_with("  "))
+        .map(str::trim)
+        .collect();
+    if !named.is_empty() {
+        message = format!("{message} {}", named.join(", "));
+    }
     output::finish(true, Err(CliError::new("usage", message)), &[])
 }
 

@@ -38,6 +38,57 @@ fn a_usage_error_is_a_document_and_exits_2() {
 }
 
 #[test]
+fn the_version_is_a_document_naming_it() {
+    let doc = document(&tm(&["--version", "--json"], &[]));
+    assert_eq!(doc["data"], json!({ "version": env!("CARGO_PKG_VERSION") }));
+}
+
+#[test]
+fn a_usage_error_names_the_missing_arguments() {
+    let doc = document(&tm(&["handoff", "X-1", "--json"], &[]));
+    assert_eq!(
+        doc["message"],
+        "the following required arguments were not provided: --to <AGENT>, <NOTE>"
+    );
+}
+
+#[test]
+fn next_refuses_paths_with_peek_since_a_peek_takes_no_claim() {
+    let doc = document(&tm(&["next", "--peek", "--paths", "src/**", "--json"], &[]));
+    assert_eq!(doc["error"], "usage");
+    assert!(
+        doc["message"].as_str().unwrap().contains("--paths"),
+        "{doc}"
+    );
+}
+
+#[test]
+fn hook_help_does_not_offer_json() {
+    for args in [
+        &["hook", "--help"][..],
+        &["hook", "session-start", "--help"],
+    ] {
+        let output = tm(args, &[]);
+        assert!(output.status.success(), "{output:?}");
+        let help = String::from_utf8(output.stdout).unwrap();
+        assert!(!help.contains("--json"), "{args:?}: {help}");
+    }
+}
+
+#[test]
+fn a_hook_still_accepts_json_after_its_action() {
+    let scratch = crate::support::Scratch::new();
+    let output = crate::support::tm_piped(
+        &scratch,
+        &scratch.0,
+        &["hook", "pre-edit", "claude", "--json"],
+        r#"{"tool_input":{"file_path":"/x"}}"#,
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+}
+
+#[test]
 fn tm_json_selects_json_mode_without_the_flag() {
     let output = tm(&["scheme", "show"], &[("TM_JSON", "1")]);
     assert!(output.status.success());
