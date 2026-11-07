@@ -19,20 +19,63 @@ use crate::hook::Harness;
 use crate::identity;
 use crate::instructions;
 use crate::output::Output;
-use crate::prompt::{ask, human, print_now};
+use crate::prompt::{ask, human, print_now, prompt, stopped};
 
-/// The repo file `harness` reads its hooks from.
-fn settings(harness: Harness) -> &'static str {
-    match harness {
-        Harness::Claude => ".claude/settings.json",
-        Harness::Codex => ".codex/hooks.json",
-    }
+/// Claude Code's settings for one person in this repo, kept out of commits;
+/// tm's hooks go here unless a person chooses the shared file.
+pub(crate) const CLAUDE_LOCAL: &str = ".claude/settings.local.json";
+const CLAUDE_SHARED: &str = ".claude/settings.json";
+const CODEX: &str = ".codex/hooks.json";
+
+#[derive(clap::Args)]
+pub(crate) struct Setup {
+    /// The harness whose settings get the hooks.
+    harness: Harness,
+    /// Remove the hooks tm setup adds, and nothing else.
+    #[arg(long)]
+    undo: bool,
+    /// Write without asking, for a person not at a terminal.
+    #[arg(long)]
+    yes: bool,
+    /// Claude Code's .claude/settings.json, which everyone who clones the
+    /// repo runs, rather than your own .claude/settings.local.json.
+    #[arg(long)]
+    shared: bool,
 }
 
-pub(crate) struct Setup {
-    pub(crate) harness: Harness,
-    pub(crate) undo: bool,
-    pub(crate) yes: bool,
+/// Which of Claude Code's settings files hold any of tm's hooks.
+#[derive(Clone, Copy)]
+struct Held {
+    shared: bool,
+    local: bool,
+}
+
+/// Which Claude Code settings file a setup acts on.
+#[derive(Debug, PartialEq, Eq)]
+enum Where {
+    Local,
+    Shared,
+    /// A person at a terminal chooses, local first.
+    Ask,
+}
+
+fn decide(setup: &Setup, held: Held, can_ask: bool) -> Where {
+    if setup.undo {
+        return if held.shared || (setup.shared && !held.local) {
+            Where::Shared
+        } else {
+            Where::Local
+        };
+    }
+    if setup.shared || held.shared {
+        Where::Shared
+    } else if held.local {
+        Where::Local
+    } else if can_ask {
+        Where::Ask
+    } else {
+        Where::Local
+    }
 }
 
 fn refused(message: impl Into<String>) -> CliError {
@@ -52,7 +95,85 @@ pub(crate) fn run(setup: &Setup, json: bool) -> Result<Output, CliError> {
     let root = workspace::repo_root(&cwd)?.ok_or_else(|| {
         refused("tm setup runs inside a git repository; none contains this directory")
     })?;
-    let file = settings(setup.harness);
+    let file = target(setup, &root, json)?;
+    let mut files = vec![file];
+    // Undo takes tm's hooks out of both of Claude Code's files, under one yes.
+    if setup.undo && file == CLAUDE_SHARED && held(&root, CLAUDE_LOCAL)? {
+        files.push(CLAUDE_LOCAL);
+    }
+    let mut plans = files
+        .into_iter()
+        .map(|file| plan(setup, &root, file))
+        .collect::<Result<Vec<_>, _>>()?;
+    plans.retain(|plan| !plan.changed.is_empty());
+    if plans.is_empty() {
+        let mut output = unchanged(setup.undo, file);
+        output.warnings.extend(also_held(setup, &root, file)?);
+        if !setup.undo {
+            output.warnings.extend(inline_hooks(&root, setup.harness));
+        }
+        return Ok(output);
+    }
+    for plan in &plans {
+        writable(&plan.path, plan.file)?;
+    }
+    let shown: String = plans.iter().map(|plan| plan.shown.as_str()).collect();
+    let names = plans
+        .iter()
+        .map(|plan| plan.file)
+        .collect::<Vec<_>>()
+        .join(" and ");
+    let question = match plans.as_slice() {
+        [plan] if plan.after.is_none() => format!("Remove {}?", plan.file),
+        [plan] => format!("Write {}?", plan.file),
+        _ => format!("Remove tm's hooks from {names}?"),
+    };
+    confirmed(&shown, &question, setup, &names, json)?;
+    // A file may have been edited while tm asked; writing the text computed
+    // before would lose that edit.
+    for plan in &plans {
+        if read(&plan.path)? != plan.before {
+            return Err(refused(format!(
+                "{} changed while tm asked; nothing written",
+                plan.file
+            )));
+        }
+        writable(&plan.path, plan.file)?;
+    }
+    let mut done: Vec<&str> = Vec::new();
+    for plan in &plans {
+        plan.write(&root).map_err(|err| {
+            if done.is_empty() {
+                err
+            } else {
+                err.warned(vec![format!("{} was already changed", done.join(" and "))])
+            }
+        })?;
+        done.push(plan.file);
+    }
+    let mut outputs = plans.iter().map(|plan| finished(setup, &root, plan));
+    let mut output = outputs.next().expect("a plan with changes")?;
+    if let Some(also) = outputs.next() {
+        let also = also?;
+        output.text.push_str(&also.text);
+        output.warnings.extend(also.warnings);
+        output.data["also"] = also.data;
+    }
+    Ok(output)
+}
+
+/// One settings file's change, worked out before anything is written.
+struct Plan {
+    file: &'static str,
+    path: std::path::PathBuf,
+    before: Option<String>,
+    /// The new text, or `None` to remove the file.
+    after: Option<String>,
+    changed: Vec<String>,
+    shown: String,
+}
+
+fn plan(setup: &Setup, root: &Path, file: &'static str) -> Result<Plan, CliError> {
     let path = root.join(file);
     let before = read(&path)?;
     let mut settings = parse(before.as_deref(), file)?;
@@ -62,48 +183,153 @@ pub(crate) fn run(setup: &Setup, json: bool) -> Result<Output, CliError> {
     } else {
         add(&mut settings, &handlers, file)?
     };
-    if changed.is_empty() {
-        let mut output = unchanged(setup.undo, file);
-        if !setup.undo {
-            output.warnings.extend(inline_hooks(&root, setup.harness));
-        }
-        return Ok(output);
-    }
-    writable(&path, file)?;
     let emptied = setup.undo && settings == Json::Object(Vec::new());
     let after = (!emptied).then(|| render(&settings, before.as_deref()));
-    let shown = diff::unified(file, before.as_deref(), after.as_deref().unwrap_or(""));
-    confirmed(&shown, emptied, setup, json)?;
-    // The file may have been edited while tm asked; writing the text
-    // computed before would lose that edit.
-    if read(&path)? != before {
-        return Err(refused(format!(
-            "{file} changed while tm asked; nothing written"
-        )));
-    }
-    writable(&path, file)?;
-    match &after {
-        Some(text) => {
-            let create = before.is_none();
-            let dir = path.parent().unwrap_or(&root).to_path_buf();
-            let made_dir = create && !dir.exists();
-            if made_dir {
-                fs::create_dir_all(&dir).map_err(|err| io_failed(&dir, &err))?;
-            }
-            instructions::write(&path, text, create).map_err(|err| {
+    let shown = if changed.is_empty() {
+        String::new()
+    } else {
+        diff::unified(file, before.as_deref(), after.as_deref().unwrap_or(""))
+    };
+    Ok(Plan {
+        file,
+        path,
+        before,
+        after,
+        changed,
+        shown,
+    })
+}
+
+impl Plan {
+    fn write(&self, root: &Path) -> Result<(), CliError> {
+        let path = &self.path;
+        match &self.after {
+            Some(text) => {
+                let create = self.before.is_none();
+                let dir = path.parent().unwrap_or(root).to_path_buf();
+                let made_dir = create && !dir.exists();
                 if made_dir {
-                    let _ = fs::remove_dir(&dir);
+                    fs::create_dir_all(&dir).map_err(|err| io_failed(&dir, &err))?;
                 }
-                io_failed(&path, &err)
-            })?;
+                instructions::write(path, text, create).map_err(|err| {
+                    if made_dir {
+                        let _ = fs::remove_dir(&dir);
+                    }
+                    io_failed(path, &err)
+                })
+            }
+            None => fs::remove_file(path).map_err(|err| io_failed(path, &err)),
         }
-        None => fs::remove_file(&path).map_err(|err| io_failed(&path, &err))?,
     }
-    let mut output = written(setup.harness, setup.undo, emptied, &changed, &shown);
+}
+
+/// What [`run`] reports for a plan it wrote.
+fn finished(setup: &Setup, root: &Path, plan: &Plan) -> Result<Output, CliError> {
+    let file = plan.file;
+    let emptied = plan.after.is_none();
+    let mut output = written(
+        setup.harness,
+        file,
+        setup.undo,
+        emptied,
+        &plan.changed,
+        &plan.shown,
+    );
+    output.warnings.extend(also_held(setup, root, file)?);
     if !setup.undo {
-        output.warnings.extend(inline_hooks(&root, setup.harness));
+        output.warnings.extend(inline_hooks(root, setup.harness));
+        if file == CLAUDE_LOCAL {
+            output.warnings.extend(match ignored(root, file) {
+                Some(true) => None,
+                Some(false) => Some(format!(
+                    "git does not ignore {file}, so it could be committed; add it to .gitignore"
+                )),
+                None => Some(format!(
+                    "cannot tell whether git ignores {file}; check it stays out of commits"
+                )),
+            });
+        }
     }
     Ok(output)
+}
+
+/// The settings file this setup acts on, asking a person at a terminal
+/// where Claude Code's hooks go when nothing settles it.
+fn target(setup: &Setup, root: &Path, json: bool) -> Result<&'static str, CliError> {
+    if setup.harness == Harness::Codex {
+        if setup.shared {
+            return Err(CliError::new(
+                "usage",
+                format!("Codex has one hooks file, {CODEX}, so tm setup codex takes no --shared"),
+            ));
+        }
+        return Ok(CODEX);
+    }
+    let can_ask = !json && !setup.yes && human();
+    let found = Held {
+        shared: held(root, CLAUDE_SHARED)?,
+        local: held(root, CLAUDE_LOCAL)?,
+    };
+    let place = decide(setup, found, can_ask);
+    match place {
+        Where::Local => Ok(CLAUDE_LOCAL),
+        Where::Shared => Ok(CLAUDE_SHARED),
+        Where::Ask => ask_where(),
+    }
+}
+
+/// Whether `file` holds any of tm's Claude Code hooks; one tm cannot read
+/// or parse is refused, since where the hooks are cannot be told.
+fn held(root: &Path, file: &str) -> Result<bool, CliError> {
+    let text = read(&root.join(file))?;
+    let settings = parse(text.as_deref(), file)?;
+    Ok(handlers(Harness::Claude)
+        .iter()
+        .any(|handler| holds(&settings, handler)))
+}
+
+fn ask_where() -> Result<&'static str, CliError> {
+    eprintln!(
+        "Where should tm's hooks go?\n  1) {CLAUDE_LOCAL}  just you; not committed\n  \
+         2) {CLAUDE_SHARED}        everyone who clones the repo"
+    );
+    loop {
+        match prompt("Choose 1 or 2 [1]: ").map_err(|err| CliError::new("io", err))? {
+            None => return Err(refused(stopped())),
+            Some(choice) if choice.is_empty() || choice == "1" => return Ok(CLAUDE_LOCAL),
+            Some(choice) if choice == "2" => return Ok(CLAUDE_SHARED),
+            Some(_) => {}
+        }
+    }
+}
+
+/// A warning, on adding to the shared file, that the local one holds tm's
+/// hooks too.
+fn also_held(setup: &Setup, root: &Path, file: &str) -> Result<Option<String>, CliError> {
+    let warn = !setup.undo && file == CLAUDE_SHARED && held(root, CLAUDE_LOCAL)?;
+    Ok(warn.then(|| {
+        format!(
+            "{CLAUDE_LOCAL} holds tm's hooks too; Claude Code runs a hook defined in both once, \
+             and tm setup claude --undo removes them from both"
+        )
+    }))
+}
+
+/// Whether git ignores `file` in the repo at `root`, or `None` where git
+/// cannot say.
+fn ignored(root: &Path, file: &str) -> Option<bool> {
+    let status = std::process::Command::new("git")
+        .args(["check-ignore", "--quiet", "--", file])
+        .current_dir(root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+    match status.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
 }
 
 /// Codex also reads hooks inline from `.codex/config.toml`, loading both
@@ -135,24 +361,36 @@ fn inline_hooks(root: &Path, harness: Harness) -> Option<String> {
     }
 }
 
-/// Whether `tm setup claude` would add anything to the repo at `root`; an
+/// The settings file `tm setup claude` would add to in the repo at `root`,
+/// without asking, or `None` where both files hold all of tm's hooks; an
 /// error names a settings file it cannot read, merge into or write.
-pub(crate) fn needed(root: &Path) -> Result<bool, String> {
-    let file = settings(Harness::Claude);
+pub(crate) fn needed(root: &Path) -> Result<Option<&'static str>, String> {
+    let read_file = |file: &str| {
+        let before = read(&root.join(file)).map_err(|err| err.message)?;
+        parse(before.as_deref(), file).map_err(|err| err.message)
+    };
+    let shared = read_file(CLAUDE_SHARED)?;
+    let local = read_file(CLAUDE_LOCAL)?;
+    let in_shared = handlers(Harness::Claude)
+        .iter()
+        .any(|handler| holds(&shared, handler));
+    let (file, mut settings) = if in_shared {
+        (CLAUDE_SHARED, shared.clone())
+    } else {
+        (CLAUDE_LOCAL, local.clone())
+    };
     let path = root.join(file);
-    let before = read(&path).map_err(|err| err.message)?;
-    let mut settings = parse(before.as_deref(), file).map_err(|err| err.message)?;
     // A handler an older tm wrote still runs, so it is not missing.
     let missing: Vec<Handler> = handlers(Harness::Claude)
         .into_iter()
-        .filter(|handler| !holds(&settings, handler))
+        .filter(|handler| !holds(&shared, handler) && !holds(&local, handler))
         .collect();
     let added = add(&mut settings, &missing, file).map_err(|err| err.message)?;
     if added.is_empty() {
-        return Ok(false);
+        return Ok(None);
     }
     writable(&path, file)
-        .map(|()| true)
+        .map(|()| Some(file))
         .map_err(|err| err.message)
 }
 
@@ -219,8 +457,13 @@ fn read(path: &Path) -> Result<Option<String>, CliError> {
 /// shows and asks nothing; its refusal carries the diff. An Agent is only
 /// shown it, `--yes` or not: the hooks run commands in every session, so a
 /// person writes them (ADR 0014).
-fn confirmed(shown: &str, emptied: bool, setup: &Setup, json: bool) -> Result<(), CliError> {
-    let file = settings(setup.harness);
+fn confirmed(
+    shown: &str,
+    question: &str,
+    setup: &Setup,
+    file: &str,
+    json: bool,
+) -> Result<(), CliError> {
     let not_written = |why: &str| refused(format!("{file} not written{why}")).with("diff", shown);
     if identity::agent_detected(identity::env) {
         let unshown = if json { None } else { print_now(shown).err() };
@@ -253,12 +496,7 @@ fn confirmed(shown: &str, emptied: bool, setup: &Setup, json: bool) -> Result<()
             ": confirm with --yes when not a person at a terminal",
         ));
     }
-    let question = if emptied {
-        format!("Remove {file}?")
-    } else {
-        format!("Write {file}?")
-    };
-    match ask(shown, &question) {
+    match ask(shown, question) {
         Ok(true) => Ok(()),
         Ok(false) => Err(not_written("")),
         Err(err) => Err(CliError::new("io", err)),
@@ -277,8 +515,14 @@ fn unchanged(undo: bool, file: &str) -> Output {
     )
 }
 
-fn written(harness: Harness, undo: bool, deleted: bool, changed: &[String], shown: &str) -> Output {
-    let file = settings(harness);
+fn written(
+    harness: Harness,
+    file: &str,
+    undo: bool,
+    deleted: bool,
+    changed: &[String],
+    shown: &str,
+) -> Output {
     let (hooks, runs) = match harness {
         Harness::Claude => (
             "tm prime when a session starts, each sub-agent's tm commands written under its own \
@@ -300,14 +544,22 @@ fn written(harness: Harness, undo: bool, deleted: bool, changed: &[String], show
         (true, false) => format!("Removed tm's hooks from {file}\n"),
         (false, _) => format!("Added tm's hooks to {file}: {hooks}. {runs}\n"),
     };
+    let (commit, commit_line): (Vec<&str>, String) = if file == CLAUDE_LOCAL {
+        (
+            Vec::new(),
+            format!("{file} stays on this machine; it is not committed\n"),
+        )
+    } else {
+        (vec![file], format!("Commit {file}\n"))
+    };
     Output::new(
-        format!("{text}Commit {file}\n"),
+        format!("{text}{commit_line}"),
         json!({
             "file": file,
             "changed": changed,
             "deleted": deleted,
             "diff": shown,
-            "commit": [file],
+            "commit": commit,
         }),
     )
 }
@@ -728,7 +980,7 @@ impl<'de> Visitor<'de> for JsonVisitor {
 
 #[cfg(test)]
 mod tests {
-    use super::{Json, add, handlers, holds, remove, render};
+    use super::{Held, Json, Setup, Where, add, decide, handlers, holds, remove, render};
     use crate::hook::Harness;
 
     const FILE: &str = ".claude/settings.json";
@@ -841,6 +1093,42 @@ mod tests {
         );
         let (_, removed) = removed(before);
         assert_eq!(removed.len(), 1, "{removed:?}");
+    }
+
+    #[test]
+    fn hooks_stay_where_they_are_else_go_where_a_person_says_else_local() {
+        use Where::{Ask, Local, Shared};
+        // (--shared, --undo, in shared, in local, can ask) → where
+        for (shared, undo, in_shared, in_local, can_ask, expected) in [
+            (false, false, false, false, true, Ask),
+            (false, false, false, false, false, Local),
+            (true, false, false, false, true, Shared),
+            (true, false, false, true, false, Shared),
+            (false, false, true, false, true, Shared),
+            (false, false, false, true, true, Local),
+            (false, false, true, true, true, Shared),
+            (false, true, false, false, true, Local),
+            (true, true, false, false, false, Shared),
+            (false, true, false, true, true, Local),
+            (true, true, false, true, true, Local),
+            (false, true, true, true, true, Shared),
+        ] {
+            let setup = Setup {
+                harness: Harness::Claude,
+                undo,
+                yes: false,
+                shared,
+            };
+            let held = Held {
+                shared: in_shared,
+                local: in_local,
+            };
+            assert_eq!(
+                decide(&setup, held, can_ask),
+                expected,
+                "{shared} {undo} {in_shared} {in_local} {can_ask}"
+            );
+        }
     }
 
     #[test]

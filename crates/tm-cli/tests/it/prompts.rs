@@ -314,35 +314,57 @@ fn a_bd_export_chosen_at_the_prompt_is_imported_and_published() {
 fn setup_writes_the_hooks_on_a_yes_and_nothing_on_a_no() {
     let scratch = Scratch::new();
     let repo = fixture(&scratch, "repo");
-    let settings = repo.join(".claude/settings.json");
+    let local = repo.join(".claude/settings.local.json");
+    let shared = repo.join(".claude/settings.json");
 
     let mut tm = tm_pty(&scratch, &repo, &["setup", "claude"]);
-    tm.exp_string("+++ b/.claude/settings.json").unwrap();
-    tm.exp_string("Write .claude/settings.json? [y/N] ")
+    tm.exp_string("Where should tm's hooks go?").unwrap();
+    tm.exp_string("Choose 1 or 2 [1]: ").unwrap();
+    tm.send_line("").unwrap();
+    tm.exp_string("+++ b/.claude/settings.local.json").unwrap();
+    tm.exp_string("Write .claude/settings.local.json? [y/N] ")
         .unwrap();
     tm.send_line("n").unwrap();
     let rest = tm.exp_eof().unwrap();
-    assert!(rest.contains(".claude/settings.json not written"), "{rest}");
-    assert!(!settings.exists());
+    assert!(
+        rest.contains(".claude/settings.local.json not written"),
+        "{rest}"
+    );
+    assert!(!local.exists());
 
     let mut tm = tm_pty(&scratch, &repo, &["setup", "claude"]);
+    tm.exp_string("Choose 1 or 2 [1]: ").unwrap();
+    tm.send_line("3").unwrap();
+    tm.exp_string("Choose 1 or 2 [1]: ").unwrap();
+    tm.send_line("1").unwrap();
+    tm.exp_string("Write .claude/settings.local.json? [y/N] ")
+        .unwrap();
+    tm.send_line("y").unwrap();
+    let rest = tm.exp_eof().unwrap();
+    assert!(rest.contains("it is not committed\r\n"), "{rest}");
+    assert!(
+        std::fs::read_to_string(&local)
+            .unwrap()
+            .contains("tm prime")
+    );
+
+    // With the hooks in a file, setup acts there without asking where.
+    let mut tm = tm_pty(&scratch, &repo, &["setup", "claude", "--undo"]);
+    tm.exp_string("Remove .claude/settings.local.json? [y/N] ")
+        .unwrap();
+    tm.send_line("y").unwrap();
+    tm.exp_eof().unwrap();
+    assert!(!local.exists());
+
+    let mut tm = tm_pty(&scratch, &repo, &["setup", "claude"]);
+    tm.exp_string("Choose 1 or 2 [1]: ").unwrap();
+    tm.send_line("2").unwrap();
     tm.exp_string("Write .claude/settings.json? [y/N] ")
         .unwrap();
     tm.send_line("y").unwrap();
     let rest = tm.exp_eof().unwrap();
     assert!(rest.contains("Commit .claude/settings.json\r\n"), "{rest}");
-    assert!(
-        std::fs::read_to_string(&settings)
-            .unwrap()
-            .contains("tm prime")
-    );
-
-    let mut tm = tm_pty(&scratch, &repo, &["setup", "claude", "--undo"]);
-    tm.exp_string("Remove .claude/settings.json? [y/N] ")
-        .unwrap();
-    tm.send_line("y").unwrap();
-    tm.exp_eof().unwrap();
-    assert!(!settings.exists());
+    assert!(shared.exists() && !local.exists());
 }
 
 #[test]
@@ -353,7 +375,7 @@ fn setup_writes_nothing_when_the_file_changed_while_it_asked() {
     std::fs::create_dir_all(repo.join(".claude")).unwrap();
     std::fs::write(&settings, "{}\n").unwrap();
 
-    let mut tm = tm_pty(&scratch, &repo, &["setup", "claude"]);
+    let mut tm = tm_pty(&scratch, &repo, &["setup", "claude", "--shared"]);
     tm.exp_string("Write .claude/settings.json? [y/N] ")
         .unwrap();
     std::fs::write(&settings, "{\"model\": \"edited\"}\n").unwrap();
@@ -372,7 +394,7 @@ fn setup_writes_nothing_when_the_file_changed_while_it_asked() {
     let shared = scratch.0.join("shared.json");
     std::fs::write(&shared, "{}\n").unwrap();
     std::fs::write(&settings, "{}\n").unwrap();
-    let mut tm = tm_pty(&scratch, &repo, &["setup", "claude"]);
+    let mut tm = tm_pty(&scratch, &repo, &["setup", "claude", "--shared"]);
     tm.exp_string("Write .claude/settings.json? [y/N] ")
         .unwrap();
     std::fs::remove_file(&settings).unwrap();
