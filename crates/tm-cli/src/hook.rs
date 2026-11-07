@@ -208,9 +208,13 @@ fn edit_notes(input: &Value) -> Result<Notes, CliError> {
             .and_then(Value::as_object)
             .map(|tool| tool.keys().map(String::as_str).collect())
             .unwrap_or_default();
+        let held = if keys.is_empty() {
+            "tool_input is missing or empty".to_owned()
+        } else {
+            format!("tool_input holds {}", keys.join(", "))
+        };
         return Err(failed(format!(
-            "cannot find the edited file in the hook's input (tool_input holds {}), so Path Claims go unchecked",
-            keys.join(", ")
+            "cannot find the edited file in the hook's input ({held}), so Path Claims go unchecked"
         )));
     };
     let here = here::read()?;

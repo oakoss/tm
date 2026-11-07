@@ -26,9 +26,10 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
     if json {
         return Err(CliError::new(
             "usage",
-            "tm tui draws screens, so it has no JSON form (--json or TM_JSON=1)",
+            "tm tui draws screens, so it has no JSON form (--json or TM_JSON=1); \
+             tm list, tm ready and tm show give a script the same",
         )
-        .fix("tm list --json, tm ready --json and tm show --json give a script the same"));
+        .fix("tm list --json"));
     }
     if !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
         return Err(CliError::new(

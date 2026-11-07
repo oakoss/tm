@@ -63,6 +63,7 @@ fn without_a_terminal_or_under_json_it_refuses_and_says_why() {
         let said = tui.exp_eof().unwrap();
         assert!(said.contains(r#""error":"usage""#), "{args}: {said}");
         assert!(said.contains("no JSON form"), "{args}: {said}");
+        assert!(said.contains(r#""fix":"tm list --json""#), "{args}: {said}");
         assert!(!said.contains("\u{1b}[?1049h"), "never drew: {said}");
         assert_eq!(exit_code(&tui), 2);
     }

@@ -531,6 +531,18 @@ fn a_file_is_placed_by_the_checkout_it_lies_in_and_a_new_claim_is_told() {
 }
 
 #[test]
+fn an_edit_hook_without_tool_input_says_so() {
+    let scratch = Scratch::new();
+    let repo = three_claims(&scratch);
+    let bare = json!({ "session_id": "s3", "tool_name": "Edit" });
+    assert_eq!(
+        hook_says(&scratch, &repo, "s3", &bare),
+        "tm: cannot find the edited file in the hook's input (tool_input is missing or empty), \
+         so Path Claims go unchecked"
+    );
+}
+
+#[test]
 fn an_edit_hook_error_is_told_once_whatever_the_heartbeat_does() {
     let scratch = Scratch::new();
     let repo = three_claims(&scratch);
