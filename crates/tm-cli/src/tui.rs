@@ -3,13 +3,15 @@
 use std::io::{self, IsTerminal};
 use std::process::ExitCode;
 
+use tm_core::ProjectId;
 use tm_store::{Store, StoreError};
 use tm_tui::Seen;
 use uuid::Uuid;
 
 use crate::error::CliError;
+use crate::identity::Identity;
 use crate::output;
-use crate::{here, history, identity, show, watch};
+use crate::{here, history, identity, ready, show, watch};
 
 pub(crate) fn run(json: bool) -> ExitCode {
     match open(json) {
@@ -40,20 +42,12 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
         .fix("tm list"));
     }
     let here = here::read()?;
-    let (_, key) = here::mapped_project(&here.store, &here.found, &here.cwd)?;
+    let (project, key) = here::mapped_project(&here.store, &here.found, &here.cwd)?;
     let mut place = key.to_owned();
     if here.snapshot.is_some() {
         place.push_str(" (read-only Snapshot)");
     }
-    // As tm list reads @me, keeping why no one can be named.
-    let me =
-        identity::resolve(identity::env, || identity::git_email(&here.found.dir)).map(|identity| {
-            let actor = identity.actor;
-            actor
-                .on_behalf_of()
-                .unwrap_or_else(|| actor.name())
-                .to_owned()
-        });
+    let (me, reader) = session(identity::env, || identity::git_email(&here.found.dir));
     // A Snapshot is opened immutable and a replaced store file is another
     // file, so the list's reader is opened again on each change, and first
     // after the watch starts, so no change between the two is missed.
@@ -70,7 +64,11 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
     let store = open()?;
     let me = me.as_deref().map_err(String::as_str);
     let mut pending = false;
-    let actions = Cli { me: me.ok() };
+    let actions = Cli {
+        me: me.ok(),
+        project,
+        reader: reader.as_ref().map_err(String::as_str),
+    };
     tm_tui::run(place, store, me, &actions, |store| {
         let (opened, seen) = refresh(watch.changed(), &mut pending, open, || {
             jiff::Zoned::now().strftime("%H:%M:%S").to_string()
@@ -86,10 +84,30 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
     })
 }
 
+/// Who `@me` is, as `tm list` reads it, and the session as `tm ready` reads
+/// it, which for an Agent needs no email; each kept with why it cannot be
+/// said.
+fn session(
+    var: impl Fn(&str) -> Option<identity::Var> + Copy,
+    email: impl Fn() -> Result<String, String>,
+) -> (Result<String, String>, Result<Identity, String>) {
+    let me = identity::resolve(var, &email).map(|identity| {
+        let actor = identity.actor;
+        actor
+            .on_behalf_of()
+            .unwrap_or_else(|| actor.name())
+            .to_owned()
+    });
+    (me, identity::reader(var, email))
+}
+
 /// The screens' text from the CLI's own commands, `me` the person at the
-/// terminal.
+/// terminal, `reader` the session as `tm ready` reads it or why it cannot,
+/// and `project` the one this directory maps to.
 struct Cli<'a> {
     me: Option<&'a str>,
+    project: ProjectId,
+    reader: Result<&'a Identity, &'a str>,
 }
 
 impl tm_tui::Actions for Cli<'_> {
@@ -106,6 +124,30 @@ impl tm_tui::Actions for Cli<'_> {
             .split_once('\n')
             .map_or("", |(_, writes)| writes);
         Ok(format!("{}\nHistory\n{writes}", shown.text))
+    }
+
+    /// `tm ready`'s warnings, which it prints on stderr, lead the text.
+    fn ready(&self, store: &Store) -> Result<String, String> {
+        let mut warnings = Vec::new();
+        let actor = || match self.reader {
+            Ok(identity) => {
+                warnings.extend(identity.warnings.iter().cloned());
+                Ok(identity.actor.clone())
+            }
+            Err(why) => Err(format!("no identity, so no Short-lists: {why}")),
+        };
+        let lists = ready::lists_in(store, self.project, actor).unwrap_or_else(|warning| {
+            warnings.push(warning);
+            Vec::new()
+        });
+        let text = ready::render(store, &lists).map_err(|err| err.message)?;
+        let mut lead = String::new();
+        for warning in warnings {
+            lead.push_str("warning: ");
+            lead.push_str(&warning);
+            lead.push('\n');
+        }
+        Ok(lead + &text)
     }
 }
 
@@ -189,7 +231,12 @@ mod tests {
             };
             store.append(draft).unwrap();
         }
-        let text = Cli { me: Some("jace") }.detail(&store, id).unwrap();
+        let cli = Cli {
+            me: Some("jace"),
+            project,
+            reader: Err("unused"),
+        };
+        let text = cli.detail(&store, id).unwrap();
         let (shown, writes) = text.split_once("\nHistory\n").expect("a History heading");
         assert!(shown.contains("note 1"), "every comment: {shown}");
         assert!(
@@ -197,6 +244,56 @@ mod tests {
             "history's writes: {writes}"
         );
         assert_eq!(text.matches("TM-1  alpha").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn the_ready_screen_is_tm_ready_with_its_warnings_first() {
+        let dir = std::env::temp_dir().join(format!("tm-ready-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut store = Store::open(&dir.join("store.db")).unwrap();
+        let jace = Actor::human("jace");
+        let (project, _) = store.create_project(&jace, "TM", "Core").unwrap();
+        let (first, _) = store.create_issue(&jace, project, "task", "alpha").unwrap();
+        store.create_issue(&jace, project, "task", "beta").unwrap();
+        let (list, _) = store
+            .create_shortlist(&jace, project, "docs", &["jace".to_owned()], None)
+            .unwrap();
+        store
+            .shortlist_add(&jace, list, &[first], tm_store::Place::End)
+            .unwrap();
+        let identity = Identity {
+            actor: jace.clone(),
+            warnings: vec!["found two harnesses".into()],
+        };
+        let cli = Cli {
+            me: Some("jace"),
+            project,
+            reader: Ok(&identity),
+        };
+        let text = cli.ready(&store).unwrap();
+        assert!(text.starts_with("warning: found two harnesses\n"), "{text}");
+        let lists = text.find("Short-lists (tm next takes the first that can start):");
+        let queue = text.find("Ready (2):");
+        assert!(lists.is_some() && queue > lists, "{text}");
+        assert!(text.contains("\nTM-2  todo  none  beta\n"), "{text}");
+        let nobody = Cli {
+            me: None,
+            project,
+            reader: Err("set TM_ACTOR"),
+        };
+        let text = nobody.ready(&store).unwrap();
+        assert!(
+            text.starts_with("warning: no identity, so no Short-lists: set TM_ACTOR\nTM-"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn an_agent_with_no_email_reads_its_lists_as_tm_ready_does() {
+        let var = |name: &str| (name == "TM_AGENT").then(|| Ok("claude".to_owned()));
+        let (me, reader) = session(var, || Err("no user.email".into()));
+        assert!(me.is_err(), "@me needs a person: {me:?}");
+        assert_eq!(reader.unwrap().actor.name(), "claude");
     }
 
     fn busy() -> StoreError {

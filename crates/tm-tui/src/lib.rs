@@ -26,17 +26,18 @@ use list::{Done, List};
 /// How often a write elsewhere is looked for between keys (ADR 0018).
 const POLL: Duration = Duration::from_millis(250);
 
-const KEYS: [(&str, &str); 10] = [
+const KEYS: [(&str, &str); 11] = [
     ("j k", "down and up; arrows too"),
     ("g G", "first and last"),
     ("PgDn", "down a page; PgUp up"),
     ("Enter", "open an Issue, or apply a filter"),
     ("/", "type a filter, as tm list"),
     ("a", "open work or every status"),
+    ("r", "the ready queue, as tm ready"),
     ("q", "back to the list, or quit"),
     ("Ctrl-C", "quit"),
     ("?", "show or hide these keys"),
-    ("Esc", "hide keys, a filter, an Issue"),
+    ("Esc", "hide keys or a filter; go back"),
 ];
 
 /// What the screens take from the CLI, so they match its commands (ADR 0018).
@@ -47,6 +48,13 @@ pub trait Actions {
     ///
     /// Why it cannot be shown, such as that it no longer exists.
     fn detail(&self, store: &Store, id: Uuid) -> Result<String, String>;
+
+    /// `tm ready` for the person at the terminal, read from `store`.
+    ///
+    /// # Errors
+    ///
+    /// Why the queue cannot be read.
+    fn ready(&self, store: &Store) -> Result<String, String>;
 }
 
 /// What a look for writes elsewhere found.
@@ -138,10 +146,14 @@ impl Shell {
         match self.list.key(key) {
             Done::Reload => Flow::Reload,
             Done::Open(id, key) => {
-                self.detail = Some(Detail::new(id, key));
+                self.detail = Some(Detail::issue(id, key));
                 Flow::Reload
             }
             Done::Passed if key.code == KeyCode::Char('q') => Flow::Quit,
+            Done::Passed if key.code == KeyCode::Char('r') => {
+                self.detail = Some(Detail::ready());
+                Flow::Reload
+            }
             Done::Handled | Done::Passed => Flow::Stay,
         }
     }
@@ -188,7 +200,7 @@ impl Shell {
         } else {
             self.list
                 .prompt()
-                .unwrap_or_else(|| "q quit · / filter · ? keys".to_owned())
+                .unwrap_or_else(|| "q quit · / filter · r ready · ? keys".to_owned())
         };
         frame.render_widget(Line::from(left), keys);
         if let Some(status) = status {
@@ -541,7 +553,7 @@ mod tests {
     fn question_mark_shows_the_keys_and_esc_hides_them() {
         let mut shell = Shell::new("TM");
         assert_eq!(shell.key(press(KeyCode::Char('?'))), Flow::Stay);
-        insta::assert_snapshot!(drawn_sized(&mut shell, 60, 16));
+        insta::assert_snapshot!(drawn_sized(&mut shell, 60, 17));
         assert_eq!(shell.key(press(KeyCode::Esc)), Flow::Stay);
         assert!(!drawn(&mut shell).contains("Keys"));
     }
@@ -572,9 +584,20 @@ mod tests {
         let mut shell = Shell::new("TM");
         shell.load(&store, NOBODY, &Fake);
         shell.seen(Seen::Changed("10:15:03".into()));
-        for (open, help) in [(false, false), (false, true), (true, true), (true, false)] {
-            if open && shell.detail.is_none() {
-                shell.key(press(KeyCode::Enter));
+        let states = [
+            (None, false),
+            (None, true),
+            (Some(KeyCode::Enter), true),
+            (Some(KeyCode::Enter), false),
+            (Some(KeyCode::Char('r')), false),
+            (Some(KeyCode::Char('r')), true),
+        ];
+        for (open, help) in states {
+            if let Some(open) = open {
+                if shell.detail.is_some() {
+                    shell.key(press(KeyCode::Esc));
+                }
+                shell.key(press(open));
                 shell.load(&store, NOBODY, &Fake);
             }
             if help != shell.help {
@@ -604,6 +627,11 @@ mod tests {
                 lines.collect::<String>()
             ))
         }
+
+        fn ready(&self, store: &Store) -> Result<String, String> {
+            let ready = store.ready().map_err(|err| err.to_string())?;
+            Ok(format!("{} ready \u{1b}[2Jsafe\n", ready.len()))
+        }
     }
 
     struct Gone;
@@ -611,6 +639,10 @@ mod tests {
     impl Actions for Gone {
         fn detail(&self, _: &Store, _: Uuid) -> Result<String, String> {
             Err("Issue TM-2 \u{1b}[2Jdoes not exist".into())
+        }
+
+        fn ready(&self, _: &Store) -> Result<String, String> {
+            Err("the queue \u{1b}[2Jcannot be read".into())
         }
     }
 
@@ -623,6 +655,10 @@ mod tests {
                 let _ = writeln!(text, "row{n:02} wraps in here");
                 text
             }))
+        }
+
+        fn ready(&self, store: &Store) -> Result<String, String> {
+            self.detail(store, Uuid::nil())
         }
     }
 
@@ -709,6 +745,43 @@ mod tests {
         let screen = drawn(&mut shell);
         assert!(screen.contains(r"Issue TM-2 \u{1b}[2Jdoes not"), "{screen}");
         assert_eq!(shell.key(press(KeyCode::Esc)), Flow::Reload);
+    }
+
+    #[test]
+    fn r_opens_the_ready_queue_as_the_cli_prints_it_and_q_goes_back() {
+        let store = store();
+        let mut shell = Shell::new("TM");
+        shell.load(&store, NOBODY, &Fake);
+        shell.key(press(KeyCode::Char('j')));
+        assert_eq!(shell.key(press(KeyCode::Char('r'))), Flow::Reload);
+        shell.load(&store, NOBODY, &Fake);
+        insta::assert_snapshot!(drawn(&mut shell));
+        assert_eq!(shell.key(press(KeyCode::Char('q'))), Flow::Reload);
+        shell.load(&store, NOBODY, &Fake);
+        assert!(drawn(&mut shell).contains("open Issues"));
+        assert_eq!(shell.list.selected_key().as_deref(), Some("TM-2"));
+    }
+
+    #[test]
+    fn r_while_typing_a_filter_is_text() {
+        let mut shell = Shell::new("TM");
+        shell.key(press(KeyCode::Char('/')));
+        assert_eq!(shell.key(press(KeyCode::Char('r'))), Flow::Stay);
+        assert!(shell.detail.is_none());
+        assert_eq!(shell.list.prompt().as_deref(), Some("/r"));
+    }
+
+    #[test]
+    fn a_ready_queue_that_cannot_be_read_says_why_in_place() {
+        let store = store();
+        let mut shell = Shell::new("TM");
+        shell.key(press(KeyCode::Char('r')));
+        shell.load(&store, NOBODY, &Gone);
+        let screen = drawn(&mut shell);
+        assert!(
+            screen.contains(r"the queue \u{1b}[2Jcannot be read"),
+            "{screen}"
+        );
     }
 
     #[test]

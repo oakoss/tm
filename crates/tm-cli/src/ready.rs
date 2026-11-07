@@ -55,6 +55,16 @@ pub(crate) fn run(limit: Option<usize>, json: bool) -> Result<Output, CliError> 
     Ok(output)
 }
 
+/// What `tm ready` prints, read from `store`: `lists` first, then the queue.
+pub(crate) fn render(
+    store: &Store,
+    lists: &[(Shortlist, Vec<Member>)],
+) -> Result<String, CliError> {
+    store
+        .read(|store| Queue::read(store, None))
+        .map(|queue| queue.text(lists))
+}
+
 /// The ready queue, cut to a limit, with what each Issue unblocks, its
 /// Project's Key and the Short-list it is on.
 struct Queue {
