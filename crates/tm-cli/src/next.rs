@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::claim::Lasts;
 use crate::error::CliError;
+use crate::fields::quoted;
 use crate::here::{self, Here};
 use crate::identity::{self, Identity};
 use crate::output::{Output, printable};
@@ -22,7 +23,31 @@ use crate::start::{self, Started};
 /// Binds a session to one of its Short-lists by name, as `TM_AGENT` names
 /// its Agent.
 const BOUND: &str = "TM_SHORTLIST";
-const BOUND_FIX: &str = "unset TM_SHORTLIST, or set it to a list tm shortlist shows";
+/// What a refusal of `TM_SHORTLIST` adds to its message, beside [`bound_fix`].
+const BOUND_HINT: &str = "unset it, or set it to a list tm shortlist shows";
+
+/// The command that ran, `--peek` and `--json` kept, with `TM_SHORTLIST`
+/// to be named; `--json` added when `TM_JSON` chose JSON mode.
+fn bound_fix(args: &[String], json: bool) -> String {
+    let mut line: Vec<String> = args.iter().skip(1).map(|arg| quoted(arg)).collect();
+    if json
+        && !line
+            .iter()
+            .take_while(|arg| *arg != "--")
+            .any(|arg| arg == "--json")
+    {
+        line.insert(0, "--json".into());
+    }
+    format!("{BOUND}='<name>' tm {}", line.join(" "))
+}
+
+fn ran_fix() -> String {
+    let args: Vec<String> = std::env::args_os()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let json = crate::output::json_mode(&args, std::env::var("TM_JSON").ok().as_deref());
+    bound_fix(&args, json)
+}
 
 /// Where `tm next` takes from, each candidate with why it would be passed
 /// over, as the take judges them.
@@ -436,9 +461,9 @@ fn bound() -> Result<Option<String>, CliError> {
         return Ok(None);
     };
     let invalid = |why: &str| {
-        CliError::new("invalid_value", format!("{BOUND} {why}"))
+        CliError::new("invalid_value", format!("{BOUND} {why}; {BOUND_HINT}"))
             .with("field", BOUND)
-            .fix(BOUND_FIX)
+            .fix(ran_fix())
     };
     let Some(text) = value.to_str() else {
         return Err(invalid("is not valid UTF-8"));
@@ -464,12 +489,15 @@ fn unbound(bound: &str, actor: &Actor, lists: &[Shortlist], matched: usize) -> C
     } else {
         ("not_found", "none of this session's Short-lists".to_owned())
     };
-    let message = format!("{BOUND} names {}, {what}; {theirs}", printable(bound));
+    let message = format!(
+        "{BOUND} names {}, {what}; {theirs}; {BOUND_HINT}",
+        printable(bound)
+    );
     let err = CliError::new(code, message)
         .with("kind", "shortlist")
         .with("name", bound)
         .with("valid", names)
-        .fix(BOUND_FIX);
+        .fix(ran_fix());
     if matched > 1 {
         err.with("count", matched)
     } else {
@@ -581,6 +609,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_bound_fix_keeps_the_command_that_ran() {
+        let ran = ["tm", "--json", "next", "--peek", "--paths", "src/a b"].map(String::from);
+        assert_eq!(
+            bound_fix(&ran, true),
+            "TM_SHORTLIST='<name>' tm --json next --peek --paths 'src/a b'"
+        );
+        let by_env = ["tm", "next", "--paths", "=ls"].map(String::from);
+        assert_eq!(
+            bound_fix(&by_env, true),
+            "TM_SHORTLIST='<name>' tm --json next --paths '=ls'"
+        );
+        assert_eq!(
+            bound_fix(&by_env, false),
+            "TM_SHORTLIST='<name>' tm next --paths '=ls'"
+        );
+    }
+
+    #[test]
     fn a_bound_name_two_lists_share_counts_them() {
         let shared = unbound("docs", &Actor::human("jace"), &[], 2);
         assert_eq!(shared.code, "shortlist_name_shared");
@@ -589,7 +635,14 @@ mod tests {
             (&json!("shortlist"), &json!("docs"))
         );
         assert_eq!(shared.details["count"], 2);
-        assert_eq!(shared.fix.as_deref(), Some(BOUND_FIX));
+        assert!(
+            shared
+                .fix
+                .as_deref()
+                .is_some_and(|fix| fix.starts_with("TM_SHORTLIST='<name>' tm ")),
+            "{:?}",
+            shared.fix
+        );
         let missing = unbound("docs", &Actor::human("jace"), &[], 0);
         assert_eq!(missing.code, "not_found");
         assert!(!missing.details.contains_key("count"));

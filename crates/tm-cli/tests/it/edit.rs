@@ -421,22 +421,26 @@ fn a_field_given_as_a_flag_is_pointed_at_set() {
 }
 
 #[test]
-fn a_line_clap_cannot_parse_with_the_field_gets_set_alone() {
+fn a_line_clap_cannot_parse_with_the_field_points_at_set_without_a_fix() {
     let scratch = Scratch::new();
     let (repo, _store) = two_issues(&scratch);
 
-    for (args, fix) in [
-        (
-            &["edit", "TM-2", "--description", "-text"][..],
-            "--set 'description=<value>'",
-        ),
-        (&["edit", "--assignee", "TM-2"], "--set 'assignee=<value>'"),
+    for args in [
+        &["edit", "TM-2", "--description", "-text"][..],
+        &["edit", "--assignee", "TM-2"],
     ] {
         let out = tm(&scratch, &repo, &[&["--json"], args].concat());
         assert_eq!(out.status.code(), Some(2), "{args:?}: {out:?}");
         let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(doc["error"], "usage", "{doc}");
-        assert_eq!(doc["fix"], fix, "{args:?}");
+        assert!(
+            doc["message"]
+                .as_str()
+                .unwrap()
+                .contains("a field is set with --set FIELD=VALUE"),
+            "{doc}"
+        );
+        assert_eq!(doc["fix"], Value::Null, "{args:?}");
     }
 }
 

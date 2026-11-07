@@ -183,10 +183,14 @@ fn reads_fall_back_to_the_snapshot_where_the_store_is_refused() {
         );
         assert!(!out.status.success());
         assert_eq!(doc(&out)["error"], "read_only", "{out:?}");
-        assert_eq!(
-            doc(&out)["fix"],
-            "run it where this process may write the store"
+        assert!(
+            doc(&out)["message"]
+                .as_str()
+                .unwrap()
+                .ends_with("; run it where it may"),
+            "{out:?}"
         );
+        assert_eq!(doc(&out)["fix"], Value::Null);
 
         let out = tm(&scratch, &repo, &["--json", "export"]);
         assert!(!out.status.success(), "a backup is never the Snapshot");
@@ -206,10 +210,14 @@ fn a_refused_store_without_a_snapshot_is_an_error() {
         let out = tm(&scratch, &repo, &["--json", "list"]);
         assert!(!out.status.success());
         assert_eq!(doc(&out)["error"], "read_only", "{out:?}");
-        assert_eq!(
-            doc(&out)["fix"],
-            "run any write where tm may write the store, which publishes one"
+        assert!(
+            doc(&out)["message"]
+                .as_str()
+                .unwrap()
+                .ends_with("; any write where tm may write the store publishes one"),
+            "{out:?}"
         );
+        assert_eq!(doc(&out)["fix"], Value::Null);
     });
 }
 

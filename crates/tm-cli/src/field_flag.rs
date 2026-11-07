@@ -203,8 +203,8 @@ impl Parsed {
 /// A settable field given to edit, create or move as its own flag: a usage
 /// error whose fix is the line clap parses with each field accepted as a
 /// flag, rebuilt with `--set`, or for one `--status` beside options tm move
-/// takes, the move. A line even that parse refuses gets `--set` alone as its
-/// fix. `None` leaves clap's error.
+/// takes, the move. A line even that parse refuses gets no fix, since no
+/// runnable line can be built from it. `None` leaves clap's error.
 pub(crate) fn refused(cli: Command, args: &[String], flag: &str) -> Option<CliError> {
     let field = flag.strip_prefix("--")?.replace('-', "_");
     let command = args
@@ -230,7 +230,7 @@ pub(crate) fn refused(cli: Command, args: &[String], flag: &str) -> Option<CliEr
     let set = "a field is set with --set FIELD=VALUE";
     let mut cli = cli.mut_subcommand(&command, accepting_fields);
     let Ok(matches) = cli.try_get_matches_from_mut(args) else {
-        return Some(error(set).fix(format!("--set {}", quoted(&format!("{field}=<value>")))));
+        return Some(error(set));
     };
     let def = cli.find_subcommand(&command)?;
     let parsed = Parsed::read(def, matches.subcommand_matches(&command)?);

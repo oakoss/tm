@@ -238,10 +238,28 @@ fn tm_shortlist_binds_a_session_to_one_list_and_never_falls_back() {
     assert_eq!(doc["valid"], json!(["docs", "ops"]), "{doc}");
     let message = doc["message"].as_str().unwrap();
     assert!(message.starts_with("TM_SHORTLIST names nope"), "{message}");
+    assert!(
+        message.ends_with("; unset it, or set it to a list tm shortlist shows"),
+        "{message}"
+    );
+    assert_eq!(doc["fix"], "TM_SHORTLIST='<name>' tm --json next", "{doc}");
+    let by_env = [("TM_SHORTLIST", "nope"), ("TM_JSON", "1")];
+    let doc = json_of(&claude(&scratch, &repo, &by_env, "next"));
+    assert_eq!(doc["fix"], "TM_SHORTLIST='<name>' tm --json next", "{doc}");
 
-    let out = claude(&scratch, &repo, &[("TM_SHORTLIST", " ")], "--json next");
+    let out = claude(
+        &scratch,
+        &repo,
+        &[("TM_SHORTLIST", " ")],
+        "--json next --peek",
+    );
     assert_eq!(out.status.code(), Some(1));
-    assert_eq!(json_of(&out)["error"], "invalid_value");
+    let doc = json_of(&out);
+    assert_eq!(doc["error"], "invalid_value");
+    assert_eq!(
+        doc["fix"], "TM_SHORTLIST='<name>' tm --json next --peek",
+        "{doc}"
+    );
 }
 
 #[test]

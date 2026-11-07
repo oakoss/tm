@@ -26,9 +26,8 @@ const RESERVED: [&str; 6] = [
 /// What an export a restore refuses can still bring in (ADR 0013).
 pub(crate) const RECORDS_FIX: &str = "tm import --records FILE";
 
-const SHARED_NAME_FIX: &str = "name a list by the id tm shortlist --all --json gives";
-const SHARED_NAME_IMPORT_FIX: &str =
-    "rename one with tm shortlist edit ID --name NAME, by the id tm shortlist --all --json gives";
+const SHARED_NAME_FIX: &str = "tm shortlist --all --json";
+const SHARED_NAME_IMPORT_FIX: &str = "tm shortlist edit '<id>' --name '<name>'";
 
 #[derive(Debug, Clone)]
 pub(crate) struct CliError {
@@ -239,6 +238,11 @@ impl CliError {
                 }
                 // The record's source and cause are the file's words.
                 refused.message = crate::output::printable(&message);
+                if shared {
+                    refused
+                        .message
+                        .push_str("; tm shortlist --all --json gives each list's id");
+                }
                 refused
             }
             StoreError::ImportChanged(issue) => Self::changed("import_changed", message, issue),
@@ -294,25 +298,30 @@ impl CliError {
             StoreError::UnknownShortlist(id) => {
                 Self::not_found("shortlist", &id, message).fix("tm shortlist --all")
             }
-            StoreError::ShortlistNameShared { name, count } => {
-                Self::new("shortlist_name_shared", message)
-                    .with("kind", "shortlist")
-                    .with("name", name)
-                    .with("count", count)
-                    .fix(SHARED_NAME_FIX)
-            }
-            StoreError::ShortlistFull { name, size } => Self::new("shortlist_full", message)
-                .with("name", name.clone())
-                .with("size", size)
-                .fix(format!(
-                    "raise its size with tm shortlist edit {name} --size N, or remove an Issue with tm shortlist remove KEY"
-                )),
+            StoreError::ShortlistNameShared { name, count } => Self::new(
+                "shortlist_name_shared",
+                format!("{message}, or name it by the id tm shortlist --all --json gives"),
+            )
+            .with("kind", "shortlist")
+            .with("name", name)
+            .with("count", count)
+            .fix(SHARED_NAME_FIX),
+            StoreError::ShortlistFull { name, size } => Self::new(
+                "shortlist_full",
+                format!("{message}; raise its size, or remove an Issue with tm shortlist remove"),
+            )
+            .with("name", name.clone())
+            .with("size", size)
+            .fix(format!(
+                "tm shortlist edit {} --size '<size>'",
+                crate::fields::quoted(&name)
+            )),
             StoreError::CannotJoin { issue, reason } => Self::new("cannot_join", message)
                 .with("reason", reason)
                 .issue(issue),
             StoreError::NotOnShortlist(issue) => Self::new("not_on_shortlist", message)
                 .issue(issue)
-                .fix("tm shortlist add LIST KEY"),
+                .fix("tm shortlist add '<list>' '<key>'"),
             other => Self::internal("store", other.to_string()),
         }
     }
@@ -359,16 +368,20 @@ impl CliError {
                 .with("supported", supported)
                 .fix("upgrade tm"),
             StoreError::FormatChanged => Self::new("store_format_changed", message),
-            StoreError::SnapshotVersion { found, expected } => {
+            StoreError::SnapshotVersion { found, expected } if found > expected => {
                 Self::new("snapshot_version", message)
                     .with("found", found)
                     .with("expected", expected)
-                    .fix(if found > expected {
-                        "upgrade tm"
-                    } else {
-                        "run any write with this tm where it may write the store, which publishes a new Snapshot"
-                    })
+                    .fix("upgrade tm")
             }
+            StoreError::SnapshotVersion { found, expected } => Self::new(
+                "snapshot_version",
+                format!(
+                    "{message}; any write with this tm, where it may write the store, publishes a new Snapshot"
+                ),
+            )
+            .with("found", found)
+            .with("expected", expected),
             StoreError::WorkspaceNotEmpty { workspace, held } => {
                 Self::new("workspace_not_empty", message)
                     .with("workspace", workspace.to_string())
@@ -675,10 +688,7 @@ mod tests {
             name: "docs".into(),
             count: 2,
         });
-        assert_eq!(
-            SHARED_NAME_FIX,
-            "name a list by the id tm shortlist --all --json gives"
-        );
+        assert_eq!(SHARED_NAME_FIX, "tm shortlist --all --json");
         for err in [&filter, &command] {
             assert_eq!(err.code, "shortlist_name_shared");
             assert_eq!(err.details["kind"], "shortlist");
@@ -700,22 +710,55 @@ mod tests {
             ("shortlist_name_shared", &json!("docs"))
         );
         assert_eq!(import.fix.as_deref(), Some(SHARED_NAME_IMPORT_FIX));
-        let full = CliError::from(StoreError::RecordRefused {
-            line: 3,
-            record: "src-1".into(),
-            cause: Box::new(StoreError::ShortlistFull {
-                name: "docs".into(),
-                size: 2,
-            }),
-            written: Vec::new(),
-        });
         assert!(
-            full.fix
-                .as_deref()
-                .is_some_and(|fix| fix.starts_with("raise its size")),
-            "{:?}",
-            full.fix
+            import
+                .message
+                .ends_with("; tm shortlist --all --json gives each list's id"),
+            "{}",
+            import.message
         );
+        let full = |name: &str| {
+            CliError::from(StoreError::RecordRefused {
+                line: 3,
+                record: "src-1".into(),
+                cause: Box::new(StoreError::ShortlistFull {
+                    name: name.into(),
+                    size: 2,
+                }),
+                written: Vec::new(),
+            })
+            .fix
+        };
+        assert_eq!(
+            full("docs").as_deref(),
+            Some("tm shortlist edit docs --size '<size>'")
+        );
+        assert_eq!(
+            full("my list").as_deref(),
+            Some("tm shortlist edit 'my list' --size '<size>'")
+        );
+    }
+
+    #[test]
+    fn a_snapshot_from_an_older_tm_says_a_write_publishes_a_new_one() {
+        let older = CliError::from(StoreError::SnapshotVersion {
+            found: 1,
+            expected: 2,
+        });
+        assert_eq!(
+            (older.code, older.fix.as_deref()),
+            ("snapshot_version", None)
+        );
+        assert!(
+            older.message.ends_with("publishes a new Snapshot"),
+            "{}",
+            older.message
+        );
+        let newer = CliError::from(StoreError::SnapshotVersion {
+            found: 3,
+            expected: 2,
+        });
+        assert_eq!(newer.fix.as_deref(), Some("upgrade tm"));
     }
 
     #[test]

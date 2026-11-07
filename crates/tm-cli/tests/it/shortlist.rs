@@ -156,7 +156,10 @@ fn refusals_carry_a_code_and_a_fix() {
     let (code, doc) = run(&scratch, &repo, "shortlist add docs TM-2");
     assert_eq!(code, Some(1));
     assert_eq!(doc["error"], "shortlist_full");
-    assert!(doc["fix"].as_str().unwrap().contains("--size"), "{doc}");
+    assert_eq!(
+        doc["fix"], "tm shortlist edit docs --size '<size>'",
+        "{doc}"
+    );
 
     run(&scratch, &repo, "move TM-3 done");
     let (_, doc) = run(&scratch, &repo, "shortlist edit docs --size 10");

@@ -287,9 +287,11 @@ pub(crate) fn refused(field: &str, reason: &str) -> CliError {
         .with("reason", reason)
 }
 
-/// `value` as one POSIX shell word, for a fix to run as printed.
+/// `value` as one POSIX shell word, for a fix to run as printed. A leading
+/// `=` is quoted, since zsh expands `=cmd` to the command's path.
 pub(crate) fn quoted(value: &str) -> String {
     let plain = !value.is_empty()
+        && !value.starts_with('=')
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"-_.,:/=@+%".contains(&b));
@@ -305,6 +307,15 @@ mod tests {
     use tm_core::scheme::Field;
 
     use super::*;
+
+    #[test]
+    fn a_word_any_shell_could_rewrite_is_quoted() {
+        assert_eq!(quoted("src/a.rs"), "src/a.rs");
+        assert_eq!(quoted("a=b"), "a=b");
+        assert_eq!(quoted("=ls"), "'=ls'");
+        assert_eq!(quoted("it's"), r"'it'\''s'");
+        assert_eq!(quoted(""), "''");
+    }
 
     #[test]
     fn a_set_value_takes_the_type_its_field_stores() {
