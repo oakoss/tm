@@ -34,9 +34,10 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
     if !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
         return Err(CliError::new(
             "not_a_terminal",
-            "tm tui draws screens, so it needs a terminal for its input and output",
+            "tm tui draws screens, so it needs a terminal for its input and output; \
+             tm list, tm ready and tm show print the same for a script",
         )
-        .fix("run it in a terminal; tm list, tm ready and tm show print the same for a script"));
+        .fix("tm list"));
     }
     let here = here::read()?;
     let (_, key) = here::mapped_project(&here.store, &here.found, &here.cwd)?;

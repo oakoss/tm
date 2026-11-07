@@ -72,11 +72,10 @@ pub(crate) fn open() -> Result<Here, CliError> {
             Some(path) => CliError::new(
                 "read_only",
                 format!(
-                    "{}: this process may not open the store for writing, as in a sandbox",
+                    "{}: this process may not open the store for writing, as in a sandbox; run it where it may",
                     path.display()
                 ),
-            )
-            .fix("run it where this process may write the store"),
+            ),
             None => err.into(),
         }),
     }
@@ -104,11 +103,10 @@ pub(crate) fn read() -> Result<Here, CliError> {
         return Err(CliError::new(
             "read_only",
             format!(
-                "{}: this process may not open the store, as in a sandbox, and no Snapshot has been published to read instead",
+                "{}: this process may not open the store, as in a sandbox, and no Snapshot has been published to read instead; any write where tm may write the store publishes one",
                 store_path.display()
             ),
-        )
-        .fix("run any write where tm may write the store, which publishes one"));
+        ));
     };
     let store = Store::open_snapshot(&path, workspace.id)?;
     let mut here = opened(home, found, &cwd, workspace, store)?;
