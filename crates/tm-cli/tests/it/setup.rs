@@ -29,6 +29,38 @@ fn as_agent(scratch: &Scratch, repo: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
+fn each_hook_exits_quietly_where_tm_is_not_installed() {
+    let scratch = Scratch::new();
+    let repo = fixture(&scratch, "repo");
+    let made = tm(&scratch, &repo, &["setup", "claude", "--yes"]);
+    assert!(made.status.success(), "{made:?}");
+    let written = doc(&fs::read(repo.join(SETTINGS)).unwrap());
+    let commands: Vec<&str> = written["hooks"]
+        .as_object()
+        .unwrap()
+        .values()
+        .flat_map(|groups| groups.as_array().unwrap())
+        .flat_map(|group| group["hooks"].as_array().unwrap())
+        .map(|handler| handler["command"].as_str().unwrap())
+        .collect();
+    assert_eq!(commands.len(), 6);
+    for command in commands {
+        let ran = Command::new("/bin/sh")
+            .args(["-c", command])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(ran.status.success(), "{command}: {ran:?}");
+        assert!(
+            ran.stdout.is_empty() && ran.stderr.is_empty(),
+            "{command}: {ran:?}"
+        );
+    }
+}
+
+#[test]
 fn yes_writes_the_hooks_once_and_undo_removes_the_file_it_made() {
     let scratch = Scratch::new();
     let repo = fixture(&scratch, "repo");
@@ -67,6 +99,7 @@ fn yes_writes_the_hooks_once_and_undo_removes_the_file_it_made() {
                 .unwrap()
         })
         .collect();
+    let guard = "command -v tm >/dev/null || exit 0; ";
     assert_eq!(
         commands,
         [
@@ -76,13 +109,15 @@ fn yes_writes_the_hooks_once_and_undo_removes_the_file_it_made() {
             "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm hook subagent-stop claude || exit 1",
             "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm hook session-end claude",
         ]
+        .map(|command| format!("{guard}{command}"))
     );
     assert_eq!(written["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+    assert_eq!(written["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"], 10);
     let edit = &written["hooks"]["PreToolUse"][1];
     assert_eq!(edit["matcher"], "Edit|MultiEdit|Write|NotebookEdit");
     assert_eq!(
         edit["hooks"][0]["command"],
-        "cd \"${CLAUDE_PROJECT_DIR:?}\" && tm hook pre-edit claude || exit 1"
+        format!("{guard}cd \"${{CLAUDE_PROJECT_DIR:?}}\" && tm hook pre-edit claude || exit 1")
     );
     assert_eq!(written["hooks"]["PostToolUse"][0]["matcher"], "*");
     assert_eq!(
@@ -200,7 +235,7 @@ fn nothing_is_written_without_a_yes() {
         refusal["diff"]
             .as_str()
             .unwrap()
-            .contains("+            \"command\": \"tm prime\""),
+            .contains("+            \"command\": \"command -v tm >/dev/null || exit 0; tm prime\""),
         "{refusal}"
     );
 
@@ -255,7 +290,7 @@ fn an_agent_is_only_shown_the_diff_even_with_yes() {
         refusal["diff"]
             .as_str()
             .unwrap()
-            .contains("+            \"command\": \"tm prime\""),
+            .contains("+            \"command\": \"command -v tm >/dev/null || exit 0; tm prime\""),
         "{refusal}"
     );
     let harness = agent_command(&scratch, &repo, &["setup", "claude", "--yes"])
