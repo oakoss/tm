@@ -68,6 +68,16 @@ impl Drop for Scratch {
 }
 
 pub(crate) fn git(scratch: &Scratch, dir: &Path, args: &[&str]) -> Output {
+    git_with(scratch, dir, args, &[])
+}
+
+/// [`git`] with `envs` set, such as a committer date.
+pub(crate) fn git_with(
+    scratch: &Scratch,
+    dir: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> Output {
     let output = Command::new("git")
         .args([
             "-c",
@@ -90,6 +100,7 @@ pub(crate) fn git(scratch: &Scratch, dir: &Path, args: &[&str]) -> Output {
         .env("GIT_CONFIG_GLOBAL", scratch.git_config())
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_OPTIONAL_LOCKS", "0")
+        .envs(envs.iter().copied())
         .output()
         .unwrap();
     assert!(output.status.success(), "git {args:?}: {output:?}");

@@ -1082,6 +1082,39 @@ impl Store {
         rows.map(|issue| uuid_from(&issue?)).collect()
     }
 
+    /// The Issues imported from an id written exactly so: `cpl-482` for the
+    /// Issue imported as `beads:cpl-482`, which `CPL-482` does not name.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
+    pub fn issues_imported_as(&self, id: &str) -> Result<Vec<Uuid>, StoreError> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT DISTINCT issue_id FROM ops
+             WHERE kind = 'create' AND source IS NOT NULL
+               AND lower(substr(source, instr(source, ':') + 1)) = lower(?1)
+               AND substr(source, instr(source, ':') + 1) = ?1",
+        )?;
+        let rows = stmt.query_map([id], |row| row.get::<_, Vec<u8>>(0))?;
+        rows.map(|issue| uuid_from(&issue?)).collect()
+    }
+
+    /// When the Project was created, in Unix milliseconds.
+    ///
+    /// # Errors
+    ///
+    /// Any SQLite failure.
+    pub fn project_created_ms(&self, project: ProjectId) -> Result<Option<i64>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT created_ms FROM projects WHERE id = ?1",
+                [project.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     /// The comments, with their Issues, an import's comment id names without
     /// case, read against the Issue's source so either id may hold a `#`.
     ///

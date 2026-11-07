@@ -9,7 +9,7 @@ use tm_core::{Actor, Change, ProjectId};
 use tm_store::{Draft, Store};
 use uuid::Uuid;
 
-use crate::support::{Scratch, git, initialized, text, tm, tm_command};
+use crate::support::{self, Scratch, git, git_with, initialized, text, tm, tm_command};
 
 fn set(store: &mut Store, project: ProjectId, issue: Uuid, field: &str, value: Value) {
     store
@@ -169,6 +169,135 @@ fn an_agents_scan_finishes_an_issue_another_agent_holds() {
     let held = show(&scratch, &repo, "TM-1");
     assert_eq!(held["fields"]["status"], "done");
     assert_eq!(held["claim"], Value::Null, "a merged Closes line ends it");
+}
+
+/// An empty commit whose committer time is `at`, in Unix seconds.
+fn commit_at(scratch: &Scratch, repo: &Path, at: i64, body: &str) -> String {
+    let message = format!("chore: dated\n\n{body}");
+    let date = format!("@{at} +0000");
+    let args = ["commit", "-q", "--allow-empty", "-m", &message];
+    git_with(scratch, repo, &args, &[("GIT_COMMITTER_DATE", &date)]);
+    text(&git(scratch, repo, &["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_owned()
+}
+
+#[test]
+fn an_imported_trackers_old_ids_close_no_issue_they_happen_to_spell() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let jace = Actor::human("jace");
+    let made = store.project_created_ms(project).unwrap().unwrap();
+
+    // Written before the Project: another tracker's ids, read silently.
+    commit_at(
+        &scratch,
+        &repo,
+        made / 1000 - 60,
+        "Closes tm-1\nCloses TM-9",
+    );
+    // After the Project, before the Issue it would name.
+    commit_at(&scratch, &repo, made / 1000, "Closes TM-2");
+    support::wait_until((made / 1000 + 1) * 1000);
+    let file = scratch.0.join("records.jsonl");
+    let record = json!({
+        "_type": "issue", "source": "beads:tm-3", "project": "TM", "type": "task",
+        "title": "imported", "status": "todo",
+    });
+    std::fs::write(&file, record.to_string()).unwrap();
+    let imported = tm(
+        &scratch,
+        &repo,
+        &["import", "--records", file.to_str().unwrap()],
+    );
+    assert!(imported.status.success(), "{imported:?}");
+    for title in ["two", "three"] {
+        store.create_issue(&jace, project, "task", title).unwrap();
+    }
+    // TM-1 is the import; TM-3 is "three", which beads' tm-3 is not.
+    let old_id = commit(&scratch, &repo, "fix: old id", "Closes tm-3");
+    let key = commit(&scratch, &repo, "fix: key", "Closes TM-2");
+
+    let doc = scan(&scratch, &repo);
+    let warnings = doc["warnings"].as_array().unwrap();
+    assert!(
+        warnings
+            .iter()
+            .all(|w| w.as_str().unwrap().starts_with("scanned local main")),
+        "no Closes line warns: {doc}"
+    );
+    let moved: Vec<_> = doc["data"]["moved"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|moved| (moved["key"].clone(), moved["commit"].clone()))
+        .collect();
+    assert_eq!(
+        moved,
+        [(json!("TM-1"), json!(old_id)), (json!("TM-2"), json!(key))]
+    );
+    assert_eq!(status(&scratch, &repo, "TM-3"), "todo");
+}
+
+#[test]
+fn an_import_id_matches_only_as_written_and_only_when_one_issue_came_from_it() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let file = scratch.0.join("records.jsonl");
+    let records: Vec<String> = ["beads:tm-2", "beads:tm-4", "beads:tm-6", "jira:tm-6"]
+        .iter()
+        .map(|source| {
+            json!({
+                "_type": "issue", "source": source, "project": "TM", "type": "task",
+                "title": source, "status": "todo",
+            })
+            .to_string()
+        })
+        .collect();
+    std::fs::write(&file, records.join("\n")).unwrap();
+    let imported = tm(
+        &scratch,
+        &repo,
+        &["import", "--records", file.to_str().unwrap()],
+    );
+    assert!(imported.status.success(), "{imported:?}");
+    let jace = Actor::human("jace");
+    for title in ["five", "six"] {
+        store.create_issue(&jace, project, "task", title).unwrap();
+    }
+    // TM-1 to TM-4 came from the sources above, in order.
+    commit(
+        &scratch,
+        &repo,
+        "fix: ids",
+        "Closes tm-2, TM-2\nCloses TM-4\ncloses tm-6",
+    );
+
+    let doc = scan(&scratch, &repo);
+    let moved: Vec<_> = doc["data"]["moved"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|moved| moved["key"].clone())
+        .collect();
+    assert_eq!(
+        moved,
+        [json!("TM-1"), json!("TM-2"), json!("TM-4")],
+        "{doc}"
+    );
+    let ambiguous =
+        "closes tm-6, but more than one imported Issue came from that id, so none moved";
+    assert!(
+        doc["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap().ends_with(ambiguous)),
+        "{doc}"
+    );
+    for key in ["TM-3", "TM-6"] {
+        assert_eq!(status(&scratch, &repo, key), "todo", "{key}");
+    }
 }
 
 #[test]
