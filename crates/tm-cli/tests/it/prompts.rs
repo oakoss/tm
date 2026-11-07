@@ -348,6 +348,14 @@ fn setup_writes_the_hooks_on_a_yes_and_nothing_on_a_no() {
             .contains("tm prime")
     );
 
+    let mut tm = tm_pty(&scratch, &repo, &["setup", "claude"]);
+    let rest = tm.exp_eof().unwrap();
+    assert!(
+        rest.contains("tm's hooks are already in .claude/settings.local.json")
+            && !rest.contains("Where should"),
+        "{rest}"
+    );
+
     // With the hooks in a file, setup acts there without asking where.
     let mut tm = tm_pty(&scratch, &repo, &["setup", "claude", "--undo"]);
     tm.exp_string("Remove .claude/settings.local.json? [y/N] ")
@@ -365,6 +373,48 @@ fn setup_writes_the_hooks_on_a_yes_and_nothing_on_a_no() {
     let rest = tm.exp_eof().unwrap();
     assert!(rest.contains("Commit .claude/settings.json\r\n"), "{rest}");
     assert!(shared.exists() && !local.exists());
+}
+
+#[test]
+fn end_of_input_where_setup_asks_for_a_file_writes_nothing() {
+    let scratch = Scratch::new();
+    let repo = fixture(&scratch, "repo");
+    let mut tm = tm_pty(&scratch, &repo, &["setup", "claude"]);
+    tm.exp_string("Choose 1 or 2 [1]: ").unwrap();
+    tm.send_control('d').unwrap();
+    let rest = tm.exp_eof().unwrap();
+    assert!(
+        rest.contains("stopped at the prompt; nothing written"),
+        "{rest}"
+    );
+    exited(&tm, 1);
+    assert!(!repo.join(".claude").exists());
+}
+
+#[test]
+fn an_undo_across_both_files_writes_neither_when_one_changed_while_it_asked() {
+    let scratch = Scratch::new();
+    let repo = fixture(&scratch, "repo");
+    let made = crate::support::tm(&scratch, &repo, &["setup", "claude", "--shared", "--yes"]);
+    assert!(made.status.success(), "{made:?}");
+    let shared = repo.join(".claude/settings.json");
+    let local = repo.join(".claude/settings.local.json");
+    std::fs::copy(&shared, &local).unwrap();
+
+    let mut tm = tm_pty(&scratch, &repo, &["setup", "claude", "--undo"]);
+    tm.exp_string(
+        "Remove tm's hooks from .claude/settings.json and .claude/settings.local.json? [y/N] ",
+    )
+    .unwrap();
+    std::fs::write(&local, "{\"model\": \"edited\"}\n").unwrap();
+    tm.send_line("y").unwrap();
+    let rest = tm.exp_eof().unwrap();
+    assert!(
+        rest.contains(".claude/settings.local.json changed while tm asked; nothing written"),
+        "{rest}"
+    );
+    exited(&tm, 1);
+    assert!(shared.exists());
 }
 
 #[test]

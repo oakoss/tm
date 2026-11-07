@@ -276,13 +276,46 @@ fn hooks_in_the_local_file_are_found_there() {
         "tm's hooks are already in .claude/settings.local.json\n",
         "{again:?}"
     );
+
+    let both = tm(&scratch, &repo, &["setup", "claude", "--shared", "--yes"]);
+    assert!(
+        text(&both.stderr).contains(".claude/settings.local.json holds tm's hooks too"),
+        "{both:?}"
+    );
+    fs::remove_file(repo.join(SETTINGS)).unwrap();
+
     let undone = tm(
         &scratch,
         &repo,
         &["setup", "claude", "--undo", "--shared", "--yes"],
     );
     assert!(undone.status.success(), "{undone:?}");
+    assert!(
+        text(&undone.stdout)
+            .ends_with("}\nRemoved .claude/settings.local.json, which held only tm's hooks\n"),
+        "{undone:?}"
+    );
     assert!(!repo.join(LOCAL).exists() && !repo.join(SETTINGS).exists());
+}
+
+#[test]
+fn where_git_cannot_say_whether_it_ignores_the_local_file_setup_says_so() {
+    let scratch = Scratch::new();
+    let repo = fixture(&scratch, "repo");
+    let no_git = scratch.0.join("no-git");
+    fs::create_dir_all(&no_git).unwrap();
+    let out = jace(&scratch, &repo, &["--json", "setup", "claude", "--yes"])
+        .env("PATH", &no_git)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        doc(&out.stdout)["warnings"],
+        serde_json::json!([
+            "cannot tell whether git ignores .claude/settings.local.json; check it stays out of commits"
+        ])
+    );
 }
 
 #[test]
@@ -308,6 +341,20 @@ fn a_settings_file_tm_cannot_read_is_named_not_passed_over() {
         );
     }
     assert!(!repo.join(LOCAL).exists());
+
+    fs::remove_file(repo.join(SETTINGS)).unwrap();
+    fs::write(repo.join(LOCAL), "{}").unwrap();
+    fs::set_permissions(repo.join(LOCAL), fs::Permissions::from_mode(0o000)).unwrap();
+    let out = tm(&scratch, &repo, &["--json", "setup", "claude", "--yes"]);
+    fs::set_permissions(repo.join(LOCAL), fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(!out.status.success(), "{out:?}");
+    let refusal = doc(&out.stdout);
+    let message = refusal["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("cannot read .claude/settings.local.json (")
+            && message.ends_with("; fix it, then run tm setup again"),
+        "{refusal}"
+    );
 }
 
 #[test]

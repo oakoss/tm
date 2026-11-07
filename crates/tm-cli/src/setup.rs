@@ -132,7 +132,7 @@ pub(crate) fn run(setup: &Setup, json: bool) -> Result<Output, CliError> {
     // A file may have been edited while tm asked; writing the text computed
     // before would lose that edit.
     for plan in &plans {
-        if read(&plan.path)? != plan.before {
+        if read(&plan.path, plan.file)? != plan.before {
             return Err(refused(format!(
                 "{} changed while tm asked; nothing written",
                 plan.file
@@ -140,21 +140,30 @@ pub(crate) fn run(setup: &Setup, json: bool) -> Result<Output, CliError> {
         }
         writable(&plan.path, plan.file)?;
     }
-    let mut done: Vec<&str> = Vec::new();
+    let mut done: Vec<&Plan> = Vec::new();
     for plan in &plans {
         plan.write(&root).map_err(|err| {
-            if done.is_empty() {
-                err
-            } else {
-                err.warned(vec![format!("{} was already changed", done.join(" and "))])
-            }
+            let warnings = done
+                .iter()
+                .map(|before| {
+                    let what = if before.after.is_none() {
+                        "removed"
+                    } else {
+                        "changed"
+                    };
+                    format!(
+                        "{} was {what}; run tm setup claude --undo again once {} can be changed",
+                        before.file, plan.file
+                    )
+                })
+                .collect();
+            err.warned(warnings)
         })?;
-        done.push(plan.file);
+        done.push(plan);
     }
     let mut outputs = plans.iter().map(|plan| finished(setup, &root, plan));
-    let mut output = outputs.next().expect("a plan with changes")?;
+    let mut output = outputs.next().expect("a plan with changes");
     if let Some(also) = outputs.next() {
-        let also = also?;
         output.text.push_str(&also.text);
         output.warnings.extend(also.warnings);
         output.data["also"] = also.data;
@@ -175,7 +184,7 @@ struct Plan {
 
 fn plan(setup: &Setup, root: &Path, file: &'static str) -> Result<Plan, CliError> {
     let path = root.join(file);
-    let before = read(&path)?;
+    let before = read(&path, file)?;
     let mut settings = parse(before.as_deref(), file)?;
     let handlers = handlers(setup.harness);
     let changed = if setup.undo {
@@ -224,7 +233,7 @@ impl Plan {
 }
 
 /// What [`run`] reports for a plan it wrote.
-fn finished(setup: &Setup, root: &Path, plan: &Plan) -> Result<Output, CliError> {
+fn finished(setup: &Setup, root: &Path, plan: &Plan) -> Output {
     let file = plan.file;
     let emptied = plan.after.is_none();
     let mut output = written(
@@ -235,7 +244,14 @@ fn finished(setup: &Setup, root: &Path, plan: &Plan) -> Result<Output, CliError>
         &plan.changed,
         &plan.shown,
     );
-    output.warnings.extend(also_held(setup, root, file)?);
+    // The write is done, so a failed check is reported, not returned.
+    match also_held(setup, root, file) {
+        Ok(warning) => output.warnings.extend(warning),
+        Err(err) => output.warnings.push(format!(
+            "cannot tell whether {CLAUDE_LOCAL} holds tm's hooks too: {}",
+            err.message
+        )),
+    }
     if !setup.undo {
         output.warnings.extend(inline_hooks(root, setup.harness));
         if file == CLAUDE_LOCAL {
@@ -250,7 +266,7 @@ fn finished(setup: &Setup, root: &Path, plan: &Plan) -> Result<Output, CliError>
             });
         }
     }
-    Ok(output)
+    output
 }
 
 /// The settings file this setup acts on, asking a person at a terminal
@@ -281,7 +297,7 @@ fn target(setup: &Setup, root: &Path, json: bool) -> Result<&'static str, CliErr
 /// Whether `file` holds any of tm's Claude Code hooks; one tm cannot read
 /// or parse is refused, since where the hooks are cannot be told.
 fn held(root: &Path, file: &str) -> Result<bool, CliError> {
-    let text = read(&root.join(file))?;
+    let text = read(&root.join(file), file)?;
     let settings = parse(text.as_deref(), file)?;
     Ok(handlers(Harness::Claude)
         .iter()
@@ -366,7 +382,7 @@ fn inline_hooks(root: &Path, harness: Harness) -> Option<String> {
 /// error names a settings file it cannot read, merge into or write.
 pub(crate) fn needed(root: &Path) -> Result<Option<&'static str>, String> {
     let read_file = |file: &str| {
-        let before = read(&root.join(file)).map_err(|err| err.message)?;
+        let before = read(&root.join(file), file).map_err(|err| err.message)?;
         parse(before.as_deref(), file).map_err(|err| err.message)
     };
     let shared = read_file(CLAUDE_SHARED)?;
@@ -445,11 +461,14 @@ fn parse(text: Option<&str>, file: &str) -> Result<Json, CliError> {
 }
 
 /// The file's text, through a symlink, `None` where there is none.
-fn read(path: &Path) -> Result<Option<String>, CliError> {
+fn read(path: &Path, file: &str) -> Result<Option<String>, CliError> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(io_failed(path, &err)),
+        Err(err) => Err(refused(format!(
+            "cannot read {file} ({err}); fix it, then run tm setup again"
+        ))
+        .with("path", path.display().to_string())),
     }
 }
 
@@ -545,10 +564,12 @@ fn written(
         (false, _) => format!("Added tm's hooks to {file}: {hooks}. {runs}\n"),
     };
     let (commit, commit_line): (Vec<&str>, String) = if file == CLAUDE_LOCAL {
-        (
-            Vec::new(),
-            format!("{file} stays on this machine; it is not committed\n"),
-        )
+        let line = if undo {
+            String::new()
+        } else {
+            format!("{file} stays on this machine; it is not committed\n")
+        };
+        (Vec::new(), line)
     } else {
         (vec![file], format!("Commit {file}\n"))
     };
