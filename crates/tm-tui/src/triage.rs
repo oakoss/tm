@@ -4,13 +4,11 @@
 use std::collections::BTreeSet;
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::Line;
-use ratatui::widgets::{
-    Block, Cell, Clear, List as Choices, ListState, Paragraph, Row, Table, TableState, Wrap,
-};
+use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState, Wrap};
 use tm_core::filter::Context;
 use tm_core::scheme::PRIORITY_RANKS;
 use tm_core::text::printable;
@@ -19,7 +17,8 @@ use uuid::Uuid;
 
 use crate::detail::Detail;
 use crate::keys::{self, Binding, ch, plain};
-use crate::{Actions, Outcome, Screen, Write};
+use crate::picker::{Choice, Field, Picked, Picker, shared, statuses, writes};
+use crate::{Actions, Outcome, Screen};
 
 /// Rows a page key moves.
 const PAGE: usize = 10;
@@ -138,72 +137,6 @@ struct Shown {
     title: String,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Field {
-    Status,
-    Priority,
-    Assignee,
-}
-
-/// A value a picker offers: `None` clears the field.
-#[derive(Clone)]
-struct Choice {
-    value: Option<String>,
-    label: String,
-}
-
-struct Picker {
-    field: Field,
-    choices: Vec<Choice>,
-    /// The Issues it was opened on and the versions read, so a read while
-    /// it is open cannot move the write to another Issue.
-    targets: Vec<(String, i64)>,
-    typed: String,
-    at: ListState,
-}
-
-impl Picker {
-    fn new(field: Field, choices: Vec<Choice>, targets: Vec<(String, i64)>) -> Self {
-        Self {
-            field,
-            choices,
-            targets,
-            typed: String::new(),
-            at: ListState::default().with_selected(Some(0)),
-        }
-    }
-
-    /// The choices the typed text matches, ignoring case.
-    fn shown(&self) -> Vec<&Choice> {
-        let typed = self.typed.to_lowercase();
-        self.choices
-            .iter()
-            .filter(|choice| {
-                choice.label.to_lowercase().contains(&typed)
-                    || choice
-                        .value
-                        .as_deref()
-                        .is_some_and(|value| value.to_lowercase().contains(&typed))
-            })
-            .collect()
-    }
-
-    /// The choice Enter takes: the one selected, or for an assignee a name
-    /// typed that no choice matches.
-    fn chosen(&self) -> Option<Choice> {
-        let shown = self.shown();
-        let at = self.at.selected().unwrap_or(0);
-        if let Some(choice) = shown.get(at) {
-            return Some((*choice).clone());
-        }
-        let typed = self.typed.trim();
-        (self.field == Field::Assignee && !typed.is_empty()).then(|| Choice {
-            value: Some(typed.to_owned()),
-            label: typed.to_owned(),
-        })
-    }
-}
-
 #[derive(Default)]
 pub(crate) struct Triage {
     rows: Vec<Shown>,
@@ -231,17 +164,7 @@ impl Triage {
     }
 
     pub(crate) fn prompt(&self) -> Option<String> {
-        self.picker.as_ref().map(|picker| {
-            format!(
-                "{} {} · Enter choose · Esc cancel",
-                field_name(picker.field),
-                if picker.typed.is_empty() {
-                    "type to narrow".to_owned()
-                } else {
-                    format!("/{}", printable(&picker.typed))
-                }
-            )
-        })
+        self.picker.as_ref().map(Picker::prompt)
     }
 
     pub(crate) fn load(&mut self, store: &Store, actions: &dyn Actions) {
@@ -280,7 +203,7 @@ impl Triage {
         let kept = self.then.take().or_else(|| self.selected_key());
         match read {
             Ok((rows, people)) => {
-                self.statuses = statuses(store, &rows);
+                self.statuses = statuses(store, rows.iter().map(|row| row.issue_type.as_str()));
                 self.rows = rows;
                 self.people = people.into_iter().collect();
                 self.problem = None;
@@ -341,8 +264,18 @@ impl Triage {
     }
 
     pub(crate) fn key(&mut self, key: KeyEvent) -> Outcome {
-        if self.picker.is_some() {
-            return self.pick(key);
+        if let Some(picker) = &mut self.picker {
+            return match picker.key(key) {
+                Picked::Open => Outcome::Stay,
+                Picked::Cancelled => {
+                    self.picker = None;
+                    Outcome::Stay
+                }
+                Picked::Chosen(field, chosen, targets) => {
+                    self.picker = None;
+                    self.write(field, &chosen, targets)
+                }
+            };
         }
         let Some(act) = keys::action(&KEYS, key) else {
             return Outcome::Stay;
@@ -397,28 +330,7 @@ impl Triage {
             .map(|row| (row.key.clone(), row.version))
             .collect();
         let choices = match field {
-            // Only a Status every target's Workflow has.
-            Field::Status => {
-                let of = |issue_type: &str| {
-                    self.statuses
-                        .iter()
-                        .find(|(listed, _)| listed == issue_type)
-                        .map(|(_, choices)| choices.as_slice())
-                        .unwrap_or_default()
-                };
-                let first = types.first().copied().unwrap_or_default();
-                of(first)
-                    .iter()
-                    .filter(|choice| {
-                        types.iter().all(|issue_type| {
-                            of(issue_type)
-                                .iter()
-                                .any(|other| other.value == choice.value)
-                        })
-                    })
-                    .cloned()
-                    .collect()
-            }
+            Field::Status => shared(&self.statuses, &types),
             Field::Priority => PRIORITY_RANKS
                 .iter()
                 .map(|(id, _)| Choice {
@@ -453,45 +365,6 @@ impl Triage {
         Outcome::Stay
     }
 
-    fn pick(&mut self, key: KeyEvent) -> Outcome {
-        let Some(picker) = &mut self.picker else {
-            return Outcome::Stay;
-        };
-        let count = picker.shown().len();
-        match key.code {
-            KeyCode::Esc => self.picker = None,
-            KeyCode::Enter => {
-                let chosen = picker.chosen();
-                let (field, targets) = (picker.field, std::mem::take(&mut picker.targets));
-                self.picker = None;
-                if let Some(chosen) = chosen {
-                    return self.write(field, &chosen, targets);
-                }
-            }
-            KeyCode::Down => picker.at.select(Some(
-                picker
-                    .at
-                    .selected()
-                    .unwrap_or(0)
-                    .saturating_add(1)
-                    .min(count.saturating_sub(1)),
-            )),
-            KeyCode::Up => picker
-                .at
-                .select(Some(picker.at.selected().unwrap_or(0).saturating_sub(1))),
-            KeyCode::Backspace => {
-                picker.typed.pop();
-                picker.at.select(Some(0));
-            }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                picker.typed.push(c);
-                picker.at.select(Some(0));
-            }
-            _ => {}
-        }
-        Outcome::Stay
-    }
-
     /// The writes `chosen` asks of `targets`, and the row to go on to once
     /// they land: the next one not written, else the one before.
     fn write(&mut self, field: Field, chosen: &Choice, targets: Vec<(String, i64)>) -> Outcome {
@@ -506,29 +379,7 @@ impl Triage {
             .find(free)
             .or_else(|| self.rows[..at.min(self.rows.len())].iter().rev().find(free))
             .map(|row| row.key.clone());
-        let writes = targets
-            .into_iter()
-            .map(|(key, version)| match field {
-                Field::Status => Write::Move {
-                    key,
-                    status: chosen.value.clone().unwrap_or_default(),
-                    version,
-                },
-                Field::Priority => Write::Set {
-                    key,
-                    field: "priority".to_owned(),
-                    value: chosen.value.clone(),
-                    version,
-                },
-                Field::Assignee => Write::Set {
-                    key,
-                    field: "assignee".to_owned(),
-                    value: chosen.value.clone(),
-                    version,
-                },
-            })
-            .collect();
-        Outcome::Write(writes)
+        Outcome::Write(writes(field, chosen, targets))
     }
 
     /// Draws the selected Issue beside the queue on a wide terminal and
@@ -609,59 +460,7 @@ impl Triage {
             frame.render_stateful_widget(table, area, &mut self.table);
         }
         if let Some(picker) = &mut self.picker {
-            let shown: Vec<String> = picker
-                .shown()
-                .iter()
-                .map(|choice| choice.label.clone())
-                .collect();
-            let height = u16::try_from(shown.len().max(1)).unwrap_or(u16::MAX) + 2;
-            let width = shown
-                .iter()
-                .map(|label| label.chars().count())
-                .max()
-                .unwrap_or(0)
-                + 4;
-            let width = u16::try_from(width.max(20)).unwrap_or(u16::MAX);
-            let popup = whole.centered(Constraint::Length(width), Constraint::Length(height));
-            frame.render_widget(Clear, popup);
-            let block =
-                Block::bordered().title(Line::from(format!(" {} ", field_name(picker.field))));
-            if shown.is_empty() {
-                frame.render_widget(Paragraph::new("no match; Esc cancels").block(block), popup);
-            } else {
-                let list = Choices::new(shown)
-                    .block(block)
-                    .highlight_style(Style::new().reversed());
-                frame.render_stateful_widget(list, popup, &mut picker.at);
-            }
+            picker.render(frame, whole);
         }
     }
-}
-
-const fn field_name(field: Field) -> &'static str {
-    match field {
-        Field::Status => "Status",
-        Field::Priority => "Priority",
-        Field::Assignee => "Assign",
-    }
-}
-
-/// Each row type's Statuses, as its Workflow lists them.
-fn statuses(store: &Store, rows: &[Shown]) -> Vec<(String, Vec<Choice>)> {
-    let types: BTreeSet<&str> = rows.iter().map(|row| row.issue_type.as_str()).collect();
-    types
-        .into_iter()
-        .filter_map(|issue_type| {
-            let workflow = store.scheme().workflow(issue_type)?;
-            let choices = workflow
-                .statuses
-                .iter()
-                .map(|status| Choice {
-                    value: Some(status.id.clone()),
-                    label: printable(&status.label),
-                })
-                .collect();
-            Some((issue_type.to_owned(), choices))
-        })
-        .collect()
 }

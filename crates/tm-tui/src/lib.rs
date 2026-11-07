@@ -3,6 +3,7 @@
 mod detail;
 mod keys;
 mod list;
+mod picker;
 mod stack;
 mod triage;
 
