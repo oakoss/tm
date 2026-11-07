@@ -10,10 +10,67 @@ use tm_core::text::printable;
 use tm_store::Store;
 use uuid::Uuid;
 
-use crate::Actions;
+use crate::keys::{self, Binding, ch, plain};
+use crate::{Actions, Outcome};
 
 /// Rows a page key scrolls.
 const PAGE: u16 = 10;
+
+#[derive(Clone, Copy)]
+pub(crate) enum Act {
+    Back,
+    Down,
+    Up,
+    First,
+    Last,
+    PageDown,
+    PageUp,
+}
+
+pub(crate) const KEYS: [Binding<Act>; 7] = [
+    Binding {
+        keys: &[ch('q'), plain(KeyCode::Esc), plain(KeyCode::Backspace)],
+        action: Act::Back,
+        does: "back",
+        hint: Some("back"),
+    },
+    Binding {
+        keys: &[ch('j'), plain(KeyCode::Down)],
+        action: Act::Down,
+        does: "scroll down and up",
+        hint: Some("scroll"),
+    },
+    Binding {
+        keys: &[ch('k'), plain(KeyCode::Up)],
+        action: Act::Up,
+        does: "scroll down and up",
+        hint: Some("scroll"),
+    },
+    Binding {
+        keys: &[ch('g'), plain(KeyCode::Home)],
+        action: Act::First,
+        does: "top and bottom",
+        hint: None,
+    },
+    Binding {
+        keys: &[ch('G'), plain(KeyCode::End)],
+        action: Act::Last,
+        does: "top and bottom",
+        hint: None,
+    },
+    Binding {
+        keys: &[plain(KeyCode::PageDown)],
+        action: Act::PageDown,
+        does: "down a page and up",
+        hint: None,
+    },
+    Binding {
+        keys: &[plain(KeyCode::PageUp)],
+        action: Act::PageUp,
+        does: "down a page and up",
+        hint: None,
+    },
+];
 
 /// What the screen shows.
 enum Shows {
@@ -64,19 +121,21 @@ impl Detail {
         self.text = read.map(|text| safe(&text)).map_err(|why| safe(&why));
     }
 
-    /// Scrolls for a scroll key; false for any other key.
-    pub(crate) fn key(&mut self, key: KeyEvent) -> bool {
-        self.scroll = match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.scroll.saturating_add(1),
-            KeyCode::Char('k') | KeyCode::Up => self.scroll.saturating_sub(1),
-            KeyCode::Char('g') | KeyCode::Home => 0,
-            KeyCode::Char('G') | KeyCode::End => self.bottom,
-            KeyCode::PageDown => self.scroll.saturating_add(PAGE),
-            KeyCode::PageUp => self.scroll.saturating_sub(PAGE),
-            _ => return false,
+    pub(crate) fn key(&mut self, key: KeyEvent) -> Outcome {
+        let Some(act) = keys::action(&KEYS, key) else {
+            return Outcome::Stay;
+        };
+        self.scroll = match act {
+            Act::Back => return Outcome::Back,
+            Act::Down => self.scroll.saturating_add(1),
+            Act::Up => self.scroll.saturating_sub(1),
+            Act::First => 0,
+            Act::Last => self.bottom,
+            Act::PageDown => self.scroll.saturating_add(PAGE),
+            Act::PageUp => self.scroll.saturating_sub(PAGE),
         }
         .min(self.bottom);
-        true
+        Outcome::Stay
     }
 
     pub(crate) fn render(&mut self, frame: &mut Frame, area: Rect) {

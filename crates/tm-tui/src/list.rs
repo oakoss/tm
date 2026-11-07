@@ -11,20 +11,96 @@ use tm_core::text::printable;
 use tm_store::{IssueView, Store, StoreError};
 use uuid::Uuid;
 
+use crate::detail::Detail;
+use crate::keys::{self, Binding, ch, plain};
+use crate::{Outcome, Screen};
+
 /// Rows a page key moves.
 const PAGE: usize = 10;
 
-/// What a key did to the list.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Done {
-    /// The filter changed, so the list must be read again.
-    Reload,
-    /// Open the selected Issue: its id and Key.
-    Open(Uuid, String),
-    Handled,
-    /// Not a list key.
-    Passed,
+#[derive(Clone, Copy)]
+pub(crate) enum Act {
+    Quit,
+    Down,
+    Up,
+    First,
+    Last,
+    PageDown,
+    PageUp,
+    Open,
+    Filter,
+    All,
+    Ready,
 }
+
+pub(crate) const KEYS: [Binding<Act>; 11] = [
+    Binding {
+        keys: &[ch('q')],
+        action: Act::Quit,
+        does: "quit",
+        hint: Some("quit"),
+    },
+    Binding {
+        keys: &[ch('j'), plain(KeyCode::Down)],
+        action: Act::Down,
+        does: "down and up",
+        hint: None,
+    },
+    Binding {
+        keys: &[ch('k'), plain(KeyCode::Up)],
+        action: Act::Up,
+        does: "down and up",
+        hint: None,
+    },
+    Binding {
+        keys: &[ch('g'), plain(KeyCode::Home)],
+        action: Act::First,
+        does: "first and last",
+        hint: None,
+    },
+    Binding {
+        keys: &[ch('G'), plain(KeyCode::End)],
+        action: Act::Last,
+        does: "first and last",
+        hint: None,
+    },
+    Binding {
+        keys: &[plain(KeyCode::PageDown)],
+        action: Act::PageDown,
+        does: "down a page and up",
+        hint: None,
+    },
+    Binding {
+        keys: &[plain(KeyCode::PageUp)],
+        action: Act::PageUp,
+        does: "down a page and up",
+        hint: None,
+    },
+    Binding {
+        keys: &[plain(KeyCode::Enter)],
+        action: Act::Open,
+        does: "open the Issue",
+        hint: None,
+    },
+    Binding {
+        keys: &[ch('/')],
+        action: Act::Filter,
+        does: "type a filter, as tm list; Enter applies",
+        hint: Some("filter"),
+    },
+    Binding {
+        keys: &[ch('a')],
+        action: Act::All,
+        does: "open work or every status",
+        hint: None,
+    },
+    Binding {
+        keys: &[ch('r')],
+        action: Act::Ready,
+        does: "the ready queue, as tm ready",
+        hint: Some("ready"),
+    },
+];
 
 #[derive(Default)]
 pub(crate) struct List {
@@ -124,13 +200,15 @@ impl List {
             .map(|row| (row.id, row.key.clone()))
     }
 
-    pub(crate) fn key(&mut self, key: KeyEvent) -> Done {
+    /// Acts on `key`: while a filter is typed it is text, else as [`KEYS`]
+    /// says.
+    pub(crate) fn key(&mut self, key: KeyEvent) -> Outcome {
         if let Some(typed) = &mut self.typing {
             match key.code {
                 KeyCode::Enter => {
                     self.filter = std::mem::take(typed);
                     self.typing = None;
-                    return Done::Reload;
+                    return Outcome::Reload;
                 }
                 KeyCode::Esc => self.typing = None,
                 KeyCode::Backspace => {
@@ -141,36 +219,40 @@ impl List {
                 }
                 _ => {}
             }
-            return Done::Handled;
+            return Outcome::Stay;
         }
+        let Some(act) = keys::action(&KEYS, key) else {
+            return Outcome::Stay;
+        };
         let last = self.rows.len().saturating_sub(1);
         let at = self.table.selected().unwrap_or(0);
-        let to = match key.code {
-            KeyCode::Char('/') => {
+        let to = match act {
+            Act::Quit => return Outcome::Quit,
+            Act::Filter => {
                 self.typing = Some(self.filter.clone());
-                return Done::Handled;
+                return Outcome::Stay;
             }
-            KeyCode::Char('a') => {
+            Act::All => {
                 self.all = !self.all;
-                return Done::Reload;
+                return Outcome::Reload;
             }
-            KeyCode::Enter => {
-                return self
-                    .selected()
-                    .map_or(Done::Handled, |(id, key)| Done::Open(id, key));
+            Act::Ready => return Outcome::Open(Screen::Detail(Detail::ready())),
+            Act::Open => {
+                return self.selected().map_or(Outcome::Stay, |(id, key)| {
+                    Outcome::Open(Screen::Detail(Detail::issue(id, key)))
+                });
             }
-            KeyCode::Char('j') | KeyCode::Down => at.saturating_add(1).min(last),
-            KeyCode::Char('k') | KeyCode::Up => at.saturating_sub(1),
-            KeyCode::Char('g') | KeyCode::Home => 0,
-            KeyCode::Char('G') | KeyCode::End => last,
-            KeyCode::PageDown => at.saturating_add(PAGE).min(last),
-            KeyCode::PageUp => at.saturating_sub(PAGE),
-            _ => return Done::Passed,
+            Act::Down => at.saturating_add(1).min(last),
+            Act::Up => at.saturating_sub(1),
+            Act::First => 0,
+            Act::Last => last,
+            Act::PageDown => at.saturating_add(PAGE).min(last),
+            Act::PageUp => at.saturating_sub(PAGE),
         };
         if !self.rows.is_empty() {
             self.table.select(Some(to));
         }
-        Done::Handled
+        Outcome::Stay
     }
 
     /// The footer's text while a filter is typed.

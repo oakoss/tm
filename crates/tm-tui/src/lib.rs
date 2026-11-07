@@ -1,7 +1,9 @@
 //! The TUI's screens, opened by `tm tui` (ADR 0018).
 
 mod detail;
+mod keys;
 mod list;
+mod stack;
 
 use std::io;
 use std::sync::Arc;
@@ -9,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use ratatui::crossterm::cursor::Show;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::text::Line;
@@ -21,27 +23,52 @@ use tm_store::Store;
 use uuid::Uuid;
 
 use detail::Detail;
-use list::{Done, List};
+use keys::{Binding, ch, ctrl, plain};
+use list::List;
+use stack::Stack;
 
 /// How often a write elsewhere is looked for between keys (ADR 0018).
 const POLL: Duration = Duration::from_millis(250);
 
-const KEYS: [(&str, &str); 11] = [
-    ("j k", "down and up; arrows too"),
-    ("g G", "first and last"),
-    ("PgDn", "down a page; PgUp up"),
-    ("Enter", "open an Issue, or apply a filter"),
-    ("/", "type a filter, as tm list"),
-    ("a", "open work or every status"),
-    ("r", "the ready queue, as tm ready"),
-    ("q", "back to the list, or quit"),
-    ("Ctrl-C", "quit"),
-    ("?", "show or hide these keys"),
-    ("Esc", "hide keys or a filter; go back"),
+#[derive(Clone, Copy)]
+enum Global {
+    Quit,
+    Help,
+    HideHelp,
+}
+
+/// Keys every screen has, ahead of its own: Ctrl-C even while text is
+/// typed, and Esc only while these keys are shown.
+const GLOBAL: [Binding<Global>; 3] = [
+    Binding {
+        keys: &[ch('?')],
+        action: Global::Help,
+        does: "show or hide these keys",
+        hint: Some("keys"),
+    },
+    Binding {
+        keys: &[plain(KeyCode::Esc)],
+        action: Global::HideHelp,
+        does: "hide these keys",
+        hint: None,
+    },
+    Binding {
+        keys: &[ctrl('c')],
+        action: Global::Quit,
+        does: "quit",
+        hint: None,
+    },
 ];
 
 /// What the screens take from the CLI, so they match its commands (ADR 0018).
 pub trait Actions {
+    /// Who `@me` is in a filter, as `tm list` reads it, or why no one can be.
+    ///
+    /// # Errors
+    ///
+    /// Why the person at the terminal cannot be named.
+    fn me(&self) -> Result<&str, &str>;
+
     /// `tm show` and `tm history` for `id`, read from `store`.
     ///
     /// # Errors
@@ -67,15 +94,83 @@ pub enum Seen {
     Busy,
 }
 
-/// The frame around the Issue list: where it reads from, the keys, and what
+/// A screen of the TUI; each acts on its own keys.
+pub(crate) enum Screen {
+    List(List),
+    Detail(Detail),
+}
+
+/// What a key on a screen asks of the Shell.
+pub(crate) enum Outcome {
+    Stay,
+    /// Read the screen again, as its filter changed.
+    Reload,
+    /// Show this screen over the current one.
+    Open(Screen),
+    /// Go back to the screen below.
+    Back,
+    Quit,
+}
+
+impl Screen {
+    fn load(&mut self, store: &Store, actions: &dyn Actions) {
+        match self {
+            Self::List(list) => list.load(store, actions.me()),
+            Self::Detail(detail) => detail.load(store, actions),
+        }
+    }
+
+    fn key(&mut self, key: KeyEvent) -> Outcome {
+        match self {
+            Self::List(list) => list.key(key),
+            Self::Detail(detail) => detail.key(key),
+        }
+    }
+
+    /// Whether keys are text being typed, which takes every key but Ctrl-C.
+    const fn typing(&self) -> bool {
+        matches!(self, Self::List(list) if list.typing())
+    }
+
+    fn help(&self) -> Vec<(String, &'static str)> {
+        match self {
+            Self::List(_) => keys::help(&list::KEYS),
+            Self::Detail(_) => keys::help(&detail::KEYS),
+        }
+    }
+
+    /// The footer: the text typed, else the screen's hints.
+    fn footer(&self) -> String {
+        if let Self::List(list) = self
+            && let Some(prompt) = list.prompt()
+        {
+            return prompt;
+        }
+        let mut hints = match self {
+            Self::List(_) => keys::hints(&list::KEYS),
+            Self::Detail(_) => keys::hints(&detail::KEYS),
+        };
+        hints.extend(keys::hints(&GLOBAL));
+        hints.join(" · ")
+    }
+
+    fn render(&mut self, frame: &mut Frame, area: ratatui::layout::Rect) {
+        match self {
+            Self::List(list) => list.render(frame, area),
+            Self::Detail(detail) => detail.render(frame, area),
+        }
+    }
+}
+
+/// The frame around the screens: where it reads from, the keys, and what
 /// the last look for writes elsewhere found.
 pub struct Shell {
     place: String,
     help: bool,
     changed: Option<String>,
     busy: bool,
-    list: List,
-    detail: Option<Detail>,
+    /// The Issue list, and the screens shown over it.
+    screens: Stack,
 }
 
 /// What the TUI does after a key.
@@ -96,65 +191,49 @@ impl Shell {
             help: false,
             changed: None,
             busy: false,
-            list: List::default(),
-            detail: None,
+            screens: Stack::new(Screen::List(List::default())),
         }
     }
 
-    /// Reads the screen shown from `store`, `me` standing for `@me` in the
-    /// list's filter, or why no one can.
-    pub fn load(&mut self, store: &Store, me: Result<&str, &str>, actions: &dyn Actions) {
-        match &mut self.detail {
-            Some(detail) => detail.load(store, actions),
-            None => self.list.load(store, me),
-        }
+    fn shown(&mut self) -> &mut Screen {
+        self.screens.top()
+    }
+
+    /// Reads the screen shown from `store`.
+    pub fn load(&mut self, store: &Store, actions: &dyn Actions) {
+        self.shown().load(store, actions);
     }
 
     pub fn key(&mut self, key: KeyEvent) -> Flow {
         if key.kind != KeyEventKind::Press {
             return Flow::Stay;
         }
-        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        let global = keys::action(&GLOBAL, key);
+        if matches!(global, Some(Global::Quit)) {
             return Flow::Quit;
         }
-        // While a filter is typed, every other key is text.
-        if !self.list.typing() {
-            match key.code {
-                KeyCode::Char('?') => {
+        if !self.shown().typing() {
+            match global {
+                Some(Global::Help) => {
                     self.help = !self.help;
                     return Flow::Stay;
                 }
-                KeyCode::Esc if self.help => {
+                Some(Global::HideHelp) if self.help => {
                     self.help = false;
                     return Flow::Stay;
                 }
                 _ => {}
             }
         }
-        if let Some(detail) = &mut self.detail {
-            return match key.code {
-                KeyCode::Char('q') | KeyCode::Esc | KeyCode::Backspace => {
-                    self.detail = None;
-                    Flow::Reload
-                }
-                _ => {
-                    detail.key(key);
-                    Flow::Stay
-                }
-            };
-        }
-        match self.list.key(key) {
-            Done::Reload => Flow::Reload,
-            Done::Open(id, key) => {
-                self.detail = Some(Detail::issue(id, key));
+        match self.shown().key(key) {
+            Outcome::Reload => Flow::Reload,
+            Outcome::Open(screen) => {
+                self.screens.push(screen);
                 Flow::Reload
             }
-            Done::Passed if key.code == KeyCode::Char('q') => Flow::Quit,
-            Done::Passed if key.code == KeyCode::Char('r') => {
-                self.detail = Some(Detail::ready());
-                Flow::Reload
-            }
-            Done::Handled | Done::Passed => Flow::Stay,
+            Outcome::Back if self.screens.pop() => Flow::Reload,
+            Outcome::Stay | Outcome::Back => Flow::Stay,
+            Outcome::Quit => Flow::Quit,
         }
     }
 
@@ -177,10 +256,7 @@ impl Shell {
         ])
         .areas(frame.area());
         frame.render_widget(Line::from(format!("tm · {}", self.place)), top);
-        match &mut self.detail {
-            Some(detail) => detail.render(frame, body),
-            None => self.list.render(frame, body),
-        }
+        self.shown().render(frame, body);
         let status = if self.busy {
             Some("store busy, retrying".to_owned())
         } else {
@@ -195,26 +271,26 @@ impl Shell {
         ])
         .spacing(1)
         .areas(bottom);
-        let left = if self.detail.is_some() {
-            "q back · j k scroll · ? keys".to_owned()
-        } else {
-            self.list
-                .prompt()
-                .unwrap_or_else(|| "q quit · / filter · r ready · ? keys".to_owned())
-        };
-        frame.render_widget(Line::from(left), keys);
+        let footer = self.shown().footer();
+        frame.render_widget(Line::from(footer), keys);
         if let Some(status) = status {
             frame.render_widget(Line::from(status).right_aligned(), right);
         }
         if self.help {
-            let lines: Vec<Line> = KEYS
+            let mut help = self.shown().help();
+            help.extend(keys::help(&GLOBAL));
+            let wide = help.iter().map(|(keys, _)| keys.chars().count()).max();
+            let wide = wide.unwrap_or(0);
+            let lines: Vec<Line> = help
                 .iter()
-                .map(|(key, does)| Line::from(format!("{key:>6}  {does}")))
+                .map(|(keys, does)| Line::from(format!("{keys:>wide$}  {does}")))
                 .collect();
             let height = u16::try_from(lines.len()).unwrap_or(u16::MAX) + 2;
+            let width = lines.iter().map(Line::width).max().unwrap_or(0) + 2;
+            let width = u16::try_from(width).unwrap_or(u16::MAX);
             let area = frame
                 .area()
-                .centered(Constraint::Length(42), Constraint::Length(height));
+                .centered(Constraint::Length(width), Constraint::Length(height));
             frame.render_widget(Clear, area);
             frame.render_widget(
                 Paragraph::new(lines).block(Block::bordered().title("Keys")),
@@ -235,7 +311,6 @@ impl Shell {
 pub fn run<E: From<io::Error>>(
     place: impl Into<String>,
     store: Store,
-    me: Result<&str, &str>,
     actions: &dyn Actions,
     look: impl FnMut(&mut Store) -> Result<Seen, E>,
 ) -> Result<Ended, E> {
@@ -259,10 +334,10 @@ pub fn run<E: From<io::Error>>(
         flag::register(caught, Arc::clone(&default))?;
     }
     let mut shell = Shell::new(place);
-    shell.load(&store, me, actions);
+    shell.load(&store, actions);
     let ran = match ratatui::try_init() {
         Ok(mut terminal) => {
-            let ran = drive(&mut terminal, shell, (store, me, actions), look, &signal);
+            let ran = drive(&mut terminal, shell, (store, actions), look, &signal);
             drop(terminal);
             ran
         }
@@ -285,7 +360,7 @@ pub enum Ended {
 fn drive<E: From<io::Error>>(
     terminal: &mut DefaultTerminal,
     mut shell: Shell,
-    (mut store, me, actions): (Store, Result<&str, &str>, &dyn Actions),
+    (mut store, actions): (Store, &dyn Actions),
     mut look: impl FnMut(&mut Store) -> Result<Seen, E>,
     signal: &AtomicUsize,
 ) -> Result<Ended, E> {
@@ -300,13 +375,13 @@ fn drive<E: From<io::Error>>(
         {
             match shell.key(key) {
                 Flow::Quit => return Ok(Ended::Quit),
-                Flow::Reload => shell.load(&store, me, actions),
+                Flow::Reload => shell.load(&store, actions),
                 Flow::Stay => {}
             }
         }
         let seen = look(&mut store)?;
         if matches!(seen, Seen::Changed(_)) {
-            shell.load(&store, me, actions);
+            shell.load(&store, actions);
         }
         shell.seen(seen);
     }
@@ -318,7 +393,7 @@ mod tests {
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::crossterm::event::KeyEventState;
+    use ratatui::crossterm::event::{KeyEventState, KeyModifiers};
     use tm_core::{Actor, Change};
     use tm_store::Draft;
 
@@ -390,7 +465,7 @@ mod tests {
     fn the_list_shows_the_open_issues_with_their_text_made_safe() {
         let store = store();
         let mut shell = Shell::new("TM");
-        shell.load(&store, NOBODY, &Fake);
+        shell.load(&store, &Fake);
         let screen = drawn(&mut shell);
         insta::assert_snapshot!(screen);
         assert!(!screen.contains("finished"), "done is not open work");
@@ -401,7 +476,7 @@ mod tests {
     fn a_typed_filter_and_every_status_change_what_is_read() {
         let store = store();
         let mut shell = Shell::new("TM");
-        shell.load(&store, NOBODY, &Fake);
+        shell.load(&store, &Fake);
         assert_eq!(shell.key(press(KeyCode::Char('/'))), Flow::Stay);
         assert_eq!(
             shell.key(press(KeyCode::Char('q'))),
@@ -410,7 +485,7 @@ mod tests {
         );
         shell.key(press(KeyCode::Backspace));
         assert_eq!(typed(&mut shell, "title:first"), Flow::Reload);
-        shell.load(&store, NOBODY, &Fake);
+        shell.load(&store, &Fake);
         let screen = drawn(&mut shell);
         assert!(
             screen.contains("first") && !screen.contains("second"),
@@ -423,7 +498,7 @@ mod tests {
         }
         shell.key(press(KeyCode::Enter));
         assert_eq!(shell.key(press(KeyCode::Char('a'))), Flow::Reload);
-        shell.load(&store, NOBODY, &Fake);
+        shell.load(&store, &Fake);
         assert!(drawn(&mut shell).contains("finished"));
     }
 
@@ -431,12 +506,12 @@ mod tests {
     fn esc_drops_a_typed_filter_and_a_bad_one_says_why() {
         let store = store();
         let mut shell = Shell::new("TM");
-        shell.load(&store, NOBODY, &Fake);
+        shell.load(&store, &Fake);
         shell.key(press(KeyCode::Char('/')));
         shell.key(press(KeyCode::Char('x')));
         assert!(drawn(&mut shell).contains("/x"));
         assert_eq!(shell.key(press(KeyCode::Esc)), Flow::Stay);
-        shell.load(&store, NOBODY, &Fake);
+        shell.load(&store, &Fake);
         let dropped = drawn(&mut shell);
         assert!(
             !dropped.contains("/x") && dropped.contains("open Issues"),
@@ -444,7 +519,7 @@ mod tests {
         );
         assert!(dropped.contains("3 Issues"), "{dropped}");
         assert_eq!(typed_after_slash(&mut shell, "nonsense:1"), Flow::Reload);
-        shell.load(&store, NOBODY, &Fake);
+        shell.load(&store, &Fake);
         assert!(drawn(&mut shell).contains("unknown field"));
     }
 
@@ -453,13 +528,13 @@ mod tests {
         let store = store();
         let mut shell = Shell::new("TM");
         typed_after_slash(&mut shell, "assignee:@me");
-        shell.load(&store, Ok("jace"), &Fake);
+        shell.load(&store, &Jace);
         let mine = drawn(&mut shell);
         assert!(
             mine.contains("third") && mine.contains("1 Issue "),
             "{mine}"
         );
-        shell.load(&store, NOBODY, &Fake);
+        shell.load(&store, &Fake);
         let nobody = drawn_at(&mut shell, 100);
         assert!(
             nobody.contains("@me needs to know who you are: set TM_ACTOR"),
@@ -471,12 +546,12 @@ mod tests {
     fn a_read_that_shrinks_the_list_keeps_a_row_selected() {
         let store = store();
         let mut shell = Shell::new("TM");
-        shell.load(&store, NOBODY, &Fake);
+        shell.load(&store, &Fake);
         shell.key(press(KeyCode::Char('G')));
-        assert_eq!(shell.list.selected_key().as_deref(), Some("TM-1"));
+        assert_eq!(list(&shell).selected_key().as_deref(), Some("TM-1"));
         typed_after_slash(&mut shell, "title:third");
-        shell.load(&store, NOBODY, &Fake);
-        assert_eq!(shell.list.selected_key().as_deref(), Some("TM-3"));
+        shell.load(&store, &Fake);
+        assert_eq!(list(&shell).selected_key().as_deref(), Some("TM-3"));
     }
 
     #[test]
@@ -486,13 +561,13 @@ mod tests {
         assert_eq!(shell.key(press(KeyCode::Char('?'))), Flow::Stay);
         let ctrl_w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
         assert_eq!(shell.key(ctrl_w), Flow::Stay);
-        assert_eq!(shell.list.prompt().as_deref(), Some("/?"));
+        assert_eq!(list(&shell).prompt().as_deref(), Some("/?"));
         assert!(!drawn_sized(&mut shell, 60, 16).contains("Keys"));
     }
 
     fn typed_after_slash(shell: &mut Shell, text: &str) -> Flow {
         shell.key(press(KeyCode::Char('/')));
-        while shell.list.prompt().is_some_and(|prompt| prompt.len() > 1) {
+        while list(shell).prompt().is_some_and(|prompt| prompt.len() > 1) {
             shell.key(press(KeyCode::Backspace));
         }
         for c in text.chars() {
@@ -505,8 +580,8 @@ mod tests {
     fn the_selection_moves_and_stays_on_its_issue_across_a_read() {
         let mut store = store();
         let mut shell = Shell::new("TM");
-        shell.load(&store, NOBODY, &Fake);
-        let selected = |shell: &Shell| shell.list.selected_key();
+        shell.load(&store, &Fake);
+        let selected = |shell: &Shell| list(shell).selected_key();
         assert_eq!(selected(&shell).as_deref(), Some("TM-3"), "the first row");
         shell.key(press(KeyCode::Char('G')));
         shell.key(press(KeyCode::Up));
@@ -516,7 +591,7 @@ mod tests {
         store
             .create_issue(&jace, project, "task", "zeroth")
             .unwrap();
-        shell.load(&store, NOBODY, &Fake);
+        shell.load(&store, &Fake);
         assert_eq!(
             selected(&shell).as_deref(),
             Some("TM-2"),
@@ -582,7 +657,7 @@ mod tests {
     fn no_size_panics() {
         let store = store();
         let mut shell = Shell::new("TM");
-        shell.load(&store, NOBODY, &Fake);
+        shell.load(&store, &Fake);
         shell.seen(Seen::Changed("10:15:03".into()));
         let states = [
             (None, false),
@@ -594,11 +669,11 @@ mod tests {
         ];
         for (open, help) in states {
             if let Some(open) = open {
-                if shell.detail.is_some() {
+                if shell.screens.depth() > 1 {
                     shell.key(press(KeyCode::Esc));
                 }
                 shell.key(press(open));
-                shell.load(&store, NOBODY, &Fake);
+                shell.load(&store, &Fake);
             }
             if help != shell.help {
                 shell.key(press(KeyCode::Char('?')));
@@ -618,6 +693,10 @@ mod tests {
     struct Fake;
 
     impl Actions for Fake {
+        fn me(&self) -> Result<&str, &str> {
+            NOBODY
+        }
+
         fn detail(&self, store: &Store, id: Uuid) -> Result<String, String> {
             let view = store.issue(id).map_err(|err| err.to_string())?;
             let key = view.and_then(|view| view.key).ok_or("no such Issue")?;
@@ -634,9 +713,37 @@ mod tests {
         }
     }
 
+    /// [`Fake`], with jace at the terminal.
+    struct Jace;
+
+    impl Actions for Jace {
+        fn me(&self) -> Result<&str, &str> {
+            Ok("jace")
+        }
+
+        fn detail(&self, store: &Store, id: Uuid) -> Result<String, String> {
+            Fake.detail(store, id)
+        }
+
+        fn ready(&self, store: &Store) -> Result<String, String> {
+            Fake.ready(store)
+        }
+    }
+
+    fn list(shell: &Shell) -> &List {
+        match shell.screens.base() {
+            Screen::List(list) => list,
+            Screen::Detail(_) => unreachable!("the list is first"),
+        }
+    }
+
     struct Gone;
 
     impl Actions for Gone {
+        fn me(&self) -> Result<&str, &str> {
+            NOBODY
+        }
+
         fn detail(&self, _: &Store, _: Uuid) -> Result<String, String> {
             Err("Issue TM-2 \u{1b}[2Jdoes not exist".into())
         }
@@ -650,6 +757,10 @@ mod tests {
     struct Wide;
 
     impl Actions for Wide {
+        fn me(&self) -> Result<&str, &str> {
+            NOBODY
+        }
+
         fn detail(&self, _: &Store, _: Uuid) -> Result<String, String> {
             Ok((1..=20).fold(String::new(), |mut text, n| {
                 let _ = writeln!(text, "row{n:02} wraps in here");
@@ -674,10 +785,10 @@ mod tests {
 
     fn opened(store: &Store, actions: &dyn Actions) -> Shell {
         let mut shell = Shell::new("TM");
-        shell.load(store, NOBODY, actions);
+        shell.load(store, actions);
         shell.key(press(KeyCode::Char('j')));
         assert_eq!(shell.key(press(KeyCode::Enter)), Flow::Reload);
-        shell.load(store, NOBODY, actions);
+        shell.load(store, actions);
         shell
     }
 
@@ -694,13 +805,83 @@ mod tests {
         for back in [KeyCode::Char('q'), KeyCode::Esc, KeyCode::Backspace] {
             let mut shell = opened(&store, &Fake);
             assert_eq!(shell.key(press(back)), Flow::Reload, "{back:?}");
-            shell.load(&store, NOBODY, &Fake);
+            shell.load(&store, &Fake);
             assert!(drawn(&mut shell).contains("open Issues"), "{back:?}");
-            assert_eq!(shell.list.selected_key().as_deref(), Some("TM-2"));
+            assert_eq!(list(&shell).selected_key().as_deref(), Some("TM-2"));
         }
         let mut shell = opened(&store, &Fake);
         shell.key(press(KeyCode::Esc));
         assert_eq!(shell.key(press(KeyCode::Char('q'))), Flow::Quit);
+    }
+
+    #[test]
+    fn the_keys_shown_are_the_open_screens() {
+        let store = store();
+        let mut shell = opened(&store, &Fake);
+        shell.key(press(KeyCode::Char('?')));
+        let help = drawn_sized(&mut shell, 60, 16);
+        assert!(
+            help.contains("q Esc Bksp  back") && help.contains("scroll down and up"),
+            "{help}"
+        );
+        assert!(!help.contains("type a filter"), "{help}");
+        let footer = help.lines().last().unwrap_or_default();
+        assert!(
+            footer.starts_with("\"q back · j k scroll · ? keys "),
+            "{footer}"
+        );
+    }
+
+    #[test]
+    fn a_modified_esc_hides_the_keys_and_ctrl_c_quits_with_any_modifier() {
+        let store = store();
+        let mut shell = opened(&store, &Fake);
+        shell.key(press(KeyCode::Char('?')));
+        let shift_esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::SHIFT);
+        assert_eq!(shell.key(shift_esc), Flow::Stay);
+        assert!(!shell.help && shell.screens.depth() == 2);
+        let ctrl_alt_c = KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        assert_eq!(shell.key(ctrl_alt_c), Flow::Quit);
+    }
+
+    #[test]
+    fn esc_while_typing_drops_the_filter_whether_or_not_the_keys_show() {
+        let mut shell = Shell::new("TM");
+        shell.key(press(KeyCode::Char('?')));
+        shell.key(press(KeyCode::Char('/')));
+        shell.key(press(KeyCode::Char('x')));
+        assert_eq!(shell.key(press(KeyCode::Esc)), Flow::Stay);
+        assert_eq!(list(&shell).prompt(), None);
+        assert!(shell.help, "the keys stay until Esc again");
+    }
+
+    #[test]
+    fn no_key_is_named_twice_on_a_screen() {
+        let named = |table: Vec<(String, &'static str)>| -> Vec<String> {
+            table
+                .into_iter()
+                .flat_map(|(keys, _)| keys.split(' ').map(str::to_owned).collect::<Vec<_>>())
+                .collect()
+        };
+        let global = named(keys::help(&GLOBAL));
+        for (screen, table) in [
+            ("list", keys::help(&list::KEYS)),
+            ("detail", keys::help(&detail::KEYS)),
+        ] {
+            let keys = named(table);
+            let mut seen = std::collections::BTreeSet::new();
+            for key in &keys {
+                assert!(seen.insert(key), "{screen} names {key} twice");
+                // Esc is the screen's own unless the keys show.
+                assert!(
+                    key == "Esc" || !global.contains(key),
+                    "{screen} shadows {key}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -709,7 +890,7 @@ mod tests {
         let mut shell = opened(&store, &Fake);
         shell.key(press(KeyCode::Char('?')));
         assert_eq!(shell.key(press(KeyCode::Esc)), Flow::Stay);
-        assert!(!shell.help && shell.detail.is_some());
+        assert!(!shell.help && shell.screens.depth() > 1);
     }
 
     #[test]
@@ -730,7 +911,7 @@ mod tests {
         shell.key(press(KeyCode::Char('G')));
         assert_eq!(drawn(&mut shell), bottom);
         shell.key(press(KeyCode::Char('k')));
-        shell.load(&store, NOBODY, &Fake);
+        shell.load(&store, &Fake);
         let reread = drawn(&mut shell);
         assert!(
             reread.contains("line 29") && !reread.contains("line 30"),
@@ -751,20 +932,20 @@ mod tests {
     fn r_opens_the_ready_queue_as_the_cli_prints_it_and_q_goes_back() {
         let store = store();
         let mut shell = Shell::new("TM");
-        shell.load(&store, NOBODY, &Fake);
+        shell.load(&store, &Fake);
         shell.key(press(KeyCode::Char('j')));
         assert_eq!(shell.key(press(KeyCode::Char('r'))), Flow::Reload);
-        shell.load(&store, NOBODY, &Fake);
+        shell.load(&store, &Fake);
         insta::assert_snapshot!(drawn(&mut shell));
         for back in [KeyCode::Char('q'), KeyCode::Esc, KeyCode::Backspace] {
-            if shell.detail.is_none() {
+            if shell.screens.depth() == 1 {
                 shell.key(press(KeyCode::Char('r')));
-                shell.load(&store, NOBODY, &Fake);
+                shell.load(&store, &Fake);
             }
             assert_eq!(shell.key(press(back)), Flow::Reload, "{back:?}");
-            shell.load(&store, NOBODY, &Fake);
+            shell.load(&store, &Fake);
             assert!(drawn(&mut shell).contains("open Issues"), "{back:?}");
-            assert_eq!(shell.list.selected_key().as_deref(), Some("TM-2"));
+            assert_eq!(list(&shell).selected_key().as_deref(), Some("TM-2"));
         }
     }
 
@@ -781,14 +962,14 @@ mod tests {
         let mut store = store();
         let mut shell = Shell::new("TM");
         shell.key(press(KeyCode::Char('r')));
-        shell.load(&store, NOBODY, &Fake);
+        shell.load(&store, &Fake);
         assert!(drawn(&mut shell).contains("3 ready"));
         let jace = Actor::human("jace");
         let project = store.project_by_key("TM").unwrap().unwrap();
         store
             .create_issue(&jace, project, "task", "fourth")
             .unwrap();
-        shell.load(&store, NOBODY, &Fake);
+        shell.load(&store, &Fake);
         assert!(drawn(&mut shell).contains("4 ready"));
     }
 
@@ -797,8 +978,8 @@ mod tests {
         let mut shell = Shell::new("TM");
         shell.key(press(KeyCode::Char('/')));
         assert_eq!(shell.key(press(KeyCode::Char('r'))), Flow::Stay);
-        assert!(shell.detail.is_none());
-        assert_eq!(shell.list.prompt().as_deref(), Some("/r"));
+        assert_eq!(shell.screens.depth(), 1);
+        assert_eq!(list(&shell).prompt().as_deref(), Some("/r"));
     }
 
     #[test]
@@ -806,7 +987,7 @@ mod tests {
         let store = store();
         let mut shell = Shell::new("TM");
         shell.key(press(KeyCode::Char('r')));
-        shell.load(&store, NOBODY, &Gone);
+        shell.load(&store, &Gone);
         let screen = drawn(&mut shell);
         assert!(
             screen.contains(r"the queue \u{1b}[2Jcannot be read"),
@@ -819,8 +1000,8 @@ mod tests {
         let store = store();
         let mut shell = Shell::new("TM");
         typed_after_slash(&mut shell, "title:nothing");
-        shell.load(&store, NOBODY, &Fake);
+        shell.load(&store, &Fake);
         assert_eq!(shell.key(press(KeyCode::Enter)), Flow::Stay);
-        assert!(shell.detail.is_none());
+        assert_eq!(shell.screens.depth(), 1);
     }
 }

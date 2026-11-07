@@ -65,11 +65,11 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
     let me = me.as_deref().map_err(String::as_str);
     let mut pending = false;
     let actions = Cli {
-        me: me.ok(),
+        me,
         project,
         reader: reader.as_ref().map_err(String::as_str),
     };
-    tm_tui::run(place, store, me, &actions, |store| {
+    tm_tui::run(place, store, &actions, |store| {
         let (opened, seen) = refresh(watch.changed(), &mut pending, open, || {
             jiff::Zoned::now().strftime("%H:%M:%S").to_string()
         })?;
@@ -102,17 +102,21 @@ fn session(
 }
 
 /// The screens' text from the CLI's own commands, `me` the person at the
-/// terminal, `reader` the session as `tm ready` reads it or why it cannot,
-/// and `project` the one this directory maps to.
+/// terminal or why no one can be named, `reader` the session as `tm ready`
+/// reads it or why it cannot, and `project` the one this directory maps to.
 struct Cli<'a> {
-    me: Option<&'a str>,
+    me: Result<&'a str, &'a str>,
     project: ProjectId,
     reader: Result<&'a Identity, &'a str>,
 }
 
 impl tm_tui::Actions for Cli<'_> {
+    fn me(&self) -> Result<&str, &str> {
+        self.me
+    }
+
     fn detail(&self, store: &Store, id: Uuid) -> Result<String, String> {
-        let me = || self.me.map(str::to_owned);
+        let me = || self.me.ok().map(str::to_owned);
         let shown = show::render_with(store, id, show::Comments::All, None);
         let written = history::render(store, id, None, false, &me);
         let (shown, written) = shown
@@ -232,7 +236,7 @@ mod tests {
             store.append(draft).unwrap();
         }
         let cli = Cli {
-            me: Some("jace"),
+            me: Ok("jace"),
             project,
             reader: Err("unused"),
         };
@@ -266,7 +270,7 @@ mod tests {
             warnings: vec!["found two harnesses".into()],
         };
         let cli = Cli {
-            me: Some("jace"),
+            me: Ok("jace"),
             project,
             reader: Ok(&identity),
         };
@@ -277,7 +281,7 @@ mod tests {
         assert!(lists.is_some() && queue > lists, "{text}");
         assert!(text.contains("\nTM-2  todo  none  beta\n"), "{text}");
         let nobody = Cli {
-            me: None,
+            me: Err("unused"),
             project,
             reader: Err("set TM_ACTOR"),
         };
