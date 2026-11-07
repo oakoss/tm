@@ -62,10 +62,16 @@ fn without_a_terminal_or_under_json_it_refuses_and_says_why() {
         let mut tui = sized(&scratch, &repo, args);
         let said = tui.exp_eof().unwrap();
         assert!(said.contains(r#""error":"usage""#), "{args}: {said}");
-        assert!(said.contains("no --json form"), "{args}: {said}");
+        assert!(said.contains("no JSON form"), "{args}: {said}");
         assert!(!said.contains("\u{1b}[?1049h"), "never drew: {said}");
         assert_eq!(exit_code(&tui), 2);
     }
+    let out = jace(&scratch, &repo, &["tui"])
+        .env("TM_JSON", "1")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(text(&out.stdout).contains("TM_JSON=1"), "{out:?}");
 }
 
 #[test]

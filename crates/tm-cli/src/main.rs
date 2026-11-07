@@ -593,7 +593,15 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args_os()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
-    let json = output::json_mode(&args, std::env::var("TM_JSON").ok().as_deref());
+    // The harness reads only its own hook format, which JSON mode must not
+    // wrap, even when the hook's arguments fail to parse. Before a command,
+    // clap takes only --json; anything else ends parsing or is refused.
+    let json = output::json_mode(&args, std::env::var("TM_JSON").ok().as_deref())
+        && args
+            .iter()
+            .skip(1)
+            .find(|arg| *arg != "--json")
+            .is_none_or(|arg| arg != "hook");
     if json {
         output::install_panic_hook();
     }
@@ -617,7 +625,6 @@ fn main() -> ExitCode {
             Err(err) => output::finish(json, Err(err), &[]),
         };
     }
-    // The harness reads only its own hook format, which TM_JSON must not wrap.
     if let Some(Command::Hook { action }) = &cli.command {
         let input = hook::input();
         let enter = |harness| {
@@ -789,19 +796,29 @@ fn parse_failed(json: bool, err: &clap::Error, args: Option<&[String]>) -> ExitC
             &[],
         );
     }
-    // Clap lists what a message names, such as missing arguments, on the
-    // indented lines after it.
+    output::finish(
+        true,
+        Err(CliError::new("usage", usage_message(&rendered))),
+        &[],
+    )
+}
+
+/// Clap's rendered error as one line: its message, then what it names, such
+/// as missing arguments, from the indented lines after it. A blank line ends
+/// them before any tip.
+fn usage_message(rendered: &str) -> String {
     let mut lines = rendered.lines();
     let first = lines.next().unwrap_or_default();
-    let mut message = first.strip_prefix("error: ").unwrap_or(first).to_owned();
+    let message = first.strip_prefix("error: ").unwrap_or(first);
     let named: Vec<&str> = lines
         .take_while(|line| line.starts_with("  "))
         .map(str::trim)
         .collect();
-    if !named.is_empty() {
-        message = format!("{message} {}", named.join(", "));
+    if named.is_empty() {
+        message.to_owned()
+    } else {
+        format!("{message} {}", named.join(", "))
     }
-    output::finish(true, Err(CliError::new("usage", message)), &[])
 }
 
 fn scheme_json(scheme: &Scheme) -> serde_json::Value {
@@ -937,6 +954,44 @@ mod tests {
         let mut out = Vec::new();
         walk("tm", &Cli::command(), true, &mut out);
         out
+    }
+
+    #[test]
+    fn only_commands_with_a_json_form_offer_json_in_their_help() {
+        fn walk(path: &str, command: &mut clap::Command, out: &mut Vec<(String, String)>) {
+            out.push((path.to_owned(), command.render_help().to_string()));
+            for sub in command.get_subcommands_mut() {
+                walk(&format!("{path} {}", sub.get_name()), sub, out);
+            }
+        }
+        let mut built = cli();
+        built.build();
+        let mut helps = Vec::new();
+        walk("tm", &mut built, &mut helps);
+        // Clap's own help commands take no flags.
+        for (path, help) in helps
+            .into_iter()
+            .filter(|(path, _)| !path.contains(" help"))
+        {
+            let without = path.starts_with("tm hook") || path == "tm tui";
+            assert_eq!(!help.contains("--json"), without, "{path}:\n{help}");
+        }
+    }
+
+    #[test]
+    fn a_usage_message_names_what_clap_lists_but_not_its_tips() {
+        let message = |args: &[&str]| {
+            let err = cli().try_get_matches_from(args).unwrap_err();
+            super::usage_message(&err.render().to_string())
+        };
+        assert_eq!(
+            message(&["tm", "handoff", "X-1"]),
+            "the following required arguments were not provided: --to <AGENT>, <NOTE>"
+        );
+        assert_eq!(
+            message(&["tm", "list", "--limt", "3"]),
+            "unexpected argument '--limt' found"
+        );
     }
 
     #[test]

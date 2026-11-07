@@ -63,15 +63,46 @@ fn next_refuses_paths_with_peek_since_a_peek_takes_no_claim() {
 }
 
 #[test]
-fn hook_help_does_not_offer_json() {
-    for args in [
-        &["hook", "--help"][..],
-        &["hook", "session-start", "--help"],
+fn the_version_without_json_is_text() {
+    let output = tm(&["--version"], &[]);
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(text, format!("tm {}\n", env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn a_usage_error_keeps_the_values_clap_allows() {
+    let doc = document(&tm(&["setup", "bogus", "--json"], &[]));
+    assert_eq!(
+        doc["message"],
+        "invalid value 'bogus' for '<HARNESS>' [possible values: claude, codex]"
+    );
+}
+
+#[test]
+fn a_hook_that_fails_to_parse_under_json_says_why_in_text() {
+    for (args, envs) in [
+        (&["hook", "pre-edit"][..], &[("TM_JSON", "1")][..]),
+        (&["--json", "hook", "pre-edit"], &[]),
     ] {
-        let output = tm(args, &[]);
-        assert!(output.status.success(), "{output:?}");
-        let help = String::from_utf8(output.stdout).unwrap();
-        assert!(!help.contains("--json"), "{args:?}: {help}");
+        let output = tm(args, envs);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        assert!(output.stdout.is_empty(), "{args:?}: {output:?}");
+        let said = String::from_utf8(output.stderr).unwrap();
+        assert!(said.contains("<HARNESS>"), "{args:?}: {said}");
+    }
+}
+
+#[test]
+fn json_mode_stays_on_where_no_hook_runs() {
+    for args in [
+        &["--json", "--", "hook"][..],
+        &["--json", "-V", "hook"],
+        &["--json", "--help", "hook"],
+        &["--json", "-hV", "hook"],
+        &["--json", "--bogus", "hook"],
+    ] {
+        document(&tm(args, &[]));
     }
 }
 
