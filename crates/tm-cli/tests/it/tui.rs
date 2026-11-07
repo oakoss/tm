@@ -444,3 +444,28 @@ fn triage_refuses_a_write_over_a_change_made_elsewhere_and_unsets_with_nobody() 
     tui.exp_eof().unwrap();
     assert_eq!(exit_code(&tui), 0);
 }
+
+#[test]
+fn the_board_moves_an_issue_a_column_as_tm_move_does_and_u_undoes_it() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    let made = tm(
+        &scratch,
+        &repo,
+        &["create", "--type", "task", "--title", "alpha"],
+    );
+    assert!(made.status.success(), "{made:?}");
+    let mut tui = sized(&scratch, &repo, "tui");
+    tui.exp_string("alpha").unwrap();
+    press(&mut tui, "b");
+    tui.exp_string("Todo 1").unwrap();
+    press(&mut tui, "L");
+    settles(|| status(&scratch, &repo, "TM-1") == "in_progress");
+    tui.exp_string("In Progress 1").unwrap();
+    press(&mut tui, "u");
+    settles(|| status(&scratch, &repo, "TM-1") == "todo");
+    press(&mut tui, "q");
+    press(&mut tui, "q");
+    tui.exp_eof().unwrap();
+    assert_eq!(exit_code(&tui), 0);
+}

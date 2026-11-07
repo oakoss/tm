@@ -244,3 +244,144 @@ pub(crate) fn shared(statuses: &[(String, Vec<Choice>)], types: &BTreeSet<&str>)
         .cloned()
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn choices(values: &[&str]) -> Vec<Choice> {
+        values
+            .iter()
+            .map(|value| Choice {
+                value: Some((*value).to_owned()),
+                label: (*value).to_owned(),
+            })
+            .collect()
+    }
+
+    fn press(picker: &mut Picker, code: KeyCode) -> Picked {
+        picker.key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    fn chosen(picked: Picked) -> Option<String> {
+        match picked {
+            Picked::Chosen(_, choice, _) => Some(choice.label),
+            _ => None,
+        }
+    }
+
+    fn opened(field: Field) -> Picker {
+        Picker::new(
+            field,
+            choices(&["low", "lower", "high"]),
+            vec![("TM-1".into(), 4)],
+        )
+    }
+
+    #[test]
+    fn up_and_down_stop_at_the_ends() {
+        let mut picker = opened(Field::Priority);
+        for _ in 0..5 {
+            press(&mut picker, KeyCode::Down);
+        }
+        assert_eq!(
+            chosen(press(&mut picker, KeyCode::Enter)),
+            Some("high".into())
+        );
+        let mut picker = opened(Field::Priority);
+        press(&mut picker, KeyCode::Down);
+        for _ in 0..5 {
+            press(&mut picker, KeyCode::Up);
+        }
+        assert_eq!(
+            chosen(press(&mut picker, KeyCode::Enter)),
+            Some("low".into())
+        );
+    }
+
+    #[test]
+    fn typing_and_backspace_go_back_to_the_first_choice_shown() {
+        let mut picker = opened(Field::Priority);
+        press(&mut picker, KeyCode::Down);
+        press(&mut picker, KeyCode::Down);
+        press(&mut picker, KeyCode::Char('l'));
+        assert_eq!(
+            chosen(press(&mut picker, KeyCode::Enter)),
+            Some("low".into())
+        );
+        let mut picker = opened(Field::Priority);
+        press(&mut picker, KeyCode::Char('w'));
+        press(&mut picker, KeyCode::Down);
+        press(&mut picker, KeyCode::Backspace);
+        assert_eq!(
+            chosen(press(&mut picker, KeyCode::Enter)),
+            Some("low".into())
+        );
+    }
+
+    #[test]
+    fn enter_with_no_match_cancels_unless_a_name_is_assigned() {
+        let mut picker = opened(Field::Status);
+        press(&mut picker, KeyCode::Char('z'));
+        assert!(matches!(
+            press(&mut picker, KeyCode::Enter),
+            Picked::Cancelled
+        ));
+        let mut picker = opened(Field::Assignee);
+        press(&mut picker, KeyCode::Char('z'));
+        assert_eq!(chosen(press(&mut picker, KeyCode::Enter)), Some("z".into()));
+    }
+
+    #[test]
+    fn a_choice_writes_its_field_at_the_version_read() {
+        let high = &choices(&["high"])[0];
+        let nobody = Choice {
+            value: None,
+            label: "nobody".into(),
+        };
+        let at = || vec![("TM-1".to_owned(), 4)];
+        assert_eq!(
+            writes(Field::Priority, high, at()),
+            [Write::Set {
+                key: "TM-1".into(),
+                field: "priority".into(),
+                value: Some("high".into()),
+                version: 4,
+            }]
+        );
+        assert_eq!(
+            writes(Field::Assignee, &nobody, at()),
+            [Write::Set {
+                key: "TM-1".into(),
+                field: "assignee".into(),
+                value: None,
+                version: 4,
+            }]
+        );
+        assert_eq!(
+            writes(Field::Status, high, at()),
+            [Write::Move {
+                key: "TM-1".into(),
+                status: "high".into(),
+                version: 4,
+            }]
+        );
+    }
+
+    #[test]
+    fn shared_keeps_the_statuses_every_type_has_in_the_first_ones_order() {
+        let statuses = vec![
+            (
+                "bug".to_owned(),
+                choices(&["triage", "todo", "fixed", "done"]),
+            ),
+            ("task".to_owned(), choices(&["todo", "triage", "done"])),
+        ];
+        let types: BTreeSet<&str> = ["bug", "task"].into();
+        let kept: Vec<String> = shared(&statuses, &types)
+            .into_iter()
+            .map(|choice| choice.label)
+            .collect();
+        assert_eq!(kept, ["triage", "todo", "done"]);
+    }
+}

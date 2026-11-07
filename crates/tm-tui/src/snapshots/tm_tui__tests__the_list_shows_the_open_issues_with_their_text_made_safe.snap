@@ -1,5 +1,6 @@
 ---
 source: crates/tm-tui/src/lib.rs
+assertion_line: 783
 expression: screen
 ---
 "tm · TM › Issues                                            "
@@ -11,4 +12,4 @@ expression: screen
 "│                                                          │"
 "│                                                          │"
 "└──────────────────────────────────────────────────────────┘"
-"q quit · / filter · r ready · t triage · ? keys             "
+"q quit · / filter · r ready · t triage · b board · ? keys   "

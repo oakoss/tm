@@ -1,11 +1,11 @@
 ---
 source: crates/tm-tui/src/lib.rs
+assertion_line: 944
 expression: "drawn_sized(&mut shell, 60, 17)"
 ---
 "tm · TM › Issues                                            "
-"┌ open Issues ─────────────────────────────────── 0 Issues ┐"
-"│N┌Keys──────────────────────────────────────────────────┐ │"
-"│ │           q  quit                                    │ │"
+"┌ ┌Keys──────────────────────────────────────────────────┐ ┐"
+"│N│           q  quit                                    │ │"
 "│ │     j ↓ k ↑  down and up                             │ │"
 "│ │g Home G End  first and last                          │ │"
 "│ │   PgDn PgUp  down a page and up                      │ │"
@@ -14,8 +14,9 @@ expression: "drawn_sized(&mut shell, 60, 17)"
 "│ │           a  open work or every status               │ │"
 "│ │           r  the ready queue, as tm ready            │ │"
 "│ │           t  triage the Issues in a triage Status    │ │"
+"│ │           b  the Board: a column per Status          │ │"
 "│ │           ?  show or hide these keys                 │ │"
 "│ │         Esc  hide these keys                         │ │"
 "│ │      Ctrl-C  quit                                    │ │"
 "└─└──────────────────────────────────────────────────────┘─┘"
-"q quit · / filter · r ready · t triage · ? keys             "
+"q quit · / filter · r ready · t triage · b board · ? keys   "
