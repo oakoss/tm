@@ -187,7 +187,7 @@ fn named(
     let Some(project) = here.store.project_by_key(prefix)? else {
         return Ok(None);
     };
-    let before = |created_ms: i64| (closing.at + 1).saturating_mul(1000) <= created_ms;
+    let before = |created_ms: i64| written_before(closing.at, created_ms);
     if here.store.project_created_ms(project)?.is_some_and(before) {
         return Ok(None);
     }
@@ -217,6 +217,12 @@ fn named(
         .issue(id)?
         .and_then(|view| view.fields.get("created").and_then(Value::as_i64));
     Ok((!created.is_some_and(before)).then_some(id))
+}
+
+/// Whether a commit at `at` seconds was written before `created_ms`. git
+/// keeps whole seconds, so a commit in the creation's second is not.
+fn written_before(at: i64, created_ms: i64) -> bool {
+    (at + 1).saturating_mul(1000) <= created_ms
 }
 
 /// The commits of `closings` no scan's comment on `id` records yet, each
@@ -596,5 +602,22 @@ mod tests {
         assert_eq!(warnings[1], subject);
         assert!(warnings[2].starts_with("skipped a commit git printed as"));
         assert_eq!(warnings.len(), 3);
+    }
+
+    #[test]
+    fn a_commit_git_printed_without_a_time_is_skipped_with_a_warning() {
+        for head in [A.to_owned(), format!("{A} soon")] {
+            let (closings, warnings) = closings(&format!("{head}\nfix\nCloses TM-1\0\n"));
+            assert_eq!(closings, [], "{head}");
+            let skipped = format!("skipped a commit git printed as {head}");
+            assert_eq!(warnings, [skipped]);
+        }
+    }
+
+    #[test]
+    fn a_commit_is_written_before_only_what_was_created_after_its_second() {
+        assert!(written_before(10, 11_000));
+        assert!(!written_before(10, 10_999));
+        assert!(!written_before(10, 10_000));
     }
 }
