@@ -71,6 +71,13 @@ fn the_version_without_json_is_text() {
 }
 
 #[test]
+fn a_usage_error_carries_clap_s_tip_but_no_fix() {
+    let doc = document(&tm(&["list", "--limt", "3", "--json"], &[]));
+    assert_eq!(doc["tip"], "a similar argument exists: '--limit'");
+    assert_eq!(doc["fix"], Value::Null, "{doc}");
+}
+
+#[test]
 fn a_usage_error_keeps_the_values_clap_allows() {
     let doc = document(&tm(&["setup", "bogus", "--json"], &[]));
     assert_eq!(
@@ -101,6 +108,7 @@ fn json_mode_stays_on_where_no_hook_runs() {
         &["--json", "--help", "hook"],
         &["--json", "-hV", "hook"],
         &["--json", "--bogus", "hook"],
+        &["--json", "--json", "hook", "pre-edit", "claude"],
     ] {
         document(&tm(args, &[]));
     }
