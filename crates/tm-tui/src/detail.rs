@@ -138,11 +138,15 @@ impl Detail {
         Outcome::Stay
     }
 
-    pub(crate) fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let title = match &self.shows {
+    pub(crate) fn title(&self) -> String {
+        match &self.shows {
             Shows::Issue { key, .. } => printable(key),
             Shows::Ready => "Ready".to_owned(),
-        };
+        }
+    }
+
+    pub(crate) fn render(&mut self, frame: &mut Frame, area: Rect) {
+        let title = self.title();
         let block = Block::bordered().title(Line::from(format!(" {title} ")));
         let text = match &self.text {
             Ok(text) | Err(text) => text.as_str(),

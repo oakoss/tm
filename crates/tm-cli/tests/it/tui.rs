@@ -336,3 +336,111 @@ fn a_store_replaced_while_open_is_read_from_its_new_file() {
     tui.exp_eof().unwrap();
     assert_eq!(exit_code(&tui), 0);
 }
+
+fn status(scratch: &Scratch, repo: &Path, key: &str) -> String {
+    let shown = tm(scratch, repo, &["--json", "show", key]);
+    let doc: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    doc["data"]["fields"]["status"].as_str().unwrap().to_owned()
+}
+
+#[test]
+fn triage_moves_an_issue_as_tm_move_does_and_u_undoes_it() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    let made = tm(
+        &scratch,
+        &repo,
+        &[
+            "create",
+            "--type",
+            "task",
+            "--title",
+            "alpha",
+            "--set",
+            "status=triage",
+        ],
+    );
+    assert!(made.status.success(), "{made:?}");
+    let mut tui = sized(&scratch, &repo, "tui");
+    tui.exp_string("alpha").unwrap();
+    press(&mut tui, "t");
+    tui.exp_string("Triage").unwrap();
+    press(&mut tui, "s");
+    tui.exp_string("Enter choose").unwrap();
+    press(&mut tui, "todo\r");
+    tui.exp_string("Nothing to triage").unwrap();
+    assert_eq!(status(&scratch, &repo, "TM-1"), "todo");
+    press(&mut tui, "u");
+    tui.exp_string("alpha").unwrap();
+    assert_eq!(status(&scratch, &repo, "TM-1"), "triage");
+    let history = tm(&scratch, &repo, &["history", "TM-1"]);
+    assert!(text(&history.stdout).contains("jace"), "{history:?}");
+    press(&mut tui, "q");
+    press(&mut tui, "q");
+    tui.exp_eof().unwrap();
+    assert_eq!(exit_code(&tui), 0);
+}
+
+/// Waits up to ten seconds for `done`, as the TUI writes between keys.
+fn settles(done: impl Fn() -> bool) {
+    for _ in 0..100 {
+        if done() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("never settled");
+}
+
+fn field(scratch: &Scratch, repo: &Path, key: &str, name: &str) -> serde_json::Value {
+    let shown = tm(scratch, repo, &["--json", "show", key]);
+    let doc: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    doc["data"]["fields"][name].clone()
+}
+
+#[test]
+fn triage_refuses_a_write_over_a_change_made_elsewhere_and_unsets_with_nobody() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    let made = tm(
+        &scratch,
+        &repo,
+        &[
+            "create",
+            "--type",
+            "task",
+            "--title",
+            "alpha",
+            "--set",
+            "status=triage",
+        ],
+    );
+    assert!(made.status.success(), "{made:?}");
+    let mut tui = sized(&scratch, &repo, "tui");
+    tui.exp_string("alpha").unwrap();
+    press(&mut tui, "t");
+    tui.exp_string("Triage").unwrap();
+    press(&mut tui, "p");
+    tui.exp_string("Enter choose").unwrap();
+    let edited = tm(&scratch, &repo, &["edit", "TM-1", "--set", "priority=low"]);
+    assert!(edited.status.success(), "{edited:?}");
+    press(&mut tui, "high\r");
+    tui.exp_string("so nothing").unwrap();
+    assert_eq!(field(&scratch, &repo, "TM-1", "priority"), "low");
+    press(&mut tui, "A");
+    tui.exp_string("nobody").unwrap();
+    press(&mut tui, "kim\r");
+    settles(|| field(&scratch, &repo, "TM-1", "assignee") == "kim");
+    press(&mut tui, "A");
+    tui.exp_string("nobody").unwrap();
+    press(&mut tui, "nobody\r");
+    tui.exp_string("assignee").unwrap();
+    assert_eq!(
+        field(&scratch, &repo, "TM-1", "assignee"),
+        serde_json::Value::Null
+    );
+    press(&mut tui, "q");
+    press(&mut tui, "q");
+    tui.exp_eof().unwrap();
+    assert_eq!(exit_code(&tui), 0);
+}

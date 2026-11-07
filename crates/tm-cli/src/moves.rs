@@ -54,6 +54,19 @@ pub(crate) struct Move {
     if_version: Option<u64>,
 }
 
+impl Move {
+    /// `tm move ISSUE STATUS --if-version VERSION`, as `tm tui` makes it.
+    pub(crate) fn to(issue: &str, status: &str, if_version: Option<u64>) -> Self {
+        Self {
+            issue: issue.to_owned(),
+            status: status.to_owned(),
+            set: Vec::new(),
+            force: false,
+            if_version,
+        }
+    }
+}
+
 /// The version a write is based on: `given` by `--if-version`, else the one
 /// `read` with the Issue. One too large for the log is ahead of any Issue,
 /// and refused as such.

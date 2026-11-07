@@ -4,6 +4,7 @@ mod detail;
 mod keys;
 mod list;
 mod stack;
+mod triage;
 
 use std::io;
 use std::sync::Arc;
@@ -26,6 +27,8 @@ use detail::Detail;
 use keys::{Binding, ch, ctrl, plain};
 use list::List;
 use stack::Stack;
+use tm_core::text::printable;
+use triage::Triage;
 
 /// How often a write elsewhere is looked for between keys (ADR 0018).
 const POLL: Duration = Duration::from_millis(250);
@@ -82,6 +85,58 @@ pub trait Actions {
     ///
     /// Why the queue cannot be read.
     fn ready(&self, store: &Store) -> Result<String, String>;
+
+    /// `write` as `tm move` or `tm edit` makes it, as the person at the
+    /// terminal.
+    ///
+    /// # Errors
+    ///
+    /// Why it was refused, such as a field changed since `version`.
+    fn write(&self, write: &Write) -> Result<Written, String>;
+
+    /// `tm undo` of `batch`: what it reverted, and the CLI's warnings.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be undone.
+    fn undo(&self, batch: Uuid) -> Result<Written, String>;
+}
+
+/// A write a screen asks for, refused if a field it sets changed after
+/// `version`, the one the screen read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Write {
+    /// `tm move KEY STATUS`.
+    Move {
+        key: String,
+        status: String,
+        version: i64,
+    },
+    /// `tm edit KEY --set FIELD=VALUE`, or `--unset FIELD` with no value.
+    Set {
+        key: String,
+        field: String,
+        value: Option<String>,
+        version: i64,
+    },
+}
+
+impl Write {
+    #[must_use]
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Move { key, .. } | Self::Set { key, .. } => key,
+        }
+    }
+}
+
+/// What a write did: the CLI's line for it, the batch `tm undo` names (none
+/// when nothing changed), and the CLI's warnings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Written {
+    pub said: String,
+    pub batch: Option<Uuid>,
+    pub warnings: Vec<String>,
 }
 
 /// What a look for writes elsewhere found.
@@ -98,6 +153,7 @@ pub enum Seen {
 pub(crate) enum Screen {
     List(List),
     Detail(Detail),
+    Triage(Triage),
 }
 
 /// What a key on a screen asks of the Shell.
@@ -106,9 +162,13 @@ pub(crate) enum Outcome {
     /// Read the screen again, as its filter changed.
     Reload,
     /// Show this screen over the current one.
-    Open(Screen),
+    Open(Box<Screen>),
     /// Go back to the screen below.
     Back,
+    /// Make these writes, then read the screen again.
+    Write(Vec<Write>),
+    /// Undo this session's last write.
+    Undo,
     Quit,
 }
 
@@ -117,6 +177,16 @@ impl Screen {
         match self {
             Self::List(list) => list.load(store, actions.me()),
             Self::Detail(detail) => detail.load(store, actions),
+            Self::Triage(triage) => triage.load(store, actions),
+        }
+    }
+
+    /// The breadcrumb's name for the screen.
+    fn title(&self) -> String {
+        match self {
+            Self::List(_) => "Issues".to_owned(),
+            Self::Detail(detail) => detail.title(),
+            Self::Triage(_) => "Triage".to_owned(),
         }
     }
 
@@ -124,31 +194,48 @@ impl Screen {
         match self {
             Self::List(list) => list.key(key),
             Self::Detail(detail) => detail.key(key),
+            Self::Triage(triage) => triage.key(key),
         }
     }
 
     /// Whether keys are text being typed, which takes every key but Ctrl-C.
     const fn typing(&self) -> bool {
-        matches!(self, Self::List(list) if list.typing())
+        match self {
+            Self::List(list) => list.typing(),
+            Self::Detail(_) => false,
+            Self::Triage(triage) => triage.typing(),
+        }
+    }
+
+    /// The writes the screen asked for are done.
+    fn wrote(&mut self, landed: &[String], refused: bool) {
+        if let Self::Triage(triage) = self {
+            triage.wrote(landed, refused);
+        }
     }
 
     fn help(&self) -> Vec<(String, &'static str)> {
         match self {
             Self::List(_) => keys::help(&list::KEYS),
             Self::Detail(_) => keys::help(&detail::KEYS),
+            Self::Triage(_) => keys::help(&triage::KEYS),
         }
     }
 
     /// The footer: the text typed, else the screen's hints.
     fn footer(&self) -> String {
-        if let Self::List(list) = self
-            && let Some(prompt) = list.prompt()
-        {
+        let prompt = match self {
+            Self::List(list) => list.prompt(),
+            Self::Detail(_) => None,
+            Self::Triage(triage) => triage.prompt(),
+        };
+        if let Some(prompt) = prompt {
             return prompt;
         }
         let mut hints = match self {
             Self::List(_) => keys::hints(&list::KEYS),
             Self::Detail(_) => keys::hints(&detail::KEYS),
+            Self::Triage(_) => keys::hints(&triage::KEYS),
         };
         hints.extend(keys::hints(&GLOBAL));
         hints.join(" · ")
@@ -158,8 +245,15 @@ impl Screen {
         match self {
             Self::List(list) => list.render(frame, area),
             Self::Detail(detail) => detail.render(frame, area),
+            Self::Triage(triage) => triage.render(frame, area),
         }
     }
+}
+
+/// What a screen asked of the Shell that needs the CLI.
+enum Pending {
+    Writes(Vec<Write>),
+    Undo,
 }
 
 /// The frame around the screens: where it reads from, the keys, and what
@@ -171,6 +265,11 @@ pub struct Shell {
     busy: bool,
     /// The Issue list, and the screens shown over it.
     screens: Stack,
+    pending: Option<Pending>,
+    /// This session's writes, each action's batches, newest last.
+    written: Vec<Vec<Uuid>>,
+    /// What the last action did, until the next key.
+    said: Option<String>,
 }
 
 /// What the TUI does after a key.
@@ -179,6 +278,9 @@ pub enum Flow {
     Stay,
     /// Read the screen shown again, as its filter or the screen changed.
     Reload,
+    /// Make the writes a screen asked for with [`Shell::write`], then read
+    /// the screen again.
+    Write,
     Quit,
 }
 
@@ -192,6 +294,110 @@ impl Shell {
             changed: None,
             busy: false,
             screens: Stack::new(Screen::List(List::default())),
+            pending: None,
+            written: Vec::new(),
+            said: None,
+        }
+    }
+
+    /// Makes the writes or undo a key asked for through `actions`, and says
+    /// what it did until the next key.
+    pub fn write(&mut self, actions: &dyn Actions) {
+        let said = match self.pending.take() {
+            None => return,
+            Some(Pending::Writes(writes)) => self.make(&writes, actions),
+            Some(Pending::Undo) => self.undo(actions),
+        };
+        self.said = Some(printable(said.lines().next().unwrap_or_default()));
+    }
+
+    /// Makes `writes`, keeping the batches that landed for `u`, and says
+    /// what happened. A write that changed nothing has no batch, so `u`
+    /// is not offered for it.
+    fn make(&mut self, writes: &[Write], actions: &dyn Actions) -> String {
+        let mut batches = Vec::new();
+        let mut landed = Vec::new();
+        let mut lines = Vec::new();
+        let mut warnings = Vec::new();
+        let mut refused = None;
+        for write in writes {
+            match actions.write(write) {
+                Ok(written) => {
+                    if let Some(batch) = written.batch {
+                        batches.push(batch);
+                        landed.push(write.key().to_owned());
+                    }
+                    lines.push(written.said);
+                    warnings.extend(written.warnings);
+                }
+                Err(why) => {
+                    refused.get_or_insert_with(|| format!("{}: {why}", write.key()));
+                }
+            }
+        }
+        self.shown().wrote(&landed, refused.is_some());
+        let count = batches.len();
+        if count > 0 {
+            self.written.push(batches);
+        }
+        let warned = warnings
+            .first()
+            .map(|warning| format!(" · warning: {warning}"))
+            .unwrap_or_default();
+        if let Some(refused) = refused {
+            let landed = match count {
+                0 => String::new(),
+                n => format!(" ({n} written; u undoes them)"),
+            };
+            return format!("✗ {refused}{landed}{warned}");
+        }
+        let first = lines.first().map_or("", String::as_str);
+        let more = match lines.len() {
+            0 | 1 => String::new(),
+            n => format!(" and {} more", n - 1),
+        };
+        if count == 0 {
+            format!("{first}{more}{warned}")
+        } else {
+            format!("✓ {first}{more} · u undo{warned}")
+        }
+    }
+
+    /// Undoes this session's last action, newest batch first; a batch that
+    /// is refused stays for the next `u`.
+    fn undo(&mut self, actions: &dyn Actions) -> String {
+        let Some(batches) = self.written.pop() else {
+            return "nothing written here to undo".to_owned();
+        };
+        let mut undone = Vec::new();
+        let mut warnings = Vec::new();
+        let mut kept = Vec::new();
+        let mut refused = None;
+        for batch in batches.iter().rev() {
+            match actions.undo(*batch) {
+                Ok(written) => {
+                    undone.push(written.said);
+                    warnings.extend(written.warnings);
+                }
+                Err(why) => {
+                    kept.push(*batch);
+                    refused.get_or_insert(why);
+                }
+            }
+        }
+        let warned = warnings
+            .first()
+            .map(|warning| format!(" · warning: {warning}"))
+            .unwrap_or_default();
+        let Some(why) = refused else {
+            return format!("✓ {}{warned}", undone.join("; "));
+        };
+        let total = batches.len();
+        kept.reverse();
+        self.written.push(kept);
+        match undone.len() {
+            0 => format!("✗ not undone: {why}"),
+            n => format!("✗ {why} ({n} of {total} undone; u tries the rest again){warned}"),
         }
     }
 
@@ -208,6 +414,7 @@ impl Shell {
         if key.kind != KeyEventKind::Press {
             return Flow::Stay;
         }
+        self.said = None;
         let global = keys::action(&GLOBAL, key);
         if matches!(global, Some(Global::Quit)) {
             return Flow::Quit;
@@ -228,11 +435,19 @@ impl Shell {
         match self.shown().key(key) {
             Outcome::Reload => Flow::Reload,
             Outcome::Open(screen) => {
-                self.screens.push(screen);
+                self.screens.push(*screen);
                 Flow::Reload
             }
             Outcome::Back if self.screens.pop() => Flow::Reload,
             Outcome::Stay | Outcome::Back => Flow::Stay,
+            Outcome::Write(writes) => {
+                self.pending = Some(Pending::Writes(writes));
+                Flow::Write
+            }
+            Outcome::Undo => {
+                self.pending = Some(Pending::Undo);
+                Flow::Write
+            }
             Outcome::Quit => Flow::Quit,
         }
     }
@@ -249,14 +464,23 @@ impl Shell {
     }
 
     pub fn render(&mut self, frame: &mut Frame) {
-        let [top, body, bottom] = Layout::vertical([
+        // What the last action did gets a row of its own, cut at its end,
+        // so the start that names the Issue and the reason always shows.
+        let said_rows = u16::from(self.said.is_some());
+        let [top, body, said, bottom] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Fill(1),
+            Constraint::Length(said_rows),
             Constraint::Length(1),
         ])
         .areas(frame.area());
-        frame.render_widget(Line::from(format!("tm · {}", self.place)), top);
+        let crumbs: Vec<String> = self.screens.iter().map(Screen::title).collect();
+        let crumbs = crumbs.join(" › ");
+        frame.render_widget(Line::from(format!("tm · {} › {crumbs}", self.place)), top);
         self.shown().render(frame, body);
+        if let Some(text) = &self.said {
+            frame.render_widget(Line::from(cut(text, usize::from(said.width))), said);
+        }
         let status = if self.busy {
             Some("store busy, retrying".to_owned())
         } else {
@@ -298,6 +522,15 @@ impl Shell {
             );
         }
     }
+}
+
+/// `text` cut to `width` columns, ending in `…` when it was longer.
+fn cut(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
+    format!("{kept}…")
 }
 
 /// Runs the TUI over `store` until a key quits it. Between keys `look` finds
@@ -376,6 +609,10 @@ fn drive<E: From<io::Error>>(
             match shell.key(key) {
                 Flow::Quit => return Ok(Ended::Quit),
                 Flow::Reload => shell.load(&store, actions),
+                Flow::Write => {
+                    shell.write(actions);
+                    shell.load(&store, actions);
+                }
                 Flow::Stay => {}
             }
         }
@@ -693,6 +930,22 @@ mod tests {
     struct Fake;
 
     impl Actions for Fake {
+        fn write(&self, write: &Write) -> Result<Written, String> {
+            Ok(Written {
+                said: format!("{} written", write.key()),
+                batch: Some(Uuid::nil()),
+                warnings: Vec::new(),
+            })
+        }
+
+        fn undo(&self, _: Uuid) -> Result<Written, String> {
+            Ok(Written {
+                said: "undone".into(),
+                batch: None,
+                warnings: Vec::new(),
+            })
+        }
+
         fn me(&self) -> Result<&str, &str> {
             NOBODY
         }
@@ -717,6 +970,14 @@ mod tests {
     struct Jace;
 
     impl Actions for Jace {
+        fn write(&self, write: &Write) -> Result<Written, String> {
+            Fake.write(write)
+        }
+
+        fn undo(&self, batch: Uuid) -> Result<Written, String> {
+            Fake.undo(batch)
+        }
+
         fn me(&self) -> Result<&str, &str> {
             Ok("jace")
         }
@@ -733,13 +994,21 @@ mod tests {
     fn list(shell: &Shell) -> &List {
         match shell.screens.base() {
             Screen::List(list) => list,
-            Screen::Detail(_) => unreachable!("the list is first"),
+            Screen::Detail(_) | Screen::Triage(_) => unreachable!("the list is first"),
         }
     }
 
     struct Gone;
 
     impl Actions for Gone {
+        fn write(&self, write: &Write) -> Result<Written, String> {
+            Err(format!("{} not written", write.key()))
+        }
+
+        fn undo(&self, _: Uuid) -> Result<Written, String> {
+            Err("nothing undone".into())
+        }
+
         fn me(&self) -> Result<&str, &str> {
             NOBODY
         }
@@ -757,6 +1026,14 @@ mod tests {
     struct Wide;
 
     impl Actions for Wide {
+        fn write(&self, write: &Write) -> Result<Written, String> {
+            Err(format!("{} not written", write.key()))
+        }
+
+        fn undo(&self, _: Uuid) -> Result<Written, String> {
+            Err("nothing undone".into())
+        }
+
         fn me(&self) -> Result<&str, &str> {
             NOBODY
         }
@@ -1003,5 +1280,489 @@ mod tests {
         shell.load(&store, &Fake);
         assert_eq!(shell.key(press(KeyCode::Enter)), Flow::Stay);
         assert_eq!(shell.screens.depth(), 1);
+    }
+
+    /// Records each write and undo; refuses writes when `refuse` is set.
+    struct Record {
+        me: Result<&'static str, &'static str>,
+        refuse: bool,
+        /// A Key whose write is refused.
+        refuse_key: Option<String>,
+        /// A Key whose write changes nothing.
+        unchanged_key: Option<String>,
+        /// Refuse the next undo.
+        refuse_undo: std::cell::Cell<bool>,
+        writes: std::cell::RefCell<Vec<Write>>,
+        issued: std::cell::RefCell<Vec<Uuid>>,
+        undone: std::cell::RefCell<Vec<Uuid>>,
+    }
+
+    impl Record {
+        fn new() -> Self {
+            Self {
+                me: Ok("jace"),
+                refuse: false,
+                refuse_key: None,
+                unchanged_key: None,
+                refuse_undo: std::cell::Cell::new(false),
+                writes: std::cell::RefCell::default(),
+                issued: std::cell::RefCell::default(),
+                undone: std::cell::RefCell::default(),
+            }
+        }
+    }
+
+    impl Actions for Record {
+        fn me(&self) -> Result<&str, &str> {
+            self.me
+        }
+
+        fn detail(&self, store: &Store, id: Uuid) -> Result<String, String> {
+            Fake.detail(store, id)
+        }
+
+        fn ready(&self, store: &Store) -> Result<String, String> {
+            Fake.ready(store)
+        }
+
+        fn write(&self, write: &Write) -> Result<Written, String> {
+            if self.refuse || self.refuse_key.as_deref() == Some(write.key()) {
+                return Err("TM-2 changed since you read it".into());
+            }
+            self.writes.borrow_mut().push(write.clone());
+            if self.unchanged_key.as_deref() == Some(write.key()) {
+                return Ok(Written {
+                    said: format!("{}: nothing changed", write.key()),
+                    batch: None,
+                    warnings: Vec::new(),
+                });
+            }
+            let batch = Uuid::now_v7();
+            self.issued.borrow_mut().push(batch);
+            Ok(Written {
+                said: format!("{}  written", write.key()),
+                batch: Some(batch),
+                warnings: vec!["the Snapshot was not updated".into()],
+            })
+        }
+
+        fn undo(&self, batch: Uuid) -> Result<Written, String> {
+            if self.refuse_undo.replace(false) {
+                return Err("changed since".into());
+            }
+            self.undone.borrow_mut().push(batch);
+            Ok(Written {
+                said: "undid the write".into(),
+                batch: None,
+                warnings: vec!["a backup was not made".into()],
+            })
+        }
+    }
+
+    /// Four Issues in triage, TM-1 to TM-4, newest first in the queue; bob
+    /// holds open work.
+    fn triage_store() -> Store {
+        let mut store = store();
+        let jace = Actor::human("jace");
+        let project = store.project_by_key("TM").unwrap().unwrap();
+        let mut ids = Vec::new();
+        for title in ["a", "b", "c", "d"] {
+            ids.push(store.create_issue(&jace, project, "task", title).unwrap().0);
+        }
+        for (subject, field, value) in ids
+            .iter()
+            .map(|id| (*id, "status", "triage"))
+            .chain([(ids[0], "assignee", "bob")])
+        {
+            let change = Change::SetField {
+                field: field.into(),
+                label: field.into(),
+                value: value.into(),
+                value_label: None,
+            };
+            store
+                .append(Draft {
+                    actor: jace.clone(),
+                    project,
+                    subject,
+                    change,
+                })
+                .unwrap();
+        }
+        store
+    }
+
+    fn triaging(store: &Store, actions: &dyn Actions) -> Shell {
+        let mut shell = Shell::new("TM");
+        shell.load(store, actions);
+        assert_eq!(shell.key(press(KeyCode::Char('t'))), Flow::Reload);
+        shell.load(store, actions);
+        shell
+    }
+
+    fn queue_key(shell: &mut Shell) -> Option<String> {
+        match shell.shown() {
+            Screen::Triage(triage) => triage.selected_key(),
+            _ => None,
+        }
+    }
+
+    /// Picks the first choice `typed` narrows `opener`'s picker to.
+    fn pick(shell: &mut Shell, opener: char, typed: &str) -> Flow {
+        shell.key(press(KeyCode::Char(opener)));
+        for c in typed.chars() {
+            shell.key(press(KeyCode::Char(c)));
+        }
+        shell.key(press(KeyCode::Enter))
+    }
+
+    #[test]
+    fn t_opens_the_issues_in_triage_and_only_those() {
+        let store = triage_store();
+        let mut shell = triaging(&store, &Record::new());
+        let screen = drawn_sized(&mut shell, 70, 10);
+        assert!(
+            screen.contains("Triage") && screen.contains("4 Issues"),
+            "{screen}"
+        );
+        assert!(
+            !screen.contains("first"),
+            "an open Issue not in triage: {screen}"
+        );
+        assert!(
+            screen.contains("s status") && screen.contains("u undo"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn a_status_picked_moves_the_issue_as_read_and_goes_on_to_the_next() {
+        let store = triage_store();
+        let record = Record::new();
+        let mut shell = triaging(&store, &record);
+        let first = queue_key(&mut shell).unwrap();
+        shell.key(press(KeyCode::Char('j')));
+        let second = queue_key(&mut shell).unwrap();
+        shell.key(press(KeyCode::Char('k')));
+        assert_eq!(pick(&mut shell, 's', "todo"), Flow::Write);
+        shell.write(&record);
+        shell.load(&store, &record);
+        let id = store.issue_by_key(&first).unwrap().unwrap();
+        let version = store.issue_with_version(id).unwrap().unwrap().1;
+        assert_eq!(
+            *record.writes.borrow(),
+            [Write::Move {
+                key: first.clone(),
+                status: "todo".into(),
+                version,
+            }]
+        );
+        assert_eq!(queue_key(&mut shell), Some(second), "the next Issue");
+        let footer = drawn_sized(&mut shell, 70, 10);
+        assert!(
+            footer.contains(&format!("✓ {first}  written · u undo")),
+            "{footer}"
+        );
+        shell.key(press(KeyCode::Char('j')));
+        assert!(
+            !drawn_sized(&mut shell, 70, 10).contains("✓"),
+            "said until the next key"
+        );
+    }
+
+    #[test]
+    fn marked_issues_take_the_action_and_at_me_comes_first() {
+        let store = triage_store();
+        let record = Record::new();
+        let mut shell = triaging(&store, &record);
+        shell.key(press(KeyCode::Char(' ')));
+        shell.key(press(KeyCode::Char(' ')));
+        assert!(drawn_sized(&mut shell, 70, 10).contains("2 marked"));
+        shell.key(press(KeyCode::Char('A')));
+        let picker = drawn_sized(&mut shell, 70, 12);
+        let lines: Vec<Vec<char>> = picker.lines().map(|line| line.chars().collect()).collect();
+        let (top, left) = lines
+            .iter()
+            .enumerate()
+            .find_map(|(row, line)| {
+                let text: String = line.iter().collect();
+                text.find("┌ Assign")
+                    .map(|byte| (row, text[..byte].chars().count()))
+            })
+            .unwrap();
+        let choices: Vec<String> = lines[top + 1..]
+            .iter()
+            .take_while(|line| line.get(left) == Some(&'│'))
+            .map(|line| {
+                let inside = line[left + 1..].iter().take_while(|c| **c != '│');
+                inside.collect::<String>().trim().to_owned()
+            })
+            .collect();
+        assert_eq!(choices, ["jace (@me)", "bob", "nobody"], "{picker}");
+        assert_eq!(shell.key(press(KeyCode::Enter)), Flow::Write);
+        shell.write(&record);
+        let writes = record.writes.borrow();
+        assert_eq!(writes.len(), 2);
+        assert!(writes.iter().all(|write| matches!(
+            write,
+            Write::Set { field, value: Some(value), .. } if field == "assignee" && value == "jace"
+        )));
+    }
+
+    #[test]
+    fn a_name_no_one_holds_yet_is_assigned_as_typed_and_nobody_unsets() {
+        let store = triage_store();
+        let record = Record::new();
+        let mut shell = triaging(&store, &record);
+        assert_eq!(pick(&mut shell, 'A', "kim"), Flow::Write);
+        shell.write(&record);
+        shell.load(&store, &record);
+        assert_eq!(pick(&mut shell, 'A', "nobody"), Flow::Write);
+        shell.write(&record);
+        let writes = record.writes.borrow();
+        assert!(matches!(&writes[0], Write::Set { value: Some(value), .. } if value == "kim"));
+        assert!(matches!(&writes[1], Write::Set { value: None, .. }));
+    }
+
+    #[test]
+    fn a_refused_write_says_why_and_the_cursor_stays() {
+        let store = triage_store();
+        let record = Record {
+            refuse: true,
+            ..Record::new()
+        };
+        let mut shell = triaging(&store, &record);
+        let first = queue_key(&mut shell);
+        pick(&mut shell, 'p', "high");
+        shell.write(&record);
+        shell.load(&store, &record);
+        assert_eq!(queue_key(&mut shell), first);
+        let screen = drawn_sized(&mut shell, 80, 10);
+        assert!(screen.contains("✗ "), "{screen}");
+        assert!(record.writes.borrow().is_empty());
+    }
+
+    #[test]
+    fn u_undoes_this_sessions_writes_newest_first() {
+        let store = triage_store();
+        let record = Record::new();
+        let mut shell = triaging(&store, &record);
+        assert_eq!(shell.key(press(KeyCode::Char('u'))), Flow::Write);
+        shell.write(&record);
+        assert!(drawn_sized(&mut shell, 70, 10).contains("nothing written here to undo"));
+        pick(&mut shell, 'p', "high");
+        shell.write(&record);
+        shell.load(&store, &record);
+        pick(&mut shell, 'p', "low");
+        shell.write(&record);
+        shell.load(&store, &record);
+        shell.key(press(KeyCode::Char('u')));
+        shell.write(&record);
+        assert_eq!(record.undone.borrow().len(), 1);
+        assert!(drawn_sized(&mut shell, 70, 10).contains("✓ undid the write"));
+    }
+
+    #[test]
+    fn esc_cancels_a_picker_and_its_keys_are_text() {
+        let store = triage_store();
+        let record = Record::new();
+        let mut shell = triaging(&store, &record);
+        shell.key(press(KeyCode::Char('s')));
+        assert_eq!(shell.key(press(KeyCode::Char('?'))), Flow::Stay);
+        assert!(!shell.help, "? is text in a picker");
+        assert_eq!(shell.key(press(KeyCode::Esc)), Flow::Stay);
+        assert_eq!(
+            shell.key(press(KeyCode::Char('q'))),
+            Flow::Reload,
+            "q goes back once the picker is gone"
+        );
+        assert!(record.writes.borrow().is_empty());
+    }
+
+    /// Moves `key` out of triage, as another process would.
+    fn moved_elsewhere(store: &mut Store, key: &str) {
+        let jace = Actor::human("jace");
+        let id = store.issue_by_key(key).unwrap().unwrap();
+        let project = store.project_by_key("TM").unwrap().unwrap();
+        let change = Change::SetField {
+            field: "status".into(),
+            label: "status".into(),
+            value: "todo".into(),
+            value_label: None,
+        };
+        store
+            .append(Draft {
+                actor: jace,
+                project,
+                subject: id,
+                change,
+            })
+            .unwrap();
+    }
+
+    fn written_keys(record: &Record) -> Vec<String> {
+        let writes = record.writes.borrow();
+        writes.iter().map(|write| write.key().to_owned()).collect()
+    }
+
+    #[test]
+    fn a_picker_writes_the_issue_it_opened_on_whatever_a_read_moves() {
+        let mut store = triage_store();
+        let record = Record::new();
+        let mut shell = triaging(&store, &record);
+        let first = queue_key(&mut shell).unwrap();
+        shell.key(press(KeyCode::Char('p')));
+        moved_elsewhere(&mut store, &first);
+        shell.load(&store, &record);
+        for c in "high".chars() {
+            shell.key(press(KeyCode::Char(c)));
+        }
+        assert_eq!(shell.key(press(KeyCode::Enter)), Flow::Write);
+        shell.write(&record);
+        assert_eq!(written_keys(&record), [first]);
+    }
+
+    #[test]
+    fn a_partly_refused_action_keeps_the_refused_marked_and_u_undoes_what_landed() {
+        let store = triage_store();
+        let mut record = Record::new();
+        let mut shell = triaging(&store, &record);
+        let first = queue_key(&mut shell).unwrap();
+        shell.key(press(KeyCode::Char(' ')));
+        shell.key(press(KeyCode::Char(' ')));
+        record.refuse_key = Some(first);
+        pick(&mut shell, 'p', "high");
+        shell.write(&record);
+        shell.load(&store, &record);
+        let screen = drawn_sized(&mut shell, 110, 10);
+        assert!(screen.contains("(1 written; u undoes them)"), "{screen}");
+        assert!(screen.contains("1 marked"), "the refused one: {screen}");
+        shell.key(press(KeyCode::Char('u')));
+        shell.write(&record);
+        assert_eq!(*record.undone.borrow(), *record.issued.borrow());
+    }
+
+    #[test]
+    fn a_write_that_changes_nothing_offers_no_undo() {
+        let store = triage_store();
+        let mut record = Record::new();
+        let mut shell = triaging(&store, &record);
+        record.unchanged_key = queue_key(&mut shell);
+        pick(&mut shell, 'p', "none");
+        shell.write(&record);
+        let screen = drawn_sized(&mut shell, 110, 10);
+        assert!(
+            screen.contains("nothing changed") && !screen.contains("✓"),
+            "{screen}"
+        );
+        shell.key(press(KeyCode::Char('u')));
+        shell.write(&record);
+        assert!(drawn_sized(&mut shell, 110, 10).contains("nothing written here to undo"));
+    }
+
+    #[test]
+    fn u_takes_the_newest_action_first_and_keeps_one_refused_for_another_try() {
+        let store = triage_store();
+        let record = Record::new();
+        let mut shell = triaging(&store, &record);
+        for level in ["high", "low"] {
+            pick(&mut shell, 'p', level);
+            shell.write(&record);
+            shell.load(&store, &record);
+        }
+        let issued = record.issued.borrow().clone();
+        record.refuse_undo.set(true);
+        shell.key(press(KeyCode::Char('u')));
+        shell.write(&record);
+        assert!(drawn_sized(&mut shell, 110, 10).contains("✗ not undone"));
+        for _ in 0..2 {
+            shell.key(press(KeyCode::Char('u')));
+            shell.write(&record);
+        }
+        assert_eq!(*record.undone.borrow(), [issued[1], issued[0]]);
+    }
+
+    #[test]
+    fn after_a_write_from_the_middle_the_cursor_goes_down_not_up() {
+        let store = triage_store();
+        let record = Record::new();
+        let mut shell = triaging(&store, &record);
+        shell.key(press(KeyCode::Char('j')));
+        shell.key(press(KeyCode::Char('j')));
+        shell.key(press(KeyCode::Char('j')));
+        let after = queue_key(&mut shell);
+        shell.key(press(KeyCode::Char('k')));
+        pick(&mut shell, 'p', "high");
+        shell.write(&record);
+        shell.load(&store, &record);
+        assert_eq!(queue_key(&mut shell), after);
+    }
+
+    #[test]
+    fn the_selected_issue_shows_beside_the_queue_and_the_crumbs_name_the_screens() {
+        let store = triage_store();
+        let record = Record::new();
+        let mut shell = triaging(&store, &record);
+        let screen = drawn_sized(&mut shell, 110, 10);
+        assert!(screen.contains("tm · TM › Issues › Triage"), "{screen}");
+        assert!(
+            screen.contains("shown") && screen.contains("line 1"),
+            "{screen}"
+        );
+        shell.key(press(KeyCode::Char('j')));
+        shell.load(&store, &record);
+        let selected = queue_key(&mut shell).unwrap();
+        assert!(drawn_sized(&mut shell, 110, 10).contains(&format!("┌ {selected} ")));
+    }
+
+    #[test]
+    fn a_warning_from_the_cli_shows_with_the_write() {
+        let store = triage_store();
+        let record = Record::new();
+        let mut shell = triaging(&store, &record);
+        pick(&mut shell, 'p', "high");
+        shell.write(&record);
+        let screen = drawn_sized(&mut shell, 140, 10);
+        assert!(
+            screen.contains("warning: the Snapshot was not updated"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn a_refusal_with_a_warning_keeps_its_start_on_a_narrow_terminal() {
+        let store = triage_store();
+        let mut record = Record::new();
+        let mut shell = triaging(&store, &record);
+        shell.key(press(KeyCode::Char(' ')));
+        shell.key(press(KeyCode::Char(' ')));
+        record.refuse_key = Some("TM-8".into());
+        pick(&mut shell, 'p', "high");
+        shell.write(&record);
+        let screen = drawn_sized(&mut shell, 80, 12);
+        let said = screen.lines().rev().nth(1).unwrap_or_default();
+        assert!(said.starts_with("\"✗ TM-8: "), "{screen}");
+        assert!(said.ends_with("…\""), "cut at its end: {screen}");
+        let footer = screen.lines().last().unwrap_or_default();
+        assert!(
+            footer.starts_with("\"q back"),
+            "the keys keep their row: {screen}"
+        );
+    }
+
+    #[test]
+    fn an_undo_says_the_clis_warning() {
+        let store = triage_store();
+        let record = Record::new();
+        let mut shell = triaging(&store, &record);
+        pick(&mut shell, 'p', "high");
+        shell.write(&record);
+        shell.key(press(KeyCode::Char('u')));
+        shell.write(&record);
+        let screen = drawn_sized(&mut shell, 140, 10);
+        assert!(
+            screen.contains("✓ undid the write · warning: a backup was not made"),
+            "{screen}"
+        );
     }
 }

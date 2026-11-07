@@ -24,6 +24,11 @@ impl Stack {
         self.above.push(screen);
     }
 
+    /// The screens, the base first.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Screen> {
+        std::iter::once(&self.base).chain(&self.above)
+    }
+
     /// Closes the screen shown, unless it is the base.
     pub(crate) fn pop(&mut self) -> bool {
         self.above.pop().is_some()

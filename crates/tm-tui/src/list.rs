@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::detail::Detail;
 use crate::keys::{self, Binding, ch, plain};
+use crate::triage::Triage;
 use crate::{Outcome, Screen};
 
 /// Rows a page key moves.
@@ -31,9 +32,10 @@ pub(crate) enum Act {
     Filter,
     All,
     Ready,
+    Triage,
 }
 
-pub(crate) const KEYS: [Binding<Act>; 11] = [
+pub(crate) const KEYS: [Binding<Act>; 12] = [
     Binding {
         keys: &[ch('q')],
         action: Act::Quit,
@@ -99,6 +101,12 @@ pub(crate) const KEYS: [Binding<Act>; 11] = [
         action: Act::Ready,
         does: "the ready queue, as tm ready",
         hint: Some("ready"),
+    },
+    Binding {
+        keys: &[ch('t')],
+        action: Act::Triage,
+        does: "triage the Issues in a triage Status",
+        hint: Some("triage"),
     },
 ];
 
@@ -236,10 +244,11 @@ impl List {
                 self.all = !self.all;
                 return Outcome::Reload;
             }
-            Act::Ready => return Outcome::Open(Screen::Detail(Detail::ready())),
+            Act::Ready => return Outcome::Open(Box::new(Screen::Detail(Detail::ready()))),
+            Act::Triage => return Outcome::Open(Box::new(Screen::Triage(Triage::default()))),
             Act::Open => {
                 return self.selected().map_or(Outcome::Stay, |(id, key)| {
-                    Outcome::Open(Screen::Detail(Detail::issue(id, key)))
+                    Outcome::Open(Box::new(Screen::Detail(Detail::issue(id, key))))
                 });
             }
             Act::Down => at.saturating_add(1).min(last),

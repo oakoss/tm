@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::error::CliError;
 use crate::identity::Identity;
 use crate::output;
-use crate::{here, history, identity, ready, show, watch};
+use crate::{edit, here, history, identity, moves, ready, show, undo, watch};
 
 pub(crate) fn run(json: bool) -> ExitCode {
     match open(json) {
@@ -153,6 +153,65 @@ impl tm_tui::Actions for Cli<'_> {
         }
         Ok(lead + &text)
     }
+
+    fn write(&self, write: &tm_tui::Write) -> Result<tm_tui::Written, String> {
+        let output = match write {
+            tm_tui::Write::Move {
+                key,
+                status,
+                version,
+            } => moves::run(&moves::Move::to(key, status, if_version(*version))),
+            tm_tui::Write::Set {
+                key,
+                field,
+                value,
+                version,
+            } => edit::run(&edit::Edit::field(
+                key,
+                field,
+                value.as_deref(),
+                if_version(*version),
+            )),
+        };
+        output
+            .map(|output| written(&output))
+            .map_err(|err| err.message)
+    }
+
+    fn undo(&self, batch: Uuid) -> Result<tm_tui::Written, String> {
+        let output =
+            undo::run(Some(&batch.to_string()), false, false).map_err(|err| err.message)?;
+        // The first line names the batch; the ones after say what reverted.
+        let reverted: Vec<&str> = output.text.lines().skip(1).map(str::trim).collect();
+        let said = if reverted.is_empty() {
+            output.text.lines().next().unwrap_or_default().to_owned()
+        } else {
+            format!("undid {}", reverted.join("; "))
+        };
+        Ok(tm_tui::Written {
+            said,
+            batch: None,
+            warnings: output.warnings,
+        })
+    }
+}
+
+/// The first line the CLI printed for a write, and the batch it named.
+fn written(output: &output::Output) -> tm_tui::Written {
+    let said = output.text.lines().next().unwrap_or_default().to_owned();
+    let batch = output.data["batch"]
+        .as_str()
+        .and_then(|batch| batch.parse().ok());
+    tm_tui::Written {
+        said,
+        batch,
+        warnings: output.warnings.clone(),
+    }
+}
+
+/// A version the store read, as `--if-version` takes it.
+fn if_version(version: i64) -> Option<u64> {
+    u64::try_from(version).ok()
 }
 
 /// A look at the store: on a change the list's reader is opened again, and a
