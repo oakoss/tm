@@ -115,21 +115,6 @@ impl tm_tui::Actions for Cli<'_> {
         self.me
     }
 
-    fn detail(&self, store: &Store, id: Uuid) -> Result<String, String> {
-        let me = || self.me.ok().map(str::to_owned);
-        let shown = show::render_with(store, id, show::Comments::All, None);
-        let written = history::render(store, id, None, false, &me);
-        let (shown, written) = shown
-            .and_then(|shown| Ok((shown, written?)))
-            .map_err(|err| err.message)?;
-        // History's first line names the Issue, as show's does.
-        let writes = written
-            .text
-            .split_once('\n')
-            .map_or("", |(_, writes)| writes);
-        Ok(format!("{}\nHistory\n{writes}", shown.text))
-    }
-
     fn issue(&self, store: &Store, id: Uuid) -> Result<tm_tui::Issue, String> {
         let me = || self.me.ok().map(str::to_owned);
         let shown = show::render_with(store, id, show::Comments::All, None);
@@ -290,41 +275,6 @@ mod tests {
     use tm_tui::Actions as _;
 
     use super::*;
-
-    #[test]
-    fn the_detail_is_show_with_every_comment_then_history_naming_the_issue_once() {
-        let dir = std::env::temp_dir().join(format!("tm-detail-{}", Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut store = Store::open(&dir.join("store.db")).unwrap();
-        let jace = Actor::human("jace");
-        let (project, _) = store.create_project(&jace, "TM", "Core").unwrap();
-        let (id, _) = store.create_issue(&jace, project, "task", "alpha").unwrap();
-        for n in 1..=6 {
-            let change = Change::Comment {
-                body: format!("note {n}"),
-            };
-            let draft = Draft {
-                actor: jace.clone(),
-                project,
-                subject: id,
-                change,
-            };
-            store.append(draft).unwrap();
-        }
-        let cli = Cli {
-            me: Ok("jace"),
-            project,
-            reader: Err("unused"),
-        };
-        let text = cli.detail(&store, id).unwrap();
-        let (shown, writes) = text.split_once("\nHistory\n").expect("a History heading");
-        assert!(shown.contains("note 1"), "every comment: {shown}");
-        assert!(
-            writes.contains("commented: note 6"),
-            "history's writes: {writes}"
-        );
-        assert_eq!(text.matches("TM-1  alpha").count(), 1, "{text}");
-    }
 
     #[test]
     fn the_issue_screen_reads_show_and_history_json_as_they_are() {

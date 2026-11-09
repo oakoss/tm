@@ -86,13 +86,6 @@ pub trait Actions {
     /// Why the person at the terminal cannot be named.
     fn me(&self) -> Result<&str, &str>;
 
-    /// `tm show` and `tm history` for `id`, read from `store`.
-    ///
-    /// # Errors
-    ///
-    /// Why it cannot be shown, such as that it no longer exists.
-    fn detail(&self, store: &Store, id: Uuid) -> Result<String, String>;
-
     /// `tm show --json` and `tm history --json` for `id`, read from `store`.
     ///
     /// # Errors

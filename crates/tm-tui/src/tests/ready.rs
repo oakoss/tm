@@ -18,15 +18,11 @@ impl Actions for Wide {
         NOBODY
     }
 
-    fn detail(&self, _: &Store, _: Uuid) -> Result<String, String> {
+    fn ready(&self, _: &Store) -> Result<String, String> {
         Ok((1..=20).fold(String::new(), |mut text, n| {
             let _ = writeln!(text, "row{n:02} wraps in here");
             text
         }))
-    }
-
-    fn ready(&self, store: &Store) -> Result<String, String> {
-        self.detail(store, Uuid::nil())
     }
 
     fn issue(&self, _: &Store, _: Uuid) -> Result<Issue, String> {

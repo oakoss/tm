@@ -199,8 +199,8 @@ fn the_selected_issue_shows_beside_the_queue_and_the_crumbs_name_the_screens() {
     let screen = drawn_sized(&mut shell, 110, 10);
     assert!(screen.contains("tm · TM › Issues › Triage"), "{screen}");
     assert!(
-        screen.contains("shown") && screen.contains("line 1"),
-        "{screen}"
+        screen.contains("Status  triage") && screen.contains("shown"),
+        "laid out as the Issue screen lays it out: {screen}"
     );
     shell.key(press(KeyCode::Char('j')));
     shell.load(&store, &record);
@@ -217,12 +217,8 @@ fn a_detail_that_cannot_be_read_says_so_beside_the_queue() {
             NOBODY
         }
 
-        fn detail(&self, _: &Store, _: Uuid) -> Result<String, String> {
+        fn issue(&self, _: &Store, _: Uuid) -> Result<Issue, String> {
             Err("database is locked".into())
-        }
-
-        fn issue(&self, store: &Store, id: Uuid) -> Result<Issue, String> {
-            Fake.issue(store, id)
         }
 
         fn ready(&self, store: &Store) -> Result<String, String> {

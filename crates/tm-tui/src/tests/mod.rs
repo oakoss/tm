@@ -149,8 +149,8 @@ fn version(store: &Store, key: &str) -> i64 {
     store.issue_with_version(id).unwrap().unwrap().1
 }
 
-/// Shows an Issue's Key beside a tab and an escape the terminal must not
-/// act on, then lines to scroll.
+/// Reports each Issue as [`laid_out`] does, and a ready queue with an escape
+/// the terminal must not act on.
 struct Fake;
 
 impl Actions for Fake {
@@ -172,16 +172,6 @@ impl Actions for Fake {
 
     fn me(&self) -> Result<&str, &str> {
         NOBODY
-    }
-
-    fn detail(&self, store: &Store, id: Uuid) -> Result<String, String> {
-        let view = store.issue(id).map_err(|err| err.to_string())?;
-        let key = view.and_then(|view| view.key).ok_or("no such Issue")?;
-        let lines = (1..=30).map(|n| format!("line {n}\n"));
-        Ok(format!(
-            "{key}\tshown \u{1b}[2Jsafe\n{}",
-            lines.collect::<String>()
-        ))
     }
 
     fn ready(&self, store: &Store) -> Result<String, String> {
@@ -256,10 +246,6 @@ impl Actions for Jace {
         Ok("jace")
     }
 
-    fn detail(&self, store: &Store, id: Uuid) -> Result<String, String> {
-        Fake.detail(store, id)
-    }
-
     fn issue(&self, store: &Store, id: Uuid) -> Result<Issue, String> {
         laid_out(store, id)
     }
@@ -282,10 +268,6 @@ impl Actions for Gone {
 
     fn me(&self) -> Result<&str, &str> {
         NOBODY
-    }
-
-    fn detail(&self, _: &Store, _: Uuid) -> Result<String, String> {
-        Err("Issue TM-2 \u{1b}[2Jdoes not exist".into())
     }
 
     fn issue(&self, _: &Store, _: Uuid) -> Result<Issue, String> {
@@ -330,10 +312,6 @@ impl Record {
 impl Actions for Record {
     fn me(&self) -> Result<&str, &str> {
         self.me
-    }
-
-    fn detail(&self, store: &Store, id: Uuid) -> Result<String, String> {
-        Fake.detail(store, id)
     }
 
     fn issue(&self, store: &Store, id: Uuid) -> Result<Issue, String> {

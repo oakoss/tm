@@ -152,10 +152,6 @@ impl Actions for Rich {
         Fake.me()
     }
 
-    fn detail(&self, store: &Store, id: Uuid) -> Result<String, String> {
-        Fake.detail(store, id)
-    }
-
     fn issue(&self, store: &Store, id: Uuid) -> Result<Issue, String> {
         let mut data = reported(store, id)?;
         if data["shown"]["key"] == "TM-2" {
