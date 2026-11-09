@@ -12,6 +12,7 @@ use tm_store::{IssueView, Store, StoreError};
 use uuid::Uuid;
 
 use crate::board::Board;
+use crate::cursor;
 use crate::detail::Detail;
 use crate::keys::{self, Binding, ch, plain};
 use crate::read;
@@ -154,12 +155,6 @@ impl Shown {
 }
 
 impl List {
-    /// Whether a filter is being typed, so keys are text, not commands.
-    #[must_use]
-    pub(crate) const fn typing(&self) -> bool {
-        self.typing.is_some()
-    }
-
     /// Reads the Issues the filter matches, as `tm list` does, `me` standing
     /// for `@me`, or why no one can. The selected Issue stays selected while
     /// it still matches.
@@ -189,11 +184,10 @@ impl List {
                 self.problem = Some(printable(&said));
             }
         }
-        let at = kept
-            .and_then(|key| self.rows.iter().position(|row| row.key == key))
-            .unwrap_or_else(|| self.table.selected().unwrap_or(0));
+        let keys = self.rows.iter().map(|row| row.key.as_str());
+        let was = self.table.selected().unwrap_or(0);
         self.table
-            .select((!self.rows.is_empty()).then(|| at.min(self.rows.len() - 1)));
+            .select(cursor::reselect(keys, kept.as_deref(), was));
     }
 
     pub(crate) fn selected_key(&self) -> Option<String> {
