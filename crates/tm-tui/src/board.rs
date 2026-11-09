@@ -16,7 +16,7 @@ use tm_store::Store;
 use uuid::Uuid;
 
 use crate::cursor;
-use crate::detail::Detail;
+use crate::issue::IssueScreen;
 use crate::keys::{self, Binding, ch, plain};
 use crate::picker::{Choice, Field, Picked, Picker, statuses, writes};
 use crate::read;
@@ -345,7 +345,7 @@ impl Board {
             // The reason hides the Issues, so none is moved or opened unseen.
             _ if self.problem.is_some() => Outcome::Stay,
             Act::Open => self.selected().map_or(Outcome::Stay, |card| {
-                Outcome::Open(Box::new(Screen::Detail(Detail::issue(
+                Outcome::Open(Box::new(Screen::Issue(IssueScreen::new(
                     card.id,
                     card.key.clone(),
                 ))))

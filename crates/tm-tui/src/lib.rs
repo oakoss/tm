@@ -3,8 +3,10 @@
 mod board;
 mod cursor;
 mod detail;
+mod issue;
 mod keys;
 mod list;
+mod markdown;
 mod picker;
 mod read;
 mod stack;
@@ -31,6 +33,10 @@ use uuid::Uuid;
 
 use board::Board;
 use detail::Detail;
+use issue::IssueScreen;
+pub use issue::{
+    Change, Claim, Comment, History, Issue, LATEST_WRITES, Link, Logged, Related, Shown,
+};
 use keys::{Binding, ch, ctrl, plain};
 use list::List;
 use stack::Stack;
@@ -85,6 +91,13 @@ pub trait Actions {
     ///
     /// Why it cannot be shown, such as that it no longer exists.
     fn detail(&self, store: &Store, id: Uuid) -> Result<String, String>;
+
+    /// `tm show --json` and `tm history --json` for `id`, read from `store`.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be shown.
+    fn issue(&self, store: &Store, id: Uuid) -> Result<Issue, String>;
 
     /// `tm ready` for the person at the terminal, read from `store`.
     ///
@@ -160,6 +173,7 @@ pub enum Seen {
 pub(crate) enum Screen {
     List(List),
     Detail(Detail),
+    Issue(IssueScreen),
     Triage(Triage),
     Board(Board),
 }
@@ -185,6 +199,7 @@ impl Screen {
         match self {
             Self::List(list) => list.load(store, actions.me()),
             Self::Detail(detail) => detail.load(store, actions),
+            Self::Issue(issue) => issue.load(store, actions),
             Self::Triage(triage) => triage.load(store, actions),
             Self::Board(board) => board.load(store, actions),
         }
@@ -194,7 +209,8 @@ impl Screen {
     fn title(&self) -> String {
         match self {
             Self::List(_) => "Issues".to_owned(),
-            Self::Detail(detail) => detail.title(),
+            Self::Detail(_) => "Ready".to_owned(),
+            Self::Issue(issue) => issue.title(),
             Self::Triage(_) => "Triage".to_owned(),
             Self::Board(_) => "Board".to_owned(),
         }
@@ -204,6 +220,7 @@ impl Screen {
         match self {
             Self::List(list) => list.key(key),
             Self::Detail(detail) => detail.key(key),
+            Self::Issue(issue) => issue.key(key),
             Self::Triage(triage) => triage.key(key),
             Self::Board(board) => board.key(key),
         }
@@ -214,7 +231,7 @@ impl Screen {
     fn prompt(&self) -> Option<String> {
         match self {
             Self::List(list) => list.prompt(),
-            Self::Detail(_) => None,
+            Self::Detail(_) | Self::Issue(_) => None,
             Self::Triage(triage) => triage.prompt(),
             Self::Board(board) => board.prompt(),
         }
@@ -231,6 +248,7 @@ impl Screen {
         match self {
             Self::List(_) => keys::help(&list::KEYS),
             Self::Detail(_) => keys::help(&detail::KEYS),
+            Self::Issue(_) => keys::help(&issue::KEYS),
             Self::Triage(_) => keys::help(&triage::KEYS),
             Self::Board(_) => keys::help(&board::KEYS),
         }
@@ -244,6 +262,7 @@ impl Screen {
         let mut hints = match self {
             Self::List(_) => keys::hints(&list::KEYS),
             Self::Detail(_) => keys::hints(&detail::KEYS),
+            Self::Issue(_) => keys::hints(&issue::KEYS),
             Self::Triage(_) => keys::hints(&triage::KEYS),
             Self::Board(_) => keys::hints(&board::KEYS),
         };
@@ -255,6 +274,7 @@ impl Screen {
         match self {
             Self::List(list) => list.render(frame, area),
             Self::Detail(detail) => detail.render(frame, area),
+            Self::Issue(issue) => issue.render(frame, area),
             Self::Triage(triage) => triage.render(frame, area),
             Self::Board(board) => board.render(frame, area),
         }

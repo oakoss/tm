@@ -1,5 +1,4 @@
-//! A command's text scrolled in place: one Issue as `tm show` and `tm
-//! history` print it, or the ready queue as `tm ready` prints it.
+//! The ready queue as `tm ready` prints it, scrolled in place.
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -8,7 +7,6 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph, Wrap};
 use tm_core::text::printable;
 use tm_store::Store;
-use uuid::Uuid;
 
 use crate::keys::{self, Binding, ch, plain};
 use crate::{Actions, Outcome};
@@ -72,14 +70,7 @@ pub(crate) const KEYS: [Binding<Act>; 7] = [
     },
 ];
 
-/// What the screen shows.
-enum Shows {
-    Issue { id: Uuid, key: String },
-    Ready,
-}
-
 pub(crate) struct Detail {
-    shows: Shows,
     /// The text, or why it could not be read.
     text: Result<String, String>,
     scroll: u16,
@@ -88,17 +79,8 @@ pub(crate) struct Detail {
 }
 
 impl Detail {
-    pub(crate) const fn issue(id: Uuid, key: String) -> Self {
-        Self::new(Shows::Issue { id, key })
-    }
-
     pub(crate) const fn ready() -> Self {
-        Self::new(Shows::Ready)
-    }
-
-    const fn new(shows: Shows) -> Self {
         Self {
-            shows,
             text: Ok(String::new()),
             scroll: 0,
             bottom: 0,
@@ -114,10 +96,7 @@ impl Detail {
                 .map(|line| printable(line).replace('\t', "    "));
             lines.collect::<Vec<_>>().join("\n")
         };
-        let read = match &self.shows {
-            Shows::Issue { id, .. } => actions.detail(store, *id),
-            Shows::Ready => actions.ready(store),
-        };
+        let read = actions.ready(store);
         self.text = read.map(|text| safe(&text)).map_err(|why| safe(&why));
     }
 
@@ -138,16 +117,8 @@ impl Detail {
         Outcome::Stay
     }
 
-    pub(crate) fn title(&self) -> String {
-        match &self.shows {
-            Shows::Issue { key, .. } => printable(key),
-            Shows::Ready => "Ready".to_owned(),
-        }
-    }
-
     pub(crate) fn render(&mut self, frame: &mut Frame, area: Rect) {
-        let title = self.title();
-        let block = Block::bordered().title(Line::from(format!(" {title} ")));
+        let block = Block::bordered().title(Line::from(" Ready "));
         let text = match &self.text {
             Ok(text) | Err(text) => text.as_str(),
         };

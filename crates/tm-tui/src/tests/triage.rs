@@ -221,6 +221,10 @@ fn a_detail_that_cannot_be_read_says_so_beside_the_queue() {
             Err("database is locked".into())
         }
 
+        fn issue(&self, store: &Store, id: Uuid) -> Result<Issue, String> {
+            Fake.issue(store, id)
+        }
+
         fn ready(&self, store: &Store) -> Result<String, String> {
             Fake.ready(store)
         }

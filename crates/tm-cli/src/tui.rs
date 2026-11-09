@@ -130,6 +130,17 @@ impl tm_tui::Actions for Cli<'_> {
         Ok(format!("{}\nHistory\n{writes}", shown.text))
     }
 
+    fn issue(&self, store: &Store, id: Uuid) -> Result<tm_tui::Issue, String> {
+        let me = || self.me.ok().map(str::to_owned);
+        let shown = show::render_with(store, id, show::Comments::All, None);
+        let latest = Some(tm_tui::LATEST_WRITES);
+        let written = history::render(store, id, latest, false, &me);
+        let (shown, written) = shown
+            .and_then(|shown| Ok((shown, written?)))
+            .map_err(|err| err.message)?;
+        tm_tui::Issue::read(shown.data, written.data)
+    }
+
     /// `tm ready`'s warnings, which it prints on stderr, lead the text.
     fn ready(&self, store: &Store) -> Result<String, String> {
         let mut warnings = Vec::new();
@@ -313,6 +324,95 @@ mod tests {
             "history's writes: {writes}"
         );
         assert_eq!(text.matches("TM-1  alpha").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn the_issue_screen_reads_show_and_history_json_as_they_are() {
+        let dir = std::env::temp_dir().join(format!("tm-issue-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut store = Store::open(&dir.join("store.db")).unwrap();
+        let jace = Actor::human("jace");
+        let (project, _) = store.create_project(&jace, "TM", "Core").unwrap();
+        let (parent, _) = store.create_issue(&jace, project, "epic", "whole").unwrap();
+        let (id, _) = store.create_issue(&jace, project, "task", "alpha").unwrap();
+        let (other, _) = store.create_issue(&jace, project, "task", "beta").unwrap();
+        for (subject, change) in [
+            (
+                id,
+                Change::SetField {
+                    field: "parent".into(),
+                    label: "Parent".into(),
+                    value: parent.to_string().into(),
+                    value_label: None,
+                },
+            ),
+            (
+                id,
+                Change::Comment {
+                    body: "**done** soon".into(),
+                },
+            ),
+        ] {
+            let draft = Draft {
+                actor: jace.clone(),
+                project,
+                subject,
+                change,
+            };
+            store.append(draft).unwrap();
+        }
+        store.link(&jace, "blocks", id, other).unwrap();
+        let said = |change| Draft {
+            actor: jace.clone(),
+            project,
+            subject: id,
+            change,
+        };
+        let oops = store
+            .append(said(Change::Comment {
+                body: "oops".into(),
+            }))
+            .unwrap();
+        let retract = Change::Retract {
+            comment: oops.op_id,
+            retracted: true,
+        };
+        store.append(said(retract)).unwrap();
+        let cli = Cli {
+            me: Ok("jace"),
+            project,
+            reader: Err("unused"),
+        };
+        let issue = cli.issue(&store, id).unwrap();
+        let shown = &issue.shown;
+        assert_eq!(shown.key.as_deref(), Some("TM-2"));
+        assert_eq!(shown.fields["title"], "alpha");
+        assert_eq!(shown.parent.as_ref().map(|parent| parent.id), Some(parent));
+        let links: Vec<_> = shown
+            .links
+            .iter()
+            .map(|link| (link.name.as_str(), link.other.id))
+            .collect();
+        assert_eq!(links, [("blocks", other)]);
+        assert_eq!(shown.comments[0].body.as_deref(), Some("**done** soon"));
+        let retracted = &shown.comments[1];
+        assert!(
+            retracted.retracted && retracted.body.is_none(),
+            "{retracted:?}"
+        );
+        let history = &issue.history;
+        assert_eq!(history.writes.len(), tm_tui::LATEST_WRITES, "{history:?}");
+        assert!(history.total > history.writes.len(), "{history:?}");
+        let linked = history.writes.iter().flat_map(|write| &write.changes);
+        assert!(
+            linked.clone().any(|change| change.line.contains("blocks")),
+            "{history:?}"
+        );
+        assert!(
+            cli.issue(&store, Uuid::now_v7())
+                .unwrap_err()
+                .contains("does not exist")
+        );
     }
 
     #[test]

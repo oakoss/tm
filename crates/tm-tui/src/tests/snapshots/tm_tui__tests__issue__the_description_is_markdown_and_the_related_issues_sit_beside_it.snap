@@ -1,0 +1,21 @@
+---
+source: crates/tm-tui/src/tests/issue.rs
+assertion_line: 48
+expression: screen
+---
+"tm · TM › Issues › TM-2                                                                                       "
+"┌ TM-2 ─────────────────────────────────────────────────────────────────┐┌ Related ──────────────────────────┐"
+"│second with a tab                                                      ││parent  TM-1  todo  first          │"
+"│                                                                       ││                                   │"
+"│Status  todo                                                           ││                                   │"
+"│                                                                       ││                                   │"
+"│Description                                                            ││                                   │"
+"│shown \u{1b}[2Jsafe                                                    ││                                   │"
+"│                                                                       ││                                   │"
+"│• line 1                                                               ││                                   │"
+"│• line 2                                                               ││                                   │"
+"│• line 3                                                               ││                                   │"
+"│• line 4                                                               ││                                   │"
+"│• line 5                                                               ││                                   │"
+"└───────────────────────────────────────────────────────────────────────┘└───────────────────────────────────┘"
+"q back · j k scroll · Tab related · Enter open · ? keys                                                       "

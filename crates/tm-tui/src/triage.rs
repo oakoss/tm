@@ -16,7 +16,7 @@ use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
 use crate::cursor;
-use crate::detail::Detail;
+use crate::issue::IssueScreen;
 use crate::keys::{self, Binding, ch, plain};
 use crate::picker::{Choice, Field, Picked, Picker, shared, statuses, writes};
 use crate::read;
@@ -276,7 +276,7 @@ impl Triage {
             Act::Undo => return Outcome::Undo,
             Act::Open => {
                 return self.selected().map_or(Outcome::Stay, |row| {
-                    Outcome::Open(Box::new(Screen::Detail(Detail::issue(
+                    Outcome::Open(Box::new(Screen::Issue(IssueScreen::new(
                         row.id,
                         row.key.clone(),
                     ))))
