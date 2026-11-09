@@ -9,8 +9,10 @@ use ratatui::layout::{Constraint, Rect};
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, List as Choices, ListState, Paragraph};
+use tm_core::filter::Context;
+use tm_core::scheme::PRIORITY_RANKS;
 use tm_core::text::printable;
-use tm_store::Store;
+use tm_store::{Store, StoreError};
 
 use crate::Write;
 
@@ -197,6 +199,53 @@ pub(crate) fn writes(field: Field, chosen: &Choice, targets: Vec<(String, i64)>)
             },
         })
         .collect()
+}
+
+/// The priorities, highest first.
+pub(crate) fn priorities() -> Vec<Choice> {
+    PRIORITY_RANKS
+        .iter()
+        .map(|(id, _)| Choice {
+            value: Some((*id).to_owned()),
+            label: (*id).to_owned(),
+        })
+        .collect()
+}
+
+/// The people assigned open work, read in `store`'s read.
+pub(crate) fn people(store: &Store) -> Result<Vec<String>, StoreError> {
+    let assigned = store.find("has:assignee -category:done,cancelled", Context::default())?;
+    let mut people = BTreeSet::new();
+    for view in store.issues(&assigned)? {
+        if let Some(person) = view.fields.get("assignee").and_then(|value| value.as_str()) {
+            people.insert(person.to_owned());
+        }
+    }
+    Ok(people.into_iter().collect())
+}
+
+/// Who to assign: `me` first as `@me`, then `people`, then nobody.
+pub(crate) fn assignees(me: Option<&str>, people: &[String]) -> Vec<Choice> {
+    let mut choices: Vec<Choice> = Vec::new();
+    if let Some(me) = me {
+        choices.push(Choice {
+            value: Some(me.to_owned()),
+            label: format!("{} (@me)", printable(me)),
+        });
+    }
+    for person in people {
+        if me != Some(person.as_str()) {
+            choices.push(Choice {
+                value: Some(person.clone()),
+                label: printable(person),
+            });
+        }
+    }
+    choices.push(Choice {
+        value: None,
+        label: "nobody".to_owned(),
+    });
+    choices
 }
 
 /// Each of `types`' Statuses, as its Workflow lists them.
