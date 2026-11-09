@@ -13,9 +13,10 @@ use uuid::Uuid;
 
 use crate::board::Board;
 use crate::cursor;
-use crate::detail::Detail;
+use crate::issue::IssueScreen;
 use crate::keys::{self, Binding, ch, plain};
 use crate::read;
+use crate::ready::Ready;
 use crate::triage::Triage;
 use crate::{Outcome, Screen};
 
@@ -238,12 +239,12 @@ impl List {
                 self.all = !self.all;
                 return Outcome::Reload;
             }
-            Act::Ready => return Outcome::Open(Box::new(Screen::Detail(Detail::ready()))),
+            Act::Ready => return Outcome::Open(Box::new(Screen::Ready(Ready::new()))),
             Act::Triage => return Outcome::Open(Box::new(Screen::Triage(Triage::default()))),
             Act::Board => return Outcome::Open(Box::new(Screen::Board(Board::default()))),
             Act::Open => {
                 return self.selected().map_or(Outcome::Stay, |(id, key)| {
-                    Outcome::Open(Box::new(Screen::Detail(Detail::issue(id, key))))
+                    Outcome::Open(Box::new(Screen::Issue(IssueScreen::new(id, key))))
                 });
             }
             Act::Down => at.saturating_add(1).min(last),

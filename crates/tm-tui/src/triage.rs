@@ -16,7 +16,7 @@ use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
 use crate::cursor;
-use crate::detail::Detail;
+use crate::issue::{Issue, IssueScreen, body, now_ms};
 use crate::keys::{self, Binding, ch, plain};
 use crate::picker::{Choice, Field, Picked, Picker, shared, statuses, writes};
 use crate::read;
@@ -155,8 +155,11 @@ pub(crate) struct Triage {
     /// Statuses per Issue type, offered when moving.
     statuses: Vec<(String, Vec<Choice>)>,
     problem: Option<String>,
-    /// The selected Issue as `tm show` and `tm history` print it.
-    detail: Option<Result<String, String>>,
+    /// The selected Issue as the Issue screen lays it out, or why it cannot
+    /// be read.
+    detail: Option<Result<Issue, String>>,
+    /// Now, as of the last read, for the times shown as ages.
+    now_ms: i64,
 }
 
 impl Triage {
@@ -209,18 +212,8 @@ impl Triage {
         let was = self.table.selected().unwrap_or(0);
         self.table
             .select(cursor::reselect(keys, kept.as_deref(), was));
-        let safe = |text: &str| {
-            let lines = text
-                .lines()
-                .map(|line| printable(line).replace('\t', "    "));
-            lines.collect::<Vec<_>>().join("\n")
-        };
-        self.detail = self.selected().map(|row| {
-            actions
-                .detail(store, row.id)
-                .map(|text| safe(&text))
-                .map_err(|why| safe(&why))
-        });
+        self.now_ms = now_ms();
+        self.detail = self.selected().map(|row| actions.issue(store, row.id));
     }
 
     /// The writes asked for are done: the Issues `landed` are unmarked, and
@@ -276,7 +269,7 @@ impl Triage {
             Act::Undo => return Outcome::Undo,
             Act::Open => {
                 return self.selected().map_or(Outcome::Stay, |row| {
-                    Outcome::Open(Box::new(Screen::Detail(Detail::issue(
+                    Outcome::Open(Box::new(Screen::Issue(IssueScreen::new(
                         row.id,
                         row.key.clone(),
                     ))))
@@ -387,13 +380,17 @@ impl Triage {
             .selected_key()
             .map(|key| printable(&key))
             .unwrap_or_default();
-        let text = match detail {
-            Ok(text) => text.clone(),
-            Err(why) => format!("✗ cannot show {title}: {why}\nMove the cursor to read it again."),
+        let block = Block::bordered().title(Line::from(format!(" {title} ")));
+        let lines = match detail {
+            Ok(issue) => body(issue, block.inner(beside).width, self.now_ms),
+            Err(why) => vec![
+                Line::from(format!("✗ cannot show {title}: {}", printable(why))),
+                Line::from("Move the cursor to read it again."),
+            ],
         };
-        let shown = Paragraph::new(text)
+        let shown = Paragraph::new(lines)
             .wrap(Wrap { trim: false })
-            .block(Block::bordered().title(Line::from(format!(" {title} "))));
+            .block(block);
         frame.render_widget(shown, beside);
         area
     }

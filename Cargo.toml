@@ -26,6 +26,8 @@ clap = { version = "4.6.7", features = ["derive"] }
 insta = { version = "1.49.0", features = ["json", "redactions"] }
 jiff = "0.2.38"
 proptest = "1.12.0"
+# The parser alone; the TUI lays its events out itself (TM-160).
+pulldown-cmark = { version = "0.13.6", default-features = false }
 ratatui = "0.30.2"
 rusqlite = { version = "0.41.0", features = ["backup", "bundled", "collation"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -37,6 +39,8 @@ sha2 = "0.11.1"
 signal-hook = "0.3.18"
 thiserror = "2.0.21"
 toml = "1.1.8"
+# The version ratatui already builds.
+unicode-width = "0.2.3"
 uuid = { version = "1.28.0", features = ["serde", "v7"] }
 
 [workspace.lints.rust]

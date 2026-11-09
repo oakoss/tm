@@ -43,6 +43,7 @@ impl Key {
             KeyCode::PageUp => "PgUp".to_owned(),
             KeyCode::PageDown => "PgDn".to_owned(),
             KeyCode::Backspace => "Bksp".to_owned(),
+            KeyCode::BackTab => "Shift-Tab".to_owned(),
             KeyCode::Enter => "Enter".to_owned(),
             KeyCode::Esc => "Esc".to_owned(),
             other => other.to_string(),

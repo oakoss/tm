@@ -142,25 +142,38 @@ fn the_list_shows_open_issues_and_a_typed_filter_narrows_it() {
 }
 
 #[test]
-fn enter_shows_the_issue_as_tm_show_and_history_do_and_reads_a_write_in_place() {
+fn enter_shows_the_issue_reads_a_write_in_place_and_opens_its_parent() {
     let scratch = Scratch::new();
     let (repo, _store, _project) = initialized(&scratch);
-    let made = tm(
-        &scratch,
-        &repo,
-        &["create", "--type", "task", "--title", "alpha"],
-    );
-    assert!(made.status.success(), "{made:?}");
+    for made in [
+        tm(
+            &scratch,
+            &repo,
+            &["create", "--type", "epic", "--title", "whole"],
+        ),
+        tm(
+            &scratch,
+            &repo,
+            &[
+                "create", "--type", "task", "--title", "alpha", "--parent", "TM-1",
+            ],
+        ),
+    ] {
+        assert!(made.status.success(), "{made:?}");
+    }
     let mut tui = sized(&scratch, &repo, "tui");
     tui.exp_string("alpha").unwrap();
     press(&mut tui, "\r");
     tui.exp_string("History").unwrap();
-    let said = tm(&scratch, &repo, &["comment", "TM-1", "plotted"]);
+    tui.exp_string("parent").unwrap();
+    // Letters no earlier text drew, so the redraw writes them in one run.
+    let said = tm(&scratch, &repo, &["comment", "TM-2", "**QZXQZX**"]);
     assert!(said.status.success(), "{said:?}");
-    tui.exp_string("plotted").unwrap();
-    press(&mut tui, "\x1b");
-    tui.exp_string("filter").unwrap();
-    press(&mut tui, "q");
+    tui.exp_string("QZXQZX").unwrap();
+    press(&mut tui, "\r");
+    tui.exp_string("child").unwrap();
+    // Back to TM-2, back to the list, then quit.
+    press(&mut tui, "qqq");
     tui.exp_eof().unwrap();
     assert_eq!(exit_code(&tui), 0);
 }

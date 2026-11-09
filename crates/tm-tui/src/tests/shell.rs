@@ -96,7 +96,7 @@ fn the_keys_shown_are_the_open_screens() {
     assert!(!help.contains("type a filter"), "{help}");
     let footer = help.lines().last().unwrap_or_default();
     assert!(
-        footer.starts_with("\"q back · j k scroll · ? keys "),
+        footer.starts_with("\"q back · j k scroll · Tab related · Enter open · ? keys "),
         "{footer}"
     );
 }
@@ -138,7 +138,10 @@ fn no_key_is_named_twice_on_a_screen() {
     let global = named(keys::help(&GLOBAL));
     for (screen, table) in [
         ("list", keys::help(&crate::list::KEYS)),
-        ("detail", keys::help(&crate::detail::KEYS)),
+        ("ready", keys::help(&crate::ready::KEYS)),
+        ("issue", keys::help(&crate::issue::KEYS)),
+        ("triage", keys::help(&crate::triage::KEYS)),
+        ("board", keys::help(&crate::board::KEYS)),
     ] {
         let keys = named(table);
         let mut seen = std::collections::BTreeSet::new();

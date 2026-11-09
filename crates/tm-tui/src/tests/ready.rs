@@ -18,83 +18,73 @@ impl Actions for Wide {
         NOBODY
     }
 
-    fn detail(&self, _: &Store, _: Uuid) -> Result<String, String> {
+    fn ready(&self, _: &Store) -> Result<String, String> {
         Ok((1..=20).fold(String::new(), |mut text, n| {
             let _ = writeln!(text, "row{n:02} wraps in here");
             text
         }))
     }
 
-    fn ready(&self, store: &Store) -> Result<String, String> {
-        self.detail(store, Uuid::nil())
+    fn issue(&self, _: &Store, _: Uuid) -> Result<Issue, String> {
+        Err("unused".into())
     }
 }
 
 #[test]
 fn wrapped_text_scrolls_to_its_last_line() {
     let store = store();
-    let mut shell = opened(&store, &Wide);
+    let mut shell = Shell::new("TM");
+    shell.key(press(KeyCode::Char('r')));
+    shell.load(&store, &Wide);
     drawn_sized(&mut shell, 20, 10);
     shell.key(press(KeyCode::Char('G')));
     let bottom = drawn_sized(&mut shell, 20, 10);
-    assert!(bottom.contains("row20"), "{bottom}");
+    assert!(
+        last_inside(&bottom).contains("│here"),
+        "row20's wrapped end: {bottom}"
+    );
 }
 
 #[test]
-fn enter_opens_the_selected_issue_as_the_cli_shows_it() {
+fn keys_past_the_last_line_go_no_further_than_it() {
     let store = store();
-    let mut shell = opened(&store, &Fake);
-    insta::assert_snapshot!(drawn(&mut shell));
-}
-
-#[test]
-fn q_esc_and_backspace_go_back_to_the_list_where_it_was() {
-    let store = store();
-    for back in [KeyCode::Char('q'), KeyCode::Esc, KeyCode::Backspace] {
-        let mut shell = opened(&store, &Fake);
-        assert_eq!(shell.key(press(back)), Flow::Reload, "{back:?}");
-        shell.load(&store, &Fake);
-        assert!(drawn(&mut shell).contains("open Issues"), "{back:?}");
-        assert_eq!(list(&shell).selected_key().as_deref(), Some("TM-2"));
-    }
-    let mut shell = opened(&store, &Fake);
-    shell.key(press(KeyCode::Esc));
-    assert_eq!(shell.key(press(KeyCode::Char('q'))), Flow::Quit);
-}
-
-#[test]
-fn an_issue_scrolls_no_further_than_its_last_line_and_keeps_its_place() {
-    let store = store();
-    let mut shell = opened(&store, &Fake);
-    drawn(&mut shell);
-    for _ in 0..100 {
+    let mut shell = Shell::new("TM");
+    shell.key(press(KeyCode::Char('r')));
+    shell.load(&store, &Wide);
+    drawn_sized(&mut shell, 20, 10);
+    shell.key(press(KeyCode::Char('G')));
+    for _ in 0..5 {
         shell.key(press(KeyCode::Char('j')));
     }
-    let bottom = drawn(&mut shell);
-    assert!(
-        bottom.contains("line 30") && !bottom.contains("line 22"),
-        "{bottom}"
-    );
-    shell.key(press(KeyCode::Char('g')));
-    assert!(drawn(&mut shell).contains("safe"));
-    shell.key(press(KeyCode::Char('G')));
-    assert_eq!(drawn(&mut shell), bottom);
     shell.key(press(KeyCode::Char('k')));
-    shell.load(&store, &Fake);
-    let reread = drawn(&mut shell);
+    let up_one = drawn_sized(&mut shell, 20, 10);
     assert!(
-        reread.contains("line 29") && !reread.contains("line 30"),
-        "{reread}"
+        last_inside(&up_one).contains("row20 wraps in"),
+        "one line above the last: {up_one}"
     );
 }
 
 #[test]
-fn an_issue_that_cannot_be_shown_says_why_in_place() {
+fn a_taller_terminal_keeps_the_last_line_at_the_bottom() {
     let store = store();
-    let mut shell = opened(&store, &Gone);
-    let screen = drawn(&mut shell);
-    assert!(screen.contains(r"Issue TM-2 \u{1b}[2Jdoes not"), "{screen}");
-    assert_eq!(shell.key(press(KeyCode::Esc)), Flow::Reload);
+    let mut shell = Shell::new("TM");
+    shell.key(press(KeyCode::Char('r')));
+    shell.load(&store, &Wide);
+    drawn_sized(&mut shell, 20, 10);
+    shell.key(press(KeyCode::Char('G')));
+    drawn_sized(&mut shell, 20, 10);
+    let taller = drawn_sized(&mut shell, 20, 30);
+    assert!(
+        last_inside(&taller).contains("│here"),
+        "no blank rows below the end: {taller}"
+    );
+}
+
+/// The last line drawn inside the screen's box.
+fn last_inside(screen: &str) -> &str {
+    let lines: Vec<&str> = screen.lines().collect();
+    let border = lines.iter().rposition(|line| line.contains('└')).unwrap();
+    lines[border - 1]
 }
 
 #[test]

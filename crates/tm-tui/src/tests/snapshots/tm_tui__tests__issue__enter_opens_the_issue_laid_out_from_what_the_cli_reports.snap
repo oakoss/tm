@@ -1,0 +1,15 @@
+---
+source: crates/tm-tui/src/tests/issue.rs
+assertion_line: 41
+expression: drawn(&mut shell)
+---
+"tm · TM › Issues › TM-2                                     "
+"┌ TM-2 ────────────────────────────────────────────────────┐"
+"│second with a tab                                         │"
+"│                                                          │"
+"│Status  todo                                              │"
+"│                                                          │"
+"│Description                                               │"
+"│shown \u{1b}[2Jsafe                                       │"
+"└──────────────────────────────────────────────────────────┘"
+"q back · j k scroll · Tab related · Enter open · ? keys     "

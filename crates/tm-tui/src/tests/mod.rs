@@ -2,10 +2,13 @@
 //! store and a fake of the CLI's actions.
 
 mod board;
-mod detail;
+mod issue;
 mod list;
+mod ready;
 mod shell;
 mod triage;
+
+use std::fmt::Write as _;
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -146,8 +149,8 @@ fn version(store: &Store, key: &str) -> i64 {
     store.issue_with_version(id).unwrap().unwrap().1
 }
 
-/// Shows an Issue's Key beside a tab and an escape the terminal must not
-/// act on, then lines to scroll.
+/// Reports each Issue as [`laid_out`] does, and a ready queue with an escape
+/// the terminal must not act on.
 struct Fake;
 
 impl Actions for Fake {
@@ -171,20 +174,60 @@ impl Actions for Fake {
         NOBODY
     }
 
-    fn detail(&self, store: &Store, id: Uuid) -> Result<String, String> {
-        let view = store.issue(id).map_err(|err| err.to_string())?;
-        let key = view.and_then(|view| view.key).ok_or("no such Issue")?;
-        let lines = (1..=30).map(|n| format!("line {n}\n"));
-        Ok(format!(
-            "{key}\tshown \u{1b}[2Jsafe\n{}",
-            lines.collect::<String>()
-        ))
-    }
-
     fn ready(&self, store: &Store) -> Result<String, String> {
         let ready = store.ready().map_err(|err| err.to_string())?;
         Ok(format!("{} ready \u{1b}[2Jsafe\n", ready.len()))
     }
+
+    fn issue(&self, store: &Store, id: Uuid) -> Result<Issue, String> {
+        laid_out(store, id)
+    }
+}
+
+/// `id` as the CLI would report it, with a description of thirty list
+/// items to scroll, an escape the terminal must not act on, and a write.
+fn laid_out(store: &Store, id: Uuid) -> Result<Issue, String> {
+    serde_json::from_value(reported(store, id)?).map_err(|err| err.to_string())
+}
+
+/// What [`laid_out`] reads, as JSON, so a test can add to it.
+fn reported(store: &Store, id: Uuid) -> Result<serde_json::Value, String> {
+    let view = store.issue(id).map_err(|err| err.to_string())?;
+    let view = view.ok_or("no such Issue")?;
+    let items = (1..=30).fold(String::new(), |mut items, n| {
+        let _ = writeln!(items, "- line {n}");
+        items
+    });
+    let parent = view.fields.get("parent").and_then(|parent| parent.as_str());
+    let parent = parent.map(|parent| {
+        let id: Uuid = parent.parse().unwrap();
+        let key = store.issue(id).unwrap().and_then(|view| view.key);
+        serde_json::json!({ "id": id, "key": key })
+    });
+    Ok(serde_json::json!({
+        "shown": {
+            "id": id,
+            "key": view.key,
+            "fields": {
+                "title": view.fields.get("title"),
+                "status": view.fields.get("status"),
+                "description": format!("shown \u{1b}[2Jsafe\n\n{items}"),
+            },
+            "claim": null,
+            "parent": parent,
+            "links": [],
+            "comments": [],
+        },
+        "history": {
+            "total": 1,
+            "writes": [{
+                "actor": "jace",
+                "on_behalf_of": null,
+                "utc_ms": 0,
+                "changes": [{ "line": "created" }],
+            }],
+        },
+    }))
 }
 
 /// [`Fake`], with jace at the terminal.
@@ -203,8 +246,8 @@ impl Actions for Jace {
         Ok("jace")
     }
 
-    fn detail(&self, store: &Store, id: Uuid) -> Result<String, String> {
-        Fake.detail(store, id)
+    fn issue(&self, store: &Store, id: Uuid) -> Result<Issue, String> {
+        laid_out(store, id)
     }
 
     fn ready(&self, store: &Store) -> Result<String, String> {
@@ -227,7 +270,7 @@ impl Actions for Gone {
         NOBODY
     }
 
-    fn detail(&self, _: &Store, _: Uuid) -> Result<String, String> {
+    fn issue(&self, _: &Store, _: Uuid) -> Result<Issue, String> {
         Err("Issue TM-2 \u{1b}[2Jdoes not exist".into())
     }
 
@@ -271,8 +314,8 @@ impl Actions for Record {
         self.me
     }
 
-    fn detail(&self, store: &Store, id: Uuid) -> Result<String, String> {
-        Fake.detail(store, id)
+    fn issue(&self, store: &Store, id: Uuid) -> Result<Issue, String> {
+        laid_out(store, id)
     }
 
     fn ready(&self, store: &Store) -> Result<String, String> {
@@ -316,7 +359,7 @@ impl Actions for Record {
 fn list(shell: &Shell) -> &List {
     match shell.screens.base() {
         Screen::List(list) => list,
-        Screen::Detail(_) | Screen::Triage(_) | Screen::Board(_) => {
+        Screen::Ready(_) | Screen::Issue(_) | Screen::Triage(_) | Screen::Board(_) => {
             unreachable!("the list is first")
         }
     }
