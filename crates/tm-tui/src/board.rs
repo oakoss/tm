@@ -247,10 +247,6 @@ fn arrange(
 }
 
 impl Board {
-    pub(crate) const fn typing(&self) -> bool {
-        self.picker.is_some()
-    }
-
     pub(crate) fn prompt(&self) -> Option<String> {
         self.picker.as_ref().map(Picker::prompt)
     }

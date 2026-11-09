@@ -209,13 +209,14 @@ impl Screen {
         }
     }
 
-    /// Whether keys are text being typed, which takes every key but Ctrl-C.
-    const fn typing(&self) -> bool {
+    /// What is being typed, as the footer shows it: while there is any, it
+    /// takes every key but Ctrl-C.
+    fn prompt(&self) -> Option<String> {
         match self {
-            Self::List(list) => list.typing(),
-            Self::Detail(_) => false,
-            Self::Triage(triage) => triage.typing(),
-            Self::Board(board) => board.typing(),
+            Self::List(list) => list.prompt(),
+            Self::Detail(_) => None,
+            Self::Triage(triage) => triage.prompt(),
+            Self::Board(board) => board.prompt(),
         }
     }
 
@@ -237,13 +238,7 @@ impl Screen {
 
     /// The footer: the text typed, else the screen's hints.
     fn footer(&self) -> String {
-        let prompt = match self {
-            Self::List(list) => list.prompt(),
-            Self::Detail(_) => None,
-            Self::Triage(triage) => triage.prompt(),
-            Self::Board(board) => board.prompt(),
-        };
-        if let Some(prompt) = prompt {
+        if let Some(prompt) = self.prompt() {
             return prompt;
         }
         let mut hints = match self {
@@ -448,7 +443,7 @@ impl Shell {
         if matches!(global, Some(Global::Quit)) {
             return Flow::Quit;
         }
-        if !self.shown().typing() {
+        if self.shown().prompt().is_none() {
             match global {
                 Some(Global::Help) => {
                     self.help = !self.help;

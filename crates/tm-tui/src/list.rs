@@ -155,12 +155,6 @@ impl Shown {
 }
 
 impl List {
-    /// Whether a filter is being typed, so keys are text, not commands.
-    #[must_use]
-    pub(crate) const fn typing(&self) -> bool {
-        self.typing.is_some()
-    }
-
     /// Reads the Issues the filter matches, as `tm list` does, `me` standing
     /// for `@me`, or why no one can. The selected Issue stays selected while
     /// it still matches.

@@ -160,11 +160,6 @@ pub(crate) struct Triage {
 }
 
 impl Triage {
-    /// Whether a picker takes the keys as text.
-    pub(crate) const fn typing(&self) -> bool {
-        self.picker.is_some()
-    }
-
     pub(crate) fn prompt(&self) -> Option<String> {
         self.picker.as_ref().map(Picker::prompt)
     }
