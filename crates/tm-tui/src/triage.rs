@@ -15,6 +15,7 @@ use tm_core::text::printable;
 use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
+use crate::cursor;
 use crate::detail::Detail;
 use crate::keys::{self, Binding, ch, plain};
 use crate::picker::{Choice, Field, Picked, Picker, shared, statuses, writes};
@@ -209,11 +210,10 @@ impl Triage {
         }
         self.marked
             .retain(|key| self.rows.iter().any(|row| &row.key == key));
-        let at = kept
-            .and_then(|key| self.rows.iter().position(|row| row.key == key))
-            .unwrap_or_else(|| self.table.selected().unwrap_or(0));
+        let keys = self.rows.iter().map(|row| row.key.as_str());
+        let was = self.table.selected().unwrap_or(0);
         self.table
-            .select((!self.rows.is_empty()).then(|| at.min(self.rows.len() - 1)));
+            .select(cursor::reselect(keys, kept.as_deref(), was));
         let safe = |text: &str| {
             let lines = text
                 .lines()

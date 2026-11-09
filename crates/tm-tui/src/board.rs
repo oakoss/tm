@@ -15,6 +15,7 @@ use tm_core::text::printable;
 use tm_store::Store;
 use uuid::Uuid;
 
+use crate::cursor;
 use crate::detail::Detail;
 use crate::keys::{self, Binding, ch, plain};
 use crate::picker::{Choice, Field, Picked, Picker, statuses, writes};
@@ -269,8 +270,7 @@ impl Board {
                 .find(|(status, _)| *status == column.status)
                 .and_then(|(_, row)| *row)
                 .unwrap_or(0);
-            let last = column.cards.len().checked_sub(1);
-            column.row.select(last.map(|last| row.min(last)));
+            column.row.select(cursor::held(column.cards.len(), row));
         }
         let found = kept.and_then(|key| {
             self.columns.iter().enumerate().find_map(|(at, column)| {

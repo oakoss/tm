@@ -12,6 +12,7 @@ use tm_store::{IssueView, Store, StoreError};
 use uuid::Uuid;
 
 use crate::board::Board;
+use crate::cursor;
 use crate::detail::Detail;
 use crate::keys::{self, Binding, ch, plain};
 use crate::read;
@@ -189,11 +190,10 @@ impl List {
                 self.problem = Some(printable(&said));
             }
         }
-        let at = kept
-            .and_then(|key| self.rows.iter().position(|row| row.key == key))
-            .unwrap_or_else(|| self.table.selected().unwrap_or(0));
+        let keys = self.rows.iter().map(|row| row.key.as_str());
+        let was = self.table.selected().unwrap_or(0);
         self.table
-            .select((!self.rows.is_empty()).then(|| at.min(self.rows.len() - 1)));
+            .select(cursor::reselect(keys, kept.as_deref(), was));
     }
 
     pub(crate) fn selected_key(&self) -> Option<String> {

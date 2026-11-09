@@ -1,6 +1,7 @@
 //! The TUI's screens, opened by `tm tui` (ADR 0018).
 
 mod board;
+mod cursor;
 mod detail;
 mod keys;
 mod list;
