@@ -24,10 +24,8 @@ pub use data::{
 pub(crate) use layout::body;
 
 use crate::keys::{self, Binding, ch, plain};
+use crate::scroll::{Move, Scroll};
 use crate::{Actions, Outcome, Screen, cursor, read};
-
-/// Rows a page key scrolls.
-const PAGE: u16 = 10;
 
 /// Columns from which the related Issues sit beside the text, not below.
 const WIDE: u16 = 100;
@@ -35,12 +33,7 @@ const WIDE: u16 = 100;
 #[derive(Clone, Copy)]
 pub(crate) enum Act {
     Back,
-    Down,
-    Up,
-    First,
-    Last,
-    PageDown,
-    PageUp,
+    Scroll(Move),
     Next,
     Previous,
     Open,
@@ -55,37 +48,37 @@ pub(crate) const KEYS: [Binding<Act>; 10] = [
     },
     Binding {
         keys: &[ch('j'), plain(KeyCode::Down)],
-        action: Act::Down,
+        action: Act::Scroll(Move::Down),
         does: "scroll down and up",
         hint: Some("scroll"),
     },
     Binding {
         keys: &[ch('k'), plain(KeyCode::Up)],
-        action: Act::Up,
+        action: Act::Scroll(Move::Up),
         does: "scroll down and up",
         hint: Some("scroll"),
     },
     Binding {
         keys: &[ch('g'), plain(KeyCode::Home)],
-        action: Act::First,
+        action: Act::Scroll(Move::First),
         does: "top and bottom",
         hint: None,
     },
     Binding {
         keys: &[ch('G'), plain(KeyCode::End)],
-        action: Act::Last,
+        action: Act::Scroll(Move::Last),
         does: "top and bottom",
         hint: None,
     },
     Binding {
         keys: &[plain(KeyCode::PageDown)],
-        action: Act::PageDown,
+        action: Act::Scroll(Move::PageDown),
         does: "down a page and up",
         hint: None,
     },
     Binding {
         keys: &[plain(KeyCode::PageUp)],
-        action: Act::PageUp,
+        action: Act::Scroll(Move::PageUp),
         does: "down a page and up",
         hint: None,
     },
@@ -128,9 +121,7 @@ pub(crate) struct IssueScreen {
     /// Why the related Issues could not be read.
     trouble: Option<String>,
     at: ListState,
-    scroll: u16,
-    /// The furthest `scroll` reaches at the last size drawn.
-    bottom: u16,
+    scroll: Scroll,
     /// Now, as of the last read, for the times shown as ages.
     now_ms: i64,
 }
@@ -144,8 +135,7 @@ impl IssueScreen {
             rows: Vec::new(),
             trouble: None,
             at: ListState::default(),
-            scroll: 0,
-            bottom: 0,
+            scroll: Scroll::default(),
             now_ms: 0,
         }
     }
@@ -202,14 +192,8 @@ impl IssueScreen {
                 self.at.select(Some(if row == 0 { last } else { row - 1 }));
             }
             Act::Next | Act::Previous => {}
-            Act::Down => self.scroll = self.scroll.saturating_add(1),
-            Act::Up => self.scroll = self.scroll.saturating_sub(1),
-            Act::First => self.scroll = 0,
-            Act::Last => self.scroll = self.bottom,
-            Act::PageDown => self.scroll = self.scroll.saturating_add(PAGE),
-            Act::PageUp => self.scroll = self.scroll.saturating_sub(PAGE),
+            Act::Scroll(to) => self.scroll.go(to),
         }
-        self.scroll = self.scroll.min(self.bottom);
         Outcome::Stay
     }
 
@@ -241,12 +225,8 @@ impl IssueScreen {
         };
         // Lines laid out above still wrap here if one is too wide, as a long
         // title or a code line can be, rather than being cut at the edge.
-        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-        let rows = paragraph.line_count(inner.width);
-        let rows = u16::try_from(rows).unwrap_or(u16::MAX);
-        self.bottom = rows.saturating_sub(inner.height);
-        self.scroll = self.scroll.min(self.bottom);
-        frame.render_widget(paragraph.block(block).scroll((self.scroll, 0)), text_area);
+        self.scroll
+            .render(frame, Paragraph::new(lines), block, text_area);
         if let Some(area) = rows_area {
             self.render_rows(frame, area);
         }

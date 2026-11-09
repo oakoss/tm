@@ -2,9 +2,9 @@
 //! store and a fake of the CLI's actions.
 
 mod board;
-mod detail;
 mod issue;
 mod list;
+mod ready;
 mod shell;
 mod triage;
 
@@ -381,7 +381,7 @@ impl Actions for Record {
 fn list(shell: &Shell) -> &List {
     match shell.screens.base() {
         Screen::List(list) => list,
-        Screen::Detail(_) | Screen::Issue(_) | Screen::Triage(_) | Screen::Board(_) => {
+        Screen::Ready(_) | Screen::Issue(_) | Screen::Triage(_) | Screen::Board(_) => {
             unreachable!("the list is first")
         }
     }

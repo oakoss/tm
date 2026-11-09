@@ -2,13 +2,14 @@
 
 mod board;
 mod cursor;
-mod detail;
 mod issue;
 mod keys;
 mod list;
 mod markdown;
 mod picker;
 mod read;
+mod ready;
+mod scroll;
 mod stack;
 #[cfg(test)]
 mod tests;
@@ -32,13 +33,13 @@ use tm_store::Store;
 use uuid::Uuid;
 
 use board::Board;
-use detail::Detail;
 use issue::IssueScreen;
 pub use issue::{
     Change, Claim, Comment, History, Issue, LATEST_WRITES, Link, Logged, Related, Shown,
 };
 use keys::{Binding, ch, ctrl, plain};
 use list::List;
+use ready::Ready;
 use stack::Stack;
 use tm_core::text::printable;
 use triage::Triage;
@@ -172,7 +173,7 @@ pub enum Seen {
 /// A screen of the TUI; each acts on its own keys.
 pub(crate) enum Screen {
     List(List),
-    Detail(Detail),
+    Ready(Ready),
     Issue(IssueScreen),
     Triage(Triage),
     Board(Board),
@@ -198,7 +199,7 @@ impl Screen {
     fn load(&mut self, store: &Store, actions: &dyn Actions) {
         match self {
             Self::List(list) => list.load(store, actions.me()),
-            Self::Detail(detail) => detail.load(store, actions),
+            Self::Ready(ready) => ready.load(store, actions),
             Self::Issue(issue) => issue.load(store, actions),
             Self::Triage(triage) => triage.load(store, actions),
             Self::Board(board) => board.load(store, actions),
@@ -209,7 +210,7 @@ impl Screen {
     fn title(&self) -> String {
         match self {
             Self::List(_) => "Issues".to_owned(),
-            Self::Detail(_) => "Ready".to_owned(),
+            Self::Ready(_) => "Ready".to_owned(),
             Self::Issue(issue) => issue.title(),
             Self::Triage(_) => "Triage".to_owned(),
             Self::Board(_) => "Board".to_owned(),
@@ -219,7 +220,7 @@ impl Screen {
     fn key(&mut self, key: KeyEvent) -> Outcome {
         match self {
             Self::List(list) => list.key(key),
-            Self::Detail(detail) => detail.key(key),
+            Self::Ready(ready) => ready.key(key),
             Self::Issue(issue) => issue.key(key),
             Self::Triage(triage) => triage.key(key),
             Self::Board(board) => board.key(key),
@@ -231,7 +232,7 @@ impl Screen {
     fn prompt(&self) -> Option<String> {
         match self {
             Self::List(list) => list.prompt(),
-            Self::Detail(_) | Self::Issue(_) => None,
+            Self::Ready(_) | Self::Issue(_) => None,
             Self::Triage(triage) => triage.prompt(),
             Self::Board(board) => board.prompt(),
         }
@@ -247,7 +248,7 @@ impl Screen {
     fn help(&self) -> Vec<(String, &'static str)> {
         match self {
             Self::List(_) => keys::help(&list::KEYS),
-            Self::Detail(_) => keys::help(&detail::KEYS),
+            Self::Ready(_) => keys::help(&ready::KEYS),
             Self::Issue(_) => keys::help(&issue::KEYS),
             Self::Triage(_) => keys::help(&triage::KEYS),
             Self::Board(_) => keys::help(&board::KEYS),
@@ -261,7 +262,7 @@ impl Screen {
         }
         let mut hints = match self {
             Self::List(_) => keys::hints(&list::KEYS),
-            Self::Detail(_) => keys::hints(&detail::KEYS),
+            Self::Ready(_) => keys::hints(&ready::KEYS),
             Self::Issue(_) => keys::hints(&issue::KEYS),
             Self::Triage(_) => keys::hints(&triage::KEYS),
             Self::Board(_) => keys::hints(&board::KEYS),
@@ -273,7 +274,7 @@ impl Screen {
     fn render(&mut self, frame: &mut Frame, area: ratatui::layout::Rect) {
         match self {
             Self::List(list) => list.render(frame, area),
-            Self::Detail(detail) => detail.render(frame, area),
+            Self::Ready(ready) => ready.render(frame, area),
             Self::Issue(issue) => issue.render(frame, area),
             Self::Triage(triage) => triage.render(frame, area),
             Self::Board(board) => board.render(frame, area),

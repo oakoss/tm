@@ -4,25 +4,18 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Paragraph};
 use tm_core::text::printable;
 use tm_store::Store;
 
 use crate::keys::{self, Binding, ch, plain};
+use crate::scroll::{Move, Scroll};
 use crate::{Actions, Outcome};
-
-/// Rows a page key scrolls.
-const PAGE: u16 = 10;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Act {
     Back,
-    Down,
-    Up,
-    First,
-    Last,
-    PageDown,
-    PageUp,
+    Scroll(Move),
 }
 
 pub(crate) const KEYS: [Binding<Act>; 7] = [
@@ -34,56 +27,53 @@ pub(crate) const KEYS: [Binding<Act>; 7] = [
     },
     Binding {
         keys: &[ch('j'), plain(KeyCode::Down)],
-        action: Act::Down,
+        action: Act::Scroll(Move::Down),
         does: "scroll down and up",
         hint: Some("scroll"),
     },
     Binding {
         keys: &[ch('k'), plain(KeyCode::Up)],
-        action: Act::Up,
+        action: Act::Scroll(Move::Up),
         does: "scroll down and up",
         hint: Some("scroll"),
     },
     Binding {
         keys: &[ch('g'), plain(KeyCode::Home)],
-        action: Act::First,
+        action: Act::Scroll(Move::First),
         does: "top and bottom",
         hint: None,
     },
     Binding {
         keys: &[ch('G'), plain(KeyCode::End)],
-        action: Act::Last,
+        action: Act::Scroll(Move::Last),
         does: "top and bottom",
         hint: None,
     },
     Binding {
         keys: &[plain(KeyCode::PageDown)],
-        action: Act::PageDown,
+        action: Act::Scroll(Move::PageDown),
         does: "down a page and up",
         hint: None,
     },
     Binding {
         keys: &[plain(KeyCode::PageUp)],
-        action: Act::PageUp,
+        action: Act::Scroll(Move::PageUp),
         does: "down a page and up",
         hint: None,
     },
 ];
 
-pub(crate) struct Detail {
+pub(crate) struct Ready {
     /// The text, or why it could not be read.
     text: Result<String, String>,
-    scroll: u16,
-    /// The furthest `scroll` reaches at the last size drawn.
-    bottom: u16,
+    scroll: Scroll,
 }
 
-impl Detail {
-    pub(crate) const fn ready() -> Self {
+impl Ready {
+    pub(crate) fn new() -> Self {
         Self {
             text: Ok(String::new()),
-            scroll: 0,
-            bottom: 0,
+            scroll: Scroll::default(),
         }
     }
 
@@ -101,20 +91,14 @@ impl Detail {
     }
 
     pub(crate) fn key(&mut self, key: KeyEvent) -> Outcome {
-        let Some(act) = keys::action(&KEYS, key) else {
-            return Outcome::Stay;
-        };
-        self.scroll = match act {
-            Act::Back => return Outcome::Back,
-            Act::Down => self.scroll.saturating_add(1),
-            Act::Up => self.scroll.saturating_sub(1),
-            Act::First => 0,
-            Act::Last => self.bottom,
-            Act::PageDown => self.scroll.saturating_add(PAGE),
-            Act::PageUp => self.scroll.saturating_sub(PAGE),
+        match keys::action(&KEYS, key) {
+            Some(Act::Back) => Outcome::Back,
+            Some(Act::Scroll(to)) => {
+                self.scroll.go(to);
+                Outcome::Stay
+            }
+            None => Outcome::Stay,
         }
-        .min(self.bottom);
-        Outcome::Stay
     }
 
     pub(crate) fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -122,13 +106,6 @@ impl Detail {
         let text = match &self.text {
             Ok(text) | Err(text) => text.as_str(),
         };
-        let inner = block.inner(area);
-        let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
-        // Counted without the block, whose side borders `line_count` ignores.
-        let rows = paragraph.line_count(inner.width);
-        self.bottom =
-            u16::try_from(rows.saturating_sub(usize::from(inner.height))).unwrap_or(u16::MAX);
-        self.scroll = self.scroll.min(self.bottom);
-        frame.render_widget(paragraph.block(block).scroll((self.scroll, 0)), area);
+        self.scroll.render(frame, Paragraph::new(text), block, area);
     }
 }

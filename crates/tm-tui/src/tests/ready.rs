@@ -43,7 +43,52 @@ fn wrapped_text_scrolls_to_its_last_line() {
     drawn_sized(&mut shell, 20, 10);
     shell.key(press(KeyCode::Char('G')));
     let bottom = drawn_sized(&mut shell, 20, 10);
-    assert!(bottom.contains("row20"), "{bottom}");
+    assert!(
+        last_inside(&bottom).contains("│here"),
+        "row20's wrapped end: {bottom}"
+    );
+}
+
+#[test]
+fn keys_past_the_last_line_go_no_further_than_it() {
+    let store = store();
+    let mut shell = Shell::new("TM");
+    shell.key(press(KeyCode::Char('r')));
+    shell.load(&store, &Wide);
+    drawn_sized(&mut shell, 20, 10);
+    shell.key(press(KeyCode::Char('G')));
+    for _ in 0..5 {
+        shell.key(press(KeyCode::Char('j')));
+    }
+    shell.key(press(KeyCode::Char('k')));
+    let up_one = drawn_sized(&mut shell, 20, 10);
+    assert!(
+        last_inside(&up_one).contains("row20 wraps in"),
+        "one line above the last: {up_one}"
+    );
+}
+
+#[test]
+fn a_taller_terminal_keeps_the_last_line_at_the_bottom() {
+    let store = store();
+    let mut shell = Shell::new("TM");
+    shell.key(press(KeyCode::Char('r')));
+    shell.load(&store, &Wide);
+    drawn_sized(&mut shell, 20, 10);
+    shell.key(press(KeyCode::Char('G')));
+    drawn_sized(&mut shell, 20, 10);
+    let taller = drawn_sized(&mut shell, 20, 30);
+    assert!(
+        last_inside(&taller).contains("│here"),
+        "no blank rows below the end: {taller}"
+    );
+}
+
+/// The last line drawn inside the screen's box.
+fn last_inside(screen: &str) -> &str {
+    let lines: Vec<&str> = screen.lines().collect();
+    let border = lines.iter().rposition(|line| line.contains('└')).unwrap();
+    lines[border - 1]
 }
 
 #[test]

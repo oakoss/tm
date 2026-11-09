@@ -138,7 +138,7 @@ fn no_key_is_named_twice_on_a_screen() {
     let global = named(keys::help(&GLOBAL));
     for (screen, table) in [
         ("list", keys::help(&crate::list::KEYS)),
-        ("detail", keys::help(&crate::detail::KEYS)),
+        ("ready", keys::help(&crate::ready::KEYS)),
         ("issue", keys::help(&crate::issue::KEYS)),
         ("triage", keys::help(&crate::triage::KEYS)),
         ("board", keys::help(&crate::board::KEYS)),
