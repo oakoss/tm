@@ -161,7 +161,9 @@ impl Actions for Rich {
                 "agent": "claude",
                 "on_behalf_of": "jace",
                 "branch": "main",
+                "expires_ms": 120_000,
                 "expires_in_ms": 120_000,
+                "handed": false,
             });
             shown["links"] = serde_json::json!([
                 { "name": "blocks", "other": { "id": linked, "key": "TM-3" } },

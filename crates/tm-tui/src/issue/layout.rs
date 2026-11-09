@@ -64,15 +64,8 @@ fn facts(shown: &Shown, now_ms: i64) -> Vec<Line<'static>> {
             facts.push((label, value));
         }
     }
-    if let Some(claim) = &shown.claim {
-        let mut holder = by(&claim.agent, claim.on_behalf_of.as_deref());
-        if let Some(branch) = &claim.branch {
-            holder = format!("{holder} on {}", printable(branch));
-        }
-        if let Some(left) = claim.expires_in_ms {
-            holder = format!("{holder}, {} left", span(left));
-        }
-        facts.push(("Claim", holder));
+    if let Some(claim) = claim(shown, now_ms) {
+        facts.push(("Claim", claim));
     }
     for (label, name) in [("Created", "created"), ("Updated", "updated")] {
         if let Some(at) = shown.fields.get(name).and_then(Value::as_i64) {
@@ -93,6 +86,46 @@ fn facts(shown: &Shown, now_ms: i64) -> Vec<Line<'static>> {
             ])
         })
         .collect()
+}
+
+/// The Claim held, else the one that lapsed, worded as `tm show` words it.
+fn claim(shown: &Shown, now_ms: i64) -> Option<String> {
+    if let Some(claim) = &shown.claim {
+        let left = claim.expires_in_ms.map_or_else(
+            || "no expiry".to_owned(),
+            |left| format!("{} left", span(left)),
+        );
+        let holder = by(&claim.agent, claim.on_behalf_of.as_deref());
+        if claim.handed {
+            return Some(format!(
+                "handed to {holder}, {left}; its next session takes it with tm start"
+            ));
+        }
+        let on = claim
+            .branch
+            .as_deref()
+            .map(|branch| format!(" on {}", printable(branch)))
+            .unwrap_or_default();
+        return Some(format!("{holder}{on}, {left}"));
+    }
+    let lapsed = shown.lapsed_claim.as_ref()?;
+    let agent = if lapsed.handed {
+        format!("{} (handed on, not yet taken)", lapsed.agent)
+    } else {
+        lapsed.agent.clone()
+    };
+    let holder = by(&agent, lapsed.on_behalf_of.as_deref());
+    let when = lapsed
+        .expires_ms
+        .map(|at| format!(" {}", ago(now_ms, at)))
+        .unwrap_or_default();
+    let archived = shown.fields.get("archived").and_then(Value::as_bool) == Some(true);
+    let takeable = if archived {
+        ""
+    } else {
+        "; any Agent may take it"
+    };
+    Some(format!("{holder}, lapsed{when}{takeable}"))
 }
 
 /// Each comment under who wrote it and when, its body as Markdown.
@@ -186,6 +219,67 @@ fn span(ms: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An Issue whose `tm show` reports `claim` held, or lapsed when
+    /// `lapsed`, and is archived when `archived`.
+    fn claimed(claim: &Value, lapsed: bool, archived: bool) -> Shown {
+        let (held, gone) = if lapsed {
+            (Value::Null, claim.clone())
+        } else {
+            (claim.clone(), Value::Null)
+        };
+        serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::nil(),
+            "key": "TM-1",
+            "fields": { "archived": archived },
+            "claim": held,
+            "lapsed_claim": gone,
+            "parent": null,
+            "links": [],
+            "comments": [],
+        }))
+        .unwrap()
+    }
+
+    fn held(expires_ms: Option<i64>, handed: bool) -> Value {
+        serde_json::json!({
+            "agent": "claude",
+            "on_behalf_of": "jace",
+            "branch": null,
+            "expires_ms": expires_ms,
+            "expires_in_ms": expires_ms,
+            "handed": handed,
+        })
+    }
+
+    #[test]
+    fn a_claim_reads_as_tm_show_words_it() {
+        let worded = |claim: &Value, lapsed, archived| {
+            super::claim(&claimed(claim, lapsed, archived), 600_000).unwrap()
+        };
+        assert_eq!(
+            worded(&held(None, false), false, false),
+            "claude for jace, no expiry"
+        );
+        assert_eq!(
+            worded(&held(Some(120_000), true), false, false),
+            "handed to claude for jace, 2m left; its next session takes it with tm start"
+        );
+        assert_eq!(
+            worded(&held(Some(300_000), false), true, false),
+            "claude for jace, lapsed 5m ago; any Agent may take it"
+        );
+        assert_eq!(
+            worded(&held(Some(300_000), false), true, true),
+            "claude for jace, lapsed 5m ago"
+        );
+        assert_eq!(
+            worded(&held(Some(300_000), true), true, false),
+            "claude (handed on, not yet taken) for jace, lapsed 5m ago; any Agent may take it"
+        );
+        let unclaimed = claimed(&Value::Null, true, false);
+        assert_eq!(super::claim(&unclaimed, 0), None);
+    }
 
     #[test]
     fn an_age_takes_its_largest_whole_unit() {

@@ -214,6 +214,7 @@ fn reported(store: &Store, id: Uuid) -> Result<serde_json::Value, String> {
                 "description": format!("shown \u{1b}[2Jsafe\n\n{items}"),
             },
             "claim": null,
+            "lapsed_claim": null,
             "parent": parent,
             "links": [],
             "comments": [],

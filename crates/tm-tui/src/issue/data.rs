@@ -48,6 +48,10 @@ pub struct Shown {
     pub fields: BTreeMap<String, Value>,
     #[serde(deserialize_with = "Option::deserialize")]
     pub claim: Option<Claim>,
+    /// The Claim that lapsed with no other taken since, as `tm show` reports
+    /// it.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub lapsed_claim: Option<Claim>,
     #[serde(deserialize_with = "Option::deserialize")]
     pub parent: Option<Related>,
     pub links: Vec<Link>,
@@ -64,7 +68,12 @@ pub struct Claim {
     pub branch: Option<String>,
     /// `null` for a Claim taken with no expiry.
     #[serde(deserialize_with = "Option::deserialize")]
+    pub expires_ms: Option<i64>,
+    /// `null` for a Claim taken with no expiry; 0 once lapsed.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub expires_in_ms: Option<i64>,
+    /// Handed on by `tm handoff` and not yet taken by the next session.
+    pub handed: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

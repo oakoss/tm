@@ -328,6 +328,9 @@ mod tests {
             retracted: true,
         };
         store.append(said(retract)).unwrap();
+        let claude = Actor::agent("claude", "jace");
+        store.take(&claude, id, Some(1)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
         let cli = Cli {
             me: Ok("jace"),
             project,
@@ -344,6 +347,14 @@ mod tests {
             .map(|link| (link.name.as_str(), link.other.id))
             .collect();
         assert_eq!(links, [("blocks", other)]);
+        assert!(shown.claim.is_none(), "{shown:?}");
+        let lapsed = shown.lapsed_claim.as_ref().unwrap();
+        assert_eq!(
+            (lapsed.agent.as_str(), lapsed.handed),
+            ("claude", false),
+            "{lapsed:?}"
+        );
+        assert!(lapsed.expires_ms.is_some(), "{lapsed:?}");
         assert_eq!(shown.comments[0].body.as_deref(), Some("**done** soon"));
         let retracted = &shown.comments[1];
         assert!(
