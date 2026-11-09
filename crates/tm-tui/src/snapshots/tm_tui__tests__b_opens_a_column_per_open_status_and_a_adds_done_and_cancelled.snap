@@ -1,0 +1,15 @@
+---
+source: crates/tm-tui/src/lib.rs
+assertion_line: 2035
+expression: screen
+---
+"tm · TM › Issues › Board                                                                                                "
+"┌ Triage 0 ──────────────────┐┌ Todo 3 ────────────────────┐┌ In Progress 0 ─────────────┐┌ In Review 0 ───────────────┐"
+"│                            ││TM-3 third \u{1b}[31mred    ││                            ││                            │"
+"│                            ││TM-2 second with a tab      ││                            ││                            │"
+"│                            ││TM-1 first                  ││                            ││                            │"
+"│                            ││                            ││                            ││                            │"
+"│                            ││                            ││                            ││                            │"
+"│                            ││                            ││                            ││                            │"
+"└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘"
+"q back · H L move · s status · u undo · ? keys                                                                          "

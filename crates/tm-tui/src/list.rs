@@ -11,8 +11,10 @@ use tm_core::text::printable;
 use tm_store::{IssueView, Store, StoreError};
 use uuid::Uuid;
 
+use crate::board::Board;
 use crate::detail::Detail;
 use crate::keys::{self, Binding, ch, plain};
+use crate::read;
 use crate::triage::Triage;
 use crate::{Outcome, Screen};
 
@@ -33,9 +35,10 @@ pub(crate) enum Act {
     All,
     Ready,
     Triage,
+    Board,
 }
 
-pub(crate) const KEYS: [Binding<Act>; 12] = [
+pub(crate) const KEYS: [Binding<Act>; 13] = [
     Binding {
         keys: &[ch('q')],
         action: Act::Quit,
@@ -108,6 +111,12 @@ pub(crate) const KEYS: [Binding<Act>; 12] = [
         does: "triage the Issues in a triage Status",
         hint: Some("triage"),
     },
+    Binding {
+        keys: &[ch('b')],
+        action: Act::Board,
+        does: "the Board: a column per Status",
+        hint: Some("board"),
+    },
 ];
 
 #[derive(Default)]
@@ -134,21 +143,12 @@ struct Shown {
 
 impl Shown {
     fn of(view: &IssueView) -> Self {
-        let field = |name: &str| {
-            let text = view
-                .fields
-                .get(name)
-                .and_then(|value| value.as_str())
-                .unwrap_or("-");
-            // A tab passes `printable` but would move a screen cell's cursor.
-            printable(text).replace('\t', " ")
-        };
         Self {
             id: view.id,
-            key: view.key.clone().unwrap_or_else(|| view.id.to_string()),
-            status: field("status"),
-            priority: field("priority"),
-            title: field("title"),
+            key: read::key(view),
+            status: read::field(view, "status"),
+            priority: read::field(view, "priority"),
+            title: read::field(view, "title"),
         }
     }
 }
@@ -246,6 +246,7 @@ impl List {
             }
             Act::Ready => return Outcome::Open(Box::new(Screen::Detail(Detail::ready()))),
             Act::Triage => return Outcome::Open(Box::new(Screen::Triage(Triage::default()))),
+            Act::Board => return Outcome::Open(Box::new(Screen::Board(Board::default()))),
             Act::Open => {
                 return self.selected().map_or(Outcome::Stay, |(id, key)| {
                     Outcome::Open(Box::new(Screen::Detail(Detail::issue(id, key))))
