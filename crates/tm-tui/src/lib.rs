@@ -32,6 +32,8 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
+#[cfg(unix)]
+use signal_hook::consts::{SIGCONT, SIGSTOP, SIGTSTP};
 use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::{SigId, flag, low_level};
 use tm_store::Store;
@@ -58,13 +60,14 @@ const POLL: Duration = Duration::from_millis(250);
 #[derive(Clone, Copy)]
 enum Global {
     Quit,
+    Suspend,
     Help,
     HideHelp,
 }
 
-/// Keys every screen has, ahead of its own: Ctrl-C even while text is
-/// typed, and Esc only while these keys are shown.
-const GLOBAL: [Binding<Global>; 3] = [
+/// Keys every screen has, ahead of its own: Ctrl-C and Ctrl-Z even while
+/// text is typed, and Esc only while these keys are shown.
+const GLOBAL: [Binding<Global>; 4] = [
     Binding {
         keys: &[ch('?')],
         action: Global::Help,
@@ -81,6 +84,12 @@ const GLOBAL: [Binding<Global>; 3] = [
         keys: &[ctrl('c')],
         action: Global::Quit,
         does: "quit",
+        hint: None,
+    },
+    Binding {
+        keys: &[ctrl('z')],
+        action: Global::Suspend,
+        does: "suspend to the shell; fg comes back",
         hint: None,
     },
 ];
@@ -332,6 +341,8 @@ pub enum Flow {
     /// Take a comment's text with the terminal handed to an editor, give it
     /// to [`Shell::compose`], then go on as for [`Flow::Write`].
     Compose,
+    /// Hand the terminal back and stop, as Ctrl-Z does at a shell.
+    Suspend,
     Quit,
 }
 
@@ -531,8 +542,10 @@ impl Shell {
         }
         self.said = None;
         let global = keys::action(&GLOBAL, key);
-        if matches!(global, Some(Global::Quit)) {
-            return Flow::Quit;
+        match global {
+            Some(Global::Quit) => return Flow::Quit,
+            Some(Global::Suspend) => return Flow::Suspend,
+            _ => {}
         }
         if self.shown().prompt().is_none() {
             match global {
@@ -732,9 +745,13 @@ pub fn run<E: From<io::Error>>(
         caught: Arc::new(AtomicUsize::new(0)),
         default: Arc::new(AtomicBool::new(false)),
         interrupt: Vec::new(),
+        stop: Arc::new(AtomicBool::new(false)),
+        resumed: Arc::new(AtomicBool::new(false)),
+        editing: Arc::new(AtomicBool::new(false)),
     };
     signals.catch(SIGTERM)?;
     signals.listen()?;
+    signals.control_jobs()?;
     let mut shell = Shell::new(place);
     shell.load(&store, actions);
     let ran = match ratatui::try_init() {
@@ -774,9 +791,24 @@ struct Signals {
     default: Arc<AtomicBool>,
     /// SIGINT's handlers, dropped while an editor has the terminal.
     interrupt: Vec<SigId>,
+    stop: Arc<AtomicBool>,
+    resumed: Arc<AtomicBool>,
+    /// While an editor has the terminal a SIGTSTP stops the TUI at once,
+    /// with the editor, as a shell expects of its whole job.
+    editing: Arc<AtomicBool>,
 }
 
 impl Signals {
+    fn control_jobs(&self) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            flag::register_conditional_default(SIGTSTP, Arc::clone(&self.editing))?;
+            flag::register(SIGTSTP, Arc::clone(&self.stop))?;
+            flag::register(SIGCONT, Arc::clone(&self.resumed))?;
+        }
+        Ok(())
+    }
+
     fn catch(&self, signal: i32) -> io::Result<Vec<SigId>> {
         let value = usize::try_from(signal).unwrap_or(usize::MAX);
         Ok(vec![
@@ -786,19 +818,108 @@ impl Signals {
         ])
     }
 
+    /// Takes SIGINT back after an editor; the terminal is taken back too,
+    /// so a stop and resume while it ran need nothing more.
     fn listen(&mut self) -> io::Result<()> {
         self.interrupt = self.catch(SIGINT)?;
+        self.editing.store(false, Ordering::Relaxed);
+        self.stop.store(false, Ordering::Relaxed);
+        self.resumed.store(false, Ordering::Relaxed);
         Ok(())
     }
 
     /// Leaves SIGINT to an editor, as git does: Ctrl-C there reaches this
     /// process too, as one of its group, and is the editor's to act on.
     fn hold(&mut self) {
+        #[cfg(unix)]
+        self.editing.store(job_control(), Ordering::Relaxed);
         for id in self.interrupt.drain(..) {
             low_level::unregister(id);
         }
     }
 }
+
+/// Whether a shell with job control started this process's group, so one
+/// can bring it back after it stops: its parent is in this session but
+/// another group. Without one, as in `tmux new-window 'tm tui'` or `exec tm
+/// tui`, a stop would hang the terminal for good.
+#[cfg(unix)]
+fn job_control() -> bool {
+    use rustix::process::{getpgid, getpgrp, getppid, getsid};
+    let Some(parent) = getppid() else {
+        return false;
+    };
+    let ours = (getpgrp(), getsid(None));
+    let theirs = (getpgid(Some(parent)), getsid(Some(parent)));
+    matches!((ours, theirs), ((group, Ok(session)), (Ok(their_group), Ok(their_session)))
+        if their_group != group && their_session == session)
+}
+
+/// Waits, stopped, until this process's group has the terminal again, as
+/// taking it from the background would stop or fail it: after `bg`, until
+/// `fg`. False when a signal ends the TUI first, as a shell's `kill %1`
+/// sends SIGTERM then SIGCONT, whose SIGTERM another thread may handle a
+/// moment after this one wakes.
+fn back_in_front(signals: &Signals) -> io::Result<bool> {
+    let ending = || signals.caught.load(Ordering::Relaxed) != 0;
+    // Only another group named in front waits; an error, as with no
+    // controlling terminal, goes on to take it, and fails there if it must.
+    #[cfg(unix)]
+    let behind = || {
+        matches!(rustix::termios::tcgetpgrp(io::stdin()),
+            Ok(front) if front != rustix::process::getpgrp())
+    };
+    #[cfg(unix)]
+    loop {
+        if ending() {
+            return Ok(false);
+        }
+        if !behind() {
+            return Ok(true);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        // `fg` may have come during the sleep.
+        if !ending() && behind() {
+            low_level::raise(SIGSTOP)?;
+        }
+    }
+    #[cfg(not(unix))]
+    Ok(!ending())
+}
+
+/// Hands the terminal back and stops until a shell's `fg` sends SIGCONT,
+/// then takes it again; or, with no shell to come back to, says so.
+fn suspend(terminal: &mut DefaultTerminal, shell: &mut Shell, signals: &Signals) -> io::Result<()> {
+    signals.stop.store(false, Ordering::Relaxed);
+    #[cfg(unix)]
+    if !job_control() {
+        shell.said = Some(NO_SHELL.to_owned());
+        return Ok(());
+    }
+    #[cfg(not(unix))]
+    {
+        shell.said = Some(NO_SHELL.to_owned());
+        let _ = terminal;
+    }
+    #[cfg(unix)]
+    {
+        let ending = || signals.caught.load(Ordering::Relaxed) != 0;
+        ratatui::restore();
+        execute!(io::stdout(), Show)?;
+        if !ending() {
+            low_level::raise(SIGSTOP)?;
+        }
+        if !back_in_front(signals)? {
+            return Ok(());
+        }
+        retake(terminal)?;
+        signals.stop.store(false, Ordering::Relaxed);
+        signals.resumed.store(false, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+const NO_SHELL: &str = "Ctrl-Z does nothing here: no shell started tm tui to bring it back";
 
 /// Why the TUI ended without an error.
 #[derive(Debug, PartialEq, Eq)]
@@ -814,6 +935,12 @@ fn suspended<T>(terminal: &mut DefaultTerminal, run: impl FnOnce() -> T) -> io::
     ratatui::restore();
     execute!(io::stdout(), Show)?;
     let ran = run();
+    retake(terminal)?;
+    Ok(ran)
+}
+
+/// Raw mode and the alternate screen again, redrawn whole.
+fn retake(terminal: &mut DefaultTerminal) -> io::Result<()> {
     enable_raw_mode()?;
     execute!(
         io::stdout(),
@@ -825,7 +952,7 @@ fn suspended<T>(terminal: &mut DefaultTerminal, run: impl FnOnce() -> T) -> io::
     // and fails where nothing answers.
     terminal.swap_buffers();
     terminal.swap_buffers();
-    Ok(ran)
+    Ok(())
 }
 
 fn drive<E: From<io::Error>>(
@@ -839,6 +966,12 @@ fn drive<E: From<io::Error>>(
         let caught = signals.caught.load(Ordering::Relaxed);
         if caught != 0 {
             return Ok(Ended::Signal(i32::try_from(caught).unwrap_or(i32::MAX)));
+        }
+        if signals.stop.load(Ordering::Relaxed) {
+            suspend(terminal, shell, signals)?;
+        } else if signals.resumed.swap(false, Ordering::Relaxed) && back_in_front(signals)? {
+            // Stopped by a SIGSTOP, which cannot be caught.
+            retake(terminal)?;
         }
         terminal.draw(|frame| shell.render(frame))?;
         if event::poll(POLL)?
@@ -862,6 +995,7 @@ fn drive<E: From<io::Error>>(
                     }
                     shell.load(&store, actions);
                 }
+                Flow::Suspend => suspend(terminal, shell, signals)?,
                 Flow::Stay => {}
             }
         }

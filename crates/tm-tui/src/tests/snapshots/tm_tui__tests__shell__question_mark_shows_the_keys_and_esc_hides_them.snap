@@ -1,6 +1,6 @@
 ---
-source: crates/tm-tui/src/lib.rs
-assertion_line: 944
+source: crates/tm-tui/src/tests/shell.rs
+assertion_line: 26
 expression: "drawn_sized(&mut shell, 60, 17)"
 ---
 "tm · TM › Issues                                            "
@@ -18,5 +18,5 @@ expression: "drawn_sized(&mut shell, 60, 17)"
 "│ │           ?  show or hide these keys                 │ │"
 "│ │         Esc  hide these keys                         │ │"
 "│ │      Ctrl-C  quit                                    │ │"
-"└─└──────────────────────────────────────────────────────┘─┘"
-"q quit · / filter · r ready · t triage · b board · ? keys   "
+"└─│      Ctrl-Z  suspend to the shell; fg comes back     │─┘"
+"q └──────────────────────────────────────────────────────┘  "

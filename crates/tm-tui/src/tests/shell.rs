@@ -117,6 +117,20 @@ fn a_modified_esc_hides_the_keys_and_ctrl_c_quits_with_any_modifier() {
 }
 
 #[test]
+fn ctrl_z_suspends_even_while_a_filter_or_picker_takes_the_keys() {
+    let ctrl_z = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    let mut shell = Shell::new("TM");
+    shell.key(press(KeyCode::Char('/')));
+    shell.key(press(KeyCode::Char('x')));
+    assert_eq!(shell.key(ctrl_z), Flow::Suspend);
+    assert_eq!(list(&shell).prompt().as_deref(), Some("/x"), "kept");
+    let store = store();
+    let mut shell = opened(&store, &Fake);
+    shell.key(press(KeyCode::Char('s')));
+    assert_eq!(shell.key(ctrl_z), Flow::Suspend);
+}
+
+#[test]
 fn esc_while_typing_drops_the_filter_whether_or_not_the_keys_show() {
     let mut shell = Shell::new("TM");
     shell.key(press(KeyCode::Char('?')));
