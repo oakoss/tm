@@ -35,7 +35,7 @@ use uuid::Uuid;
 use board::Board;
 use issue::IssueScreen;
 pub use issue::{
-    Change, Claim, Comment, History, Issue, LATEST_WRITES, Link, Logged, Related, Shown,
+    Change, Claim, Comment, History, Issue, LATEST_WRITES, Link, Logged, Related, Shown, Status,
 };
 use keys::{Binding, ch, ctrl, plain};
 use list::List;
@@ -225,7 +225,8 @@ impl Screen {
     fn prompt(&self) -> Option<String> {
         match self {
             Self::List(list) => list.prompt(),
-            Self::Ready(_) | Self::Issue(_) => None,
+            Self::Ready(_) => None,
+            Self::Issue(issue) => issue.prompt(),
             Self::Triage(triage) => triage.prompt(),
             Self::Board(board) => board.prompt(),
         }

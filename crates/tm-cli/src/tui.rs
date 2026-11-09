@@ -277,6 +277,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_issue_screen_reads_the_version_moves_and_lapsed_claim_tm_show_reports() {
+        let dir = std::env::temp_dir().join(format!("tm-issue-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut store = Store::open(&dir.join("store.db")).unwrap();
+        let jace = Actor::human("jace");
+        let (project, _) = store.create_project(&jace, "TM", "Core").unwrap();
+        let (id, _) = store.create_issue(&jace, project, "task", "alpha").unwrap();
+        let claude = Actor::agent("claude", "jace");
+        store.take(&claude, id, Some(1)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let cli = Cli {
+            me: Ok("jace"),
+            project,
+            reader: Err("unused"),
+        };
+        let shown = cli.issue(&store, id).unwrap().shown;
+        let read = store.issue_with_version(id).unwrap().unwrap().1;
+        assert_eq!(shown.version, read);
+        let moves: Vec<&str> = shown.moves_to.iter().map(|to| to.id.as_str()).collect();
+        assert!(
+            moves.contains(&"done") && !moves.contains(&"todo"),
+            "{moves:?}"
+        );
+        assert!(shown.claim.is_none(), "{shown:?}");
+        let lapsed = shown.lapsed_claim.as_ref().unwrap();
+        assert_eq!(
+            (lapsed.agent.as_str(), lapsed.handed),
+            ("claude", false),
+            "{lapsed:?}"
+        );
+        assert!(lapsed.expires_ms.is_some(), "{lapsed:?}");
+    }
+
+    #[test]
     fn the_issue_screen_reads_show_and_history_json_as_they_are() {
         let dir = std::env::temp_dir().join(format!("tm-issue-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -328,9 +362,6 @@ mod tests {
             retracted: true,
         };
         store.append(said(retract)).unwrap();
-        let claude = Actor::agent("claude", "jace");
-        store.take(&claude, id, Some(1)).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(5));
         let cli = Cli {
             me: Ok("jace"),
             project,
@@ -347,14 +378,6 @@ mod tests {
             .map(|link| (link.name.as_str(), link.other.id))
             .collect();
         assert_eq!(links, [("blocks", other)]);
-        assert!(shown.claim.is_none(), "{shown:?}");
-        let lapsed = shown.lapsed_claim.as_ref().unwrap();
-        assert_eq!(
-            (lapsed.agent.as_str(), lapsed.handed),
-            ("claude", false),
-            "{lapsed:?}"
-        );
-        assert!(lapsed.expires_ms.is_some(), "{lapsed:?}");
         assert_eq!(shown.comments[0].body.as_deref(), Some("**done** soon"));
         let retracted = &shown.comments[1];
         assert!(

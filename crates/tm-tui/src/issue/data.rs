@@ -45,7 +45,12 @@ pub struct Shown {
     pub id: Uuid,
     #[serde(deserialize_with = "Option::deserialize")]
     pub key: Option<String>,
+    /// The version read, so a write from the screen is refused if the
+    /// Issue changed since.
+    pub version: i64,
     pub fields: BTreeMap<String, Value>,
+    /// The Statuses its Workflow lets it move to, as `tm show` lists them.
+    pub moves_to: Vec<Status>,
     #[serde(deserialize_with = "Option::deserialize")]
     pub claim: Option<Claim>,
     /// The Claim that lapsed with no other taken since, as `tm show` reports
@@ -74,6 +79,13 @@ pub struct Claim {
     pub expires_in_ms: Option<i64>,
     /// Handed on by `tm handoff` and not yet taken by the next session.
     pub handed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
+pub struct Status {
+    pub id: String,
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

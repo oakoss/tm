@@ -231,6 +231,8 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "id": uuid::Uuid::nil(),
             "key": "TM-1",
+            "version": 1,
+            "moves_to": [],
             "fields": { "archived": archived },
             "claim": held,
             "lapsed_claim": gone,

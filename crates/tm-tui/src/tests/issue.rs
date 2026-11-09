@@ -2,14 +2,99 @@ use super::*;
 
 /// `key` opened from the list.
 fn open(store: &Store, key: &str) -> Shell {
+    open_with(store, key, &Fake)
+}
+
+fn open_with(store: &Store, key: &str, actions: &dyn Actions) -> Shell {
     let mut shell = Shell::new("TM");
-    shell.load(store, &Fake);
+    shell.load(store, actions);
     while list(&shell).selected_key().as_deref() != Some(key) {
         shell.key(press(KeyCode::Down));
     }
     assert_eq!(shell.key(press(KeyCode::Enter)), Flow::Reload);
-    shell.load(store, &Fake);
+    shell.load(store, actions);
     shell
+}
+
+#[test]
+fn s_p_and_a_write_the_issue_shown_at_the_version_read() {
+    let store = store();
+    let record = Record::new();
+    let mut shell = open_with(&store, "TM-2", &record);
+    let read = version(&store, "TM-2");
+    assert_eq!(pick(&mut shell, 's', "done"), Flow::Write);
+    shell.write(&record);
+    assert_eq!(pick(&mut shell, 'p', "high"), Flow::Write);
+    shell.write(&record);
+    assert_eq!(pick(&mut shell, 'A', "nobody"), Flow::Write);
+    shell.write(&record);
+    assert_eq!(
+        *record.writes.borrow(),
+        [
+            Write::Move {
+                key: "TM-2".into(),
+                status: "done".into(),
+                version: read,
+            },
+            Write::Set {
+                key: "TM-2".into(),
+                field: "priority".into(),
+                value: Some("high".into()),
+                version: read,
+            },
+            Write::Set {
+                key: "TM-2".into(),
+                field: "assignee".into(),
+                value: None,
+                version: read,
+            },
+        ]
+    );
+    let footer = drawn_sized(&mut shell, 120, 20);
+    assert!(footer.contains("✓ TM-2  written · u undo"), "{footer}");
+    assert_eq!(shell.key(press(KeyCode::Char('u'))), Flow::Write);
+    shell.write(&record);
+    assert_eq!(record.undone.borrow().len(), 1);
+}
+
+#[test]
+fn the_status_picker_offers_what_tm_show_says_it_moves_to() {
+    let store = store();
+    let mut shell = open(&store, "TM-2");
+    shell.key(press(KeyCode::Char('s')));
+    let picker = drawn_sized(&mut shell, 120, 30);
+    assert!(
+        picker.contains("┌ Status") && picker.contains("Done"),
+        "{picker}"
+    );
+    assert!(
+        !picker.contains("│Todo"),
+        "not the Status it is in: {picker}"
+    );
+    assert!(drawn_sized(&mut shell, 120, 30).contains("Status type to narrow"));
+}
+
+#[test]
+fn a_picker_takes_question_mark_and_esc_as_its_own_keys() {
+    let store = store();
+    let record = Record::new();
+    let mut issue = open_with(&store, "TM-2", &record);
+    let mut board = Shell::new("TM");
+    board.load(&store, &record);
+    assert_eq!(board.key(press(KeyCode::Char('b'))), Flow::Reload);
+    board.load(&store, &record);
+    for (name, shell) in [("Issue", &mut issue), ("Board", &mut board)] {
+        shell.key(press(KeyCode::Char('s')));
+        assert_eq!(shell.key(press(KeyCode::Char('?'))), Flow::Stay, "{name}");
+        assert!(!shell.help, "? is text in the {name} picker");
+        assert_eq!(shell.key(press(KeyCode::Esc)), Flow::Stay, "{name}");
+        assert_eq!(
+            shell.key(press(KeyCode::Char('q'))),
+            Flow::Reload,
+            "q goes back from the {name} once the picker is gone"
+        );
+    }
+    assert!(record.writes.borrow().is_empty());
 }
 
 /// The Key of the related Issue selected on the Issue shown.

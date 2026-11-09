@@ -88,7 +88,7 @@ fn the_keys_shown_are_the_open_screens() {
     let store = store();
     let mut shell = opened(&store, &Fake);
     shell.key(press(KeyCode::Char('?')));
-    let help = drawn_sized(&mut shell, 60, 16);
+    let help = drawn_sized(&mut shell, 60, 24);
     assert!(
         help.contains("q Esc Bksp  back") && help.contains("scroll down and up"),
         "{help}"
@@ -96,7 +96,7 @@ fn the_keys_shown_are_the_open_screens() {
     assert!(!help.contains("type a filter"), "{help}");
     let footer = help.lines().last().unwrap_or_default();
     assert!(
-        footer.starts_with("\"q back · j k scroll · Tab related · Enter open · ? keys "),
+        footer.starts_with("\"q back · j k scroll · Tab related · Enter open · s status"),
         "{footer}"
     );
 }
