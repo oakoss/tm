@@ -2,6 +2,7 @@
 
 mod board;
 mod cursor;
+mod editor;
 mod issue;
 mod keys;
 mod list;
@@ -15,7 +16,8 @@ mod stack;
 mod tests;
 mod triage;
 
-use std::io;
+use std::io::{self, Write as _};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -23,16 +25,20 @@ use std::time::Duration;
 use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{
+    Clear as ClearScreen, ClearType, EnterAlternateScreen, enable_raw_mode,
+};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use signal_hook::consts::{SIGINT, SIGTERM};
-use signal_hook::flag;
+use signal_hook::{SigId, flag, low_level};
 use tm_store::Store;
 use uuid::Uuid;
 
 use board::Board;
+pub use editor::{Composed, Unwritten};
 use issue::IssueScreen;
 pub use issue::{
     Change, Claim, Comment, History, Issue, LATEST_WRITES, Link, Logged, Related, Shown, Status,
@@ -43,6 +49,8 @@ use ready::Ready;
 use stack::Stack;
 use tm_core::text::printable;
 use triage::Triage;
+
+const KEPT: &str = "comment kept, its path printed on exit";
 
 /// How often a write elsewhere is looked for between keys (ADR 0018).
 const POLL: Duration = Duration::from_millis(250);
@@ -133,13 +141,15 @@ pub enum Write {
         value: Option<String>,
         version: i64,
     },
+    /// `tm comment KEY BODY`; comments are append-only, so no version.
+    Comment { key: String, body: String },
 }
 
 impl Write {
     #[must_use]
     pub fn key(&self) -> &str {
         match self {
-            Self::Move { key, .. } | Self::Set { key, .. } => key,
+            Self::Move { key, .. } | Self::Set { key, .. } | Self::Comment { key, .. } => key,
         }
     }
 }
@@ -185,6 +195,8 @@ pub(crate) enum Outcome {
     Write(Vec<Write>),
     /// Undo this session's last write.
     Undo,
+    /// Write a comment on the Issue with this Key in `$EDITOR`.
+    Compose(String),
     Quit,
 }
 
@@ -280,6 +292,7 @@ impl Screen {
 enum Pending {
     Writes(Vec<Write>),
     Undo,
+    Compose(String),
 }
 
 /// The frame around the screens: where it reads from, the keys, and what
@@ -299,6 +312,12 @@ pub struct Shell {
     /// Whether the last action wrote anything, so `u` can say when it
     /// reaches back past one that did not.
     last_wrote: bool,
+    /// The file holding the comment being written.
+    draft: Option<PathBuf>,
+    finished: Option<PathBuf>,
+    /// Drafts of comments not written, named once the terminal is restored,
+    /// as the status line is too narrow for their paths.
+    kept: Vec<PathBuf>,
 }
 
 /// What the TUI does after a key.
@@ -310,6 +329,9 @@ pub enum Flow {
     /// Make the writes a screen asked for with [`Shell::write`], then read
     /// the screen again.
     Write,
+    /// Take a comment's text with the terminal handed to an editor, give it
+    /// to [`Shell::compose`], then go on as for [`Flow::Write`].
+    Compose,
     Quit,
 }
 
@@ -327,18 +349,72 @@ impl Shell {
             written: Vec::new(),
             said: None,
             last_wrote: true,
+            draft: None,
+            finished: None,
+            kept: Vec::new(),
         }
     }
 
     /// Makes the writes or undo a key asked for through `actions`, and says
     /// what it did until the next key.
     pub fn write(&mut self, actions: &dyn Actions) {
-        let said = match self.pending.take() {
-            None => return,
+        let mut said = match self.pending.take() {
+            None | Some(Pending::Compose(_)) => return,
             Some(Pending::Writes(writes)) => self.make(&writes, actions),
             Some(Pending::Undo) => self.undo(actions),
         };
+        if let Some(draft) = self.draft.take() {
+            match said.strip_prefix("✗ ") {
+                Some(why) => {
+                    said = format!("✗ {KEPT} · {why}");
+                    self.kept.push(draft);
+                }
+                None => self.finished = Some(draft),
+            }
+        }
         self.said = Some(printable(said.lines().next().unwrap_or_default()));
+    }
+
+    /// Takes what an editor saved for the comment a key asked for, or why
+    /// nothing was; [`Shell::write`] then writes a comment that is not
+    /// blank, and keeps its draft if the write is refused.
+    pub fn compose(&mut self, composed: Result<Composed, Unwritten>) {
+        let Some(Pending::Compose(key)) = self.pending.take() else {
+            return;
+        };
+        match composed {
+            Ok(Composed { text, draft }) if !text.trim().is_empty() => {
+                self.draft = Some(draft);
+                self.pending = Some(Pending::Writes(vec![Write::Comment { key, body: text }]));
+            }
+            Ok(Composed { draft, .. }) => {
+                self.finished = Some(draft);
+                self.said = Some("nothing written: the comment was empty".to_owned());
+            }
+            Err(Unwritten { why, kept }) => {
+                let why = why.lines().next().unwrap_or_default();
+                let said = match kept {
+                    Some(draft) => {
+                        self.kept.push(draft);
+                        format!("✗ {KEPT} · {why}")
+                    }
+                    None => format!("✗ no comment written: {why}"),
+                };
+                self.said = Some(printable(&said));
+            }
+        }
+    }
+
+    /// A comment's draft no longer needed, as its text was written or blank.
+    pub fn finished_draft(&mut self) -> Option<PathBuf> {
+        self.finished.take()
+    }
+
+    /// The drafts of comments not written, to name once the terminal is
+    /// restored.
+    #[must_use]
+    pub fn kept_drafts(&self) -> &[PathBuf] {
+        &self.kept
     }
 
     /// Makes `writes`, keeping the batches that landed for `u`, and says
@@ -486,6 +562,10 @@ impl Shell {
             Outcome::Undo => {
                 self.pending = Some(Pending::Undo);
                 Flow::Write
+            }
+            Outcome::Compose(key) => {
+                self.pending = Some(Pending::Compose(key));
+                Flow::Compose
             }
             Outcome::Quit => Flow::Quit,
         }
@@ -648,19 +728,24 @@ pub fn run<E: From<io::Error>>(
     // first is caught and the loop leaves through it. A second, or one after
     // the TUI returns, acts as it would have. SIGHUP is left alone: the
     // terminal is gone, and caught it would leave input polling spinning.
-    let signal = Arc::new(AtomicUsize::new(0));
-    let default = Arc::new(AtomicBool::new(false));
-    for caught in [SIGTERM, SIGINT] {
-        flag::register_conditional_default(caught, Arc::clone(&default))?;
-        let value = usize::try_from(caught).unwrap_or(usize::MAX);
-        flag::register_usize(caught, Arc::clone(&signal), value)?;
-        flag::register(caught, Arc::clone(&default))?;
-    }
+    let mut signals = Signals {
+        caught: Arc::new(AtomicUsize::new(0)),
+        default: Arc::new(AtomicBool::new(false)),
+        interrupt: Vec::new(),
+    };
+    signals.catch(SIGTERM)?;
+    signals.listen()?;
     let mut shell = Shell::new(place);
     shell.load(&store, actions);
     let ran = match ratatui::try_init() {
         Ok(mut terminal) => {
-            let ran = drive(&mut terminal, shell, (store, actions), look, &signal);
+            let ran = drive(
+                &mut terminal,
+                &mut shell,
+                (store, actions),
+                look,
+                &mut signals,
+            );
             drop(terminal);
             ran
         }
@@ -668,8 +753,51 @@ pub fn run<E: From<io::Error>>(
         Err(err) => Err(err.into()),
     };
     ratatui::restore();
-    default.store(true, Ordering::Relaxed);
+    signals.default.store(true, Ordering::Relaxed);
+    // Written, not `eprintln!`, which panics on a broken stderr pipe and
+    // would lose `ran`.
+    let mut stderr = io::stderr().lock();
+    for draft in shell.kept_drafts() {
+        let _ = writeln!(
+            stderr,
+            "tm: a comment not written is kept in {}",
+            draft.display()
+        );
+    }
     ran
+}
+
+/// The signals that end the TUI: the last one caught, and whether the next
+/// takes its default action.
+struct Signals {
+    caught: Arc<AtomicUsize>,
+    default: Arc<AtomicBool>,
+    /// SIGINT's handlers, dropped while an editor has the terminal.
+    interrupt: Vec<SigId>,
+}
+
+impl Signals {
+    fn catch(&self, signal: i32) -> io::Result<Vec<SigId>> {
+        let value = usize::try_from(signal).unwrap_or(usize::MAX);
+        Ok(vec![
+            flag::register_conditional_default(signal, Arc::clone(&self.default))?,
+            flag::register_usize(signal, Arc::clone(&self.caught), value)?,
+            flag::register(signal, Arc::clone(&self.default))?,
+        ])
+    }
+
+    fn listen(&mut self) -> io::Result<()> {
+        self.interrupt = self.catch(SIGINT)?;
+        Ok(())
+    }
+
+    /// Leaves SIGINT to an editor, as git does: Ctrl-C there reaches this
+    /// process too, as one of its group, and is the editor's to act on.
+    fn hold(&mut self) {
+        for id in self.interrupt.drain(..) {
+            low_level::unregister(id);
+        }
+    }
 }
 
 /// Why the TUI ended without an error.
@@ -680,15 +808,35 @@ pub enum Ended {
     Signal(i32),
 }
 
+/// Runs `run` with the terminal as the TUI found it, then takes it back and
+/// redraws it whole.
+fn suspended<T>(terminal: &mut DefaultTerminal, run: impl FnOnce() -> T) -> io::Result<T> {
+    ratatui::restore();
+    execute!(io::stdout(), Show)?;
+    let ran = run();
+    enable_raw_mode()?;
+    execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        ClearScreen(ClearType::All)
+    )?;
+    // Both buffers emptied, so the next draw writes every cell. Not
+    // `terminal.clear()`, which first asks the terminal where its cursor is
+    // and fails where nothing answers.
+    terminal.swap_buffers();
+    terminal.swap_buffers();
+    Ok(ran)
+}
+
 fn drive<E: From<io::Error>>(
     terminal: &mut DefaultTerminal,
-    mut shell: Shell,
+    shell: &mut Shell,
     (mut store, actions): (Store, &dyn Actions),
     mut look: impl FnMut(&mut Store) -> Result<Seen, E>,
-    signal: &AtomicUsize,
+    signals: &mut Signals,
 ) -> Result<Ended, E> {
     loop {
-        let caught = signal.load(Ordering::Relaxed);
+        let caught = signals.caught.load(Ordering::Relaxed);
         if caught != 0 {
             return Ok(Ended::Signal(i32::try_from(caught).unwrap_or(i32::MAX)));
         }
@@ -701,6 +849,17 @@ fn drive<E: From<io::Error>>(
                 Flow::Reload => shell.load(&store, actions),
                 Flow::Write => {
                     shell.write(actions);
+                    shell.load(&store, actions);
+                }
+                Flow::Compose => {
+                    signals.hold();
+                    let composed = suspended(terminal, editor::compose);
+                    signals.listen()?;
+                    shell.compose(composed?);
+                    shell.write(actions);
+                    if let Some(draft) = shell.finished_draft() {
+                        let _ = std::fs::remove_file(draft);
+                    }
                     shell.load(&store, actions);
                 }
                 Flow::Stay => {}

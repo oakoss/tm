@@ -57,6 +57,99 @@ fn s_p_and_a_write_the_issue_shown_at_the_version_read() {
     assert_eq!(record.undone.borrow().len(), 1);
 }
 
+fn composed(text: &str) -> Composed {
+    Composed {
+        text: text.to_owned(),
+        draft: "/drafts/one.md".into(),
+    }
+}
+
+#[test]
+fn c_writes_the_text_composed_as_a_comment_and_u_undoes_it() {
+    let store = store();
+    let record = Record::new();
+    let mut shell = open_with(&store, "TM-2", &record);
+    assert_eq!(shell.key(press(KeyCode::Char('c'))), Flow::Compose);
+    shell.compose(Ok(composed("# Plan\n\n- \u{1b}[2Jfirst\n")));
+    shell.write(&record);
+    assert_eq!(
+        *record.writes.borrow(),
+        [Write::Comment {
+            key: "TM-2".into(),
+            body: "# Plan\n\n- \u{1b}[2Jfirst\n".into(),
+        }]
+    );
+    assert_eq!(shell.finished_draft(), Some("/drafts/one.md".into()));
+    assert!(drawn_sized(&mut shell, 120, 20).contains("✓ TM-2  written · u undo"));
+    assert_eq!(shell.key(press(KeyCode::Char('u'))), Flow::Write);
+    shell.write(&record);
+    assert_eq!(record.undone.borrow().len(), 1);
+}
+
+#[test]
+fn a_comment_not_written_keeps_its_draft_and_says_why() {
+    let store = store();
+    let record = Record {
+        refuse: true,
+        ..Record::new()
+    };
+    let mut shell = open_with(&store, "TM-2", &record);
+    shell.key(press(KeyCode::Char('c')));
+    shell.compose(Ok(composed("a long careful comment")));
+    shell.write(&record);
+    assert_eq!(shell.finished_draft(), None);
+    let screen = drawn_sized(&mut shell, 80, 20);
+    assert!(
+        screen.contains("✗ comment kept, its path printed on exit · TM-2: TM-2 changed"),
+        "the reason shows at 80 columns: {screen}"
+    );
+    shell.key(press(KeyCode::Char('c')));
+    shell.compose(Err(Unwritten {
+        why: "vi exited with exit status: 1".into(),
+        kept: Some("/drafts/two.md".into()),
+    }));
+    let screen = drawn_sized(&mut shell, 80, 20);
+    assert!(
+        screen.contains("✗ comment kept, its path printed on exit · vi exited"),
+        "{screen}"
+    );
+    assert_eq!(
+        shell.kept_drafts(),
+        [PathBuf::from("/drafts/one.md"), "/drafts/two.md".into()]
+    );
+}
+
+#[test]
+fn a_blank_comment_or_a_failed_editor_writes_nothing_and_says_so() {
+    let store = store();
+    let record = Record::new();
+    let mut shell = open_with(&store, "TM-2", &record);
+    shell.key(press(KeyCode::Char('c')));
+    shell.compose(Ok(composed(" \n\t\n")));
+    shell.write(&record);
+    assert_eq!(shell.finished_draft(), Some("/drafts/one.md".into()));
+    let screen = drawn_sized(&mut shell, 120, 20);
+    assert!(
+        screen.contains("nothing written: the comment was empty"),
+        "{screen}"
+    );
+    shell.key(press(KeyCode::Char('c')));
+    shell.compose(Err(Unwritten {
+        why: "vi exited with \u{1b}[2Jexit status: 1\nmore".to_owned(),
+        kept: None,
+    }));
+    shell.write(&record);
+    assert_eq!(shell.finished_draft(), None);
+    assert_eq!(shell.kept_drafts(), &[] as &[PathBuf]);
+    let screen = drawn_sized(&mut shell, 120, 20);
+    assert!(
+        screen.contains(r"✗ no comment written: vi exited with \u{1b}[2Jexit status: 1"),
+        "{screen}"
+    );
+    assert!(!screen.contains("more"), "{screen}");
+    assert!(record.writes.borrow().is_empty());
+}
+
 #[test]
 fn the_status_picker_offers_what_tm_show_says_it_moves_to() {
     let store = store();

@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::error::CliError;
 use crate::identity::Identity;
 use crate::output;
-use crate::{edit, here, history, identity, moves, ready, show, undo, watch};
+use crate::{comment, edit, here, history, identity, moves, ready, show, undo, watch};
 
 pub(crate) fn run(json: bool) -> ExitCode {
     match open(json) {
@@ -168,6 +168,7 @@ impl tm_tui::Actions for Cli<'_> {
                 value.as_deref(),
                 if_version(*version),
             )),
+            tm_tui::Write::Comment { key, body } => comment::add(key, body),
         };
         output.map(|output| written(&output)).map_err(refusal)
     }

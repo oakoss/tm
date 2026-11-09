@@ -14,13 +14,19 @@ use crate::output::{Output, id_by_part, id_has_part, printable, short};
 use crate::show::imported_id;
 
 pub(crate) fn run(reference: &str, body: &str, edit: Option<&str>) -> Result<Output, CliError> {
-    here::write(|here| write(here, reference, body, edit))
+    here::write(|here| write(here, reference, body, body == "-", edit))
+}
+
+/// A new comment of `body` as written, `-` included.
+pub(crate) fn add(reference: &str, body: &str) -> Result<Output, CliError> {
+    here::write(|here| write(here, reference, body, false, None))
 }
 
 fn write(
     here: &mut Here,
     reference: &str,
     body: &str,
+    stdin: bool,
     edit: Option<&str>,
 ) -> Result<(Output, Vec<String>), CliError> {
     // Comments are append-only, so a blank one from a failed `$(cmd)` would
@@ -53,7 +59,7 @@ fn write(
         None => None,
     };
     // Read once all else is checked, so a mistake keeps the piped text.
-    let body = if body == "-" {
+    let body = if stdin {
         let read = fields::read_stdin_text("body")?;
         if read.trim().is_empty() {
             return Err(fields::refused("body", "is blank"));

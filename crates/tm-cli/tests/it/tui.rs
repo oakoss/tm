@@ -16,7 +16,12 @@ const LEFT: &str = "\u{1b}[?1049l";
 /// `tm` with `args` at an 80 by 24 terminal: rexpect's opens at 0 by 0,
 /// where nothing is drawn.
 fn sized(scratch: &Scratch, repo: &Path, args: &str) -> PtySession {
-    let tm = jace(scratch, repo, &[]);
+    sized_with(scratch, repo, args, &[])
+}
+
+fn sized_with(scratch: &Scratch, repo: &Path, args: &str, env: &[(&str, &str)]) -> PtySession {
+    let mut tm = jace(scratch, repo, &[]);
+    tm.envs(env.iter().copied());
     let mut command = Command::new("sh");
     command.current_dir(repo).args([
         "-c",
@@ -176,6 +181,120 @@ fn enter_shows_the_issue_reads_a_write_in_place_and_opens_its_parent() {
     press(&mut tui, "qqq");
     tui.exp_eof().unwrap();
     assert_eq!(exit_code(&tui), 0);
+}
+
+#[test]
+fn c_writes_what_the_editor_saved_as_tm_comment_does_and_takes_the_terminal_back() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    let made = tm(
+        &scratch,
+        &repo,
+        &["create", "--type", "task", "--title", "alpha"],
+    );
+    assert!(made.status.success(), "{made:?}");
+    let recorded = scratch.home().join("draft-path");
+    let editor = format!(
+        "printf %s \"$1\" > '{}'; printf '**QZXQZX** from the editor' >",
+        recorded.display()
+    );
+    let editor = editor.as_str();
+    let mut tui = sized_with(
+        &scratch,
+        &repo,
+        "tui",
+        &[("VISUAL", editor), ("EDITOR", "false")],
+    );
+    tui.exp_string("alpha").unwrap();
+    press(&mut tui, "\r");
+    tui.exp_string("History").unwrap();
+    press(&mut tui, "c");
+    tui.exp_string(LEFT).unwrap();
+    tui.exp_string("\u{1b}[?1049h").unwrap();
+    // The title, unchanged, drawn again, as the editor drew over the screen.
+    tui.exp_string("alpha").unwrap();
+    tui.exp_string("QZXQZX").unwrap();
+    let shown = tm(
+        &scratch,
+        &repo,
+        &["--json", "show", "TM-1", "--comments", "all"],
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    let comments = &doc["data"]["comments"];
+    assert_eq!(
+        comments[0]["body"], "**QZXQZX** from the editor",
+        "{comments}"
+    );
+    assert_eq!(comments[0]["actor"], "jace", "{comments}");
+    let draft = fs::read_to_string(&recorded).unwrap();
+    assert!(!Path::new(&draft).exists(), "{draft} outlived its comment");
+    press(&mut tui, "qq");
+    tui.exp_eof().unwrap();
+    assert_eq!(exit_code(&tui), 0);
+}
+
+#[test]
+fn a_comment_not_written_is_kept_and_its_path_printed_once_the_terminal_is_back() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    let made = tm(
+        &scratch,
+        &repo,
+        &["create", "--type", "task", "--title", "alpha"],
+    );
+    assert!(made.status.success(), "{made:?}");
+    let editor = "printf 'careful words' > \"$1\"; false";
+    let mut tui = sized_with(&scratch, &repo, "tui", &[("VISUAL", editor)]);
+    tui.exp_string("alpha").unwrap();
+    press(&mut tui, "\r");
+    tui.exp_string("History").unwrap();
+    press(&mut tui, "c");
+    tui.exp_string("\u{1b}[?1049h").unwrap();
+    tui.exp_string("printed").unwrap();
+    press(&mut tui, "qq");
+    tui.exp_string(LEFT).unwrap();
+    let (_, said) = tui
+        .exp_regex(r"tm: a comment not written is kept in \S+\.md")
+        .unwrap();
+    let draft = said.rsplit(' ').next().unwrap();
+    assert_eq!(fs::read_to_string(draft).unwrap(), "careful words");
+    fs::remove_file(draft).unwrap();
+    tui.exp_eof().unwrap();
+    assert_eq!(exit_code(&tui), 0);
+}
+
+#[test]
+fn a_ctrl_c_in_the_editor_is_the_editors_and_a_dash_is_a_comment_not_stdin() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    let made = tm(
+        &scratch,
+        &repo,
+        &["create", "--type", "task", "--title", "alpha"],
+    );
+    assert!(made.status.success(), "{made:?}");
+    // SIGINT to the whole group twice, as Ctrl-C sends it, which the
+    // editor shrugs off before saving.
+    let editor = "trap '' INT; kill -INT 0; sleep 0.2; kill -INT 0; printf - >";
+    let mut tui = sized_with(&scratch, &repo, "tui", &[("VISUAL", editor)]);
+    tui.exp_string("alpha").unwrap();
+    press(&mut tui, "\r");
+    tui.exp_string("History").unwrap();
+    press(&mut tui, "c");
+    tui.exp_string("commented:").unwrap();
+    let shown = tm(
+        &scratch,
+        &repo,
+        &["--json", "show", "TM-1", "--comments", "all"],
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(doc["data"]["comments"][0]["body"], "-", "{doc}");
+    // Back from the editor, a SIGINT is the TUI's again, ending it with the
+    // terminal restored.
+    tui.process_mut().signal(Signal::SIGINT).unwrap();
+    let rest = tui.exp_eof().unwrap();
+    assert!(rest.contains(LEFT), "left the alternate screen");
+    assert_eq!(exit_code(&tui), 130);
 }
 
 #[test]

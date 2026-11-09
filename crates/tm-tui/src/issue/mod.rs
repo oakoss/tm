@@ -41,10 +41,11 @@ pub(crate) enum Act {
     Status,
     Priority,
     Assign,
+    Comment,
     Undo,
 }
 
-pub(crate) const KEYS: [Binding<Act>; 14] = [
+pub(crate) const KEYS: [Binding<Act>; 15] = [
     Binding {
         keys: &[ch('q'), plain(KeyCode::Esc), plain(KeyCode::Backspace)],
         action: Act::Back,
@@ -122,6 +123,12 @@ pub(crate) const KEYS: [Binding<Act>; 14] = [
         action: Act::Assign,
         does: "assign, as tm edit",
         hint: Some("assign"),
+    },
+    Binding {
+        keys: &[ch('c')],
+        action: Act::Comment,
+        does: "write a comment in $EDITOR, as tm comment",
+        hint: Some("comment"),
     },
     Binding {
         keys: &[ch('u')],
@@ -241,6 +248,12 @@ impl IssueScreen {
             Act::Status => self.open(Field::Status),
             Act::Priority => self.open(Field::Priority),
             Act::Assign => self.open(Field::Assignee),
+            Act::Comment => {
+                return self.read.as_ref().map_or(Outcome::Stay, |issue| {
+                    let shown = &issue.shown;
+                    Outcome::Compose(shown.key.clone().unwrap_or_else(|| shown.id.to_string()))
+                });
+            }
             Act::Open => {
                 return self.selected().map_or(Outcome::Stay, |row| {
                     Outcome::Open(Box::new(Screen::Issue(Self::new(row.id, row.key.clone()))))
