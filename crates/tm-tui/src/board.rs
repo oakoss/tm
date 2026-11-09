@@ -208,6 +208,44 @@ fn place(columns: &[Column], status: &str) -> Option<usize> {
         .or_else(|| (!columns.is_empty()).then_some(0))
 }
 
+/// Puts each column's row back from `rows`, as read before, as near as its
+/// Issues now allow, and returns the cursor's column: the one holding
+/// `kept`, at its row; else `here`, the column it was in; else the first
+/// column with an Issue.
+fn arrange(
+    columns: &mut [Column],
+    rows: &[(String, Option<usize>)],
+    kept: Option<&str>,
+    here: Option<&str>,
+) -> usize {
+    for column in columns.iter_mut() {
+        let row = rows
+            .iter()
+            .find(|(status, _)| *status == column.status)
+            .and_then(|(_, row)| *row)
+            .unwrap_or(0);
+        column.row.select(cursor::held(column.cards.len(), row));
+    }
+    let found = kept.and_then(|key| {
+        columns.iter().enumerate().find_map(|(at, column)| {
+            let row = column.cards.iter().position(|card| card.key == key)?;
+            Some((at, row))
+        })
+    });
+    let same = here.and_then(|status| columns.iter().position(|column| column.status == status));
+    match (found, same) {
+        (Some((column, row)), _) => {
+            columns[column].row.select(Some(row));
+            column
+        }
+        (None, Some(column)) => column,
+        (None, None) => columns
+            .iter()
+            .position(|column| !column.cards.is_empty())
+            .unwrap_or(0),
+    }
+}
+
 impl Board {
     pub(crate) const fn typing(&self) -> bool {
         self.picker.is_some()
@@ -263,40 +301,7 @@ impl Board {
             }
         }
         self.problem = None;
-        // Each column keeps its row, as near as its Issues now allow.
-        for column in &mut self.columns {
-            let row = rows
-                .iter()
-                .find(|(status, _)| *status == column.status)
-                .and_then(|(_, row)| *row)
-                .unwrap_or(0);
-            column.row.select(cursor::held(column.cards.len(), row));
-        }
-        let found = kept.and_then(|key| {
-            self.columns.iter().enumerate().find_map(|(at, column)| {
-                let row = column.cards.iter().position(|card| card.key == key)?;
-                Some((at, row))
-            })
-        });
-        let same = here.and_then(|status| {
-            self.columns
-                .iter()
-                .position(|column| column.status == status)
-        });
-        self.column = match (found, same) {
-            (Some((column, row)), _) => {
-                self.columns[column].row.select(Some(row));
-                column
-            }
-            // Its Issue is gone: the same column, at the row kept above.
-            (None, Some(column)) => column,
-            // Opened, or its column hidden: the first column with an Issue.
-            (None, None) => self
-                .columns
-                .iter()
-                .position(|column| !column.cards.is_empty())
-                .unwrap_or(0),
-        };
+        self.column = arrange(&mut self.columns, &rows, kept.as_deref(), here.as_deref());
     }
 
     /// The cursor's column Status and Issue Key.
@@ -544,5 +549,58 @@ mod tests {
         let no_triage: Vec<Column> = columns(&scheme, false).into_iter().skip(1).collect();
         assert_eq!(place(&no_triage, "gone"), Some(0));
         assert_eq!(place(&[], "todo"), None);
+    }
+
+    /// The open columns, Todo holding TM-1 to TM-3 and In Review TM-4.
+    fn filled() -> Vec<Column> {
+        let mut shown = columns(&Scheme::built_in(), false);
+        for (key, status) in [
+            ("TM-1", "todo"),
+            ("TM-2", "todo"),
+            ("TM-3", "todo"),
+            ("TM-4", "in_review"),
+        ] {
+            let at = place(&shown, status).unwrap();
+            shown[at].cards.push(Card {
+                id: Uuid::nil(),
+                key: key.into(),
+                version: 1,
+                issue_type: "task".into(),
+                status: status.into(),
+                title: key.into(),
+            });
+        }
+        shown
+    }
+
+    fn rows(columns: &[Column]) -> Vec<Option<usize>> {
+        columns.iter().map(|column| column.row.selected()).collect()
+    }
+
+    #[test]
+    fn the_cursor_goes_to_its_issue_wherever_it_moved() {
+        let mut shown = filled();
+        let was = [("todo".to_owned(), Some(0))];
+        assert_eq!(arrange(&mut shown, &was, Some("TM-4"), Some("todo")), 3);
+        assert_eq!(shown[3].row.selected(), Some(0));
+        assert_eq!(shown[1].row.selected(), Some(0), "todo keeps its row");
+    }
+
+    #[test]
+    fn a_gone_issue_leaves_the_cursor_in_its_column_at_its_row_held() {
+        let mut shown = filled();
+        let was = [("todo".to_owned(), Some(7))];
+        assert_eq!(arrange(&mut shown, &was, Some("TM-9"), Some("todo")), 1);
+        assert_eq!(shown[1].row.selected(), Some(2), "held to the last");
+    }
+
+    #[test]
+    fn with_its_column_gone_the_cursor_goes_to_the_first_with_an_issue() {
+        let mut shown = filled();
+        assert_eq!(arrange(&mut shown, &[], None, Some("done")), 1);
+        assert_eq!(arrange(&mut shown, &[], None, None), 1);
+        assert_eq!(rows(&shown), [None, Some(0), None, Some(0)]);
+        let mut empty = columns(&Scheme::built_in(), false);
+        assert_eq!(arrange(&mut empty, &[], None, None), 0);
     }
 }
