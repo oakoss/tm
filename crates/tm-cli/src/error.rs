@@ -551,6 +551,9 @@ impl From<FilterError> for CliError {
             FilterError::NoShortlist { .. } => {
                 details.insert("kind".into(), "shortlist".into());
             }
+            FilterError::NoProject { .. } => {
+                details.insert("kind".into(), "project".into());
+            }
             FilterError::ShortlistNameShared { value, .. } => {
                 details.insert("kind".into(), "shortlist".into());
                 details.insert("name".into(), value.clone().into());
@@ -564,7 +567,9 @@ impl From<FilterError> for CliError {
             FilterError::UnknownValue { .. } => "unknown_value",
             FilterError::InvalidValue { .. } => "invalid_value",
             FilterError::NoIdentity { .. } => "no_identity",
-            FilterError::NoIssue { .. } | FilterError::NoShortlist { .. } => "not_found",
+            FilterError::NoIssue { .. }
+            | FilterError::NoShortlist { .. }
+            | FilterError::NoProject { .. } => "not_found",
             FilterError::ShortlistNameShared { .. } => "shortlist_name_shared",
         };
         details.retain(|key, _| !RESERVED.contains(&key.as_str()));

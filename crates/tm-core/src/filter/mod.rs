@@ -144,6 +144,8 @@ pub enum FilterError {
     },
     #[error("no Short-list is named {value}")]
     NoShortlist { value: String, span: Span },
+    #[error("no Project is {value}")]
+    NoProject { value: String, span: Span },
     /// A merge left the name on several lists in one Project (ADR 0016).
     #[error("{count} Short-lists in one Project are named {value}; name one by its id")]
     ShortlistNameShared {

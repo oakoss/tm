@@ -405,3 +405,24 @@ fn tm_search_is_tm_list() {
         );
     }
 }
+
+#[test]
+fn project_takes_a_projects_key_and_names_one_that_does_not_exist() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    new(&mut store, project, "here");
+    let (web, _) = store
+        .create_project(&Actor::human("jace"), "WEB", "Web")
+        .unwrap();
+    new(&mut store, web, "there");
+    drop(store);
+    let (ok, doc) = list(&scratch, &repo, &["project:tm"]);
+    assert!(ok, "{doc}");
+    assert_eq!(keys(&doc), ["TM-1"]);
+
+    let (ok, doc) = list(&scratch, &repo, &["project:nope"]);
+    assert!(!ok);
+    assert_eq!(doc["error"], "not_found", "{doc}");
+    assert_eq!(doc["kind"], "project", "{doc}");
+    assert_eq!(doc["value"], "nope", "{doc}");
+}

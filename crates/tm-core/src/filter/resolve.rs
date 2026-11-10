@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use super::suggest::did_you_mean;
 use super::{Direction, FilterError, OPEN, Query, Span, Term, Value, parse, same_field};
+use crate::project::ProjectId;
 use crate::scheme::{Category, Field, FieldType, PRIORITY_RANKS, Scheme};
 
 /// Who is asking, for `@me`.
@@ -169,6 +170,9 @@ enum Kind {
     /// A Short-list, named by id; a store turns names into ids before
     /// resolving.
     Shortlist,
+    /// A Project, named by id; a store turns Project keys into ids before
+    /// resolving.
+    Project,
     Session,
     /// Words or quoted phrases, matched word by word on their stems.
     Text,
@@ -186,15 +190,8 @@ struct Filterable {
     sort: Option<(SortTarget, bool)>,
 }
 
-/// Every field the filter language accepts. The error that lists valid fields
-/// and the lookup both read this, so they cannot disagree.
-fn filterable(scheme: &Scheme) -> Vec<Filterable> {
-    let field = |name: &str, kind, sort| Filterable {
-        name: name.to_owned(),
-        kind,
-        sort,
-    };
-    let text = |id: &str| (id.to_owned(), Literal::Text(id.to_owned()));
+/// Every Status id the Scheme's workflows hold, each once, in workflow order.
+fn status_ids(scheme: &Scheme) -> Vec<String> {
     let mut statuses: Vec<String> = Vec::new();
     for status in scheme
         .workflows
@@ -205,6 +202,19 @@ fn filterable(scheme: &Scheme) -> Vec<Filterable> {
             statuses.push(status.id.clone());
         }
     }
+    statuses
+}
+
+/// Every field the filter language accepts. The error that lists valid fields
+/// and the lookup both read this, so they cannot disagree.
+fn filterable(scheme: &Scheme) -> Vec<Filterable> {
+    let field = |name: &str, kind, sort| Filterable {
+        name: name.to_owned(),
+        kind,
+        sort,
+    };
+    let text = |id: &str| (id.to_owned(), Literal::Text(id.to_owned()));
+    let statuses = status_ids(scheme);
     let mut fields = vec![
         field(
             "type",
@@ -259,6 +269,7 @@ fn filterable(scheme: &Scheme) -> Vec<Filterable> {
         field("blocking", Kind::Issue(IssueField::Blocking), None),
         field("is", Kind::Is, None),
         field("shortlist", Kind::Shortlist, None),
+        field("project", Kind::Project, None),
         field("key", Kind::Later("filtering by Key", None), None),
         field("agent", Kind::Later("filtering by Agent", None), None),
         field("claim", Kind::Later("filtering by Claim", None), None),
@@ -409,12 +420,13 @@ fn lookup<'a>(
 fn present_target(def: &Filterable, span: Span) -> Result<Target, FilterError> {
     match &def.kind {
         // Priority's `none` is its unset value; archived always holds one.
-        Kind::Boolean(Target::IntColumn(_)) | Kind::Category | Kind::Later(_, None) => {
-            Err(FilterError::Unsupported {
-                construct: format!("has: and no: on {}, which always holds a value", def.name),
-                span,
-            })
-        }
+        Kind::Boolean(Target::IntColumn(_))
+        | Kind::Category
+        | Kind::Project
+        | Kind::Later(_, None) => Err(FilterError::Unsupported {
+            construct: format!("has: and no: on {}, which always holds a value", def.name),
+            span,
+        }),
         Kind::Is => Err(FilterError::Syntax {
             message: "is is no field; write is:blocked or -is:blocked".into(),
             span,
@@ -457,6 +469,7 @@ fn match_condition(
         Kind::MultiSelect(field, _) => Target::Set(field.clone()),
         Kind::Labels => Target::Set("labels".into()),
         Kind::Shortlist => Target::Shortlist,
+        Kind::Project => Target::Column("project"),
         Kind::Session => Target::Sessions,
         Kind::Text => Target::Text,
         Kind::Words(field, _) => Target::Words(field.clone()),
@@ -499,6 +512,9 @@ fn literal(
         }
         (Kind::Shortlist, Value::Me) => {
             return Err(invalid(def, "@me", span, SHORTLIST_VALUE));
+        }
+        (Kind::Project, Value::Me) => {
+            return Err(invalid(def, "@me", span, PROJECT_VALUE));
         }
         (Kind::Session, Value::Me) => {
             return Err(invalid(def, "@me", span, SESSION_VALUE));
@@ -545,6 +561,11 @@ fn literal(
         Kind::Shortlist => Uuid::parse_str(text.trim())
             .map(Literal::Shortlist)
             .map_err(|_| invalid(def, text, span, SHORTLIST_VALUE)),
+        Kind::Project => text
+            .trim()
+            .parse::<ProjectId>()
+            .map(|id| Literal::Text(id.to_string()))
+            .map_err(|_| invalid(def, text, span, PROJECT_VALUE)),
         Kind::Session => {
             let text = text.trim();
             let id = text.strip_prefix('…').unwrap_or(text);
@@ -567,6 +588,8 @@ fn literal(
 }
 
 const SHORTLIST_VALUE: &str = "a Short-list's name or id";
+
+const PROJECT_VALUE: &str = "a Project's key or id";
 
 const SESSION_VALUE: &str = "a session's id, or its end as tm history shows it";
 
