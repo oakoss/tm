@@ -88,7 +88,7 @@ fn the_keys_shown_are_the_open_screens() {
     let store = store();
     let mut shell = opened(&store, &Fake);
     shell.key(press(KeyCode::Char('?')));
-    let help = drawn_sized(&mut shell, 60, 16);
+    let help = drawn_sized(&mut shell, 60, 24);
     assert!(
         help.contains("q Esc Bksp  back") && help.contains("scroll down and up"),
         "{help}"
@@ -96,7 +96,7 @@ fn the_keys_shown_are_the_open_screens() {
     assert!(!help.contains("type a filter"), "{help}");
     let footer = help.lines().last().unwrap_or_default();
     assert!(
-        footer.starts_with("\"q back · j k scroll · Tab related · Enter open · ? keys "),
+        footer.starts_with("\"q back · j k scroll · Tab related · Enter open · s status"),
         "{footer}"
     );
 }
@@ -114,6 +114,20 @@ fn a_modified_esc_hides_the_keys_and_ctrl_c_quits_with_any_modifier() {
         KeyModifiers::CONTROL | KeyModifiers::ALT,
     );
     assert_eq!(shell.key(ctrl_alt_c), Flow::Quit);
+}
+
+#[test]
+fn ctrl_z_suspends_even_while_a_filter_or_picker_takes_the_keys() {
+    let ctrl_z = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    let mut shell = Shell::new("TM");
+    shell.key(press(KeyCode::Char('/')));
+    shell.key(press(KeyCode::Char('x')));
+    assert_eq!(shell.key(ctrl_z), Flow::Suspend);
+    assert_eq!(list(&shell).prompt().as_deref(), Some("/x"), "kept");
+    let store = store();
+    let mut shell = opened(&store, &Fake);
+    shell.key(press(KeyCode::Char('s')));
+    assert_eq!(shell.key(ctrl_z), Flow::Suspend);
 }
 
 #[test]

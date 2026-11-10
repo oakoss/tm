@@ -1,6 +1,6 @@
 ---
 source: crates/tm-tui/src/tests/issue.rs
-assertion_line: 48
+assertion_line: 176
 expression: screen
 ---
 "tm · TM › Issues › TM-2                                                                                       "
@@ -18,4 +18,4 @@ expression: screen
 "│• line 4                                                               ││                                   │"
 "│• line 5                                                               ││                                   │"
 "└───────────────────────────────────────────────────────────────────────┘└───────────────────────────────────┘"
-"q back · j k scroll · Tab related · Enter open · ? keys                                                       "
+"q back · j k scroll · Tab related · Enter open · s status · p priority · A assign · c comment · u undo · ? ke "

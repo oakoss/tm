@@ -12,4 +12,4 @@ expression: drawn(&mut shell)
 "│Description                                               │"
 "│shown \u{1b}[2Jsafe                                       │"
 "└──────────────────────────────────────────────────────────┘"
-"q back · j k scroll · Tab related · Enter open · ? keys     "
+"q back · j k scroll · Tab related · Enter open · s status · "

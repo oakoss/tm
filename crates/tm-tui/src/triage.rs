@@ -10,7 +10,6 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState, Wrap};
 use tm_core::filter::Context;
-use tm_core::scheme::PRIORITY_RANKS;
 use tm_core::text::printable;
 use tm_store::{Store, StoreError};
 use uuid::Uuid;
@@ -18,7 +17,9 @@ use uuid::Uuid;
 use crate::cursor;
 use crate::issue::{Issue, IssueScreen, body, now_ms};
 use crate::keys::{self, Binding, ch, plain};
-use crate::picker::{Choice, Field, Picked, Picker, shared, statuses, writes};
+use crate::picker::{
+    Choice, Field, Picked, Picker, assignees, people, priorities, shared, statuses, writes,
+};
 use crate::read;
 use crate::{Actions, Outcome, Screen};
 
@@ -183,22 +184,14 @@ impl Triage {
                     version: issue.version,
                 })
                 .collect();
-            let assigned =
-                store.find("has:assignee -category:done,cancelled", Context::default())?;
-            let mut people = BTreeSet::new();
-            for view in store.issues(&assigned)? {
-                if let Some(person) = view.fields.get("assignee").and_then(|value| value.as_str()) {
-                    people.insert(person.to_owned());
-                }
-            }
-            Ok::<_, StoreError>((rows, people))
+            Ok::<_, StoreError>((rows, people(store)?))
         });
         let kept = self.then.take().or_else(|| self.selected_key());
         match read {
             Ok((rows, people)) => {
                 self.statuses = statuses(store, rows.iter().map(|row| row.issue_type.as_str()));
                 self.rows = rows;
-                self.people = people.into_iter().collect();
+                self.people = people;
                 self.problem = None;
             }
             Err(err) => {
@@ -313,35 +306,8 @@ impl Triage {
             .collect();
         let choices = match field {
             Field::Status => shared(&self.statuses, &types),
-            Field::Priority => PRIORITY_RANKS
-                .iter()
-                .map(|(id, _)| Choice {
-                    value: Some((*id).to_owned()),
-                    label: (*id).to_owned(),
-                })
-                .collect(),
-            Field::Assignee => {
-                let mut choices: Vec<Choice> = Vec::new();
-                if let Some(me) = &self.me {
-                    choices.push(Choice {
-                        value: Some(me.clone()),
-                        label: format!("{} (@me)", printable(me)),
-                    });
-                }
-                for person in &self.people {
-                    if self.me.as_ref() != Some(person) {
-                        choices.push(Choice {
-                            value: Some(person.clone()),
-                            label: printable(person),
-                        });
-                    }
-                }
-                choices.push(Choice {
-                    value: None,
-                    label: "nobody".to_owned(),
-                });
-                choices
-            }
+            Field::Priority => priorities(),
+            Field::Assignee => assignees(self.me.as_deref(), &self.people),
         };
         self.picker = Some(Picker::new(field, choices, captured));
         Outcome::Stay

@@ -19,11 +19,12 @@ use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
 pub use data::{
-    Change, Claim, Comment, History, Issue, LATEST_WRITES, Link, Logged, Related, Shown,
+    Change, Claim, Comment, History, Issue, LATEST_WRITES, Link, Logged, Related, Shown, Status,
 };
 pub(crate) use layout::body;
 
 use crate::keys::{self, Binding, ch, plain};
+use crate::picker::{Choice, Field, Picked, Picker, assignees, people, priorities, writes};
 use crate::scroll::{Move, Scroll};
 use crate::{Actions, Outcome, Screen, cursor, read};
 
@@ -37,9 +38,14 @@ pub(crate) enum Act {
     Next,
     Previous,
     Open,
+    Status,
+    Priority,
+    Assign,
+    Comment,
+    Undo,
 }
 
-pub(crate) const KEYS: [Binding<Act>; 10] = [
+pub(crate) const KEYS: [Binding<Act>; 15] = [
     Binding {
         keys: &[ch('q'), plain(KeyCode::Esc), plain(KeyCode::Backspace)],
         action: Act::Back,
@@ -100,6 +106,36 @@ pub(crate) const KEYS: [Binding<Act>; 10] = [
         does: "open the related Issue",
         hint: Some("open"),
     },
+    Binding {
+        keys: &[ch('s')],
+        action: Act::Status,
+        does: "move to a Status, as tm move",
+        hint: Some("status"),
+    },
+    Binding {
+        keys: &[ch('p')],
+        action: Act::Priority,
+        does: "set the priority, as tm edit",
+        hint: Some("priority"),
+    },
+    Binding {
+        keys: &[ch('A')],
+        action: Act::Assign,
+        does: "assign, as tm edit",
+        hint: Some("assign"),
+    },
+    Binding {
+        keys: &[ch('c')],
+        action: Act::Comment,
+        does: "write a comment in $EDITOR, as tm comment",
+        hint: Some("comment"),
+    },
+    Binding {
+        keys: &[ch('u')],
+        action: Act::Undo,
+        does: "undo this session's last write, as tm undo",
+        hint: Some("undo"),
+    },
 ];
 
 /// An Issue this one relates to, as a row shows it.
@@ -124,6 +160,11 @@ pub(crate) struct IssueScreen {
     scroll: Scroll,
     /// Now, as of the last read, for the times shown as ages.
     now_ms: i64,
+    picker: Option<Picker>,
+    /// Who `@me` is, offered first when assigning.
+    me: Option<String>,
+    /// People assigned open work, offered when assigning.
+    people: Vec<String>,
 }
 
 impl IssueScreen {
@@ -137,7 +178,14 @@ impl IssueScreen {
             at: ListState::default(),
             scroll: Scroll::default(),
             now_ms: 0,
+            picker: None,
+            me: None,
+            people: Vec::new(),
         }
+    }
+
+    pub(crate) fn prompt(&self) -> Option<String> {
+        self.picker.as_ref().map(Picker::prompt)
     }
 
     pub(crate) fn title(&self) -> String {
@@ -149,6 +197,9 @@ impl IssueScreen {
     pub(crate) fn load(&mut self, store: &Store, actions: &dyn Actions) {
         self.now_ms = now_ms();
         self.read = actions.issue(store, self.id);
+        self.me = actions.me().ok().map(str::to_owned);
+        // Only the assignee picker offers them, and it takes a name typed.
+        self.people = store.read(people).unwrap_or_default();
         let kept = self.selected().map(|row| row.key.clone());
         let rows = match &self.read {
             Ok(issue) => related(store, &issue.shown),
@@ -173,6 +224,19 @@ impl IssueScreen {
     }
 
     pub(crate) fn key(&mut self, key: KeyEvent) -> Outcome {
+        if let Some(picker) = &mut self.picker {
+            return match picker.key(key) {
+                Picked::Open => Outcome::Stay,
+                Picked::Cancelled => {
+                    self.picker = None;
+                    Outcome::Stay
+                }
+                Picked::Chosen(field, chosen, targets) => {
+                    self.picker = None;
+                    Outcome::Write(writes(field, &chosen, targets))
+                }
+            };
+        }
         let Some(act) = keys::action(&KEYS, key) else {
             return Outcome::Stay;
         };
@@ -180,6 +244,16 @@ impl IssueScreen {
         let row = self.at.selected().unwrap_or(0);
         match act {
             Act::Back => return Outcome::Back,
+            Act::Undo => return Outcome::Undo,
+            Act::Status => self.open(Field::Status),
+            Act::Priority => self.open(Field::Priority),
+            Act::Assign => self.open(Field::Assignee),
+            Act::Comment => {
+                return self.read.as_ref().map_or(Outcome::Stay, |issue| {
+                    let shown = &issue.shown;
+                    Outcome::Compose(shown.key.clone().unwrap_or_else(|| shown.id.to_string()))
+                });
+            }
             Act::Open => {
                 return self.selected().map_or(Outcome::Stay, |row| {
                     Outcome::Open(Box::new(Screen::Issue(Self::new(row.id, row.key.clone()))))
@@ -195,6 +269,27 @@ impl IssueScreen {
             Act::Scroll(to) => self.scroll.go(to),
         }
         Outcome::Stay
+    }
+
+    fn open(&mut self, field: Field) {
+        let Ok(issue) = &self.read else {
+            return;
+        };
+        let shown = &issue.shown;
+        let choices = match field {
+            Field::Status => shown
+                .moves_to
+                .iter()
+                .map(|status| Choice {
+                    value: Some(status.id.clone()),
+                    label: printable(&status.label),
+                })
+                .collect(),
+            Field::Priority => priorities(),
+            Field::Assignee => assignees(self.me.as_deref(), &self.people),
+        };
+        let key = shown.key.clone().unwrap_or_else(|| shown.id.to_string());
+        self.picker = Some(Picker::new(field, choices, vec![(key, shown.version)]));
     }
 
     pub(crate) fn render(&mut self, frame: &mut Frame, whole: Rect) {
@@ -229,6 +324,9 @@ impl IssueScreen {
             .render(frame, Paragraph::new(lines), block, text_area);
         if let Some(area) = rows_area {
             self.render_rows(frame, area);
+        }
+        if let Some(picker) = &mut self.picker {
+            picker.render(frame, whole);
         }
     }
 

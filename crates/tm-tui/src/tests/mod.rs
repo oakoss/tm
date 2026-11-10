@@ -204,16 +204,33 @@ fn reported(store: &Store, id: Uuid) -> Result<serde_json::Value, String> {
         let key = store.issue(id).unwrap().and_then(|view| view.key);
         serde_json::json!({ "id": id, "key": key })
     });
+    let status = view.fields.get("status").and_then(|status| status.as_str());
+    let issue_type = view.fields.get("type").and_then(|value| value.as_str());
+    let moves_to: Vec<_> = issue_type
+        .and_then(|issue_type| store.scheme().workflow(issue_type))
+        .map(|workflow| workflow.statuses.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|other| Some(other.id.as_str()) != status)
+        .map(|other| serde_json::json!({ "id": other.id, "label": other.label }))
+        .collect();
+    let version = store
+        .issue_with_version(id)
+        .map_err(|err| err.to_string())?;
+    let version = version.map_or(0, |(_, version)| version);
     Ok(serde_json::json!({
         "shown": {
             "id": id,
             "key": view.key,
+            "version": version,
+            "moves_to": moves_to,
             "fields": {
                 "title": view.fields.get("title"),
                 "status": view.fields.get("status"),
                 "description": format!("shown \u{1b}[2Jsafe\n\n{items}"),
             },
             "claim": null,
+            "lapsed_claim": null,
             "parent": parent,
             "links": [],
             "comments": [],

@@ -14,14 +14,20 @@ use crate::support::{Scratch, initialized, jace, text, tm};
 const LEFT: &str = "\u{1b}[?1049l";
 
 /// `tm` with `args` at an 80 by 24 terminal: rexpect's opens at 0 by 0,
-/// where nothing is drawn.
+/// where nothing is drawn. It first prints `pid N`, since rexpect keeps
+/// the pid to itself and `exec` keeps it the same.
 fn sized(scratch: &Scratch, repo: &Path, args: &str) -> PtySession {
-    let tm = jace(scratch, repo, &[]);
+    sized_with(scratch, repo, args, &[])
+}
+
+fn sized_with(scratch: &Scratch, repo: &Path, args: &str, env: &[(&str, &str)]) -> PtySession {
+    let mut tm = jace(scratch, repo, &[]);
+    tm.envs(env.iter().copied());
     let mut command = Command::new("sh");
     command.current_dir(repo).args([
         "-c",
         &format!(
-            "stty cols 80 rows 24 && exec '{}' {args}",
+            "stty cols 80 rows 24 && echo \"pid $$\" && exec '{}' {args}",
             tm.get_program().display()
         ),
     ]);
@@ -176,6 +182,322 @@ fn enter_shows_the_issue_reads_a_write_in_place_and_opens_its_parent() {
     press(&mut tui, "qqq");
     tui.exp_eof().unwrap();
     assert_eq!(exit_code(&tui), 0);
+}
+
+#[test]
+fn c_writes_what_the_editor_saved_as_tm_comment_does_and_takes_the_terminal_back() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    let made = tm(
+        &scratch,
+        &repo,
+        &["create", "--type", "task", "--title", "alpha"],
+    );
+    assert!(made.status.success(), "{made:?}");
+    let recorded = scratch.home().join("draft-path");
+    let editor = format!(
+        "printf %s \"$1\" > '{}'; printf '**QZXQZX** from the editor' >",
+        recorded.display()
+    );
+    let editor = editor.as_str();
+    let mut tui = sized_with(
+        &scratch,
+        &repo,
+        "tui",
+        &[("VISUAL", editor), ("EDITOR", "false")],
+    );
+    tui.exp_string("alpha").unwrap();
+    press(&mut tui, "\r");
+    tui.exp_string("History").unwrap();
+    press(&mut tui, "c");
+    tui.exp_string(LEFT).unwrap();
+    tui.exp_string("\u{1b}[?1049h").unwrap();
+    // The title, unchanged, drawn again, as the editor drew over the screen.
+    tui.exp_string("alpha").unwrap();
+    tui.exp_string("QZXQZX").unwrap();
+    let shown = tm(
+        &scratch,
+        &repo,
+        &["--json", "show", "TM-1", "--comments", "all"],
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    let comments = &doc["data"]["comments"];
+    assert_eq!(
+        comments[0]["body"], "**QZXQZX** from the editor",
+        "{comments}"
+    );
+    assert_eq!(comments[0]["actor"], "jace", "{comments}");
+    let draft = fs::read_to_string(&recorded).unwrap();
+    assert!(!Path::new(&draft).exists(), "{draft} outlived its comment");
+    press(&mut tui, "qq");
+    tui.exp_eof().unwrap();
+    assert_eq!(exit_code(&tui), 0);
+}
+
+/// Process `pid`'s state, as `ps` reports it: empty once it is gone.
+fn state(pid: &str) -> String {
+    let ps = Command::new("ps")
+        .args(["-o", "stat=", "-p", pid])
+        .output()
+        .unwrap();
+    text(&ps.stdout).trim().to_owned()
+}
+
+fn stopped(pid: &str) -> bool {
+    state(pid).starts_with('T')
+}
+
+/// Neither gone nor a zombie its shell has yet to reap.
+fn running(pid: &str) -> bool {
+    let state = state(pid);
+    !state.is_empty() && !state.starts_with('Z')
+}
+
+/// `tm tui` started from an interactive bash, a shell with job control, at
+/// an 80 by 24 terminal, and its pid.
+fn in_a_shell(scratch: &Scratch, repo: &Path, env: &[(&str, &str)]) -> (PtySession, String) {
+    let mut tm = jace(scratch, repo, &[]);
+    tm.envs(env.iter().copied());
+    let mut command = Command::new("sh");
+    command.current_dir(repo).args([
+        "-c",
+        "stty cols 80 rows 24 && exec env PS1='ready$ ' bash --norc --noprofile -i",
+    ]);
+    for (key, value) in tm.get_envs() {
+        match value {
+            Some(value) => command.env(key, value),
+            None => command.env_remove(key),
+        };
+    }
+    command.env("BASH_SILENCE_DEPRECATION_WARNING", "1");
+    let mut shell = rexpect::session::spawn_command(command, Some(10_000)).unwrap();
+    shell.exp_string("ready$ ").unwrap();
+    let program = tm.get_program().display().to_string();
+    // `exec` keeps the pid the shell echoes.
+    let line = format!("sh -c 'echo pid $$; exec \"$0\" tui' '{program}'");
+    shell.send_line(&line).unwrap();
+    let (_, said) = shell.exp_regex(r"pid \d+").unwrap();
+    (shell, said.trim_start_matches("pid ").to_owned())
+}
+
+/// Waits for bash to report the job stopped and prompt again.
+fn shell_has_it_stopped(shell: &mut PtySession) {
+    shell.exp_string("Stopped").unwrap();
+    shell.exp_string("ready$ ").unwrap();
+}
+
+/// The status `tm tui` ended with in `shell`, which then exits.
+fn status_then_exit(shell: &mut PtySession, wait: &str) -> String {
+    shell.send_line(&format!("{wait}echo status $?")).unwrap();
+    let (_, said) = shell.exp_regex(r"status \d+").unwrap();
+    shell.send_line("exit").unwrap();
+    shell.exp_eof().unwrap();
+    said
+}
+
+#[test]
+fn ctrl_z_or_a_stop_signal_hands_the_terminal_back_and_fg_redraws_it() {
+    for stop in ["ctrl-z", "SIGTSTP", "ctrl-z then bg"] {
+        let scratch = Scratch::new();
+        let (repo, _store, _project) = initialized(&scratch);
+        let made = tm(
+            &scratch,
+            &repo,
+            &["create", "--type", "task", "--title", "alpha"],
+        );
+        assert!(made.status.success(), "{made:?}");
+        let (mut shell, pid) = in_a_shell(&scratch, &repo, &[]);
+        shell.exp_string("alpha").unwrap();
+        if stop == "SIGTSTP" {
+            kill(&pid, "-TSTP");
+        } else {
+            press(&mut shell, "\u{1a}");
+        }
+        // The terminal is the shell's again before the TUI stops.
+        shell.exp_string(LEFT).unwrap();
+        settles(|| stopped(&pid));
+        shell_has_it_stopped(&mut shell);
+        if stop == "ctrl-z then bg" {
+            // In the background it waits, stopped, for `fg`.
+            shell.send_line("bg").unwrap();
+            shell.exp_string("ready$ ").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            settles(|| stopped(&pid));
+        }
+        shell.send_line("fg").unwrap();
+        if let Err(err) = shell.exp_string("\u{1b}[?1049h") {
+            panic!("{stop}: fg did not take the terminal: {err}");
+        }
+        // The unchanged list drawn again, as the shell drew over it.
+        shell.exp_string("alpha").unwrap();
+        // Longer than a look for writes elsewhere, which would stop it again
+        // on a stop left pending.
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        assert!(!stopped(&pid), "{stop}: stopped again");
+        press(&mut shell, "q");
+        if let Err(err) = shell.exp_string("ready$ ") {
+            panic!("{stop}: q did not quit: {err}");
+        }
+        assert_eq!(status_then_exit(&mut shell, ""), "status 0", "{stop}");
+    }
+}
+
+fn kill(pid: &str, signal: &str) {
+    let sent = Command::new("kill").args([signal, pid]).status().unwrap();
+    assert!(sent.success());
+}
+
+#[test]
+fn kill_while_suspended_ends_it_without_taking_the_terminal_back() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    let (mut shell, pid) = in_a_shell(&scratch, &repo, &[]);
+    shell.exp_string("match").unwrap();
+    press(&mut shell, "\u{1a}");
+    shell.exp_string(LEFT).unwrap();
+    settles(|| stopped(&pid));
+    shell_has_it_stopped(&mut shell);
+    // SIGTERM then SIGCONT, to a job in the background.
+    shell.send_line("kill %1").unwrap();
+    settles(|| !running(&pid));
+    // By pid, as bash 5 may already have reported the job done.
+    let status = status_then_exit(&mut shell, &format!("wait {pid}; "));
+    assert_eq!(status, "status 143");
+}
+
+#[test]
+fn a_sigcont_after_an_uncatchable_sigstop_takes_the_terminal_back() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    let made = tm(
+        &scratch,
+        &repo,
+        &["create", "--type", "task", "--title", "alpha"],
+    );
+    assert!(made.status.success(), "{made:?}");
+    let mut tui = sized(&scratch, &repo, "tui");
+    let (_, said) = tui.exp_regex(r"pid \d+").unwrap();
+    let pid = said.trim_start_matches("pid ").to_owned();
+    tui.exp_string("alpha").unwrap();
+    kill(&pid, "-STOP");
+    settles(|| stopped(&pid));
+    kill(&pid, "-CONT");
+    tui.exp_string("\u{1b}[?1049h").unwrap();
+    tui.exp_string("alpha").unwrap();
+    press(&mut tui, "q");
+    tui.exp_eof().unwrap();
+    assert_eq!(exit_code(&tui), 0);
+}
+
+#[test]
+fn ctrl_z_with_no_shell_to_come_back_to_does_nothing() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    // rexpect starts it as the leader of its own session, as `exec tm tui`
+    // or `tmux new-window 'tm tui'` would, so nothing could send it SIGCONT.
+    let mut tui = sized(&scratch, &repo, "tui");
+    let (_, said) = tui.exp_regex(r"pid \d+").unwrap();
+    let pid = said.trim_start_matches("pid ").to_owned();
+    tui.exp_string("match").unwrap();
+    press(&mut tui, "\u{1a}");
+    kill(&pid, "-TSTP");
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert!(!stopped(&pid));
+    press(&mut tui, "q");
+    let rest = tui.exp_eof().unwrap();
+    assert!(!rest.contains("\u{1b}[?1049h"), "never left: {rest:?}");
+    assert_eq!(exit_code(&tui), 0);
+}
+
+#[test]
+fn ctrl_z_in_the_editor_stops_the_tui_with_it_and_fg_goes_on_writing() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    let made = tm(
+        &scratch,
+        &repo,
+        &["create", "--type", "task", "--title", "alpha"],
+    );
+    assert!(made.status.success(), "{made:?}");
+    // SIGTSTP to the whole group, as Ctrl-Z sends it.
+    let editor = "kill -TSTP 0; printf QZXQZX >";
+    let (mut shell, pid) = in_a_shell(&scratch, &repo, &[("VISUAL", editor)]);
+    shell.exp_string("alpha").unwrap();
+    press(&mut shell, "\r");
+    shell.exp_string("History").unwrap();
+    press(&mut shell, "c");
+    settles(|| stopped(&pid));
+    shell_has_it_stopped(&mut shell);
+    shell.send_line("fg").unwrap();
+    shell.exp_string("commented:").unwrap();
+    press(&mut shell, "qq");
+    shell.exp_string("ready$ ").unwrap();
+    let status = status_then_exit(&mut shell, "");
+    assert_eq!(status, "status 0", "went on, not stopped again");
+}
+
+#[test]
+fn a_comment_not_written_is_kept_and_its_path_printed_once_the_terminal_is_back() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    let made = tm(
+        &scratch,
+        &repo,
+        &["create", "--type", "task", "--title", "alpha"],
+    );
+    assert!(made.status.success(), "{made:?}");
+    let editor = "printf 'careful words' > \"$1\"; false";
+    let mut tui = sized_with(&scratch, &repo, "tui", &[("VISUAL", editor)]);
+    tui.exp_string("alpha").unwrap();
+    press(&mut tui, "\r");
+    tui.exp_string("History").unwrap();
+    press(&mut tui, "c");
+    tui.exp_string("\u{1b}[?1049h").unwrap();
+    tui.exp_string("printed").unwrap();
+    press(&mut tui, "qq");
+    tui.exp_string(LEFT).unwrap();
+    let (_, said) = tui
+        .exp_regex(r"tm: a comment not written is kept in \S+\.md")
+        .unwrap();
+    let draft = said.rsplit(' ').next().unwrap();
+    assert_eq!(fs::read_to_string(draft).unwrap(), "careful words");
+    fs::remove_file(draft).unwrap();
+    tui.exp_eof().unwrap();
+    assert_eq!(exit_code(&tui), 0);
+}
+
+#[test]
+fn a_ctrl_c_in_the_editor_is_the_editors_and_a_dash_is_a_comment_not_stdin() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    let made = tm(
+        &scratch,
+        &repo,
+        &["create", "--type", "task", "--title", "alpha"],
+    );
+    assert!(made.status.success(), "{made:?}");
+    // SIGINT to the whole group twice, as Ctrl-C sends it, which the
+    // editor shrugs off before saving.
+    let editor = "trap '' INT; kill -INT 0; sleep 0.2; kill -INT 0; printf - >";
+    let mut tui = sized_with(&scratch, &repo, "tui", &[("VISUAL", editor)]);
+    tui.exp_string("alpha").unwrap();
+    press(&mut tui, "\r");
+    tui.exp_string("History").unwrap();
+    press(&mut tui, "c");
+    tui.exp_string("commented:").unwrap();
+    let shown = tm(
+        &scratch,
+        &repo,
+        &["--json", "show", "TM-1", "--comments", "all"],
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(doc["data"]["comments"][0]["body"], "-", "{doc}");
+    // Back from the editor, a SIGINT is the TUI's again, ending it with the
+    // terminal restored.
+    tui.process_mut().signal(Signal::SIGINT).unwrap();
+    let rest = tui.exp_eof().unwrap();
+    assert!(rest.contains(LEFT), "left the alternate screen");
+    assert_eq!(exit_code(&tui), 130);
 }
 
 #[test]
