@@ -288,6 +288,11 @@ enum Pending {
     Writes(Vec<Write>),
     Undo,
     Compose(String),
+    /// A comment composed in the file `draft`, kept if the write is refused.
+    Comment {
+        write: Write,
+        draft: PathBuf,
+    },
 }
 
 /// The frame around the screens: where it reads from, the keys, and what
@@ -307,9 +312,6 @@ pub struct Shell {
     /// Whether the last action wrote anything, so `u` can say when it
     /// reaches back past one that did not.
     last_wrote: bool,
-    /// The file holding the comment being written.
-    draft: Option<PathBuf>,
-    finished: Option<PathBuf>,
     /// Drafts of comments not written, named once the terminal is restored,
     /// as the status line is too narrow for their paths.
     kept: Vec<PathBuf>,
@@ -346,8 +348,6 @@ impl Shell {
             written: Vec::new(),
             said: None,
             last_wrote: true,
-            draft: None,
-            finished: None,
             kept: Vec::new(),
         }
     }
@@ -355,46 +355,38 @@ impl Shell {
     /// Makes the writes or undo a key asked for through `actions`, and says
     /// what it did until the next key.
     pub fn write(&mut self, actions: &dyn Actions) {
-        let mut said = match self.pending.take() {
+        let said = match self.pending.take() {
             None | Some(Pending::Compose(_)) => return,
-            Some(Pending::Writes(writes)) => self.make(&writes, actions),
+            Some(Pending::Writes(writes)) => self.make(&writes, actions).1,
             Some(Pending::Undo) => self.undo(actions),
-        };
-        if let Some(draft) = self.draft.take() {
-            match said.strip_prefix("✗ ") {
-                Some(why) => {
-                    said = format!("✗ {KEPT} · {why}");
-                    self.kept.push(draft);
+            Some(Pending::Comment { write, draft }) => {
+                let (refused, said) = self.make(&[write], actions);
+                if refused {
+                    self.keep(draft, said.trim_start_matches("✗ "))
+                } else {
+                    let _ = std::fs::remove_file(draft);
+                    said
                 }
-                None => self.finished = Some(draft),
             }
-        }
+        };
         self.said = Some(printable(said.lines().next().unwrap_or_default()));
     }
 
     /// Takes what an editor saved for the comment a key asked for, or why
-    /// nothing was; [`Shell::write`] then writes a comment that is not
-    /// blank, and keeps its draft if the write is refused.
+    /// nothing was; [`Shell::write`] then writes it.
     pub fn compose(&mut self, composed: Result<Composed, Unwritten>) {
         let Some(Pending::Compose(key)) = self.pending.take() else {
             return;
         };
         match composed {
-            Ok(Composed { text, draft }) if !text.trim().is_empty() => {
-                self.draft = Some(draft);
-                self.pending = Some(Pending::Writes(vec![Write::Comment { key, body: text }]));
-            }
-            Ok(Composed { draft, .. }) => {
-                self.finished = Some(draft);
-                self.said = Some("nothing written: the comment was empty".to_owned());
+            Ok(Composed { text, draft }) => {
+                let write = Write::Comment { key, body: text };
+                self.pending = Some(Pending::Comment { write, draft });
             }
             Err(Unwritten { why, kept }) => {
                 let why = why.lines().next().unwrap_or_default();
                 let said = match kept {
-                    Some(draft) => {
-                        self.kept.push(draft);
-                        format!("✗ {KEPT} · {why}")
-                    }
+                    Some(draft) => self.keep(draft, why),
                     None => format!("✗ no comment written: {why}"),
                 };
                 self.said = Some(printable(&said));
@@ -402,22 +394,28 @@ impl Shell {
         }
     }
 
-    /// A comment's draft no longer needed, as its text was written or blank.
-    pub fn finished_draft(&mut self) -> Option<PathBuf> {
-        self.finished.take()
+    /// Keeps `draft` to name once the terminal is restored, and says so
+    /// beside `why`.
+    fn keep(&mut self, draft: PathBuf, why: &str) -> String {
+        self.kept.push(draft);
+        format!("✗ {KEPT} · {why}")
     }
 
     /// The drafts of comments not written, to name once the terminal is
     /// restored.
-    #[must_use]
-    pub fn kept_drafts(&self) -> &[PathBuf] {
+    pub(crate) fn kept_drafts(&self) -> &[PathBuf] {
         &self.kept
     }
 
-    /// Makes `writes`, keeping the batches that landed for `u`, and says
-    /// what happened. A write that changed nothing has no batch, so `u`
-    /// is not offered for it.
-    fn make(&mut self, writes: &[Write], actions: &dyn Actions) -> String {
+    /// Says `text` until the next key.
+    pub(crate) fn say(&mut self, text: &str) {
+        self.said = Some(text.to_owned());
+    }
+
+    /// Makes `writes`, keeping the batches that landed for `u`; whether any
+    /// was refused, and what happened. A write that changed nothing has no
+    /// batch, so `u` is not offered for it.
+    fn make(&mut self, writes: &[Write], actions: &dyn Actions) -> (bool, String) {
         let mut batches = Vec::new();
         let mut landed = Vec::new();
         let mut written_lines = Vec::new();
@@ -454,18 +452,18 @@ impl Shell {
                 0 => String::new(),
                 n => format!(" ({n} written; u undoes them)"),
             };
-            return format!("✗ {refused}{landed}{warned}");
+            return (true, format!("✗ {refused}{landed}{warned}"));
         }
         if count == 0 {
             let said = first_of(&unchanged, "more unchanged").unwrap_or_default();
-            return format!("{said}{warned}");
+            return (false, format!("{said}{warned}"));
         }
         let said = first_of(&written_lines, "more written").unwrap_or_default();
         let unchanged = match unchanged.len() {
             0 => String::new(),
             n => format!(" · {n} unchanged"),
         };
-        format!("✓ {said}{unchanged} · u undo{warned}")
+        (false, format!("✓ {said}{unchanged} · u undo{warned}"))
     }
 
     /// Undoes this session's last action, newest batch first; a batch that

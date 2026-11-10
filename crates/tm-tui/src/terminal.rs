@@ -129,15 +129,24 @@ impl Signals {
     fn listen(&mut self) -> io::Result<()> {
         self.interrupt = self.catch(SIGINT)?;
         self.editing.store(false, Ordering::Relaxed);
+        self.settle();
+        Ok(())
+    }
+
+    /// Whether a signal asked the TUI to end.
+    fn ending(&self) -> bool {
+        self.caught.load(Ordering::Relaxed) != 0
+    }
+
+    /// Forgets a stop or resume the terminal has been taken back since.
+    fn settle(&self) {
         self.stop.store(false, Ordering::Relaxed);
         self.resumed.store(false, Ordering::Relaxed);
-        Ok(())
     }
 
     /// Leaves SIGINT to an editor, as git does: Ctrl-C there reaches this
     /// process too, as one of its group, and is the editor's to act on.
     fn hold(&mut self) {
-        #[cfg(unix)]
         self.editing.store(job_control(), Ordering::Relaxed);
         for id in self.interrupt.drain(..) {
             low_level::unregister(id);
@@ -161,13 +170,17 @@ fn job_control() -> bool {
         if their_group != group && their_session == session)
 }
 
+#[cfg(not(unix))]
+fn job_control() -> bool {
+    false
+}
+
 /// Waits, stopped, until this process's group has the terminal again, as
 /// taking it from the background would stop or fail it: after `bg`, until
 /// `fg`. False when a signal ends the TUI first, as a shell's `kill %1`
 /// sends SIGTERM then SIGCONT, whose SIGTERM another thread may handle a
 /// moment after this one wakes.
 fn back_in_front(signals: &Signals) -> io::Result<bool> {
-    let ending = || signals.caught.load(Ordering::Relaxed) != 0;
     // Only another group named in front waits; an error, as with no
     // controlling terminal, goes on to take it, and fails there if it must.
     #[cfg(unix)]
@@ -177,7 +190,7 @@ fn back_in_front(signals: &Signals) -> io::Result<bool> {
     };
     #[cfg(unix)]
     loop {
-        if ending() {
+        if signals.ending() {
             return Ok(false);
         }
         if !behind() {
@@ -185,44 +198,35 @@ fn back_in_front(signals: &Signals) -> io::Result<bool> {
         }
         std::thread::sleep(Duration::from_millis(50));
         // `fg` may have come during the sleep.
-        if !ending() && behind() {
+        if !signals.ending() && behind() {
             low_level::raise(SIGSTOP)?;
         }
     }
     #[cfg(not(unix))]
-    Ok(!ending())
+    Ok(!signals.ending())
 }
 
 /// Hands the terminal back and stops until a shell's `fg` sends SIGCONT,
-/// then takes it again; or, with no shell to come back to, says so.
-fn suspend(terminal: &mut DefaultTerminal, shell: &mut Shell, signals: &Signals) -> io::Result<()> {
+/// then takes it again. False when no shell could bring it back.
+fn suspend(terminal: &mut DefaultTerminal, signals: &Signals) -> io::Result<bool> {
     signals.stop.store(false, Ordering::Relaxed);
-    #[cfg(unix)]
     if !job_control() {
-        shell.said = Some(NO_SHELL.to_owned());
-        return Ok(());
-    }
-    #[cfg(not(unix))]
-    {
-        shell.said = Some(NO_SHELL.to_owned());
-        let _ = terminal;
+        return Ok(false);
     }
     #[cfg(unix)]
     {
-        let ending = || signals.caught.load(Ordering::Relaxed) != 0;
-        ratatui::restore();
-        execute!(io::stdout(), Show)?;
-        if !ending() {
+        release()?;
+        if !signals.ending() {
             low_level::raise(SIGSTOP)?;
         }
-        if !back_in_front(signals)? {
-            return Ok(());
+        if back_in_front(signals)? {
+            retake(terminal)?;
+            signals.settle();
         }
-        retake(terminal)?;
-        signals.stop.store(false, Ordering::Relaxed);
-        signals.resumed.store(false, Ordering::Relaxed);
     }
-    Ok(())
+    #[cfg(not(unix))]
+    let _ = terminal;
+    Ok(true)
 }
 
 const NO_SHELL: &str = "Ctrl-Z does nothing here: no shell started tm tui to bring it back";
@@ -238,11 +242,16 @@ pub enum Ended {
 /// Runs `run` with the terminal as the TUI found it, then takes it back and
 /// redraws it whole.
 fn suspended<T>(terminal: &mut DefaultTerminal, run: impl FnOnce() -> T) -> io::Result<T> {
-    ratatui::restore();
-    execute!(io::stdout(), Show)?;
+    release()?;
     let ran = run();
     retake(terminal)?;
     Ok(ran)
+}
+
+/// The terminal as the TUI found it, the cursor shown.
+fn release() -> io::Result<()> {
+    ratatui::restore();
+    execute!(io::stdout(), Show)
 }
 
 /// Raw mode and the alternate screen again, redrawn whole.
@@ -270,7 +279,9 @@ fn drive<E: From<io::Error>>(
             return Ok(Ended::Signal(i32::try_from(caught).unwrap_or(i32::MAX)));
         }
         if signals.stop.load(Ordering::Relaxed) {
-            suspend(terminal, shell, signals)?;
+            if !suspend(terminal, signals)? {
+                shell.say(NO_SHELL);
+            }
         } else if signals.resumed.swap(false, Ordering::Relaxed) && back_in_front(signals)? {
             // Stopped by a SIGSTOP, which cannot be caught.
             retake(terminal)?;
@@ -292,12 +303,13 @@ fn drive<E: From<io::Error>>(
                     signals.listen()?;
                     shell.compose(composed?);
                     shell.write(actions);
-                    if let Some(draft) = shell.finished_draft() {
-                        let _ = std::fs::remove_file(draft);
-                    }
                     shell.load(&store, actions);
                 }
-                Flow::Suspend => suspend(terminal, shell, signals)?,
+                Flow::Suspend => {
+                    if !suspend(terminal, signals)? {
+                        shell.say(NO_SHELL);
+                    }
+                }
                 Flow::Stay => {}
             }
         }

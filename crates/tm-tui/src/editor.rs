@@ -6,8 +6,8 @@ use std::process::Command;
 
 use uuid::Uuid;
 
-/// What an editor saved, and the file it is in, which stays until the
-/// comment is written so a refused write keeps the text.
+/// What an editor saved, never blank, and the file it is in, which stays
+/// until the comment is written so a refused write keeps the text.
 #[derive(Debug)]
 pub struct Composed {
     pub text: String,
@@ -34,8 +34,8 @@ pub(crate) fn compose() -> Result<Composed, Unwritten> {
 
 /// The text `editor` saves in an empty file, or why there is none. The file
 /// starts empty rather than with `#` lines to strip, since a comment is
-/// Markdown and `#` starts a heading. An editor that fails leaves its file
-/// only when it saved something.
+/// Markdown and `#` starts a heading. A blank save is no comment, and an
+/// editor that fails leaves its file only when it saved something.
 pub(crate) fn compose_with(editor: &str) -> Result<Composed, Unwritten> {
     let draft = std::env::temp_dir().join(format!("tm-comment-{}.md", Uuid::now_v7()));
     let mut options = OpenOptions::new();
@@ -54,7 +54,14 @@ pub(crate) fn compose_with(editor: &str) -> Result<Composed, Unwritten> {
         Ok(_) => None,
     };
     match (failed, text) {
-        (None, Ok(text)) => Ok(Composed { text, draft }),
+        (None, Ok(text)) if !text.trim().is_empty() => Ok(Composed { text, draft }),
+        (None, Ok(_)) => {
+            let _ = fs::remove_file(&draft);
+            Err(Unwritten {
+                why: "the comment was empty".to_owned(),
+                kept: None,
+            })
+        }
         (Some(why), Ok(text)) if !text.trim().is_empty() => Err(Unwritten {
             why,
             kept: Some(draft),
@@ -119,6 +126,21 @@ mod tests {
         let editor = format!("printf %s \"$1\" > '{}'; false", record.display());
         let unwritten = compose_with(&editor).unwrap_err();
         assert!(unwritten.why.contains("exited with"), "{unwritten:?}");
+        assert_eq!(unwritten.kept, None);
+        let draft = fs::read_to_string(&record).unwrap();
+        fs::remove_file(&record).unwrap();
+        assert!(!Path::new(&draft).exists(), "{draft} left behind");
+    }
+
+    #[test]
+    fn a_blank_save_is_no_comment_and_leaves_no_file() {
+        let record = std::env::temp_dir().join(format!("tm-draft-path-{}", Uuid::now_v7()));
+        let editor = format!(
+            "printf %s \"$1\" > '{}'; printf ' \\n\\t' >",
+            record.display()
+        );
+        let unwritten = compose_with(&editor).unwrap_err();
+        assert_eq!(unwritten.why, "the comment was empty");
         assert_eq!(unwritten.kept, None);
         let draft = fs::read_to_string(&record).unwrap();
         fs::remove_file(&record).unwrap();
