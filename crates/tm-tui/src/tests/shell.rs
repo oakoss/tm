@@ -417,3 +417,95 @@ fn a_refused_undo_of_an_earlier_action_says_so() {
         "{screen}"
     );
 }
+
+/// [`Fake`], in the Project with this id.
+struct Mapped(ProjectId);
+
+impl Actions for Mapped {
+    fn write(&self, write: &Write) -> Result<Written, String> {
+        Fake.write(write)
+    }
+
+    fn undo(&self, batch: Uuid) -> Result<Written, String> {
+        Fake.undo(batch)
+    }
+
+    fn me(&self) -> Result<&str, &str> {
+        NOBODY
+    }
+
+    fn project(&self) -> Option<ProjectId> {
+        Some(self.0)
+    }
+
+    fn issue(&self, store: &Store, id: Uuid) -> Result<Issue, String> {
+        laid_out(store, id)
+    }
+
+    fn ready(&self, store: &Store) -> Result<String, String> {
+        Fake.ready(store)
+    }
+}
+
+#[test]
+fn the_screens_read_the_mapped_project_unless_a_filter_names_another() {
+    let mut store = triage_store();
+    let jace = Actor::human("jace");
+    let (web, _) = store.create_project(&jace, "WEB", "Web").unwrap();
+    let (elsewhere, _) = store.create_issue(&jace, web, "task", "elsewhere").unwrap();
+    store
+        .append(Draft {
+            actor: jace,
+            project: web,
+            subject: elsewhere,
+            change: Change::SetField {
+                field: "status".into(),
+                label: "status".into(),
+                value: "triage".into(),
+                value_label: None,
+            },
+        })
+        .unwrap();
+    let tm = Mapped(store.project_by_key("TM").unwrap().unwrap());
+    let mut shell = Shell::new("TM");
+    shell.load(&store, &tm);
+    let listed = drawn_sized(&mut shell, 80, 20);
+    assert!(
+        listed.contains("first") && !listed.contains("elsewhere"),
+        "{listed}"
+    );
+    typed_after_slash(&mut shell, "project:web");
+    shell.load(&store, &tm);
+    let named = drawn_sized(&mut shell, 80, 20);
+    assert!(
+        named.contains("elsewhere") && !named.contains("first"),
+        "{named}"
+    );
+
+    let mut shell = triaging(&store, &tm);
+    let queue = drawn_sized(&mut shell, 140, 20);
+    assert!(
+        queue.contains("TM-5") && !queue.contains("WEB-1"),
+        "{queue}"
+    );
+    let mut shell = Shell::new("TM");
+    shell.load(&store, &tm);
+    shell.key(press(KeyCode::Char('b')));
+    shell.load(&store, &tm);
+    let board = drawn_sized(&mut shell, 140, 20);
+    assert!(
+        board.contains("TM-5") && !board.contains("WEB-1"),
+        "{board}"
+    );
+    assert_eq!(shell.key(press(KeyCode::Char('a'))), Flow::Reload);
+    shell.load(&store, &tm);
+    let whole = drawn_sized(&mut shell, 140, 20);
+    assert!(
+        whole.contains("TM-5") && !whole.contains("WEB-1"),
+        "{whole}"
+    );
+
+    let mut shell = triaging(&store, &Fake);
+    let every = drawn_sized(&mut shell, 140, 20);
+    assert!(every.contains("WEB-1"), "{every}");
+}

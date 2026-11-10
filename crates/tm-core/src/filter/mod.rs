@@ -9,6 +9,8 @@ mod suggest;
 
 use serde::Serialize;
 
+use crate::project::ProjectId;
+
 pub use parse::parse;
 pub use resolve::{
     Condition, Context, IssueField, Literal, Resolved, Sort, SortTarget, Target, resolve,
@@ -30,13 +32,25 @@ pub fn open_unless_named(filter: &str, all: bool) -> String {
     }
 }
 
+/// `filter` narrowed to `project`'s Issues unless it names a Project or does
+/// not parse, as [`open_unless_named`] narrows to the open work.
+#[must_use]
+pub fn in_project_unless_named(filter: &str, project: ProjectId) -> String {
+    match parse(filter) {
+        Ok(query) if !names(&query, &["project"]) => format!("{filter} project:{project}"),
+        _ => filter.to_owned(),
+    }
+}
+
 /// Whether a term asks about status, category or archived.
 fn names_state(query: &Query) -> bool {
+    names(query, &["status", "category", "archived"])
+}
+
+fn names(query: &Query, fields: &[&str]) -> bool {
     query.terms.iter().any(|term| {
         let (Term::Match { field, .. } | Term::Has { field, .. }) = term;
-        ["status", "category", "archived"]
-            .iter()
-            .any(|name| same_field(&field.0, name))
+        fields.iter().any(|name| same_field(&field.0, name))
     })
 }
 
@@ -171,5 +185,17 @@ mod tests {
             assert_eq!(open_unless_named(named, false), named);
         }
         assert_eq!(open_unless_named("status:", false), "status:");
+    }
+
+    #[test]
+    fn the_project_default_yields_to_a_named_project_and_a_parse_error() {
+        let project = ProjectId::from_uuid(uuid::Uuid::nil());
+        assert_eq!(
+            in_project_unless_named("label:x", project),
+            format!("label:x project:{project}")
+        );
+        for named in ["Project:WEB", "-project:TM", "has:project", "status:"] {
+            assert_eq!(in_project_unless_named(named, project), named);
+        }
     }
 }

@@ -255,7 +255,7 @@ impl Board {
     /// went.
     pub(crate) fn load(&mut self, store: &Store, actions: &dyn Actions) {
         let kept = self.selected().map(|card| card.key.clone());
-        let filter = open_unless_named("", self.all);
+        let filter = read::in_project(&open_unless_named("", self.all), actions);
         let me = actions.me().ok();
         let read = read::issues(store, &filter, Context { me }).map(|issues| {
             issues

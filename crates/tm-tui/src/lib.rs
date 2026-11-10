@@ -24,6 +24,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, Paragraph};
+use tm_core::ProjectId;
 use tm_store::Store;
 use uuid::Uuid;
 
@@ -88,6 +89,12 @@ pub trait Actions {
     ///
     /// Why the person at the terminal cannot be named.
     fn me(&self) -> Result<&str, &str>;
+
+    /// The Project this directory maps to, whose Issues the screens read
+    /// unless a filter names another; `None` reads every Project.
+    fn project(&self) -> Option<ProjectId> {
+        None
+    }
 
     /// `tm show --json` and `tm history --json` for `id`, read from `store`.
     ///
@@ -198,7 +205,7 @@ pub(crate) enum Outcome {
 impl Screen {
     fn load(&mut self, store: &Store, actions: &dyn Actions) {
         match self {
-            Self::List(list) => list.load(store, actions.me()),
+            Self::List(list) => list.load(store, actions),
             Self::Ready(ready) => ready.load(store, actions),
             Self::Issue(issue) => issue.load(store, actions),
             Self::Triage(triage) => triage.load(store, actions),

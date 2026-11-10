@@ -171,8 +171,9 @@ impl Triage {
     pub(crate) fn load(&mut self, store: &Store, actions: &dyn Actions) {
         let me = actions.me();
         self.me = me.ok().map(str::to_owned);
+        let queue = read::in_project(QUEUE, actions);
         let read = store.read(|store| {
-            let rows: Vec<Shown> = read::issues(store, QUEUE, Context { me: me.ok() })?
+            let rows: Vec<Shown> = read::issues(store, &queue, Context { me: me.ok() })?
                 .into_iter()
                 .map(|issue| Shown {
                     issue_type: issue.field("type"),
