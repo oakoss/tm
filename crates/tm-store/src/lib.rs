@@ -1541,13 +1541,19 @@ impl Store {
         let mut query = parse(filter)?;
         let issues = self.issues_by_id(&mut query)?;
         let lists = self.shortlists_by_id(&mut query)?;
+        let projects = self.projects_by_id(&mut query)?;
         // The one earlier in the filter text, as a reader meets it.
-        let missing = issues.into_iter().chain(lists).min_by_key(|err| match err {
-            FilterError::NoIssue { span, .. }
-            | FilterError::NoShortlist { span, .. }
-            | FilterError::ShortlistNameShared { span, .. } => span.0,
-            _ => usize::MAX,
-        });
+        let missing = issues
+            .into_iter()
+            .chain(lists)
+            .chain(projects)
+            .min_by_key(|err| match err {
+                FilterError::NoIssue { span, .. }
+                | FilterError::NoShortlist { span, .. }
+                | FilterError::NoProject { span, .. }
+                | FilterError::ShortlistNameShared { span, .. } => span.0,
+                _ => usize::MAX,
+            });
         let resolved = resolve(&query, &self.scheme, context)?;
         // After resolving, so a filter that does not fit the Scheme is named first.
         if let Some(missing) = missing {
@@ -1658,6 +1664,46 @@ impl Store {
                 );
             }
             *values = ids;
+        }
+        Ok(missing)
+    }
+
+    /// Rewrites each Project key a `project:` term names as its Project's id,
+    /// and each id in the one spelling the column holds, returning the first
+    /// that names none. A key matches without case, and a retired key still
+    /// names its Project; anything else is left for resolving to refuse.
+    fn projects_by_id(&self, query: &mut Query) -> Result<Option<FilterError>, StoreError> {
+        let mut missing = None;
+        for term in &mut query.terms {
+            let Term::Match { field, values, .. } = term else {
+                continue;
+            };
+            if !same_field(&field.0, "project") {
+                continue;
+            }
+            for (value, span) in values {
+                let FilterValue::Text(text) = value else {
+                    continue;
+                };
+                let key = text.trim().to_ascii_uppercase();
+                let found = if let Ok(id) = Uuid::parse_str(text.trim()) {
+                    let id = ProjectId::from_uuid(id);
+                    project::exists(&self.conn, id)?.then_some(id)
+                } else if tm_core::project::is_key(&key) {
+                    project::key_holder(&self.conn, &key)?
+                } else {
+                    continue;
+                };
+                if found.is_none() {
+                    missing.get_or_insert(FilterError::NoProject {
+                        value: text.trim().to_owned(),
+                        span: *span,
+                    });
+                }
+                *text = found
+                    .unwrap_or(ProjectId::from_uuid(Uuid::nil()))
+                    .to_string();
+            }
         }
         Ok(missing)
     }

@@ -970,3 +970,57 @@ fn a_shortlist_name_two_lists_share_is_refused() {
     let parent = matches!(err, StoreError::Filter(FilterError::NoIssue { .. }));
     assert!(parent, "{err}");
 }
+
+#[test]
+fn a_project_key_or_id_matches_that_projects_issues() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let (web, _) = store.create_project(&jace(), "WEB", "Web").unwrap();
+    let (here, _) = store.create_issue(&jace(), PROJECT, "task", "t").unwrap();
+    let (there, _) = store.create_issue(&jace(), web, "task", "t").unwrap();
+    assert_eq!(find(&store, "project:CPL"), [here]);
+    assert_eq!(find(&store, "project:web"), [there]);
+    assert_eq!(find(&store, &format!("project:{web}")), [there]);
+    let shouted = web.to_string().to_ascii_uppercase();
+    assert_eq!(find(&store, &format!("project:{shouted}")), [there]);
+    assert_eq!(find(&store, "-project:cpl"), [there]);
+    let both = find(&store, "project:CPL,WEB");
+    assert_eq!(sorted(both), sorted(vec![here, there]));
+    store
+        .rename_project(&jace(), web, Some("SITE"), None)
+        .unwrap();
+    assert_eq!(find(&store, "project:WEB"), [there]);
+    assert_eq!(find(&store, "project:site"), [there]);
+}
+
+#[test]
+fn a_project_that_does_not_exist_is_named() {
+    let dir = TempDir::new();
+    let store = open(&dir.db(), &ManualClock::at(1_000));
+    let named = |filter: &str| match store.find(filter, ME).unwrap_err() {
+        StoreError::Filter(FilterError::NoProject { value, span }) => (value, span),
+        err => panic!("{filter}: {err}"),
+    };
+    assert_eq!(
+        named("status:todo project:nope"),
+        ("nope".into(), Span(20, 24))
+    );
+    let first = named("project:NOPE shortlist:gone");
+    assert_eq!(first, ("NOPE".into(), Span(8, 12)));
+    let unknown = ProjectId::new().to_string();
+    for filter in [format!("project:{unknown}"), format!("-project:{unknown}")] {
+        assert_eq!(named(&filter).0, unknown, "{filter}");
+    }
+    for filter in ["project:@me", "project:x-1", "project:\" \"", "has:project"] {
+        let err = store.find(filter, ME).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                StoreError::Filter(
+                    FilterError::InvalidValue { .. } | FilterError::Unsupported { .. }
+                )
+            ),
+            "{filter}: {err}"
+        );
+    }
+}

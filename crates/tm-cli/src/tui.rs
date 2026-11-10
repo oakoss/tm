@@ -115,6 +115,10 @@ impl tm_tui::Actions for Cli<'_> {
         self.me
     }
 
+    fn project(&self) -> Option<ProjectId> {
+        Some(self.project)
+    }
+
     fn issue(&self, store: &Store, id: Uuid) -> Result<tm_tui::Issue, String> {
         let me = || self.me.ok().map(str::to_owned);
         let shown = show::render_with(store, id, show::Comments::All, None);
@@ -293,6 +297,7 @@ mod tests {
             project,
             reader: Err("unused"),
         };
+        assert_eq!(cli.project(), Some(project));
         let shown = cli.issue(&store, id).unwrap().shown;
         let read = store.issue_with_version(id).unwrap().unwrap().1;
         assert_eq!(shown.version, read);

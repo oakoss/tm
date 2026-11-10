@@ -1,10 +1,12 @@
 //! Issues as the screens show them: their text safe for the terminal, and
 //! the version a write from the screen is checked against.
 
-use tm_core::filter::Context;
+use tm_core::filter::{Context, in_project_unless_named};
 use tm_core::text::printable;
 use tm_store::{IssueView, Store, StoreError};
 use uuid::Uuid;
+
+use crate::Actions;
 
 /// One Issue a filter matched, as read.
 pub(crate) struct Read {
@@ -30,6 +32,14 @@ pub(crate) fn field(view: &IssueView, name: &str) -> String {
 /// `view`'s Key, or its id until it has one.
 pub(crate) fn key(view: &IssueView) -> String {
     view.key.clone().unwrap_or_else(|| view.id.to_string())
+}
+
+/// `filter` narrowed to the Project `actions` names, unless it names one.
+pub(crate) fn in_project(filter: &str, actions: &dyn Actions) -> String {
+    match actions.project() {
+        Some(project) => in_project_unless_named(filter, project),
+        None => filter.to_owned(),
+    }
 }
 
 /// The Issues `filter` matches, in its order, each with its version.

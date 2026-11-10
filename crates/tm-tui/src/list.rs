@@ -18,7 +18,7 @@ use crate::keys::{self, Binding, ch, plain};
 use crate::read;
 use crate::ready::Ready;
 use crate::triage::Triage;
-use crate::{Outcome, Screen};
+use crate::{Actions, Outcome, Screen};
 
 /// Rows a page key moves.
 const PAGE: usize = 10;
@@ -159,8 +159,9 @@ impl List {
     /// Reads the Issues the filter matches, as `tm list` does, `me` standing
     /// for `@me`, or why no one can. The selected Issue stays selected while
     /// it still matches.
-    pub(crate) fn load(&mut self, store: &Store, me: Result<&str, &str>) {
-        let filter = open_unless_named(&self.filter, self.all);
+    pub(crate) fn load(&mut self, store: &Store, actions: &dyn Actions) {
+        let me = actions.me();
+        let filter = read::in_project(&open_unless_named(&self.filter, self.all), actions);
         let read = store.read(|store| {
             let ids = store.find(&filter, Context { me: me.ok() })?;
             let views = store.issues(&ids)?;

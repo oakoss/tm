@@ -389,6 +389,7 @@ impl Scheme {
             "blocking",
             "session",
             "text",
+            "project",
             crate::link::FIELD,
             crate::op::COMMENTS_FIELD,
             crate::op::COMMENT_BODY_FIELD,
@@ -510,6 +511,7 @@ mod tests {
             "blocking",
             "session",
             "text",
+            "project",
             "links",
             "comments",
         ] {
