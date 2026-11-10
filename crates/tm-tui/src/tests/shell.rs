@@ -474,6 +474,14 @@ fn the_screens_read_the_mapped_project_unless_a_filter_names_another() {
         listed.contains("first") && !listed.contains("elsewhere"),
         "{listed}"
     );
+    assert_eq!(shell.key(press(KeyCode::Char('a'))), Flow::Reload);
+    shell.load(&store, &tm);
+    let every_status = drawn_sized(&mut shell, 80, 20);
+    assert!(
+        every_status.contains("finished") && !every_status.contains("elsewhere"),
+        "{every_status}"
+    );
+    shell.key(press(KeyCode::Char('a')));
     typed_after_slash(&mut shell, "project:web");
     shell.load(&store, &tm);
     let named = drawn_sized(&mut shell, 80, 20);
