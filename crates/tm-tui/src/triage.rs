@@ -17,9 +17,7 @@ use uuid::Uuid;
 use crate::cursor;
 use crate::issue::{Issue, IssueScreen, body, now_ms};
 use crate::keys::{self, Binding, ch, plain};
-use crate::picker::{
-    Choice, Field, Picked, Picker, assignees, people, priorities, shared, statuses,
-};
+use crate::picker::{Choice, Field, Picker, assignees, people, priorities, shared, statuses};
 use crate::read;
 use crate::{Actions, Outcome, Screen};
 
@@ -146,7 +144,6 @@ pub(crate) struct Triage {
     table: TableState,
     /// Keys marked for the next action.
     marked: BTreeSet<String>,
-    picker: Option<Picker>,
     /// The Key to select once a write lands and the queue is read again.
     then: Option<String>,
     /// Who `@me` is, offered first when assigning.
@@ -164,10 +161,6 @@ pub(crate) struct Triage {
 }
 
 impl Triage {
-    pub(crate) fn prompt(&self) -> Option<String> {
-        self.picker.as_ref().map(Picker::prompt)
-    }
-
     pub(crate) fn load(&mut self, store: &Store, actions: &dyn Actions) {
         let me = actions.me();
         self.me = me.ok().map(str::to_owned);
@@ -242,19 +235,6 @@ impl Triage {
     }
 
     pub(crate) fn key(&mut self, key: KeyEvent) -> Outcome {
-        if let Some(picker) = &mut self.picker {
-            return match picker.key(key) {
-                Picked::Open => Outcome::Stay,
-                Picked::Cancelled => {
-                    self.picker = None;
-                    Outcome::Stay
-                }
-                Picked::Chosen(writes) => {
-                    self.picker = None;
-                    Outcome::Write(writes)
-                }
-            };
-        }
         let Some(act) = keys::action(&KEYS, key) else {
             return Outcome::Stay;
         };
@@ -312,8 +292,7 @@ impl Triage {
             Field::Priority => priorities(),
             Field::Assignee => assignees(self.me.as_deref(), &self.people),
         };
-        self.picker = Some(Picker::new(field, choices, captured));
-        Outcome::Stay
+        Outcome::Pick(Picker::new(field, choices, captured))
     }
 
     /// The row the cursor goes on to once `attempted` are written: the first
@@ -409,9 +388,6 @@ impl Triage {
                 .block(block)
                 .row_highlight_style(Style::new().reversed());
             frame.render_stateful_widget(table, area, &mut self.table);
-        }
-        if let Some(picker) = &mut self.picker {
-            picker.render(frame, whole);
         }
     }
 }

@@ -185,6 +185,25 @@ fn a_picker_takes_question_mark_and_esc_as_its_own_keys() {
     assert!(record.writes.borrow().is_empty());
 }
 
+#[test]
+fn a_picker_opened_over_the_keys_takes_question_mark_and_esc_too() {
+    let store = store();
+    let record = Record::new();
+    let mut shell = open_with(&store, "TM-2", &record);
+    shell.key(press(KeyCode::Char('?')));
+    assert!(shell.help);
+    shell.key(press(KeyCode::Char('s')));
+    shell.key(press(KeyCode::Char('?')));
+    assert!(shell.help, "? is text in the picker, not a toggle");
+    assert!(drawn_sized(&mut shell, 120, 30).contains("Status /?"));
+    shell.key(press(KeyCode::Esc));
+    assert!(shell.help, "Esc cancels the picker first");
+    assert!(!drawn_sized(&mut shell, 120, 30).contains("Status /?"));
+    shell.key(press(KeyCode::Esc));
+    assert!(!shell.help, "then hides the keys");
+    assert!(record.writes.borrow().is_empty());
+}
+
 /// The Key of the related Issue selected on the Issue shown.
 fn related_key(shell: &mut Shell) -> Option<String> {
     match shell.shown() {
