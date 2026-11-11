@@ -6,11 +6,11 @@ use std::collections::BTreeSet;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Style, Stylize as _};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, List as Cards, ListState, Paragraph};
-use tm_core::filter::{Context, names_a_state, open_unless_named};
-use tm_core::scheme::{Category, Scheme};
+use tm_core::filter::{Context, names_a_state, open_unless_named, parse};
+use tm_core::scheme::{Category, PRIORITY_RANKS, Scheme};
 use tm_core::text::printable;
 use tm_store::Store;
 use tm_store::view::View;
@@ -149,6 +149,8 @@ struct Card {
     issue_type: String,
     status: String,
     title: String,
+    /// Its value of the swimlane field, `-` when unset.
+    lane: String,
 }
 
 struct Column {
@@ -173,6 +175,10 @@ pub(crate) struct Board {
     /// Statuses per Issue type, in Workflow order.
     statuses: Vec<(String, Vec<Choice>)>,
     problem: Option<String>,
+    /// Each swimlane's value and band height, in order.
+    lanes: Vec<(String, usize)>,
+    /// The first row drawn, shared so the bands line up across columns.
+    top: usize,
 }
 
 /// The Statuses of every Workflow, in order, each once; done and cancelled
@@ -196,7 +202,12 @@ fn columns(scheme: &Scheme, all: bool) -> Vec<Column> {
 }
 
 /// The Issues `filter` matches, as cards.
-fn cards(store: &Store, filter: &str, actions: &dyn Actions) -> Result<Vec<Card>, String> {
+fn cards(
+    store: &Store,
+    filter: &str,
+    lane: Option<&str>,
+    actions: &dyn Actions,
+) -> Result<Vec<Card>, String> {
     let me = actions.me().ok();
     let read = read::issues(store, filter, Context { me }).map_err(|err| err.to_string())?;
     Ok(read
@@ -205,6 +216,7 @@ fn cards(store: &Store, filter: &str, actions: &dyn Actions) -> Result<Vec<Card>
             issue_type: issue.field("type"),
             status: issue.field("status"),
             title: issue.field("title"),
+            lane: lane.map_or_else(String::new, |field| issue.value(field)),
             id: issue.id,
             key: issue.key,
             version: issue.version,
@@ -212,14 +224,95 @@ fn cards(store: &Store, filter: &str, actions: &dyn Actions) -> Result<Vec<Card>
         .collect())
 }
 
+/// Refuses a View whose filter or swimlanes' filter does not parse alone,
+/// naming which, before they are joined, where a quote could run across.
+fn parses(view: &View) -> Result<(), String> {
+    parse(&view.filter).map_err(|err| format!("{}: {err}", view.name))?;
+    if let Some(lanes) = &view.swimlanes {
+        parse(&lanes.filter).map_err(|err| format!("{}, swimlanes: {err}", view.name))?;
+    }
+    Ok(())
+}
+
+/// `view`'s filter with its swimlanes' own, which narrows the Issues in
+/// them.
+fn narrowed(view: &View) -> String {
+    match &view.swimlanes {
+        Some(lanes) if !lanes.filter.is_empty() => format!("{} {}", view.filter, lanes.filter),
+        _ => view.filter.clone(),
+    }
+}
+
+fn lane_field(view: &View) -> Option<&str> {
+    view.swimlanes.as_ref().map(|lanes| lanes.field.as_str())
+}
+
+/// Where `value` of `field` sorts among its swimlanes: the Scheme's order
+/// for a Status, type, priority or select field, else none.
+fn rank(scheme: &Scheme, field: &str, value: &str) -> Option<usize> {
+    match field {
+        "priority" => PRIORITY_RANKS.iter().position(|(id, _)| *id == value),
+        "status" => scheme
+            .workflows
+            .iter()
+            .flat_map(|workflow| &workflow.statuses)
+            .position(|status| status.id == value),
+        "type" => scheme.types.iter().position(|kind| kind.id == value),
+        _ => scheme
+            .field(field)?
+            .options
+            .iter()
+            .position(|choice| choice.id == value),
+    }
+}
+
+/// The swimlanes for `columns` by `field`: each value its cards hold, in
+/// the Scheme's order where it has one, else by name, unset last, with the
+/// most cards any one column has in it.
+fn lanes(scheme: &Scheme, field: &str, columns: &mut [Column]) -> Vec<(String, usize)> {
+    let mut values: Vec<String> = columns
+        .iter()
+        .flat_map(|column| column.cards.iter().map(|card| card.lane.clone()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    values.sort_by_key(|value| {
+        let unset = value == "-" || (field == "priority" && value == "none");
+        (unset, rank(scheme, field, value).unwrap_or(usize::MAX))
+    });
+    let order = |lane: &str| values.iter().position(|value| value == lane);
+    for column in columns.iter_mut() {
+        column.cards.sort_by_key(|card| order(&card.lane));
+    }
+    values
+        .iter()
+        .map(|value| {
+            let height = columns
+                .iter()
+                .map(|column| {
+                    column
+                        .cards
+                        .iter()
+                        .filter(|card| &card.lane == value)
+                        .count()
+                })
+                .max()
+                .unwrap_or(0);
+            (value.clone(), height)
+        })
+        .collect()
+}
+
 /// The columns `view` lists, in its order, each holding the Issues in its
 /// Status that the View's filter and its own both match; done and
 /// cancelled ones too, since a View names its Statuses.
 fn listed(store: &Store, view: &View, actions: &dyn Actions) -> Result<Vec<Column>, String> {
-    // The View's filter is read alone first, so its error is named as its
-    // own, and once it parses alone no quote can run across the join.
-    cards(store, &read::in_project(&view.filter, actions), actions)
+    // The View's filters are read without a column's first, so their error
+    // is not named for a column; `parses` keeps a quote inside its filter.
+    let typed = narrowed(view);
+    cards(store, &read::in_project(&typed, actions), None, actions)
         .map_err(|why| format!("{}: {why}", view.name))?;
+    let lane = lane_field(view);
     let scheme = store.scheme();
     let mut filled = Vec::with_capacity(view.columns.len());
     for column in &view.columns {
@@ -229,8 +322,8 @@ fn listed(store: &Store, view: &View, actions: &dyn Actions) -> Result<Vec<Colum
             .flat_map(|workflow| &workflow.statuses)
             .find(|status| status.id == column.status)
             .ok_or_else(|| format!("{}: no Status {:?}", view.name, column.status))?;
-        let filter = format!("{} {} status:{}", view.filter, column.filter, status.id);
-        let cards = cards(store, &read::in_project(&filter, actions), actions)
+        let filter = format!("{typed} {} status:{}", column.filter, status.id);
+        let cards = cards(store, &read::in_project(&filter, actions), lane, actions)
             .map_err(|why| format!("{}, column {}: {why}", view.name, status.id))?;
         filled.push(Column {
             status: status.id.clone(),
@@ -329,15 +422,24 @@ impl Board {
     /// went.
     pub(crate) fn load(&mut self, store: &Store, actions: &dyn Actions) {
         let kept = self.selected().map(|card| card.key.clone());
-        let read = if let Some(view) = self.view.as_ref().filter(|view| !view.columns.is_empty()) {
+        let view = self.view.as_ref();
+        let lane = view.and_then(lane_field);
+        let read = if let Some(Err(why)) = view.map(parses) {
+            Err(why)
+        } else if let Some(field) = lane.filter(|field| store.scheme().field(field).is_none()) {
+            Err(format!(
+                "{}: no field {field:?}",
+                view.map_or("", |view| &view.name)
+            ))
+        } else if let Some(view) = view.filter(|view| !view.columns.is_empty()) {
             listed(store, view, actions)
         } else {
-            let typed = self.view.as_ref().map_or("", |view| view.filter.as_str());
-            let filter = read::in_project(&open_unless_named(typed, self.all), actions);
-            cards(store, &filter, actions).map(|cards| {
+            let typed = view.map(narrowed).unwrap_or_default();
+            let filter = read::in_project(&open_unless_named(&typed, self.all), actions);
+            cards(store, &filter, lane, actions).map(|cards| {
                 // A filter naming a state may admit done or cancelled
                 // Issues, which need their own columns, not the triage one.
-                let mut columns = columns(store.scheme(), self.all || names_a_state(typed));
+                let mut columns = columns(store.scheme(), self.all || names_a_state(&typed));
                 for card in cards {
                     if let Some(at) = place(&columns, &card.status) {
                         columns[at].cards.push(card);
@@ -346,7 +448,7 @@ impl Board {
                 columns
             })
         };
-        let filled = match read {
+        let mut filled = match read {
             Ok(filled) => filled,
             // The last Board read stays behind the reason, so the next read
             // finds the cursor's Issue again.
@@ -364,6 +466,10 @@ impl Board {
             .columns
             .get(self.column)
             .map(|column| column.status.clone());
+        self.lanes = match self.view.as_ref().and_then(lane_field) {
+            Some(field) => lanes(store.scheme(), field, &mut filled),
+            None => Vec::new(),
+        };
         self.columns = filled;
         let types = self.columns.iter().flat_map(|column| &column.cards);
         self.statuses = statuses(store, types.map(|card| card.issue_type.as_str()));
@@ -522,6 +628,9 @@ impl Board {
             self.left = self.column + 1 - fit;
         }
         self.left = self.left.min(self.columns.len() - fit);
+        if !self.lanes.is_empty() {
+            self.scroll_lanes(usize::from(whole.height.saturating_sub(2)));
+        }
         let areas = Layout::horizontal(vec![Constraint::Fill(1); fit]).split(whole);
         let shown = self.left..self.left + fit;
         let (before, after) = (self.left, self.columns.len() - shown.end);
@@ -544,25 +653,89 @@ impl Board {
             if here {
                 block = block.border_style(Style::new().bold());
             }
-            let lines: Vec<Line> = column
-                .cards
-                .iter()
-                .map(|card| {
-                    let off = if card.status == column.status {
-                        String::new()
-                    } else {
-                        format!("[{}] ", card.status)
-                    };
-                    Line::from(format!("{} {off}{}", card.key, card.title))
-                })
-                .collect();
-            let mut cards = Cards::new(lines).block(block);
-            if here {
-                cards = cards.highlight_style(Style::new().reversed());
+            if self.lanes.is_empty() {
+                let lines: Vec<Line> = column.cards.iter().map(|card| line(column, card)).collect();
+                let mut cards = Cards::new(lines).block(block);
+                if here {
+                    cards = cards.highlight_style(Style::new().reversed());
+                }
+                frame.render_stateful_widget(cards, *area, &mut column.row);
+                continue;
             }
-            frame.render_stateful_widget(cards, *area, &mut column.row);
+            let (mut rows, selected) = banded(&self.lanes, column);
+            if let Some(at) = selected.filter(|_| here) {
+                rows[at] = rows[at].clone().reversed();
+            }
+            let window: Vec<Line> = rows.into_iter().skip(self.top).collect();
+            frame.render_widget(Paragraph::new(window).block(block), *area);
         }
     }
+
+    /// Moves the rows every column shares so the cursor's card is in view.
+    fn scroll_lanes(&mut self, height: usize) {
+        let rows: usize = self.lanes.iter().map(|(_, tall)| tall + 1).sum();
+        self.top = self.top.min(rows.saturating_sub(height));
+        let Some(column) = self.columns.get(self.column) else {
+            return;
+        };
+        let Some(at) = banded(&self.lanes, column).1 else {
+            return;
+        };
+        if at < self.top {
+            self.top = at;
+        } else if at >= self.top + height {
+            self.top = at + 1 - height;
+        }
+        // The cursor's band keeps its name in view while its card fits.
+        let header = header_row(&self.lanes, at);
+        if at - header < height {
+            self.top = self.top.min(header);
+        }
+    }
+}
+
+fn header_row(lanes: &[(String, usize)], row: usize) -> usize {
+    let mut start = 0;
+    for (_, tall) in lanes {
+        if row < start + 1 + tall {
+            return start;
+        }
+        start += 1 + tall;
+    }
+    start
+}
+
+/// A card's line: its Key, its Status when it is not the column's, and its
+/// title.
+fn line<'a>(column: &Column, card: &Card) -> Line<'a> {
+    let off = if card.status == column.status {
+        String::new()
+    } else {
+        format!("[{}] ", card.status)
+    };
+    Line::from(format!("{} {off}{}", card.key, card.title))
+}
+
+/// `column`'s rows in swimlanes: each band's name, then its cards, then
+/// blank rows to the band's height, so bands line up across columns; and
+/// the row of the selected card.
+fn banded<'a>(lanes: &[(String, usize)], column: &Column) -> (Vec<Line<'a>>, Option<usize>) {
+    let selected = column.row.selected().and_then(|at| column.cards.get(at));
+    let mut rows = Vec::new();
+    let mut at = None;
+    for (lane, height) in lanes {
+        let name = if lane == "-" { "none" } else { lane };
+        rows.push(Line::from(format!("── {name} ──")).dim());
+        let start = rows.len();
+        for card in column.cards.iter().filter(|card| &card.lane == lane) {
+            if selected.is_some_and(|selected| std::ptr::eq(selected, card)) {
+                at = Some(rows.len());
+            }
+            rows.push(line(column, card));
+        }
+        rows.resize(start + height, Line::default());
+    }
+    (rows, at)
 }
 
 #[cfg(test)]
@@ -636,6 +809,7 @@ mod tests {
                 issue_type: "task".into(),
                 status: status.into(),
                 title: key.into(),
+                lane: String::new(),
             });
         }
         shown
