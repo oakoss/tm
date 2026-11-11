@@ -36,6 +36,7 @@ pub use issue::{
 };
 use keys::{Binding, ch, ctrl, plain};
 use list::List;
+use picker::{Picked, Picker};
 use ready::Ready;
 use stack::Stack;
 pub use terminal::{Ended, run};
@@ -199,6 +200,8 @@ pub(crate) enum Outcome {
     Undo,
     /// Write a comment on the Issue with this Key in `$EDITOR`.
     Compose(String),
+    /// Open this picker over the screen; it takes the keys until it closes.
+    Pick(Picker),
     Quit,
 }
 
@@ -239,17 +242,20 @@ impl Screen {
     fn prompt(&self) -> Option<String> {
         match self {
             Self::List(list) => list.prompt(),
-            Self::Ready(_) => None,
-            Self::Issue(issue) => issue.prompt(),
-            Self::Triage(triage) => triage.prompt(),
-            Self::Board(board) => board.prompt(),
+            _ => None,
         }
     }
 
+    /// Whether the last read failed in a way that leaves an open picker
+    /// pointing at Issues the screen no longer shows.
+    fn unread(&self) -> bool {
+        matches!(self, Self::Board(board) if board.unread())
+    }
+
     /// The writes the screen asked for are done.
-    fn wrote(&mut self, landed: &[String], refused: bool) {
+    fn wrote(&mut self, attempted: &[String], landed: &[String], refused: bool) {
         if let Self::Triage(triage) = self {
-            triage.wrote(landed, refused);
+            triage.wrote(attempted, landed, refused);
         }
     }
 
@@ -311,6 +317,9 @@ pub struct Shell {
     busy: bool,
     /// The Issue list, and the screens shown over it.
     screens: Stack,
+    /// The picker open over the screen shown, which takes every key but
+    /// Ctrl-C and Ctrl-Z until it closes.
+    picker: Option<Picker>,
     pending: Option<Pending>,
     /// This session's writes, each action's batches, newest last.
     written: Vec<Vec<Uuid>>,
@@ -351,6 +360,7 @@ impl Shell {
             changed: None,
             busy: false,
             screens: Stack::new(Screen::List(List::default())),
+            picker: None,
             pending: None,
             written: Vec::new(),
             said: None,
@@ -445,7 +455,8 @@ impl Shell {
                 Err(why) => refused.push(format!("{}: {why}", write.key())),
             }
         }
-        self.shown().wrote(&landed, !refused.is_empty());
+        let attempted: Vec<String> = writes.iter().map(|write| write.key().to_owned()).collect();
+        self.shown().wrote(&attempted, &landed, !refused.is_empty());
         let count = batches.len();
         self.last_wrote = count > 0;
         if count > 0 {
@@ -525,6 +536,9 @@ impl Shell {
     /// Reads the screen shown from `store`.
     pub fn load(&mut self, store: &Store, actions: &dyn Actions) {
         self.shown().load(store, actions);
+        if self.shown().unread() {
+            self.picker = None;
+        }
     }
 
     pub fn key(&mut self, key: KeyEvent) -> Flow {
@@ -537,6 +551,20 @@ impl Shell {
             Some(Global::Quit) => return Flow::Quit,
             Some(Global::Suspend) => return Flow::Suspend,
             _ => {}
+        }
+        if let Some(picker) = &mut self.picker {
+            return match picker.key(key) {
+                Picked::Open => Flow::Stay,
+                Picked::Cancelled => {
+                    self.picker = None;
+                    Flow::Stay
+                }
+                Picked::Chosen(writes) => {
+                    self.picker = None;
+                    self.pending = Some(Pending::Writes(writes));
+                    Flow::Write
+                }
+            };
         }
         if self.shown().prompt().is_none() {
             match global {
@@ -571,6 +599,10 @@ impl Shell {
                 self.pending = Some(Pending::Compose(key));
                 Flow::Compose
             }
+            Outcome::Pick(picker) => {
+                self.picker = Some(picker);
+                Flow::Stay
+            }
             Outcome::Quit => Flow::Quit,
         }
     }
@@ -601,6 +633,9 @@ impl Shell {
         let crumbs = crumbs(&self.place, &titles, usize::from(top.width));
         frame.render_widget(Line::from(crumbs), top);
         self.shown().render(frame, body);
+        if let Some(picker) = &mut self.picker {
+            picker.render(frame, body);
+        }
         if let Some(text) = &self.said {
             frame.render_widget(Line::from(cut(text, usize::from(said.width))), said);
         }
@@ -618,7 +653,10 @@ impl Shell {
         ])
         .spacing(1)
         .areas(bottom);
-        let footer = self.shown().footer();
+        let footer = match &self.picker {
+            Some(picker) => picker.prompt(),
+            None => self.screens.top().footer(),
+        };
         frame.render_widget(Line::from(footer), keys);
         if let Some(status) = status {
             frame.render_widget(Line::from(status).right_aligned(), right);

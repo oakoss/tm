@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::cursor;
 use crate::issue::IssueScreen;
 use crate::keys::{self, Binding, ch, plain};
-use crate::picker::{Choice, Field, Picked, Picker, statuses, writes};
+use crate::picker::{Choice, Field, Picker, statuses};
 use crate::read;
 use crate::{Actions, Outcome, Screen, Write};
 
@@ -167,7 +167,6 @@ pub(crate) struct Board {
     column: usize,
     /// The first column drawn, so the one with the cursor stays in view.
     left: usize,
-    picker: Option<Picker>,
     /// Statuses per Issue type, in Workflow order.
     statuses: Vec<(String, Vec<Choice>)>,
     problem: Option<String>,
@@ -247,8 +246,10 @@ fn arrange(
 }
 
 impl Board {
-    pub(crate) fn prompt(&self) -> Option<String> {
-        self.picker.as_ref().map(Picker::prompt)
+    /// Whether the last read failed, its reason hiding the Issues, so none
+    /// is moved unseen.
+    pub(crate) fn unread(&self) -> bool {
+        self.problem.is_some()
     }
 
     /// Reads the Issues again, the cursor staying on its Issue wherever it
@@ -275,7 +276,6 @@ impl Board {
             // The last Board read stays behind the reason, so the next read
             // finds the cursor's Issue again.
             Err(err) => {
-                self.picker = None;
                 self.problem = Some(printable(&err.to_string()));
                 return;
             }
@@ -319,19 +319,6 @@ impl Board {
     }
 
     pub(crate) fn key(&mut self, key: KeyEvent) -> Outcome {
-        if let Some(picker) = &mut self.picker {
-            return match picker.key(key) {
-                Picked::Open => Outcome::Stay,
-                Picked::Cancelled => {
-                    self.picker = None;
-                    Outcome::Stay
-                }
-                Picked::Chosen(field, chosen, targets) => {
-                    self.picker = None;
-                    Outcome::Write(writes(field, &chosen, targets))
-                }
-            };
-        }
         let Some(act) = keys::action(&KEYS, key) else {
             return Outcome::Stay;
         };
@@ -358,8 +345,7 @@ impl Board {
                 };
                 let choices = self.workflow(&card.issue_type).to_vec();
                 let target = vec![(card.key.clone(), card.version)];
-                self.picker = Some(Picker::new(Field::Status, choices, target));
-                Outcome::Stay
+                Outcome::Pick(Picker::new(Field::Status, choices, target))
             }
             Act::Left => {
                 self.column = self.column.saturating_sub(1);
@@ -486,9 +472,6 @@ impl Board {
                 cards = cards.highlight_style(Style::new().reversed());
             }
             frame.render_stateful_widget(cards, *area, &mut column.row);
-        }
-        if let Some(picker) = &mut self.picker {
-            picker.render(frame, whole);
         }
     }
 }
