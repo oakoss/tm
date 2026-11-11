@@ -247,9 +247,9 @@ impl Screen {
     }
 
     /// The writes the screen asked for are done.
-    fn wrote(&mut self, landed: &[String], refused: bool) {
+    fn wrote(&mut self, attempted: &[String], landed: &[String], refused: bool) {
         if let Self::Triage(triage) = self {
-            triage.wrote(landed, refused);
+            triage.wrote(attempted, landed, refused);
         }
     }
 
@@ -445,7 +445,8 @@ impl Shell {
                 Err(why) => refused.push(format!("{}: {why}", write.key())),
             }
         }
-        self.shown().wrote(&landed, !refused.is_empty());
+        let attempted: Vec<String> = writes.iter().map(|write| write.key().to_owned()).collect();
+        self.shown().wrote(&attempted, &landed, !refused.is_empty());
         let count = batches.len();
         self.last_wrote = count > 0;
         if count > 0 {

@@ -24,7 +24,7 @@ pub use data::{
 pub(crate) use layout::body;
 
 use crate::keys::{self, Binding, ch, plain};
-use crate::picker::{Choice, Field, Picked, Picker, assignees, people, priorities, writes};
+use crate::picker::{Choice, Field, Picked, Picker, assignees, people, priorities};
 use crate::scroll::{Move, Scroll};
 use crate::{Actions, Outcome, Screen, cursor, read};
 
@@ -231,9 +231,9 @@ impl IssueScreen {
                     self.picker = None;
                     Outcome::Stay
                 }
-                Picked::Chosen(field, chosen, targets) => {
+                Picked::Chosen(writes) => {
                     self.picker = None;
-                    Outcome::Write(writes(field, &chosen, targets))
+                    Outcome::Write(writes)
                 }
             };
         }

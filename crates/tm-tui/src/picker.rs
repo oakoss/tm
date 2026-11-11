@@ -44,8 +44,9 @@ pub(crate) struct Choice {
 pub(crate) enum Picked {
     Open,
     Cancelled,
-    /// Enter took this choice for these Issues and versions.
-    Chosen(Field, Choice, Vec<(String, i64)>),
+    /// Enter took a choice: the writes that set it on the Issues the picker
+    /// opened on, each checked against the version read.
+    Chosen(Vec<Write>),
 }
 
 pub(crate) struct Picker {
@@ -106,8 +107,10 @@ impl Picker {
             KeyCode::Enter => {
                 let targets = std::mem::take(&mut self.targets);
                 return match self.chosen() {
-                    Some(chosen) => Picked::Chosen(self.field, chosen, targets),
-                    None => Picked::Cancelled,
+                    Some(chosen) if !targets.is_empty() => {
+                        Picked::Chosen(writes(self.field, &chosen, targets))
+                    }
+                    _ => Picked::Cancelled,
                 };
             }
             KeyCode::Down => self.at.select(Some(
@@ -176,7 +179,7 @@ impl Picker {
 }
 
 /// The writes that set `field` to `chosen` on each of `targets`.
-pub(crate) fn writes(field: Field, chosen: &Choice, targets: Vec<(String, i64)>) -> Vec<Write> {
+fn writes(field: Field, chosen: &Choice, targets: Vec<(String, i64)>) -> Vec<Write> {
     targets
         .into_iter()
         .map(|(key, version)| match field {
@@ -312,9 +315,14 @@ mod tests {
         picker.key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
+    /// The value the picked writes set, each choice's value its label here.
     fn chosen(picked: Picked) -> Option<String> {
         match picked {
-            Picked::Chosen(_, choice, _) => Some(choice.label),
+            Picked::Chosen(writes) => match writes.as_slice() {
+                [Write::Set { value, .. }] => value.clone(),
+                [Write::Move { status, .. }] => Some(status.clone()),
+                _ => None,
+            },
             _ => None,
         }
     }

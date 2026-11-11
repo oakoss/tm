@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::cursor;
 use crate::issue::IssueScreen;
 use crate::keys::{self, Binding, ch, plain};
-use crate::picker::{Choice, Field, Picked, Picker, statuses, writes};
+use crate::picker::{Choice, Field, Picked, Picker, statuses};
 use crate::read;
 use crate::{Actions, Outcome, Screen, Write};
 
@@ -326,9 +326,9 @@ impl Board {
                     self.picker = None;
                     Outcome::Stay
                 }
-                Picked::Chosen(field, chosen, targets) => {
+                Picked::Chosen(writes) => {
                     self.picker = None;
-                    Outcome::Write(writes(field, &chosen, targets))
+                    Outcome::Write(writes)
                 }
             };
         }
