@@ -202,7 +202,7 @@ enum Command {
     /// List the work that can start now, most urgent first.
     ///
     /// Unclaimed todo Issues no open Issue blocks, each with what it would
-    /// unblock.
+    /// unblock, in the Project this directory maps to.
     Ready {
         /// Show at most this many.
         #[arg(long)]

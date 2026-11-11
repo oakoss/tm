@@ -426,12 +426,13 @@ pub(crate) fn unread(err: &CliError) -> String {
 /// The Project's ready queue, less Issues on a Short-list, which another
 /// Actor works through.
 fn ready(here: &Here, project: ProjectId) -> Result<Source, CliError> {
-    let ready: Vec<Uuid> = here.store.ready()?.into_iter().map(|r| r.issue).collect();
-    let members = here
+    let ready: Vec<Uuid> = here
         .store
-        .eligibility(&ready)?
+        .ready_in(Some(project))?
         .into_iter()
-        .filter(|member| member.issue.project == project);
+        .map(|r| r.issue)
+        .collect();
+    let members = here.store.eligibility(&ready)?.into_iter();
     let (listed, members): (Vec<Member>, Vec<Member>) = members.partition(|member| {
         let list = member.issue.fields.get("shortlist");
         list.and_then(Value::as_str).is_some()

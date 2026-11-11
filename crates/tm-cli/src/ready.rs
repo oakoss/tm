@@ -18,8 +18,9 @@ use crate::output::Output;
 
 pub(crate) fn run(limit: Option<usize>, json: bool) -> Result<Output, CliError> {
     let mut here = here::read()?;
-    let lists = session_lists(&mut here);
-    let queue = match here.store.read(|store| Queue::read(store, limit)) {
+    let project = mapped_or_every(&mut here);
+    let lists = project.map_or_else(Vec::new, |project| session_lists(&mut here, project));
+    let queue = match here.store.read(|store| Queue::read(store, limit, project)) {
         Ok(queue) => queue,
         Err(err) => return Err(err.warned(here.warnings)),
     };
@@ -58,15 +59,16 @@ pub(crate) fn run(limit: Option<usize>, json: bool) -> Result<Output, CliError> 
 /// What `tm ready` prints, read from `store`: `lists` first, then the queue.
 pub(crate) fn render(
     store: &Store,
+    project: ProjectId,
     lists: &[(Shortlist, Vec<Member>)],
 ) -> Result<String, CliError> {
     store
-        .read(|store| Queue::read(store, None))
+        .read(|store| Queue::read(store, None, Some(project)))
         .map(|queue| queue.text(lists))
 }
 
-/// The ready queue, cut to a limit, with what each Issue unblocks, its
-/// Project's Key and the Short-list it is on.
+/// The ready queue, of one Project or every one, cut to a limit, with what
+/// each Issue unblocks, its Project's Key and the Short-list it is on.
 struct Queue {
     total: usize,
     views: Vec<IssueView>,
@@ -76,8 +78,12 @@ struct Queue {
 }
 
 impl Queue {
-    fn read(store: &Store, limit: Option<usize>) -> Result<Self, CliError> {
-        let mut ready = store.ready()?;
+    fn read(
+        store: &Store,
+        limit: Option<usize>,
+        project: Option<ProjectId>,
+    ) -> Result<Self, CliError> {
+        let mut ready = store.ready_in(project)?;
         let total = ready.len();
         ready.truncate(limit.unwrap_or(total));
         let ids: Vec<Uuid> = ready.iter().map(|ready| ready.issue).collect();
@@ -128,22 +134,35 @@ impl Queue {
     }
 }
 
+/// The Project this directory maps to, whose queue `tm ready` shows; with
+/// none, every Project's, and [`unmapped`]'s warnings.
+fn mapped_or_every(here: &mut Here) -> Option<ProjectId> {
+    match here.project() {
+        Ok(project) => Some(project),
+        Err(err) => {
+            here.warnings.extend(unmapped(&err));
+            None
+        }
+    }
+}
+
+/// Why `tm ready` and `tm prime` show every Project's queue when the
+/// directory maps to none, `err` saying why, and that a `TM_SHORTLIST`
+/// binding goes unused, since Short-lists belong to a Project.
+pub(crate) fn unmapped(err: &CliError) -> Vec<String> {
+    let why = next::unread(err);
+    let mut warnings = vec![format!("the ready queue spans every Project: {why}")];
+    if std::env::var_os("TM_SHORTLIST").is_some() {
+        warnings.push("TM_SHORTLIST is unused, as no Project is mapped".to_owned());
+    }
+    warnings
+}
+
 /// The session's lists, which `tm ready` leads with. Who the session is, which
 /// may run git, is read only when its Project has a list or `TM_SHORTLIST`
 /// names one; a session that cannot say, a binding that names no list, or a
 /// list it cannot read is a warning, so the queue still prints.
-fn session_lists(here: &mut Here) -> Vec<(Shortlist, Vec<Member>)> {
-    // The queue spans Projects, so a directory mapped to none has no lists
-    // to lead with, and no warning unless TM_SHORTLIST asked for one.
-    let project = match here.project() {
-        Ok(project) => project,
-        Err(_) if std::env::var_os("TM_SHORTLIST").is_none() => return Vec::new(),
-        Err(err) => {
-            let why = next::unread(&err);
-            here.warnings.push(format!("no Short-lists: {why}"));
-            return Vec::new();
-        }
-    };
+fn session_lists(here: &mut Here, project: ProjectId) -> Vec<(Shortlist, Vec<Member>)> {
     let Here {
         store,
         found,

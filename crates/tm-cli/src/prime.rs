@@ -65,15 +65,17 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
         }),
         None => Vec::new(),
     };
+    let mapped_id = mapped.as_ref().map(|(project, _)| *project);
     let project = mapped.map(|(_, key)| key);
     let ready_shown = if lists.is_empty() {
         READY_SHOWN
     } else {
         READY_SHOWN_WITH_LISTS
     };
+    let ready_of = (mapped_id, ready_shown);
     let read = here
         .store
-        .read(|store| gather(store, actor.as_ref(), ready_shown, &mut warnings));
+        .read(|store| gather(store, actor.as_ref(), ready_of, &mut warnings));
     let Read {
         claims,
         notes,
@@ -188,7 +190,7 @@ struct Read {
 fn gather(
     store: &Store,
     actor: Option<&Actor>,
-    ready_shown: usize,
+    (project, ready_shown): (Option<ProjectId>, usize),
     warnings: &mut Vec<String>,
 ) -> Result<Read, CliError> {
     let waiting = waiting(store, actor, warnings)?;
@@ -202,7 +204,7 @@ fn gather(
     let mut active = store.find("category:active", Context { me: None })?;
     let active_total = active.len();
     active.truncate(ACTIVE_SHOWN);
-    let (ready, total, passed) = ready_queue(store, ready_shown)?;
+    let (ready, total, passed) = ready_queue(store, project, ready_shown)?;
     let ids: Vec<Uuid> = claims
         .held
         .iter()
@@ -369,8 +371,12 @@ fn waiting_section(
 /// The first `shown` ready Issues, how many are ready and how many of those
 /// are on a Short-list, which are passed over: a list holds them for its
 /// Actors, and the session's own lists show above.
-fn ready_queue(store: &Store, shown: usize) -> Result<(Vec<Uuid>, usize, usize), CliError> {
-    let ready = store.ready()?;
+fn ready_queue(
+    store: &Store,
+    project: Option<ProjectId>,
+    shown: usize,
+) -> Result<(Vec<Uuid>, usize, usize), CliError> {
+    let ready = store.ready_in(project)?;
     let total = ready.len();
     let listed: HashSet<Uuid> = store
         .find("has:shortlist", Context { me: None })?
@@ -412,7 +418,7 @@ fn context(here: &here::Here) -> (Option<Actor>, Option<(ProjectId, String)>, Ve
     let project = match here::mapped_project(&here.store, &here.found, &here.cwd) {
         Ok((id, key)) => Some((id, key.to_owned())),
         Err(err) => {
-            warnings.push(err.message);
+            warnings.extend(crate::ready::unmapped(&err));
             None
         }
     };
