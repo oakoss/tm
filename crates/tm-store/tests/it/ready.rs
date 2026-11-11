@@ -5,7 +5,9 @@ use serde_json::json;
 use tm_store::{Ready, Store};
 use uuid::Uuid;
 
-use crate::support::{ManualClock, TempDir, claude, draft, jace, new_issue, open, set_field};
+use crate::support::{
+    ManualClock, PROJECT, TempDir, claude, draft, jace, new_issue, open, set_field,
+};
 
 fn set(store: &mut Store, issue: Uuid, field: &str, value: serde_json::Value) {
     store.append(draft(issue, set_field(field, value))).unwrap();
@@ -152,4 +154,32 @@ fn a_blocking_cycle_left_by_a_merge_drops_both_without_looping() {
         )
         .unwrap();
     assert_eq!(queue(&store), [free]);
+}
+
+#[test]
+fn a_projects_queue_holds_its_issues_and_what_they_unblock_anywhere() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let (web, _) = store.create_project(&jace(), "WEB", "Web").unwrap();
+    let here = new_issue(&mut store);
+    let (there, _) = store.create_issue(&jace(), web, "task", "t").unwrap();
+    let (held, _) = store.create_issue(&jace(), web, "task", "t").unwrap();
+    blocks(&mut store, here, held);
+    let in_project = |project| {
+        let ready = store.ready_in(Some(project)).unwrap();
+        ready
+            .into_iter()
+            .map(|r| (r.issue, r.unblocks))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(in_project(PROJECT), [(here, vec![held])]);
+    assert_eq!(in_project(web), [(there, Vec::new())]);
+    let every: Vec<Uuid> = store
+        .ready_in(None)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.issue)
+        .collect();
+    assert_eq!(every, queue(&store));
+    assert_eq!(every.len(), 2, "{every:?}");
 }

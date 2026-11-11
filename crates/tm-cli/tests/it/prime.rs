@@ -452,18 +452,35 @@ fn ready_warns_of_a_binding_when_the_project_has_no_lists() {
     let warned = doc["warnings"][0].as_str().unwrap_or_default();
     assert!(warned.starts_with("TM_SHORTLIST names nope"), "{doc}");
 
-    // So is one in a directory mapped to a Project the Workspace lacks.
+    // A directory mapped to a Project the Workspace lacks reads every
+    // Project's queue and says why, and that a binding goes unused.
     let file = repo.join(".config/tm.toml");
     let mapped = fs::read_to_string(&file).unwrap();
     fs::write(&file, mapped.replace("\"TM\"", "\"NOPE\"")).unwrap();
-    let out = as_agent(&scratch, &repo, "claude", &nope, &["--json", "ready"]);
-    assert!(out.status.success(), "{out:?}");
-    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
-    let warned = doc["warnings"][0].as_str().unwrap_or_default();
-    assert!(warned.starts_with("no Short-lists: "), "{doc}");
-    let quiet = as_agent(&scratch, &repo, "claude", &[], &["--json", "ready"]);
-    let doc: Value = serde_json::from_slice(&quiet.stdout).unwrap();
-    assert_eq!(doc["warnings"], json!([]), "{doc}");
+    let unused = "TM_SHORTLIST is unused, as no Project is mapped";
+    for (binding, also) in [(&nope[..], Some(unused)), (&[], None)] {
+        for command in ["ready", "prime"] {
+            let out = as_agent(&scratch, &repo, "claude", binding, &["--json", command]);
+            assert!(out.status.success(), "{out:?}");
+            let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+            let warnings: Vec<&str> = doc["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Value::as_str)
+                .collect();
+            let spans = warnings.iter().filter(|warned| {
+                warned.starts_with("the ready queue spans every Project: ")
+                    && warned.contains("Project NOPE")
+            });
+            assert_eq!(spans.count(), 1, "{command}: {doc}");
+            assert_eq!(
+                warnings.contains(&unused),
+                also.is_some(),
+                "{command}: {doc}"
+            );
+        }
+    }
 }
 
 /// The list tm next takes from shows even past the lists prime shows, its

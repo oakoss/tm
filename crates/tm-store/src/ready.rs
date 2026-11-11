@@ -2,7 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use tm_core::filter::{Context, OPEN, parse, resolve};
+use tm_core::ProjectId;
+use tm_core::filter::{Condition, Context, Literal, OPEN, Target, parse, resolve};
 use tm_core::link::BLOCKS;
 use uuid::Uuid;
 
@@ -28,13 +29,30 @@ impl Store {
     /// [`StoreError::Clock`], any SQLite failure, or [`StoreError::Corrupt`]
     /// for a malformed row.
     pub fn ready(&self) -> Result<Vec<Ready>, StoreError> {
+        self.ready_in(None)
+    }
+
+    /// [`Store::ready`], of `project`'s Issues alone when one is named. What
+    /// each unblocks still spans Projects, as blocks do.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::ready`].
+    pub fn ready_in(&self, project: Option<ProjectId>) -> Result<Vec<Ready>, StoreError> {
         let now_ms = self.utc_ms()?;
         self.read(|store| {
             let category = |filter: &str| {
                 resolve(&parse(filter)?, &store.scheme, Context { me: None })
                     .map_err(StoreError::from)
             };
-            let todo = category("category:todo")?;
+            let mut todo = category("category:todo")?;
+            if let Some(project) = project {
+                todo.conditions.push(Condition::Match {
+                    target: Target::Column("project"),
+                    values: vec![Literal::Text(project.to_string())],
+                    negated: false,
+                });
+            }
             let open = category(OPEN)?;
 
             let (sql, params) = query::ready(&todo, &open, BLOCKS, now_ms);

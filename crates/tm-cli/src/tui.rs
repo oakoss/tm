@@ -144,7 +144,7 @@ impl tm_tui::Actions for Cli<'_> {
             warnings.push(warning);
             Vec::new()
         });
-        let text = ready::render(store, &lists).map_err(|err| err.message)?;
+        let text = ready::render(store, self.project, &lists).map_err(|err| err.message)?;
         let mut lead = String::new();
         for warning in warnings {
             lead.push_str("warning: ");
@@ -414,6 +414,8 @@ mod tests {
         let (project, _) = store.create_project(&jace, "TM", "Core").unwrap();
         let (first, _) = store.create_issue(&jace, project, "task", "alpha").unwrap();
         store.create_issue(&jace, project, "task", "beta").unwrap();
+        let (web, _) = store.create_project(&jace, "WEB", "Web").unwrap();
+        store.create_issue(&jace, web, "task", "elsewhere").unwrap();
         let (list, _) = store
             .create_shortlist(&jace, project, "docs", &["jace".to_owned()], None)
             .unwrap();
@@ -435,6 +437,7 @@ mod tests {
         let queue = text.find("Ready (2):");
         assert!(lists.is_some() && queue > lists, "{text}");
         assert!(text.contains("\nTM-2  todo  none  beta\n"), "{text}");
+        assert!(!text.contains("WEB-1"), "{text}");
         let nobody = Cli {
             me: Err("unused"),
             project,
