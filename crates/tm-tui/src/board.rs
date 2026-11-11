@@ -195,6 +195,54 @@ fn columns(scheme: &Scheme, all: bool) -> Vec<Column> {
         .collect()
 }
 
+/// The Issues `filter` matches, as cards.
+fn cards(store: &Store, filter: &str, actions: &dyn Actions) -> Result<Vec<Card>, String> {
+    let me = actions.me().ok();
+    let read = read::issues(store, filter, Context { me }).map_err(|err| err.to_string())?;
+    Ok(read
+        .into_iter()
+        .map(|issue| Card {
+            issue_type: issue.field("type"),
+            status: issue.field("status"),
+            title: issue.field("title"),
+            id: issue.id,
+            key: issue.key,
+            version: issue.version,
+        })
+        .collect())
+}
+
+/// The columns `view` lists, in its order, each holding the Issues in its
+/// Status that the View's filter and its own both match; done and
+/// cancelled ones too, since a View names its Statuses.
+fn listed(store: &Store, view: &View, actions: &dyn Actions) -> Result<Vec<Column>, String> {
+    // The View's filter is read alone first, so its error is named as its
+    // own, and once it parses alone no quote can run across the join.
+    cards(store, &read::in_project(&view.filter, actions), actions)
+        .map_err(|why| format!("{}: {why}", view.name))?;
+    let scheme = store.scheme();
+    let mut filled = Vec::with_capacity(view.columns.len());
+    for column in &view.columns {
+        let status = scheme
+            .workflows
+            .iter()
+            .flat_map(|workflow| &workflow.statuses)
+            .find(|status| status.id == column.status)
+            .ok_or_else(|| format!("{}: no Status {:?}", view.name, column.status))?;
+        let filter = format!("{} {} status:{}", view.filter, column.filter, status.id);
+        let cards = cards(store, &read::in_project(&filter, actions), actions)
+            .map_err(|why| format!("{}, column {}: {why}", view.name, status.id))?;
+        filled.push(Column {
+            status: status.id.clone(),
+            label: printable(&status.label),
+            category: status.category,
+            cards,
+            row: ListState::default(),
+        });
+    }
+    Ok(filled)
+}
+
 /// The column a card in `status` goes in: its own, else the first triage
 /// one, as a Status the Scheme does not define reads as triage, else the
 /// first.
@@ -257,6 +305,13 @@ impl Board {
         }
     }
 
+    /// Whether its columns are the ones its View lists.
+    fn listed(&self) -> bool {
+        self.view
+            .as_ref()
+            .is_some_and(|view| !view.columns.is_empty())
+    }
+
     /// The breadcrumb's name for it: its View's, else Board.
     pub(crate) fn title(&self) -> String {
         self.view
@@ -274,28 +329,29 @@ impl Board {
     /// went.
     pub(crate) fn load(&mut self, store: &Store, actions: &dyn Actions) {
         let kept = self.selected().map(|card| card.key.clone());
-        let typed = self.view.as_ref().map_or("", |view| view.filter.as_str());
-        let filter = read::in_project(&open_unless_named(typed, self.all), actions);
-        let me = actions.me().ok();
-        let read = read::issues(store, &filter, Context { me }).map(|issues| {
-            issues
-                .into_iter()
-                .map(|issue| Card {
-                    issue_type: issue.field("type"),
-                    status: issue.field("status"),
-                    title: issue.field("title"),
-                    id: issue.id,
-                    key: issue.key,
-                    version: issue.version,
-                })
-                .collect::<Vec<_>>()
-        });
-        let cards = match read {
-            Ok(cards) => cards,
+        let read = if let Some(view) = self.view.as_ref().filter(|view| !view.columns.is_empty()) {
+            listed(store, view, actions)
+        } else {
+            let typed = self.view.as_ref().map_or("", |view| view.filter.as_str());
+            let filter = read::in_project(&open_unless_named(typed, self.all), actions);
+            cards(store, &filter, actions).map(|cards| {
+                // A filter naming a state may admit done or cancelled
+                // Issues, which need their own columns, not the triage one.
+                let mut columns = columns(store.scheme(), self.all || names_a_state(typed));
+                for card in cards {
+                    if let Some(at) = place(&columns, &card.status) {
+                        columns[at].cards.push(card);
+                    }
+                }
+                columns
+            })
+        };
+        let filled = match read {
+            Ok(filled) => filled,
             // The last Board read stays behind the reason, so the next read
             // finds the cursor's Issue again.
-            Err(err) => {
-                self.problem = Some(printable(&err.to_string()));
+            Err(why) => {
+                self.problem = Some(printable(&why));
                 return;
             }
         };
@@ -308,15 +364,9 @@ impl Board {
             .columns
             .get(self.column)
             .map(|column| column.status.clone());
-        // A filter naming a state may admit done or cancelled Issues, which
-        // need their own columns rather than the triage one.
-        self.columns = columns(store.scheme(), self.all || names_a_state(typed));
-        self.statuses = statuses(store, cards.iter().map(|card| card.issue_type.as_str()));
-        for card in cards {
-            if let Some(at) = place(&self.columns, &card.status) {
-                self.columns[at].cards.push(card);
-            }
-        }
+        self.columns = filled;
+        let types = self.columns.iter().flat_map(|column| &column.cards);
+        self.statuses = statuses(store, types.map(|card| card.issue_type.as_str()));
         self.problem = None;
         self.column = arrange(&mut self.columns, &rows, kept.as_deref(), here.as_deref());
     }
@@ -415,18 +465,36 @@ impl Board {
             return Outcome::Stay;
         };
         let order = self.workflow(&card.issue_type);
-        let Some(now) = order
-            .iter()
-            .position(|choice| choice.value.as_deref() == Some(card.status.as_str()))
-        else {
-            return Outcome::Stay;
-        };
-        let next = if right {
-            now.checked_add(1)
+        let to = if self.listed() {
+            // A View's columns set the order: the Status of the column drawn
+            // beside this one, if the Issue's Workflow has it.
+            let beside = if right {
+                self.column.checked_add(1)
+            } else {
+                self.column.checked_sub(1)
+            };
+            beside
+                .and_then(|at| self.columns.get(at))
+                .and_then(|column| {
+                    order
+                        .iter()
+                        .find(|choice| choice.value.as_deref() == Some(column.status.as_str()))
+                })
         } else {
-            now.checked_sub(1)
+            let Some(now) = order
+                .iter()
+                .position(|choice| choice.value.as_deref() == Some(card.status.as_str()))
+            else {
+                return Outcome::Stay;
+            };
+            let next = if right {
+                now.checked_add(1)
+            } else {
+                now.checked_sub(1)
+            };
+            next.and_then(|next| order.get(next))
         };
-        match next.and_then(|next| order.get(next)) {
+        match to {
             Some(to) => Outcome::Write(vec![Write::Move {
                 key: card.key.clone(),
                 status: to.value.clone().unwrap_or_default(),

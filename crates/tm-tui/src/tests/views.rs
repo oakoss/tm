@@ -1,4 +1,4 @@
-use tm_store::view::{Layout, View};
+use tm_store::view::{Column, Layout, View};
 
 use super::*;
 
@@ -134,6 +134,98 @@ fn a_board_view_naming_a_state_puts_finished_issues_in_their_own_column() {
         panic!("a Board is shown");
     };
     assert_eq!(board.cursor(), ("done".to_owned(), Some("TM-4".to_owned())));
+}
+
+fn column(status: &str, filter: &str) -> Column {
+    Column {
+        status: status.into(),
+        filter: filter.into(),
+    }
+}
+
+#[test]
+fn a_board_views_columns_are_its_statuses_in_order_each_narrowed_by_its_filter() {
+    let store = store();
+    let mut flow = view("Flow", "-title:second", Layout::Board);
+    flow.columns = vec![column("done", ""), column("todo", "-title:third")];
+    let views = Saved(Ok(vec![flow]));
+    let mut shell = sidebar(&store, &views);
+    shell.key(press(KeyCode::Enter));
+    shell.load(&store, &views);
+    let board = drawn_sized(&mut shell, 140, 12);
+    let done = board.find("Done").expect("a Done column");
+    let todo = board.find("Todo").expect("a Todo column");
+    assert!(done < todo, "in the View's order: {board}");
+    assert!(
+        !board.contains("Triage") && !board.contains("In Progress"),
+        "{board}"
+    );
+    assert!(
+        board.contains("TM-4") && board.contains("TM-1"),
+        "a listed done column shows done work: {board}"
+    );
+    assert!(
+        !board.contains("TM-2") && !board.contains("TM-3"),
+        "the column's filter and the View's both narrow it: {board}"
+    );
+}
+
+#[test]
+fn a_filter_error_names_the_view_or_the_column_it_is_in() {
+    let store = store();
+    for (filter, todo, said) in [
+        ("titel:x", "", "Flow: unknown field \"titel\""),
+        ("title:\"first", "x\"", "Flow: unterminated quote"),
+        ("", "titel:x", "Flow, column todo: unknown field \"titel\""),
+    ] {
+        let mut flow = view("Flow", filter, Layout::Board);
+        flow.columns = vec![column("todo", todo), column("done", "")];
+        let views = Saved(Ok(vec![flow]));
+        let mut shell = sidebar(&store, &views);
+        shell.key(press(KeyCode::Enter));
+        shell.load(&store, &views);
+        let board = drawn_sized(&mut shell, 160, 12);
+        assert!(board.contains(said), "{filter} / {todo}: {board}");
+    }
+}
+
+#[test]
+fn h_and_l_move_to_the_status_of_the_column_beside() {
+    let store = store();
+    let mut flow = view("Flow", "", Layout::Board);
+    flow.columns = vec![column("done", ""), column("todo", "")];
+    let record = Record::new();
+    let views = Saved(Ok(vec![flow]));
+    let mut shell = sidebar(&store, &views);
+    shell.key(press(KeyCode::Enter));
+    shell.load(&store, &views);
+    shell.key(press(KeyCode::Char('l')));
+    assert_eq!(shell.key(press(KeyCode::Char('H'))), Flow::Write);
+    shell.write(&record);
+    let moved = record.writes.borrow();
+    assert!(
+        matches!(moved.as_slice(), [Write::Move { status, .. }] if status == "done"),
+        "{moved:?}"
+    );
+    drop(moved);
+    assert_eq!(
+        shell.key(press(KeyCode::Char('L'))),
+        Flow::Stay,
+        "no column beyond the last"
+    );
+}
+
+#[test]
+fn a_column_naming_no_status_says_so() {
+    let store = store();
+    let mut flow = view("Flow", "", Layout::Board);
+    flow.columns = vec![column("todo", ""), column("shipped", "")];
+    let views = Saved(Ok(vec![flow]));
+    let mut shell = sidebar(&store, &views);
+    shell.key(press(KeyCode::Enter));
+    shell.load(&store, &views);
+    let board = drawn_sized(&mut shell, 140, 12);
+    assert!(board.contains("Flow: no Status \"shipped\""), "{board}");
 }
 
 #[test]
