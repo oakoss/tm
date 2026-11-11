@@ -1,9 +1,12 @@
 //! `tm tui`: the screens over this directory's Workspace (ADR 0018).
 
 use std::io::{self, IsTerminal};
+use std::path::Path;
 use std::process::ExitCode;
 
 use tm_core::ProjectId;
+use tm_store::view::View;
+use tm_store::workspace::RepoFile;
 use tm_store::{Store, StoreError};
 use tm_tui::Seen;
 use uuid::Uuid;
@@ -68,6 +71,7 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
         me,
         project,
         reader: reader.as_ref().map_err(String::as_str),
+        repo: Some((&here.found.path, key)),
     };
     tm_tui::run(place, store, &actions, |store| {
         let (opened, seen) = refresh(watch.changed(), &mut pending, open, || {
@@ -103,11 +107,13 @@ fn session(
 
 /// The screens' text from the CLI's own commands, `me` the person at the
 /// terminal or why no one can be named, `reader` the session as `tm ready`
-/// reads it or why it cannot, and `project` the one this directory maps to.
+/// reads it or why it cannot, `project` the one this directory maps to, and
+/// `repo` the repo file holding its Views with that Project's key.
 struct Cli<'a> {
     me: Result<&'a str, &'a str>,
     project: ProjectId,
     reader: Result<&'a Identity, &'a str>,
+    repo: Option<(&'a Path, &'a str)>,
 }
 
 impl tm_tui::Actions for Cli<'_> {
@@ -117,6 +123,21 @@ impl tm_tui::Actions for Cli<'_> {
 
     fn project(&self) -> Option<ProjectId> {
         Some(self.project)
+    }
+
+    fn views(&self) -> Result<Vec<View>, String> {
+        let Some((path, key)) = self.repo else {
+            return Ok(Vec::new());
+        };
+        let file = std::fs::read_to_string(path)
+            .map_err(|err| err.to_string())
+            .and_then(|text| RepoFile::parse(&text))
+            .map_err(|why| format!("{}: {why}", path.display()))?;
+        Ok(file
+            .views
+            .into_iter()
+            .filter(|view| view.shows_in(key))
+            .collect())
     }
 
     fn issue(&self, store: &Store, id: Uuid) -> Result<tm_tui::Issue, String> {
@@ -296,6 +317,7 @@ mod tests {
             me: Ok("jace"),
             project,
             reader: Err("unused"),
+            repo: None,
         };
         assert_eq!(cli.project(), Some(project));
         let shown = cli.issue(&store, id).unwrap().shown;
@@ -372,6 +394,7 @@ mod tests {
             me: Ok("jace"),
             project,
             reader: Err("unused"),
+            repo: None,
         };
         let issue = cli.issue(&store, id).unwrap();
         let shown = &issue.shown;
@@ -406,6 +429,31 @@ mod tests {
     }
 
     #[test]
+    fn the_views_are_the_repo_files_for_this_project_read_afresh() {
+        let dir = std::env::temp_dir().join(format!("tm-views-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tm.toml");
+        let head = format!("workspace = \"{}\"\nproject = \"TM\"\n", Uuid::now_v7());
+        let views = "[[views]]\nname = \"Mine\"\n\n[[views]]\nname = \"Web\"\nproject = \"web\"\n";
+        std::fs::write(&path, format!("{head}{views}")).unwrap();
+        let cli = |key| Cli {
+            me: Err("unused"),
+            project: ProjectId::new(),
+            reader: Err("unused"),
+            repo: Some((&path, key)),
+        };
+        let names = |key| -> Vec<String> {
+            let views = cli(key).views().unwrap();
+            views.into_iter().map(|view| view.name).collect()
+        };
+        assert_eq!(names("TM"), ["Mine"]);
+        assert_eq!(names("WEB"), ["Mine", "Web"]);
+        std::fs::write(&path, format!("{head}[[views]]\nname = \"x\"\nsort = 1\n")).unwrap();
+        let why = cli("TM").views().unwrap_err();
+        assert!(why.contains("tm.toml") && why.contains("sort"), "{why}");
+    }
+
+    #[test]
     fn the_ready_screen_is_tm_ready_with_its_warnings_first() {
         let dir = std::env::temp_dir().join(format!("tm-ready-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -430,6 +478,7 @@ mod tests {
             me: Ok("jace"),
             project,
             reader: Ok(&identity),
+            repo: None,
         };
         let text = cli.ready(&store).unwrap();
         assert!(text.starts_with("warning: found two harnesses\n"), "{text}");
@@ -442,6 +491,7 @@ mod tests {
             me: Err("unused"),
             project,
             reader: Err("set TM_ACTOR"),
+            repo: None,
         };
         let text = nobody.ready(&store).unwrap();
         assert!(

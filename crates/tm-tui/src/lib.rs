@@ -16,6 +16,7 @@ mod terminal;
 #[cfg(test)]
 mod tests;
 mod triage;
+mod views;
 
 use std::path::PathBuf;
 
@@ -42,6 +43,7 @@ use stack::Stack;
 pub use terminal::{Ended, run};
 use tm_core::text::printable;
 use triage::Triage;
+use views::Sidebar;
 
 const KEPT: &str = "comment kept, its path printed on exit";
 
@@ -51,16 +53,23 @@ enum Global {
     Suspend,
     Help,
     HideHelp,
+    Views,
 }
 
 /// Keys every screen has, ahead of its own: Ctrl-C and Ctrl-Z even while
 /// text is typed, and Esc only while these keys are shown.
-const GLOBAL: [Binding<Global>; 4] = [
+const GLOBAL: [Binding<Global>; 5] = [
     Binding {
         keys: &[ch('?')],
         action: Global::Help,
         does: "show or hide these keys",
         hint: Some("keys"),
+    },
+    Binding {
+        keys: &[ch('v')],
+        action: Global::Views,
+        does: "pick a View from .config/tm.toml",
+        hint: Some("views"),
     },
     Binding {
         keys: &[plain(KeyCode::Esc)],
@@ -95,6 +104,15 @@ pub trait Actions {
     /// unless a filter names another; `None` reads every Project.
     fn project(&self) -> Option<ProjectId> {
         None
+    }
+
+    /// The Views the repo file holds for that Project, read afresh.
+    ///
+    /// # Errors
+    ///
+    /// Why the repo file cannot be read.
+    fn views(&self) -> Result<Vec<tm_store::view::View>, String> {
+        Ok(Vec::new())
     }
 
     /// `tm show --json` and `tm history --json` for `id`, read from `store`.
@@ -219,11 +237,11 @@ impl Screen {
     /// The breadcrumb's name for the screen.
     fn title(&self) -> String {
         match self {
-            Self::List(_) => "Issues".to_owned(),
+            Self::List(list) => list.title(),
             Self::Ready(_) => "Ready".to_owned(),
             Self::Issue(issue) => issue.title(),
             Self::Triage(_) => "Triage".to_owned(),
-            Self::Board(_) => "Board".to_owned(),
+            Self::Board(board) => board.title(),
         }
     }
 
@@ -261,7 +279,7 @@ impl Screen {
 
     fn help(&self) -> Vec<(String, &'static str)> {
         match self {
-            Self::List(_) => keys::help(&list::KEYS),
+            Self::List(list) => keys::help(list.keys()),
             Self::Ready(_) => keys::help(&ready::KEYS),
             Self::Issue(_) => keys::help(&issue::KEYS),
             Self::Triage(_) => keys::help(&triage::KEYS),
@@ -275,7 +293,7 @@ impl Screen {
             return prompt;
         }
         let mut hints = match self {
-            Self::List(_) => keys::hints(&list::KEYS),
+            Self::List(list) => keys::hints(list.keys()),
             Self::Ready(_) => keys::hints(&ready::KEYS),
             Self::Issue(_) => keys::hints(&issue::KEYS),
             Self::Triage(_) => keys::hints(&triage::KEYS),
@@ -308,6 +326,12 @@ enum Pending {
     },
 }
 
+/// What can be open over the screen shown.
+enum Overlay {
+    Picker(Picker),
+    Views(Sidebar),
+}
+
 /// The frame around the screens: where it reads from, the keys, and what
 /// the last look for writes elsewhere found.
 pub struct Shell {
@@ -317,9 +341,9 @@ pub struct Shell {
     busy: bool,
     /// The Issue list, and the screens shown over it.
     screens: Stack,
-    /// The picker open over the screen shown, which takes every key but
-    /// Ctrl-C and Ctrl-Z until it closes.
-    picker: Option<Picker>,
+    /// What is open over the screen shown, which takes every key but Ctrl-C
+    /// and Ctrl-Z until it closes.
+    overlay: Option<Overlay>,
     pending: Option<Pending>,
     /// This session's writes, each action's batches, newest last.
     written: Vec<Vec<Uuid>>,
@@ -360,7 +384,7 @@ impl Shell {
             changed: None,
             busy: false,
             screens: Stack::new(Screen::List(List::default())),
-            picker: None,
+            overlay: None,
             pending: None,
             written: Vec::new(),
             said: None,
@@ -536,8 +560,10 @@ impl Shell {
     /// Reads the screen shown from `store`.
     pub fn load(&mut self, store: &Store, actions: &dyn Actions) {
         self.shown().load(store, actions);
-        if self.shown().unread() {
-            self.picker = None;
+        match &mut self.overlay {
+            Some(Overlay::Picker(_)) if self.screens.top().unread() => self.overlay = None,
+            Some(Overlay::Views(sidebar)) => sidebar.read(actions),
+            _ => {}
         }
     }
 
@@ -552,19 +578,36 @@ impl Shell {
             Some(Global::Suspend) => return Flow::Suspend,
             _ => {}
         }
-        if let Some(picker) = &mut self.picker {
-            return match picker.key(key) {
-                Picked::Open => Flow::Stay,
-                Picked::Cancelled => {
-                    self.picker = None;
-                    Flow::Stay
-                }
-                Picked::Chosen(writes) => {
-                    self.picker = None;
-                    self.pending = Some(Pending::Writes(writes));
-                    Flow::Write
-                }
-            };
+        match &mut self.overlay {
+            Some(Overlay::Picker(picker)) => {
+                return match picker.key(key) {
+                    Picked::Open => Flow::Stay,
+                    Picked::Cancelled => {
+                        self.overlay = None;
+                        Flow::Stay
+                    }
+                    Picked::Chosen(writes) => {
+                        self.overlay = None;
+                        self.pending = Some(Pending::Writes(writes));
+                        Flow::Write
+                    }
+                };
+            }
+            Some(Overlay::Views(sidebar)) => {
+                return match sidebar.key(key) {
+                    views::Picked::Stay => Flow::Stay,
+                    views::Picked::Closed => {
+                        self.overlay = None;
+                        Flow::Stay
+                    }
+                    views::Picked::Open(view) => {
+                        self.overlay = None;
+                        self.screens.push(views::screen(view));
+                        Flow::Reload
+                    }
+                };
+            }
+            None => {}
         }
         if self.shown().prompt().is_none() {
             match global {
@@ -575,6 +618,11 @@ impl Shell {
                 Some(Global::HideHelp) if self.help => {
                     self.help = false;
                     return Flow::Stay;
+                }
+                Some(Global::Views) => {
+                    self.help = false;
+                    self.overlay = Some(Overlay::Views(Sidebar::default()));
+                    return Flow::Reload;
                 }
                 _ => {}
             }
@@ -600,7 +648,9 @@ impl Shell {
                 Flow::Compose
             }
             Outcome::Pick(picker) => {
-                self.picker = Some(picker);
+                // The keys go to what is drawn on top.
+                self.help = false;
+                self.overlay = Some(Overlay::Picker(picker));
                 Flow::Stay
             }
             Outcome::Quit => Flow::Quit,
@@ -633,8 +683,10 @@ impl Shell {
         let crumbs = crumbs(&self.place, &titles, usize::from(top.width));
         frame.render_widget(Line::from(crumbs), top);
         self.shown().render(frame, body);
-        if let Some(picker) = &mut self.picker {
-            picker.render(frame, body);
+        match &mut self.overlay {
+            Some(Overlay::Picker(picker)) => picker.render(frame, body),
+            Some(Overlay::Views(sidebar)) => sidebar.render(frame, body),
+            None => {}
         }
         if let Some(text) = &self.said {
             frame.render_widget(Line::from(cut(text, usize::from(said.width))), said);
@@ -653,8 +705,9 @@ impl Shell {
         ])
         .spacing(1)
         .areas(bottom);
-        let footer = match &self.picker {
-            Some(picker) => picker.prompt(),
+        let footer = match &self.overlay {
+            Some(Overlay::Picker(picker)) => picker.prompt(),
+            Some(Overlay::Views(_)) => Sidebar::prompt(),
             None => self.screens.top().footer(),
         };
         frame.render_widget(Line::from(footer), keys);

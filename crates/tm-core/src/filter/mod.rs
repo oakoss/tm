@@ -32,6 +32,13 @@ pub fn open_unless_named(filter: &str, all: bool) -> String {
     }
 }
 
+/// Whether `filter` parses and names a status, category or archived, so it
+/// may admit finished work.
+#[must_use]
+pub fn names_a_state(filter: &str) -> bool {
+    parse(filter).is_ok_and(|query| names_state(&query))
+}
+
 /// `filter` narrowed to `project`'s Issues unless it names a Project or does
 /// not parse, as [`open_unless_named`] narrows to the open work.
 #[must_use]

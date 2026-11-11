@@ -9,10 +9,11 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, List as Cards, ListState, Paragraph};
-use tm_core::filter::{Context, open_unless_named};
+use tm_core::filter::{Context, names_a_state, open_unless_named};
 use tm_core::scheme::{Category, Scheme};
 use tm_core::text::printable;
 use tm_store::Store;
+use tm_store::view::View;
 use uuid::Uuid;
 
 use crate::cursor;
@@ -160,6 +161,8 @@ struct Column {
 
 #[derive(Default)]
 pub(crate) struct Board {
+    /// The View it opened as, whose filter it reads.
+    view: Option<View>,
     /// Whether the done and cancelled columns show.
     all: bool,
     columns: Vec<Column>,
@@ -246,6 +249,21 @@ fn arrange(
 }
 
 impl Board {
+    /// The Board a View with the board layout opens as.
+    pub(crate) fn of_view(view: View) -> Self {
+        Self {
+            view: Some(view),
+            ..Self::default()
+        }
+    }
+
+    /// The breadcrumb's name for it: its View's, else Board.
+    pub(crate) fn title(&self) -> String {
+        self.view
+            .as_ref()
+            .map_or_else(|| "Board".to_owned(), |view| printable(&view.name))
+    }
+
     /// Whether the last read failed, its reason hiding the Issues, so none
     /// is moved unseen.
     pub(crate) fn unread(&self) -> bool {
@@ -256,7 +274,8 @@ impl Board {
     /// went.
     pub(crate) fn load(&mut self, store: &Store, actions: &dyn Actions) {
         let kept = self.selected().map(|card| card.key.clone());
-        let filter = read::in_project(&open_unless_named("", self.all), actions);
+        let typed = self.view.as_ref().map_or("", |view| view.filter.as_str());
+        let filter = read::in_project(&open_unless_named(typed, self.all), actions);
         let me = actions.me().ok();
         let read = read::issues(store, &filter, Context { me }).map(|issues| {
             issues
@@ -289,7 +308,9 @@ impl Board {
             .columns
             .get(self.column)
             .map(|column| column.status.clone());
-        self.columns = columns(store.scheme(), self.all);
+        // A filter naming a state may admit done or cancelled Issues, which
+        // need their own columns rather than the triage one.
+        self.columns = columns(store.scheme(), self.all || names_a_state(typed));
         self.statuses = statuses(store, cards.iter().map(|card| card.issue_type.as_str()));
         for card in cards {
             if let Some(at) = place(&self.columns, &card.status) {
