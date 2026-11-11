@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use tm_store::StoreError;
+use tm_store::view::{Column, Layout, Swimlanes};
 use tm_store::workspace::{
     self, PathProject, RepoFile, Workspace, WorkspaceError, discover, repo_root,
 };
@@ -24,6 +25,7 @@ fn repo_file(workspace: Uuid, project: &str) -> String {
         project: project.into(),
         paths: Vec::new(),
         claim_expiry: None,
+        views: Vec::new(),
     }
     .render()
 }
@@ -94,6 +96,7 @@ fn a_repo_file_reads_back_what_it_renders() {
             project: "TUI".into(),
         }],
         claim_expiry: Some(String::from("30m").try_into().unwrap()),
+        views: Vec::new(),
     };
     assert_eq!(RepoFile::parse(&file.render()).unwrap(), file);
     assert_eq!(file.claim_ttl_ms(), Some(1_800_000));
@@ -113,6 +116,101 @@ fn a_repo_file_refuses_fields_it_does_not_know() {
     let err = RepoFile::parse(&text).unwrap_err();
     assert!(err.contains("server"), "{err}");
     assert!(err.contains("line 3"), "the error says where: {err}");
+}
+
+const VIEWS: &str = r#"
+[[views]]
+name = "My bugs"
+filter = "type:bug assignee:@me"
+
+[[views]]
+name = "Release board"
+layout = "board"
+project = "web"
+filter = "-type:epic"
+
+[[views.columns]]
+status = "todo"
+filter = "priority:high,urgent"
+
+[[views.columns]]
+status = "in_progress"
+
+[views.swimlanes]
+field = "assignee"
+filter = "-assignee:bot"
+"#;
+
+#[test]
+fn views_read_back_as_written_and_show_in_their_project() {
+    let text = format!(
+        "workspace = \"{}\"\nproject = \"TM\"\n{VIEWS}",
+        Uuid::now_v7()
+    );
+    let file = RepoFile::parse(&text).unwrap();
+    let [mine, board] = file.views.as_slice() else {
+        panic!("{:?}", file.views);
+    };
+    assert_eq!(
+        (mine.layout, mine.filter.as_str(), mine.project.as_deref()),
+        (Layout::List, "type:bug assignee:@me", None)
+    );
+    assert_eq!(board.layout, Layout::Board);
+    assert_eq!(
+        board.columns,
+        [
+            Column {
+                status: "todo".into(),
+                filter: "priority:high,urgent".into()
+            },
+            Column {
+                status: "in_progress".into(),
+                filter: String::new()
+            },
+        ]
+    );
+    assert_eq!(
+        board.swimlanes,
+        Some(Swimlanes {
+            field: "assignee".into(),
+            filter: "-assignee:bot".into()
+        })
+    );
+    assert!(mine.shows_in("TM") && mine.shows_in("WEB"));
+    assert!(board.shows_in("WEB") && !board.shows_in("TM"));
+    assert_eq!(RepoFile::parse(&file.render()).unwrap(), file);
+    let rendered = file.render();
+    assert!(
+        !rendered.contains("layout = \"list\""),
+        "list is the default: {rendered}"
+    );
+}
+
+#[test]
+fn a_view_refuses_fields_it_does_not_know() {
+    for (view, field) in [
+        ("[[views]]\nname = \"x\"\nsort = \"title\"\n", "sort"),
+        ("[[views]]\nname = \"x\"\nlayout = \"grid\"\n", "grid"),
+        (
+            "[[views]]\nname = \"x\"\n[[views.columns]]\nstatus = \"todo\"\nlimit = 3\n",
+            "limit",
+        ),
+    ] {
+        let text = format!(
+            "workspace = \"{}\"\nproject = \"TM\"\n{view}",
+            Uuid::now_v7()
+        );
+        let err = RepoFile::parse(&text).unwrap_err();
+        assert!(err.contains(field), "{field}: {err}");
+    }
+    for key in ["web-app", "1X", "TOOLONGPROJECTKEY"] {
+        let text = format!(
+            "workspace = \"{}\"\nproject = \"TM\"\n[[views]]\nname = \"x\"\nproject = \"{key}\"\n",
+            Uuid::now_v7()
+        );
+        let err = RepoFile::parse(&text).unwrap_err();
+        assert!(err.contains("not a Project key"), "{key}: {err}");
+    }
 }
 
 #[test]
@@ -156,6 +254,7 @@ fn a_path_prefix_matches_whole_segments_and_the_longest_wins() {
             },
         ],
         claim_expiry: None,
+        views: Vec::new(),
     };
     assert_eq!(file.project_for(Path::new("")), "TM");
     assert_eq!(file.project_for(Path::new("docs")), "TM");

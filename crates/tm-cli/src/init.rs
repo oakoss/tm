@@ -76,6 +76,7 @@ pub(crate) fn run(init: &Init, json: bool) -> Result<Output, CliError> {
         project: key.clone(),
         paths: Vec::new(),
         claim_expiry: None,
+        views: Vec::new(),
     };
     let text = file.render();
     confirmed(&text, init.yes, json).map_err(refused)?;
