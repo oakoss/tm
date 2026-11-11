@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use tm_store::StoreError;
-use tm_store::view::{Column, Layout, Swimlanes};
+use tm_store::view::{self, Column, Layout, Swimlanes, View};
 use tm_store::workspace::{
     self, PathProject, RepoFile, Workspace, WorkspaceError, discover, repo_root,
 };
@@ -1000,4 +1000,39 @@ fn opening_a_store_that_holds_its_id_waits_on_no_writer() {
     writer.execute_batch("COMMIT").unwrap();
     assert!(opened.is_ok(), "{:?}", opened.err());
     assert!(took < std::time::Duration::from_secs(1), "{took:?}");
+}
+
+#[test]
+fn a_views_snippet_reads_back_as_the_view_and_refuses_anything_else() {
+    let text = format!(
+        "workspace = \"{}\"\nproject = \"TM\"\n{VIEWS}",
+        Uuid::now_v7()
+    );
+    for view in RepoFile::parse(&text).unwrap().views {
+        assert_eq!(View::from_snippet(&view.snippet()).unwrap(), view);
+    }
+    let lower = View::from_snippet("[[views]]\nname = \"x\"\nproject = \"web\"\n").unwrap();
+    assert_eq!(lower.project.as_deref(), Some("WEB"));
+    for (text, why) in [
+        ("", "expected one [[views]] table, not 0"),
+        (
+            "[[views]]\nname = \"a\"\n[[views]]\nname = \"b\"\n",
+            "not 2",
+        ),
+        ("[[views]]\nname = \" \"\n", "a View needs a name"),
+        (
+            "[[views]]\nname = \"x\"\nproject = \"1X\"\n",
+            "not a Project key",
+        ),
+        ("[[views]]\nname = \"x\"\nsort = 1\n", "sort"),
+        ("workspace = 1\n", "workspace"),
+    ] {
+        let err = View::from_snippet(text).unwrap_err();
+        assert!(err.contains(why), "{text:?}: {err}");
+    }
+    assert!(
+        View::from_snippet(view::BLANK)
+            .unwrap_err()
+            .contains("needs a name")
+    );
 }

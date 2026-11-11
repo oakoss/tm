@@ -1,5 +1,7 @@
 use tm_store::view::{Column, Layout, Swimlanes, View};
 
+use crate::{Composed, Proposal, ViewEdit};
+
 use super::*;
 
 /// [`Fake`], with the Views the repo file holds or why it cannot be read.
@@ -482,4 +484,264 @@ fn v_is_text_while_a_filter_is_typed() {
     shell.key(press(KeyCode::Char('/')));
     assert_eq!(shell.key(press(KeyCode::Char('v'))), Flow::Stay);
     assert_eq!(list(&shell).prompt().as_deref(), Some("/v"));
+}
+
+/// [`Saved`], where Views may be changed, recording each change shown and
+/// each saved, refusing a save when `refuse` holds a reason.
+struct Editing {
+    views: Vec<View>,
+    may: Result<(), String>,
+    refuse: Option<String>,
+    proposed: std::cell::RefCell<Vec<ViewEdit>>,
+    saved: std::cell::RefCell<Vec<Proposal>>,
+}
+
+impl Editing {
+    fn new(may: Result<(), String>) -> Self {
+        Self {
+            views: saved().0.unwrap(),
+            may,
+            refuse: None,
+            proposed: std::cell::RefCell::default(),
+            saved: std::cell::RefCell::default(),
+        }
+    }
+}
+
+impl Actions for Editing {
+    fn write(&self, write: &Write) -> Result<Written, String> {
+        Fake.write(write)
+    }
+
+    fn undo(&self, batch: Uuid) -> Result<Written, String> {
+        Fake.undo(batch)
+    }
+
+    fn me(&self) -> Result<&str, &str> {
+        NOBODY
+    }
+
+    fn issue(&self, store: &Store, id: Uuid) -> Result<Issue, String> {
+        laid_out(store, id)
+    }
+
+    fn ready(&self, store: &Store) -> Result<String, String> {
+        Fake.ready(store)
+    }
+
+    fn views(&self) -> Result<Vec<View>, String> {
+        Ok(self.views.clone())
+    }
+
+    fn may_edit_views(&self) -> Result<(), String> {
+        self.may.clone()
+    }
+
+    fn propose(&self, edit: &ViewEdit) -> Result<Proposal, String> {
+        self.proposed.borrow_mut().push(edit.clone());
+        Ok(Proposal {
+            diff: "--- a/.config/tm.toml\n+++ b/.config/tm.toml\n-name = \"Firsts\"\n+name = \"Seconds\"\n".into(),
+            before: "before".into(),
+            after: "after".into(),
+        })
+    }
+
+    fn save(&self, proposal: &Proposal) -> Result<String, String> {
+        if let Some(why) = &self.refuse {
+            return Err(why.clone());
+        }
+        self.saved.borrow_mut().push(proposal.clone());
+        Ok("saved to .config/tm.toml".into())
+    }
+}
+
+/// A draft holding `text`, as an editor would leave it.
+fn draft_of(text: &str) -> Composed {
+    let draft = std::env::temp_dir().join(format!("tm-View-{}.toml", Uuid::now_v7()));
+    std::fs::write(&draft, text).unwrap();
+    Composed {
+        text: text.to_owned(),
+        draft,
+    }
+}
+
+/// Edits the first View to `text` and lets the editor finish.
+fn edited(store: &Store, actions: &Editing, text: &str) -> (Shell, std::path::PathBuf) {
+    let mut shell = sidebar(store, actions);
+    assert_eq!(shell.key(press(KeyCode::Char('e'))), Flow::Compose);
+    let (start, draft) = shell.drafting();
+    assert_eq!(draft.suffix, "toml");
+    assert!(start.contains("name = \"Firsts\""), "{start}");
+    let composed = draft_of(text);
+    let path = composed.draft.clone();
+    shell.compose(Ok(composed));
+    shell.write(actions);
+    (shell, path)
+}
+
+#[test]
+fn e_edits_a_view_and_y_on_its_diff_saves_it() {
+    let store = store();
+    let actions = Editing::new(Ok(()));
+    let text = "[[views]]\nname = \"Seconds\"\nfilter = \"title:first\"\n";
+    let (mut shell, draft) = edited(&store, &actions, text);
+    let edit = actions.proposed.borrow()[0].clone();
+    assert_eq!(
+        edit.was.as_ref().map(|view| view.name.as_str()),
+        Some("Firsts")
+    );
+    assert_eq!(edit.becomes.map(|view| view.name), Some("Seconds".into()));
+    let shown = drawn_sized(&mut shell, 100, 12);
+    assert!(
+        shown.contains("Save this change?") && shown.contains("+name = \"Seconds\""),
+        "{shown}"
+    );
+    assert!(actions.saved.borrow().is_empty(), "nothing saved before y");
+    assert_eq!(
+        shell.key(press(KeyCode::Char('j'))),
+        Flow::Stay,
+        "j scrolls"
+    );
+    assert_eq!(shell.key(press(KeyCode::Char('y'))), Flow::Write);
+    shell.write(&actions);
+    assert_eq!(actions.saved.borrow().len(), 1);
+    assert!(drawn_sized(&mut shell, 100, 12).contains("✓ saved to .config/tm.toml"));
+    assert!(!draft.exists(), "a saved View's draft is gone");
+}
+
+#[test]
+fn any_key_but_y_leaves_the_view_unsaved_and_keeps_its_draft() {
+    let store = store();
+    let actions = Editing::new(Ok(()));
+    let text = "[[views]]\nname = \"Seconds\"\n";
+    for key in [KeyCode::Enter, KeyCode::Char('n'), KeyCode::Esc] {
+        let (mut shell, draft) = edited(&store, &actions, text);
+        assert_eq!(shell.key(press(key)), Flow::Stay, "{key:?}");
+        assert!(actions.saved.borrow().is_empty(), "{key:?}");
+        assert_eq!(shell.kept_drafts(), [("View", draft.clone())]);
+        assert!(drawn_sized(&mut shell, 100, 12).contains("View kept"));
+        std::fs::remove_file(draft).unwrap();
+    }
+}
+
+#[test]
+fn a_refused_save_keeps_the_draft_and_says_why() {
+    let store = store();
+    let mut actions = Editing::new(Ok(()));
+    actions.refuse = Some("tm.toml changed since the diff was shown".into());
+    let (mut shell, draft) = edited(&store, &actions, "[[views]]\nname = \"Seconds\"\n");
+    shell.key(press(KeyCode::Char('y')));
+    shell.write(&actions);
+    assert_eq!(shell.kept_drafts(), [("View", draft.clone())]);
+    let shown = drawn_sized(&mut shell, 140, 12);
+    assert!(
+        shown.contains("changed since the diff was shown"),
+        "{shown}"
+    );
+    std::fs::remove_file(draft).unwrap();
+}
+
+#[test]
+fn an_unchanged_or_unreadable_view_shows_no_diff() {
+    let store = store();
+    let actions = Editing::new(Ok(()));
+    let first = saved().0.unwrap().remove(0);
+    let (mut shell, draft) = edited(&store, &actions, &first.snippet());
+    assert!(actions.proposed.borrow().is_empty());
+    assert!(drawn_sized(&mut shell, 100, 12).contains("unchanged"));
+    assert!(!draft.exists());
+
+    let (mut shell, draft) = edited(&store, &actions, "[[views]]\nfilter = \"x\"\n");
+    assert!(actions.proposed.borrow().is_empty());
+    assert_eq!(shell.kept_drafts(), [("View", draft.clone())]);
+    assert!(drawn_sized(&mut shell, 140, 12).contains("missing field `name`"));
+    std::fs::remove_file(draft).unwrap();
+}
+
+#[test]
+fn n_starts_a_new_view_and_d_removes_one_after_its_diff() {
+    let store = store();
+    let actions = Editing::new(Ok(()));
+    let mut shell = sidebar(&store, &actions);
+    assert_eq!(shell.key(press(KeyCode::Char('n'))), Flow::Compose);
+    assert_eq!(shell.drafting().0, tm_store::view::BLANK);
+
+    let mut shell = sidebar(&store, &actions);
+    assert_eq!(shell.key(press(KeyCode::Char('d'))), Flow::Write);
+    shell.write(&actions);
+    let edit = actions.proposed.borrow()[0].clone();
+    assert_eq!(edit.becomes, None);
+    assert_eq!(edit.was.map(|view| view.name), Some("Firsts".into()));
+    assert_eq!(shell.key(press(KeyCode::Char('y'))), Flow::Write);
+    shell.write(&actions);
+    assert_eq!(actions.saved.borrow().len(), 1);
+}
+
+#[test]
+fn a_person_who_may_not_edit_is_told_before_any_editor_opens() {
+    let store = store();
+    let actions = Editing::new(Err("an Agent is shown the Views".into()));
+    for key in ['e', 'n', 'd'] {
+        let mut shell = sidebar(&store, &actions);
+        assert_eq!(shell.key(press(KeyCode::Char(key))), Flow::Stay, "{key}");
+        let shown = drawn_sized(&mut shell, 100, 12);
+        assert!(
+            shown.contains("✗ an Agent is shown the Views"),
+            "{key}: {shown}"
+        );
+    }
+    assert!(actions.proposed.borrow().is_empty());
+}
+
+#[test]
+fn a_draft_still_waiting_on_its_diff_is_named_however_the_tui_ends() {
+    let store = store();
+    let actions = Editing::new(Ok(()));
+    let (mut shell, draft) = edited(&store, &actions, "[[views]]\nname = \"Seconds\"\n");
+    assert_eq!(shell.kept_drafts(), [("View", draft.clone())]);
+    let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+    assert_eq!(shell.key(ctrl('y')), Flow::Stay, "only a plain y says yes");
+    assert!(actions.saved.borrow().is_empty());
+    let (mut shell, draft) = edited(&store, &actions, "[[views]]\nname = \"Seconds\"\n");
+    assert_eq!(shell.key(ctrl('c')), Flow::Quit);
+    assert_eq!(shell.kept_drafts(), [("View", draft.clone())]);
+    std::fs::remove_file(draft).unwrap();
+}
+
+#[test]
+fn a_new_view_left_untouched_is_dropped_quietly() {
+    let store = store();
+    let actions = Editing::new(Ok(()));
+    let mut shell = sidebar(&store, &actions);
+    shell.key(press(KeyCode::Char('n')));
+    let composed = draft_of(tm_store::view::BLANK);
+    let draft = composed.draft.clone();
+    shell.compose(Ok(composed));
+    shell.write(&actions);
+    assert!(drawn_sized(&mut shell, 100, 12).contains("no View added"));
+    assert_eq!(shell.kept_drafts(), [] as [(&str, std::path::PathBuf); 0]);
+    assert!(!draft.exists());
+}
+
+#[test]
+fn u_after_a_view_save_names_the_earlier_action_it_undoes() {
+    let store = store();
+    let actions = Editing::new(Ok(()));
+    let mut shell = sidebar(&store, &actions);
+    shell.key(press(KeyCode::Esc));
+    shell.key(press(KeyCode::Char('j')));
+    shell.key(press(KeyCode::Enter));
+    shell.load(&store, &actions);
+    pick(&mut shell, 'p', "high");
+    shell.write(&actions);
+    shell.key(press(KeyCode::Char('v')));
+    shell.load(&store, &actions);
+    assert_eq!(shell.key(press(KeyCode::Char('d'))), Flow::Write);
+    shell.write(&actions);
+    shell.key(press(KeyCode::Char('y')));
+    shell.write(&actions);
+    assert_eq!(shell.key(press(KeyCode::Char('u'))), Flow::Write);
+    shell.write(&actions);
+    let shown = drawn_sized(&mut shell, 140, 12);
+    assert!(shown.contains("the earlier action: "), "{shown}");
 }

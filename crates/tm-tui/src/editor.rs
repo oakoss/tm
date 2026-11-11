@@ -1,4 +1,4 @@
-//! A comment's text, written in the person's editor.
+//! Text written in the person's editor: a comment, or a View.
 
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -21,31 +21,56 @@ pub struct Unwritten {
     pub kept: Option<PathBuf>,
 }
 
-/// The text saved in `$VISUAL`, else `$EDITOR`, else `vi`, opened on an
-/// empty file, or why there is none.
-pub(crate) fn compose() -> Result<Composed, Unwritten> {
+/// What is written: the file it starts from, and what it is called.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Draft<'a> {
+    pub(crate) start: &'a str,
+    /// The file's extension, so the editor knows the language.
+    pub(crate) suffix: &'a str,
+    pub(crate) noun: &'a str,
+}
+
+/// A comment starts empty rather than with `#` lines to strip, since it is
+/// Markdown and `#` starts a heading.
+pub(crate) const COMMENT: Draft<'static> = Draft {
+    start: "",
+    suffix: "md",
+    noun: "comment",
+};
+
+/// The text saved in `$VISUAL`, else `$EDITOR`, else `vi`, or why there is
+/// none.
+pub(crate) fn compose(draft: Draft<'_>) -> Result<Composed, Unwritten> {
     let editor = ["VISUAL", "EDITOR"]
         .into_iter()
         .filter_map(|name| std::env::var(name).ok())
         .find(|editor| !editor.trim().is_empty())
         .unwrap_or_else(|| "vi".to_owned());
-    compose_with(&editor)
+    compose_with(&editor, draft)
 }
 
-/// The text `editor` saves in an empty file, or why there is none. The file
-/// starts empty rather than with `#` lines to strip, since a comment is
-/// Markdown and `#` starts a heading. A blank save is no comment, and an
-/// editor that fails leaves its file only when it saved something.
-pub(crate) fn compose_with(editor: &str) -> Result<Composed, Unwritten> {
-    let draft = std::env::temp_dir().join(format!("tm-comment-{}.md", Uuid::now_v7()));
+/// The text `editor` saves in a file holding `draft`'s start, or why there
+/// is none. A blank save is nothing written, and an editor that fails
+/// leaves its file only when it saved something.
+pub(crate) fn compose_with(editor: &str, kind: Draft<'_>) -> Result<Composed, Unwritten> {
+    let name = format!("tm-{}-{}.{}", kind.noun, Uuid::now_v7(), kind.suffix);
+    let draft = std::env::temp_dir().join(name.replace(' ', "-"));
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    options.open(&draft).map_err(|err| Unwritten {
+    let mut file = options.open(&draft).map_err(|err| Unwritten {
         why: format!("cannot make {}: {err}", draft.display()),
         kept: None,
     })?;
+    if let Err(err) = std::io::Write::write_all(&mut file, kind.start.as_bytes()) {
+        let _ = fs::remove_file(&draft);
+        return Err(Unwritten {
+            why: format!("cannot make {}: {err}", draft.display()),
+            kept: None,
+        });
+    }
+    drop(file);
     let ran = run(editor, &draft);
     let text = fs::read_to_string(&draft);
     let failed = match ran {
@@ -58,7 +83,7 @@ pub(crate) fn compose_with(editor: &str) -> Result<Composed, Unwritten> {
         (None, Ok(_)) => {
             let _ = fs::remove_file(&draft);
             Err(Unwritten {
-                why: "the comment was empty".to_owned(),
+                why: format!("the {} was empty", kind.noun),
                 kept: None,
             })
         }
@@ -102,7 +127,7 @@ mod tests {
 
     #[test]
     fn the_text_saved_comes_back_with_its_file_private_to_its_owner() {
-        let composed = compose_with("printf '# Heading\\n\\nbody' >").unwrap();
+        let composed = compose_with("printf '# Heading\\n\\nbody' >", COMMENT).unwrap();
         assert_eq!(composed.text, "# Heading\n\nbody");
         let mode = std::os::unix::fs::PermissionsExt::mode(
             &fs::metadata(&composed.draft).unwrap().permissions(),
@@ -113,7 +138,7 @@ mod tests {
 
     #[test]
     fn an_editor_that_fails_keeps_what_it_saved() {
-        let unwritten = compose_with("printf kept > \"$1\"; false").unwrap_err();
+        let unwritten = compose_with("printf kept > \"$1\"; false", COMMENT).unwrap_err();
         assert!(unwritten.why.contains("exited with"), "{unwritten:?}");
         let kept = unwritten.kept.unwrap();
         assert_eq!(fs::read_to_string(&kept).unwrap(), "kept");
@@ -124,7 +149,7 @@ mod tests {
     fn an_editor_that_fails_having_saved_nothing_leaves_no_file() {
         let record = std::env::temp_dir().join(format!("tm-draft-path-{}", Uuid::now_v7()));
         let editor = format!("printf %s \"$1\" > '{}'; false", record.display());
-        let unwritten = compose_with(&editor).unwrap_err();
+        let unwritten = compose_with(&editor, COMMENT).unwrap_err();
         assert!(unwritten.why.contains("exited with"), "{unwritten:?}");
         assert_eq!(unwritten.kept, None);
         let draft = fs::read_to_string(&record).unwrap();
@@ -139,7 +164,7 @@ mod tests {
             "printf %s \"$1\" > '{}'; printf ' \\n\\t' >",
             record.display()
         );
-        let unwritten = compose_with(&editor).unwrap_err();
+        let unwritten = compose_with(&editor, COMMENT).unwrap_err();
         assert_eq!(unwritten.why, "the comment was empty");
         assert_eq!(unwritten.kept, None);
         let draft = fs::read_to_string(&record).unwrap();
@@ -148,8 +173,27 @@ mod tests {
     }
 
     #[test]
+    fn a_draft_starts_from_its_text_in_a_file_named_for_it() {
+        let view = Draft {
+            start: "[[views]]\n",
+            suffix: "toml",
+            noun: "View",
+        };
+        let composed = compose_with("printf 'name = \"x\"\\n' >>", view).unwrap();
+        assert_eq!(composed.text, "[[views]]\nname = \"x\"\n");
+        let name = composed.draft.file_name().unwrap().to_string_lossy();
+        assert!(
+            name.starts_with("tm-View-") && name.ends_with(".toml"),
+            "{name}"
+        );
+        fs::remove_file(&composed.draft).unwrap();
+        let unwritten = compose_with("printf '' >", view).unwrap_err();
+        assert_eq!(unwritten.why, "the View was empty");
+    }
+
+    #[test]
     fn an_editor_that_removes_its_file_keeps_nothing() {
-        let unwritten = compose_with("rm").unwrap_err();
+        let unwritten = compose_with("rm", COMMENT).unwrap_err();
         assert!(unwritten.why.contains("cannot read"), "{unwritten:?}");
         assert_eq!(unwritten.kept, None);
     }

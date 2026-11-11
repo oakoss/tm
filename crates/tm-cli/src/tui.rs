@@ -9,12 +9,15 @@ use tm_store::view::View;
 use tm_store::workspace::RepoFile;
 use tm_store::{Store, StoreError};
 use tm_tui::Seen;
+use tm_tui::{Proposal, ViewEdit};
 use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::identity::Identity;
 use crate::output;
-use crate::{comment, edit, here, history, identity, moves, ready, show, undo, watch};
+use crate::{
+    comment, edit, here, history, identity, instructions, moves, ready, show, undo, views, watch,
+};
 
 pub(crate) fn run(json: bool) -> ExitCode {
     match open(json) {
@@ -67,11 +70,14 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
     let store = open()?;
     let me = me.as_deref().map_err(String::as_str);
     let mut pending = false;
+    let agent = identity::agent_detected(identity::env);
+    let edits = views::editable(&here.found.path, snapshot, agent);
     let actions = Cli {
         me,
         project,
         reader: reader.as_ref().map_err(String::as_str),
         repo: Some((&here.found.path, key)),
+        edits,
     };
     tm_tui::run(place, store, &actions, |store| {
         let (opened, seen) = refresh(watch.changed(), &mut pending, open, || {
@@ -114,9 +120,51 @@ struct Cli<'a> {
     project: ProjectId,
     reader: Result<&'a Identity, &'a str>,
     repo: Option<(&'a Path, &'a str)>,
+    /// Whether the person here may change that file's Views, or why not.
+    edits: Result<(), String>,
 }
 
 impl tm_tui::Actions for Cli<'_> {
+    fn may_edit_views(&self) -> Result<(), String> {
+        self.edits.clone()
+    }
+
+    fn propose(&self, edit: &ViewEdit) -> Result<Proposal, String> {
+        self.edits.clone()?;
+        let (path, _) = self.repo.ok_or("no repo file holds the Views")?;
+        let file = path.display().to_string();
+        let before = std::fs::read_to_string(path).map_err(|err| format!("{file}: {err}"))?;
+        let after = views::changed(&before, edit, &file)?;
+        let shown = path.file_name().map_or(file, |name| {
+            let parent = path.parent().and_then(Path::file_name);
+            parent.map_or_else(
+                || name.to_string_lossy().into_owned(),
+                |dir| format!("{}/{}", dir.to_string_lossy(), name.to_string_lossy()),
+            )
+        });
+        Ok(Proposal {
+            diff: crate::diff::unified(&shown, Some(&before), &after),
+            before,
+            after,
+        })
+    }
+
+    fn save(&self, proposal: &Proposal) -> Result<String, String> {
+        self.edits.clone()?;
+        let (path, _) = self.repo.ok_or("no repo file holds the Views")?;
+        let file = path.display().to_string();
+        views::writable(path, &file)?;
+        // Another hand may have edited the file while the diff was shown.
+        if std::fs::read_to_string(path).ok().as_deref() != Some(proposal.before.as_str()) {
+            return Err(format!(
+                "{file} changed since the diff was shown; press v and make the change again"
+            ));
+        }
+        instructions::write(path, &proposal.after, false)
+            .map_err(|err| format!("writing {file} failed: {err}"))?;
+        Ok(format!("saved to {file}"))
+    }
+
     fn me(&self) -> Result<&str, &str> {
         self.me
     }
@@ -318,6 +366,7 @@ mod tests {
             project,
             reader: Err("unused"),
             repo: None,
+            edits: Ok(()),
         };
         assert_eq!(cli.project(), Some(project));
         let shown = cli.issue(&store, id).unwrap().shown;
@@ -395,6 +444,7 @@ mod tests {
             project,
             reader: Err("unused"),
             repo: None,
+            edits: Ok(()),
         };
         let issue = cli.issue(&store, id).unwrap();
         let shown = &issue.shown;
@@ -441,6 +491,7 @@ mod tests {
             project: ProjectId::new(),
             reader: Err("unused"),
             repo: Some((&path, key)),
+            edits: Ok(()),
         };
         let names = |key| -> Vec<String> {
             let views = cli(key).views().unwrap();
@@ -451,6 +502,85 @@ mod tests {
         std::fs::write(&path, format!("{head}[[views]]\nname = \"x\"\nsort = 1\n")).unwrap();
         let why = cli("TM").views().unwrap_err();
         assert!(why.contains("tm.toml") && why.contains("sort"), "{why}");
+    }
+
+    #[test]
+    fn a_view_change_is_shown_as_a_diff_then_saved_unless_the_file_moved_on() {
+        let dir = std::env::temp_dir().join(format!("tm-view-save-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(dir.join(".config")).unwrap();
+        let path = dir.join(".config/tm.toml");
+        let text = format!(
+            "workspace = \"{}\"\nproject = \"TM\"\n\n# kept\n[[views]]\nname = \"Mine\"\n",
+            Uuid::now_v7()
+        );
+        std::fs::write(&path, &text).unwrap();
+        let cli = Cli {
+            me: Err("unused"),
+            project: ProjectId::new(),
+            reader: Err("unused"),
+            repo: Some((&path, "TM")),
+            edits: Ok(()),
+        };
+        let mine = cli.views().unwrap().remove(0);
+        let ours = View {
+            name: "Ours".into(),
+            ..mine.clone()
+        };
+        let edit = ViewEdit {
+            was: Some(mine),
+            becomes: Some(ours),
+        };
+        let proposal = cli.propose(&edit).unwrap();
+        assert!(
+            proposal.diff.contains("a/.config/tm.toml"),
+            "{}",
+            proposal.diff
+        );
+        assert!(
+            proposal.diff.contains("-name = \"Mine\"\n+name = \"Ours\""),
+            "{}",
+            proposal.diff
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            text,
+            "not yet written"
+        );
+
+        std::fs::write(&path, format!("{text}# a hand edit\n")).unwrap();
+        let why = cli.save(&proposal).unwrap_err();
+        assert!(why.contains("changed since the diff was shown"), "{why}");
+        std::fs::write(&path, &text).unwrap();
+        cli.save(&proposal).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            saved.contains("# kept\n[[views]]\nname = \"Ours\""),
+            "{saved}"
+        );
+
+        let refused = Cli {
+            edits: Err("an Agent".into()),
+            ..cli
+        };
+        assert_eq!(refused.propose(&edit).unwrap_err(), "an Agent");
+        assert_eq!(refused.save(&proposal).unwrap_err(), "an Agent");
+    }
+
+    #[test]
+    fn views_are_edited_only_by_a_person_in_a_writable_file() {
+        let dir = std::env::temp_dir().join(format!("tm-view-who-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tm.toml");
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(views::editable(&path, false, false), Ok(()));
+        let snapshot = views::editable(&path, true, false).unwrap_err();
+        assert!(snapshot.contains("read-only Snapshot"), "{snapshot}");
+        let agent = views::editable(&path, false, true).unwrap_err();
+        assert!(agent.contains("a person edits"), "{agent}");
+        let link = dir.join("linked.toml");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        let linked = views::editable(&link, false, false).unwrap_err();
+        assert!(linked.contains("symlink"), "{linked}");
     }
 
     #[test]
@@ -479,6 +609,7 @@ mod tests {
             project,
             reader: Ok(&identity),
             repo: None,
+            edits: Ok(()),
         };
         let text = cli.ready(&store).unwrap();
         assert!(text.starts_with("warning: found two harnesses\n"), "{text}");
@@ -492,6 +623,7 @@ mod tests {
             project,
             reader: Err("set TM_ACTOR"),
             repo: None,
+            edits: Ok(()),
         };
         let text = nobody.ready(&store).unwrap();
         assert!(

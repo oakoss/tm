@@ -2084,6 +2084,7 @@ dependencies = [
  "tm-store",
  "tm-tui",
  "toml",
+ "toml_edit",
  "uuid",
 ]
 
@@ -2173,6 +2174,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

@@ -41,6 +41,7 @@ mod show;
 mod start;
 mod tui;
 mod undo;
+mod views;
 mod watch;
 
 use std::fmt::Write as _;
