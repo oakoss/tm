@@ -64,7 +64,15 @@ fn ready_and_prime_show_the_mapped_projects_queue_or_every_one_without_it() {
     let (web, _) = store.create_project(&jace, "WEB", "Web").unwrap();
     store.create_issue(&jace, project, "task", "here").unwrap();
     store.create_issue(&jace, web, "task", "there").unwrap();
+    let (listed, _) = store.create_issue(&jace, web, "task", "listed").unwrap();
+    let (list, _) = store
+        .create_shortlist(&jace, web, "theirs", &["bob".to_owned()], None)
+        .unwrap();
+    store
+        .shortlist_add(&jace, list, &[listed], tm_store::Place::End)
+        .unwrap();
     drop(store);
+    let passed = |doc: &Value| doc["data"]["ready"]["on_shortlists"].clone();
     let keys = |doc: &Value| -> Vec<String> {
         doc["data"]["issues"]
             .as_array()
@@ -85,6 +93,9 @@ fn ready_and_prime_show_the_mapped_projects_queue_or_every_one_without_it() {
         primed.contains("Ready (1)") && !primed.contains("WEB-1"),
         "{primed}"
     );
+    let doc: Value =
+        serde_json::from_slice(&tm(&scratch, &repo, &["prime", "--json"]).stdout).unwrap();
+    assert_eq!(passed(&doc), 0, "{doc}");
 
     let file = repo.join(".config/tm.toml");
     let mapped = std::fs::read_to_string(&file).unwrap();
@@ -94,7 +105,7 @@ fn ready_and_prime_show_the_mapped_projects_queue_or_every_one_without_it() {
     let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
     let mut every = keys(&doc);
     every.sort();
-    assert_eq!(every, ["TM-1", "WEB-1"], "{doc}");
+    assert_eq!(every, ["TM-1", "WEB-1", "WEB-2"], "{doc}");
     let warned = doc["warnings"][0].as_str().unwrap_or_default();
     assert!(
         warned.starts_with("the ready queue spans every Project"),
@@ -102,4 +113,7 @@ fn ready_and_prime_show_the_mapped_projects_queue_or_every_one_without_it() {
     );
     let primed = text(&tm(&scratch, &repo, &["prime"]).stdout);
     assert!(primed.contains("WEB-1"), "{primed}");
+    let doc: Value =
+        serde_json::from_slice(&tm(&scratch, &repo, &["prime", "--json"]).stdout).unwrap();
+    assert_eq!(passed(&doc), 1, "{doc}");
 }
