@@ -57,6 +57,7 @@ impl Key {
 }
 
 /// One line of a screen's key table.
+#[derive(Clone, Copy)]
 pub(crate) struct Binding<A> {
     pub(crate) keys: &'static [Key],
     pub(crate) action: A,

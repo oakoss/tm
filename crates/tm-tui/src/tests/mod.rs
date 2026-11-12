@@ -7,6 +7,7 @@ mod list;
 mod ready;
 mod shell;
 mod triage;
+mod views;
 
 use std::fmt::Write as _;
 

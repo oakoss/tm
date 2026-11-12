@@ -26,6 +26,7 @@ const PAGE: usize = 10;
 #[derive(Clone, Copy)]
 pub(crate) enum Act {
     Quit,
+    Back,
     Down,
     Up,
     First,
@@ -39,6 +40,18 @@ pub(crate) enum Act {
     Triage,
     Board,
 }
+
+/// A list a View opened, over the Issue list: `q` goes back to it.
+pub(crate) const VIEW_KEYS: [Binding<Act>; 13] = {
+    let mut keys = KEYS;
+    keys[0] = Binding {
+        keys: &[ch('q')],
+        action: Act::Back,
+        does: "back",
+        hint: Some("back"),
+    };
+    keys
+};
 
 pub(crate) const KEYS: [Binding<Act>; 13] = [
     Binding {
@@ -123,6 +136,8 @@ pub(crate) const KEYS: [Binding<Act>; 13] = [
 
 #[derive(Default)]
 pub(crate) struct List {
+    /// The View it opened as, which names it.
+    view: Option<String>,
     filter: String,
     all: bool,
     /// The filter being typed, while it is.
@@ -156,6 +171,31 @@ impl Shown {
 }
 
 impl List {
+    /// The list a View with the list layout opens as: its filter, named
+    /// for it.
+    pub(crate) fn of_view(view: tm_store::view::View) -> Self {
+        Self {
+            view: Some(view.name),
+            filter: view.filter,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn keys(&self) -> &'static [Binding<Act>] {
+        if self.view.is_some() {
+            &VIEW_KEYS
+        } else {
+            &KEYS
+        }
+    }
+
+    /// The breadcrumb's name for it: its View's, else Issues.
+    pub(crate) fn title(&self) -> String {
+        self.view
+            .as_deref()
+            .map_or_else(|| "Issues".to_owned(), printable)
+    }
+
     /// Reads the Issues the filter matches, as `tm list` does, `me` standing
     /// for `@me`, or why no one can. The selected Issue stays selected while
     /// it still matches.
@@ -225,13 +265,14 @@ impl List {
             }
             return Outcome::Stay;
         }
-        let Some(act) = keys::action(&KEYS, key) else {
+        let Some(act) = keys::action(self.keys(), key) else {
             return Outcome::Stay;
         };
         let last = self.rows.len().saturating_sub(1);
         let at = self.table.selected().unwrap_or(0);
         let to = match act {
             Act::Quit => return Outcome::Quit,
+            Act::Back => return Outcome::Back,
             Act::Filter => {
                 self.typing = Some(self.filter.clone());
                 return Outcome::Stay;

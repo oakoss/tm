@@ -24,7 +24,7 @@ pub use data::{
 pub(crate) use layout::body;
 
 use crate::keys::{self, Binding, ch, plain};
-use crate::picker::{Choice, Field, Picked, Picker, assignees, people, priorities, writes};
+use crate::picker::{Choice, Field, Picker, assignees, people, priorities};
 use crate::scroll::{Move, Scroll};
 use crate::{Actions, Outcome, Screen, cursor, read};
 
@@ -160,7 +160,6 @@ pub(crate) struct IssueScreen {
     scroll: Scroll,
     /// Now, as of the last read, for the times shown as ages.
     now_ms: i64,
-    picker: Option<Picker>,
     /// Who `@me` is, offered first when assigning.
     me: Option<String>,
     /// People assigned open work, offered when assigning.
@@ -178,14 +177,9 @@ impl IssueScreen {
             at: ListState::default(),
             scroll: Scroll::default(),
             now_ms: 0,
-            picker: None,
             me: None,
             people: Vec::new(),
         }
-    }
-
-    pub(crate) fn prompt(&self) -> Option<String> {
-        self.picker.as_ref().map(Picker::prompt)
     }
 
     pub(crate) fn title(&self) -> String {
@@ -224,19 +218,6 @@ impl IssueScreen {
     }
 
     pub(crate) fn key(&mut self, key: KeyEvent) -> Outcome {
-        if let Some(picker) = &mut self.picker {
-            return match picker.key(key) {
-                Picked::Open => Outcome::Stay,
-                Picked::Cancelled => {
-                    self.picker = None;
-                    Outcome::Stay
-                }
-                Picked::Chosen(field, chosen, targets) => {
-                    self.picker = None;
-                    Outcome::Write(writes(field, &chosen, targets))
-                }
-            };
-        }
         let Some(act) = keys::action(&KEYS, key) else {
             return Outcome::Stay;
         };
@@ -245,9 +226,9 @@ impl IssueScreen {
         match act {
             Act::Back => return Outcome::Back,
             Act::Undo => return Outcome::Undo,
-            Act::Status => self.open(Field::Status),
-            Act::Priority => self.open(Field::Priority),
-            Act::Assign => self.open(Field::Assignee),
+            Act::Status => return self.open(Field::Status),
+            Act::Priority => return self.open(Field::Priority),
+            Act::Assign => return self.open(Field::Assignee),
             Act::Comment => {
                 return self.read.as_ref().map_or(Outcome::Stay, |issue| {
                     let shown = &issue.shown;
@@ -271,9 +252,9 @@ impl IssueScreen {
         Outcome::Stay
     }
 
-    fn open(&mut self, field: Field) {
+    fn open(&self, field: Field) -> Outcome {
         let Ok(issue) = &self.read else {
-            return;
+            return Outcome::Stay;
         };
         let shown = &issue.shown;
         let choices = match field {
@@ -289,7 +270,7 @@ impl IssueScreen {
             Field::Assignee => assignees(self.me.as_deref(), &self.people),
         };
         let key = shown.key.clone().unwrap_or_else(|| shown.id.to_string());
-        self.picker = Some(Picker::new(field, choices, vec![(key, shown.version)]));
+        Outcome::Pick(Picker::new(field, choices, vec![(key, shown.version)]))
     }
 
     pub(crate) fn render(&mut self, frame: &mut Frame, whole: Rect) {
@@ -324,9 +305,6 @@ impl IssueScreen {
             .render(frame, Paragraph::new(lines), block, text_area);
         if let Some(area) = rows_area {
             self.render_rows(frame, area);
-        }
-        if let Some(picker) = &mut self.picker {
-            picker.render(frame, whole);
         }
     }
 

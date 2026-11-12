@@ -80,10 +80,10 @@ pub fn run<E: From<io::Error>>(
     // Written, not `eprintln!`, which panics on a broken stderr pipe and
     // would lose `ran`.
     let mut stderr = io::stderr().lock();
-    for draft in shell.kept_drafts() {
+    for (noun, draft) in shell.kept_drafts() {
         let _ = writeln!(
             stderr,
-            "tm: a comment not written is kept in {}",
+            "tm: a {noun} not written is kept in {}",
             draft.display()
         );
     }
@@ -299,7 +299,12 @@ fn drive<E: From<io::Error>>(
                 }
                 Flow::Compose => {
                     signals.hold();
-                    let composed = suspended(terminal, editor::compose);
+                    let (start, draft) = shell.drafting();
+                    let draft = editor::Draft {
+                        start: &start,
+                        ..draft
+                    };
+                    let composed = suspended(terminal, || editor::compose(draft));
                     signals.listen()?;
                     shell.compose(composed?);
                     shell.write(actions);

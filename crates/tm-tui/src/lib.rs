@@ -16,6 +16,7 @@ mod terminal;
 #[cfg(test)]
 mod tests;
 mod triage;
+mod views;
 
 use std::path::PathBuf;
 
@@ -36,13 +37,20 @@ pub use issue::{
 };
 use keys::{Binding, ch, ctrl, plain};
 use list::List;
+use picker::{Picked, Picker};
 use ready::Ready;
 use stack::Stack;
 pub use terminal::{Ended, run};
 use tm_core::text::printable;
+use tm_store::view::View;
 use triage::Triage;
+use views::{Confirm, Sidebar};
 
-const KEPT: &str = "comment kept, its path printed on exit";
+const VIEW_DRAFT: editor::Draft<'static> = editor::Draft {
+    start: "",
+    suffix: "toml",
+    noun: "View",
+};
 
 #[derive(Clone, Copy)]
 enum Global {
@@ -50,16 +58,23 @@ enum Global {
     Suspend,
     Help,
     HideHelp,
+    Views,
 }
 
 /// Keys every screen has, ahead of its own: Ctrl-C and Ctrl-Z even while
 /// text is typed, and Esc only while these keys are shown.
-const GLOBAL: [Binding<Global>; 4] = [
+const GLOBAL: [Binding<Global>; 5] = [
     Binding {
         keys: &[ch('?')],
         action: Global::Help,
         does: "show or hide these keys",
         hint: Some("keys"),
+    },
+    Binding {
+        keys: &[ch('v')],
+        action: Global::Views,
+        does: "pick a View from .config/tm.toml",
+        hint: Some("views"),
     },
     Binding {
         keys: &[plain(KeyCode::Esc)],
@@ -94,6 +109,42 @@ pub trait Actions {
     /// unless a filter names another; `None` reads every Project.
     fn project(&self) -> Option<ProjectId> {
         None
+    }
+
+    /// The Views the repo file holds for that Project, read afresh.
+    ///
+    /// # Errors
+    ///
+    /// Why the repo file cannot be read.
+    fn views(&self) -> Result<Vec<tm_store::view::View>, String> {
+        Ok(Vec::new())
+    }
+
+    /// # Errors
+    ///
+    /// Why the person here may not change the repo file's Views.
+    fn may_edit_views(&self) -> Result<(), String> {
+        Err("Views are read-only here".to_owned())
+    }
+
+    /// The repo file `edit` would write, to show before writing it.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be made.
+    fn propose(&self, edit: &ViewEdit) -> Result<Proposal, String> {
+        let _ = edit;
+        Err("Views are read-only here".to_owned())
+    }
+
+    /// Writes `proposal`, which a person said yes to: what was saved.
+    ///
+    /// # Errors
+    ///
+    /// Why it was not.
+    fn save(&self, proposal: &Proposal) -> Result<String, String> {
+        let _ = proposal;
+        Err("Views are read-only here".to_owned())
     }
 
     /// `tm show --json` and `tm history --json` for `id`, read from `store`.
@@ -199,6 +250,8 @@ pub(crate) enum Outcome {
     Undo,
     /// Write a comment on the Issue with this Key in `$EDITOR`.
     Compose(String),
+    /// Open this picker over the screen; it takes the keys until it closes.
+    Pick(Picker),
     Quit,
 }
 
@@ -216,11 +269,11 @@ impl Screen {
     /// The breadcrumb's name for the screen.
     fn title(&self) -> String {
         match self {
-            Self::List(_) => "Issues".to_owned(),
+            Self::List(list) => list.title(),
             Self::Ready(_) => "Ready".to_owned(),
             Self::Issue(issue) => issue.title(),
             Self::Triage(_) => "Triage".to_owned(),
-            Self::Board(_) => "Board".to_owned(),
+            Self::Board(board) => board.title(),
         }
     }
 
@@ -239,23 +292,26 @@ impl Screen {
     fn prompt(&self) -> Option<String> {
         match self {
             Self::List(list) => list.prompt(),
-            Self::Ready(_) => None,
-            Self::Issue(issue) => issue.prompt(),
-            Self::Triage(triage) => triage.prompt(),
-            Self::Board(board) => board.prompt(),
+            _ => None,
         }
     }
 
+    /// Whether the last read failed in a way that leaves an open picker
+    /// pointing at Issues the screen no longer shows.
+    fn unread(&self) -> bool {
+        matches!(self, Self::Board(board) if board.unread())
+    }
+
     /// The writes the screen asked for are done.
-    fn wrote(&mut self, landed: &[String], refused: bool) {
+    fn wrote(&mut self, attempted: &[String], landed: &[String], refused: bool) {
         if let Self::Triage(triage) = self {
-            triage.wrote(landed, refused);
+            triage.wrote(attempted, landed, refused);
         }
     }
 
     fn help(&self) -> Vec<(String, &'static str)> {
         match self {
-            Self::List(_) => keys::help(&list::KEYS),
+            Self::List(list) => keys::help(list.keys()),
             Self::Ready(_) => keys::help(&ready::KEYS),
             Self::Issue(_) => keys::help(&issue::KEYS),
             Self::Triage(_) => keys::help(&triage::KEYS),
@@ -269,7 +325,7 @@ impl Screen {
             return prompt;
         }
         let mut hints = match self {
-            Self::List(_) => keys::hints(&list::KEYS),
+            Self::List(list) => keys::hints(list.keys()),
             Self::Ready(_) => keys::hints(&ready::KEYS),
             Self::Issue(_) => keys::hints(&issue::KEYS),
             Self::Triage(_) => keys::hints(&triage::KEYS),
@@ -300,6 +356,42 @@ enum Pending {
         write: Write,
         draft: PathBuf,
     },
+    /// A View to write in an editor: `was` as the sidebar read it, none for
+    /// a new one.
+    ComposeView(Option<View>),
+    /// A View change to show as a diff, from the editor's `draft`, if any.
+    Propose {
+        edit: ViewEdit,
+        draft: Option<PathBuf>,
+    },
+    /// A diff a person said yes to.
+    Save {
+        proposal: Proposal,
+        draft: Option<PathBuf>,
+    },
+}
+
+/// A change to the repo file's Views: `was` as the sidebar read it, none
+/// for a new one, and what it `becomes`, none to remove it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewEdit {
+    pub was: Option<View>,
+    pub becomes: Option<View>,
+}
+
+/// The repo file as read and as the change would write it, and their diff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Proposal {
+    pub diff: String,
+    pub before: String,
+    pub after: String,
+}
+
+/// What can be open over the screen shown.
+enum Overlay {
+    Picker(Picker),
+    Views(Sidebar),
+    Confirm(Confirm),
 }
 
 /// The frame around the screens: where it reads from, the keys, and what
@@ -311,6 +403,9 @@ pub struct Shell {
     busy: bool,
     /// The Issue list, and the screens shown over it.
     screens: Stack,
+    /// What is open over the screen shown, which takes every key but Ctrl-C
+    /// and Ctrl-Z until it closes.
+    overlay: Option<Overlay>,
     pending: Option<Pending>,
     /// This session's writes, each action's batches, newest last.
     written: Vec<Vec<Uuid>>,
@@ -321,7 +416,7 @@ pub struct Shell {
     last_wrote: bool,
     /// Drafts of comments not written, named once the terminal is restored,
     /// as the status line is too narrow for their paths.
-    kept: Vec<PathBuf>,
+    kept: Vec<(&'static str, PathBuf)>,
 }
 
 /// What the TUI does after a key.
@@ -351,6 +446,7 @@ impl Shell {
             changed: None,
             busy: false,
             screens: Stack::new(Screen::List(List::default())),
+            overlay: None,
             pending: None,
             written: Vec::new(),
             said: None,
@@ -363,13 +459,44 @@ impl Shell {
     /// what it did until the next key.
     pub fn write(&mut self, actions: &dyn Actions) {
         let said = match self.pending.take() {
-            None | Some(Pending::Compose(_)) => return,
+            None | Some(Pending::Compose(_) | Pending::ComposeView(_)) => return,
+            // A View change is no batch `u` undoes, so the next `u` names
+            // what it reaches back to.
+            Some(Pending::Propose { edit, draft }) => match actions.propose(&edit) {
+                Ok(proposal) => {
+                    self.overlay = Some(Overlay::Confirm(Confirm::new(proposal, draft)));
+                    return;
+                }
+                Err(why) => {
+                    self.last_wrote = false;
+                    match draft {
+                        Some(draft) => self.keep("View", draft, &why),
+                        None => format!("✗ {why}"),
+                    }
+                }
+            },
+            Some(Pending::Save { proposal, draft }) => match actions.save(&proposal) {
+                Ok(said) => {
+                    self.last_wrote = false;
+                    if let Some(draft) = draft {
+                        let _ = std::fs::remove_file(draft);
+                    }
+                    format!("✓ {said}")
+                }
+                Err(why) => {
+                    self.last_wrote = false;
+                    match draft {
+                        Some(draft) => self.keep("View", draft, &why),
+                        None => format!("✗ {why}"),
+                    }
+                }
+            },
             Some(Pending::Writes(writes)) => self.make(&writes, actions).1,
             Some(Pending::Undo) => self.undo(actions),
             Some(Pending::Comment { write, draft }) => {
                 let (refused, said) = self.make(&[write], actions);
                 if refused {
-                    self.keep(draft, said.trim_start_matches("✗ "))
+                    self.keep("comment", draft, said.trim_start_matches("✗ "))
                 } else {
                     let _ = std::fs::remove_file(draft);
                     said
@@ -382,8 +509,13 @@ impl Shell {
     /// Takes what an editor saved for the comment a key asked for, or why
     /// nothing was; [`Shell::write`] then writes it.
     pub fn compose(&mut self, composed: Result<Composed, Unwritten>) {
-        let Some(Pending::Compose(key)) = self.pending.take() else {
-            return;
+        let key = match self.pending.take() {
+            Some(Pending::Compose(key)) => key,
+            Some(Pending::ComposeView(was)) => return self.composed_view(was, composed),
+            other => {
+                self.pending = other;
+                return;
+            }
         };
         match composed {
             Ok(Composed { text, draft }) => {
@@ -393,7 +525,7 @@ impl Shell {
             Err(Unwritten { why, kept }) => {
                 let why = why.lines().next().unwrap_or_default();
                 let said = match kept {
-                    Some(draft) => self.keep(draft, why),
+                    Some(draft) => self.keep("comment", draft, why),
                     None => format!("✗ no comment written: {why}"),
                 };
                 self.said = Some(printable(&said));
@@ -401,17 +533,74 @@ impl Shell {
         }
     }
 
-    /// Keeps `draft` to name once the terminal is restored, and says so
-    /// beside `why`.
-    fn keep(&mut self, draft: PathBuf, why: &str) -> String {
-        self.kept.push(draft);
-        format!("✗ {KEPT} · {why}")
+    fn composed_view(&mut self, was: Option<View>, composed: Result<Composed, Unwritten>) {
+        let said = match composed {
+            Ok(Composed { text, draft }) if was.is_none() && text == tm_store::view::BLANK => {
+                let _ = std::fs::remove_file(draft);
+                "no View added".to_owned()
+            }
+            Ok(Composed { text, draft }) => match View::from_snippet(&text) {
+                Ok(becomes) if was.as_ref() == Some(&becomes) => {
+                    let _ = std::fs::remove_file(draft);
+                    "the View is unchanged; nothing to save".to_owned()
+                }
+                Ok(becomes) => {
+                    let edit = ViewEdit {
+                        was,
+                        becomes: Some(becomes),
+                    };
+                    self.pending = Some(Pending::Propose {
+                        edit,
+                        draft: Some(draft),
+                    });
+                    return;
+                }
+                Err(why) => self.keep("View", draft, &why),
+            },
+            Err(Unwritten { why, kept }) => {
+                let why = why.lines().next().unwrap_or_default();
+                match kept {
+                    Some(draft) => self.keep("View", draft, why),
+                    None => format!("✗ no View saved: {why}"),
+                }
+            }
+        };
+        self.said = Some(printable(said.lines().next().unwrap_or_default()));
     }
 
-    /// The drafts of comments not written, to name once the terminal is
-    /// restored.
-    pub(crate) fn kept_drafts(&self) -> &[PathBuf] {
-        &self.kept
+    pub(crate) fn drafting(&self) -> (String, editor::Draft<'static>) {
+        match &self.pending {
+            Some(Pending::ComposeView(was)) => {
+                let start = was
+                    .as_ref()
+                    .map_or_else(|| tm_store::view::BLANK.to_owned(), View::snippet);
+                (start, VIEW_DRAFT)
+            }
+            _ => (String::new(), editor::COMMENT),
+        }
+    }
+
+    /// Keeps `draft` to name once the terminal is restored, and says so
+    /// beside `why`.
+    fn keep(&mut self, noun: &'static str, draft: PathBuf, why: &str) -> String {
+        self.kept.push((noun, draft));
+        format!("✗ {noun} kept, its path printed on exit · {why}")
+    }
+
+    /// The drafts not written, each with what it is, to name once the
+    /// terminal is restored: those kept, and one still waiting on its diff,
+    /// as the TUI can end before the diff is answered.
+    pub(crate) fn kept_drafts(&self) -> Vec<(&'static str, PathBuf)> {
+        let waiting = match (&self.overlay, &self.pending) {
+            (Some(Overlay::Confirm(confirm)), _) => confirm.draft(),
+            (_, Some(Pending::Propose { draft, .. } | Pending::Save { draft, .. })) => {
+                draft.as_ref()
+            }
+            _ => None,
+        };
+        let mut kept = self.kept.clone();
+        kept.extend(waiting.map(|draft| ("View", draft.clone())));
+        kept
     }
 
     /// Says `text` until the next key.
@@ -445,7 +634,8 @@ impl Shell {
                 Err(why) => refused.push(format!("{}: {why}", write.key())),
             }
         }
-        self.shown().wrote(&landed, !refused.is_empty());
+        let attempted: Vec<String> = writes.iter().map(|write| write.key().to_owned()).collect();
+        self.shown().wrote(&attempted, &landed, !refused.is_empty());
         let count = batches.len();
         self.last_wrote = count > 0;
         if count > 0 {
@@ -525,6 +715,64 @@ impl Shell {
     /// Reads the screen shown from `store`.
     pub fn load(&mut self, store: &Store, actions: &dyn Actions) {
         self.shown().load(store, actions);
+        match &mut self.overlay {
+            Some(Overlay::Picker(_)) if self.screens.top().unread() => self.overlay = None,
+            Some(Overlay::Views(sidebar)) => sidebar.read(actions),
+            _ => {}
+        }
+    }
+
+    fn picked_view(&mut self, picked: views::Picked) -> Flow {
+        match picked {
+            views::Picked::Stay => return Flow::Stay,
+            views::Picked::Refused(why) => {
+                self.said = Some(printable(&format!("✗ {why}")));
+                return Flow::Stay;
+            }
+            _ => {}
+        }
+        self.overlay = None;
+        match picked {
+            views::Picked::Open(view) => {
+                self.screens.push(views::screen(view));
+                Flow::Reload
+            }
+            views::Picked::Edit(was) => {
+                self.pending = Some(Pending::ComposeView(was));
+                Flow::Compose
+            }
+            views::Picked::Remove(was) => {
+                let edit = ViewEdit {
+                    was: Some(was),
+                    becomes: None,
+                };
+                self.pending = Some(Pending::Propose { edit, draft: None });
+                Flow::Write
+            }
+            views::Picked::Stay | views::Picked::Refused(_) | views::Picked::Closed => Flow::Stay,
+        }
+    }
+
+    /// Saves the diff shown on `y`; any other answer leaves it unsaved,
+    /// keeping what the editor wrote.
+    fn answered(&mut self, answer: views::Answer) -> Flow {
+        if matches!(answer, views::Answer::Scrolled) {
+            return Flow::Stay;
+        }
+        let Some(Overlay::Confirm(confirm)) = self.overlay.take() else {
+            return Flow::Stay;
+        };
+        let (proposal, draft) = confirm.into_parts();
+        if matches!(answer, views::Answer::Yes) {
+            self.pending = Some(Pending::Save { proposal, draft });
+            return Flow::Write;
+        }
+        let said = match draft {
+            Some(draft) => self.keep("View", draft, "not saved"),
+            None => "not saved".to_owned(),
+        };
+        self.said = Some(said);
+        Flow::Stay
     }
 
     pub fn key(&mut self, key: KeyEvent) -> Flow {
@@ -538,6 +786,31 @@ impl Shell {
             Some(Global::Suspend) => return Flow::Suspend,
             _ => {}
         }
+        match &mut self.overlay {
+            Some(Overlay::Picker(picker)) => {
+                return match picker.key(key) {
+                    Picked::Open => Flow::Stay,
+                    Picked::Cancelled => {
+                        self.overlay = None;
+                        Flow::Stay
+                    }
+                    Picked::Chosen(writes) => {
+                        self.overlay = None;
+                        self.pending = Some(Pending::Writes(writes));
+                        Flow::Write
+                    }
+                };
+            }
+            Some(Overlay::Views(sidebar)) => {
+                let picked = sidebar.key(key);
+                return self.picked_view(picked);
+            }
+            Some(Overlay::Confirm(confirm)) => {
+                let answer = confirm.key(key);
+                return self.answered(answer);
+            }
+            None => {}
+        }
         if self.shown().prompt().is_none() {
             match global {
                 Some(Global::Help) => {
@@ -547,6 +820,11 @@ impl Shell {
                 Some(Global::HideHelp) if self.help => {
                     self.help = false;
                     return Flow::Stay;
+                }
+                Some(Global::Views) => {
+                    self.help = false;
+                    self.overlay = Some(Overlay::Views(Sidebar::default()));
+                    return Flow::Reload;
                 }
                 _ => {}
             }
@@ -570,6 +848,12 @@ impl Shell {
             Outcome::Compose(key) => {
                 self.pending = Some(Pending::Compose(key));
                 Flow::Compose
+            }
+            Outcome::Pick(picker) => {
+                // The keys go to what is drawn on top.
+                self.help = false;
+                self.overlay = Some(Overlay::Picker(picker));
+                Flow::Stay
             }
             Outcome::Quit => Flow::Quit,
         }
@@ -601,6 +885,12 @@ impl Shell {
         let crumbs = crumbs(&self.place, &titles, usize::from(top.width));
         frame.render_widget(Line::from(crumbs), top);
         self.shown().render(frame, body);
+        match &mut self.overlay {
+            Some(Overlay::Picker(picker)) => picker.render(frame, body),
+            Some(Overlay::Views(sidebar)) => sidebar.render(frame, body),
+            Some(Overlay::Confirm(confirm)) => confirm.render(frame, body),
+            None => {}
+        }
         if let Some(text) = &self.said {
             frame.render_widget(Line::from(cut(text, usize::from(said.width))), said);
         }
@@ -618,7 +908,12 @@ impl Shell {
         ])
         .spacing(1)
         .areas(bottom);
-        let footer = self.shown().footer();
+        let footer = match &self.overlay {
+            Some(Overlay::Picker(picker)) => picker.prompt(),
+            Some(Overlay::Views(_)) => Sidebar::prompt(),
+            Some(Overlay::Confirm(_)) => Confirm::prompt(),
+            None => self.screens.top().footer(),
+        };
         frame.render_widget(Line::from(footer), keys);
         if let Some(status) = status {
             frame.render_widget(Line::from(status).right_aligned(), right);

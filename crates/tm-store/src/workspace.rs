@@ -10,6 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::view::View;
 use crate::{Store, StoreError};
 
 /// Where a repo file may live, relative to the directory that holds it.
@@ -161,6 +162,8 @@ pub struct RepoFile {
     /// [`DEFAULT_CLAIM_EXPIRY_MS`] when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claim_expiry: Option<ClaimExpiry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub views: Vec<View>,
 }
 
 /// How long a Claim lasts when neither the take nor the repo file says: 2h.
@@ -238,6 +241,11 @@ impl RepoFile {
         let mut file: Self = toml::from_str(text).map_err(|err| err.to_string())?;
         for key in std::iter::once(&mut file.project)
             .chain(file.paths.iter_mut().map(|mapping| &mut mapping.project))
+            .chain(
+                file.views
+                    .iter_mut()
+                    .filter_map(|view| view.project.as_mut()),
+            )
         {
             *key = key.to_ascii_uppercase();
             if !tm_core::project::is_key(key) {

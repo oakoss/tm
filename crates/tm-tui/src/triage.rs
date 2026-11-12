@@ -17,9 +17,7 @@ use uuid::Uuid;
 use crate::cursor;
 use crate::issue::{Issue, IssueScreen, body, now_ms};
 use crate::keys::{self, Binding, ch, plain};
-use crate::picker::{
-    Choice, Field, Picked, Picker, assignees, people, priorities, shared, statuses, writes,
-};
+use crate::picker::{Choice, Field, Picker, assignees, people, priorities, shared, statuses};
 use crate::read;
 use crate::{Actions, Outcome, Screen};
 
@@ -146,7 +144,6 @@ pub(crate) struct Triage {
     table: TableState,
     /// Keys marked for the next action.
     marked: BTreeSet<String>,
-    picker: Option<Picker>,
     /// The Key to select once a write lands and the queue is read again.
     then: Option<String>,
     /// Who `@me` is, offered first when assigning.
@@ -164,10 +161,6 @@ pub(crate) struct Triage {
 }
 
 impl Triage {
-    pub(crate) fn prompt(&self) -> Option<String> {
-        self.picker.as_ref().map(Picker::prompt)
-    }
-
     pub(crate) fn load(&mut self, store: &Store, actions: &dyn Actions) {
         let me = actions.me();
         self.me = me.ok().map(str::to_owned);
@@ -210,13 +203,15 @@ impl Triage {
         self.detail = self.selected().map(|row| actions.issue(store, row.id));
     }
 
-    /// The writes asked for are done: the Issues `landed` are unmarked, and
-    /// when one was `refused` the cursor stays where it was.
-    pub(crate) fn wrote(&mut self, landed: &[String], refused: bool) {
+    /// The writes to `attempted` are done: the Issues `landed` are unmarked,
+    /// and the cursor goes on past them unless one was `refused`.
+    pub(crate) fn wrote(&mut self, attempted: &[String], landed: &[String], refused: bool) {
         self.marked.retain(|key| !landed.contains(key));
-        if refused {
-            self.then = None;
-        }
+        self.then = if refused || attempted.is_empty() {
+            None
+        } else {
+            self.after(attempted)
+        };
     }
 
     pub(crate) fn selected_key(&self) -> Option<String> {
@@ -240,19 +235,6 @@ impl Triage {
     }
 
     pub(crate) fn key(&mut self, key: KeyEvent) -> Outcome {
-        if let Some(picker) = &mut self.picker {
-            return match picker.key(key) {
-                Picked::Open => Outcome::Stay,
-                Picked::Cancelled => {
-                    self.picker = None;
-                    Outcome::Stay
-                }
-                Picked::Chosen(field, chosen, targets) => {
-                    self.picker = None;
-                    self.write(field, &chosen, targets)
-                }
-            };
-        }
         let Some(act) = keys::action(&KEYS, key) else {
             return Outcome::Stay;
         };
@@ -310,25 +292,20 @@ impl Triage {
             Field::Priority => priorities(),
             Field::Assignee => assignees(self.me.as_deref(), &self.people),
         };
-        self.picker = Some(Picker::new(field, choices, captured));
-        Outcome::Stay
+        Outcome::Pick(Picker::new(field, choices, captured))
     }
 
-    /// The writes `chosen` asks of `targets`, and the row to go on to once
-    /// they land: the next one not written, else the one before.
-    fn write(&mut self, field: Field, chosen: &Choice, targets: Vec<(String, i64)>) -> Outcome {
-        if targets.is_empty() {
-            return Outcome::Stay;
-        }
-        let written: BTreeSet<&str> = targets.iter().map(|(key, _)| key.as_str()).collect();
-        let at = self.table.selected().unwrap_or(0);
+    /// The row the cursor goes on to once `attempted` are written: the first
+    /// other at or below it, else the nearest above.
+    fn after(&self, attempted: &[String]) -> Option<String> {
+        let written: BTreeSet<&str> = attempted.iter().map(String::as_str).collect();
+        let at = self.table.selected().unwrap_or(0).min(self.rows.len());
         let free = |row: &&Shown| !written.contains(row.key.as_str());
-        self.then = self.rows[at.min(self.rows.len())..]
+        self.rows[at..]
             .iter()
             .find(free)
-            .or_else(|| self.rows[..at.min(self.rows.len())].iter().rev().find(free))
-            .map(|row| row.key.clone());
-        Outcome::Write(writes(field, chosen, targets))
+            .or_else(|| self.rows[..at].iter().rev().find(free))
+            .map(|row| row.key.clone())
     }
 
     /// Draws the selected Issue beside the queue on a wide terminal and
@@ -411,9 +388,6 @@ impl Triage {
                 .block(block)
                 .row_highlight_style(Style::new().reversed());
             frame.render_stateful_widget(table, area, &mut self.table);
-        }
-        if let Some(picker) = &mut self.picker {
-            picker.render(frame, whole);
         }
     }
 }
