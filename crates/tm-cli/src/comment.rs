@@ -102,7 +102,7 @@ fn write(
         ),
     };
     let data = json!({ "issue": { "id": id, "key": key }, "comment": comment });
-    let output = Output::new(text, data);
+    let output = mention::named(&here.store, Output::new(text, data))?;
     Ok((
         here.undoable(output, op.op_id, &identity.actor)?,
         identity.warnings,

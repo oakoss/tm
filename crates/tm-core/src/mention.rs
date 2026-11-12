@@ -97,10 +97,26 @@ pub struct Found<'a> {
     pub candidates: Vec<&'a Known>,
 }
 
-/// The tokens already in `text`, with where each is.
+/// The tokens already in `text`, outside code, with where each is.
 #[must_use]
 pub fn tokens(text: &str) -> Vec<(Range<usize>, Mentioned)> {
-    let code = code(text);
+    scan(text, &code(text))
+}
+
+/// `text` with each token `name` knows shown as it says, in code or not,
+/// since tm writes tokens only where it resolved a mention; any other
+/// stays as written.
+#[must_use]
+pub fn shown(text: &str, name: impl Fn(&Mentioned) -> Option<String>) -> String {
+    let edits = scan(text, &[])
+        .into_iter()
+        .filter_map(|(span, actor)| name(&actor).map(|shown| (span, shown)))
+        .collect();
+    replace(text, edits)
+}
+
+/// The tokens in `text` that do not start inside `skip`.
+fn scan(text: &str, skip: &[Range<usize>]) -> Vec<(Range<usize>, Mentioned)> {
     let mut found = Vec::new();
     let mut from = 0;
     while let Some(at) = text[from..].find("<@").map(|at| at + from) {
@@ -109,7 +125,7 @@ pub fn tokens(text: &str) -> Vec<(Range<usize>, Mentioned)> {
             .find(['>', '<', '\n'])
             .map(|end| end + inner_start);
         match end {
-            Some(end) if text[end..].starts_with('>') && !inside(&code, at) => {
+            Some(end) if text[end..].starts_with('>') && !inside(skip, at) => {
                 let inner = &text[inner_start..end];
                 let actor = match inner.split_once(" for ") {
                     Some((name, human)) => Mentioned::Agent {
@@ -127,16 +143,6 @@ pub fn tokens(text: &str) -> Vec<(Range<usize>, Mentioned)> {
         }
     }
     found
-}
-
-/// `text` with each token shown as the mention `shown` gives it.
-#[must_use]
-pub fn shown(text: &str, shown: impl Fn(&Mentioned) -> String) -> String {
-    let edits = tokens(text)
-        .into_iter()
-        .map(|(span, actor)| (span, shown(&actor)))
-        .collect();
-    replace(text, edits)
 }
 
 /// Every `@` in `text` that may start a mention and names a known Actor:
@@ -400,7 +406,7 @@ mod tests {
         let known = known();
         let text = "thanks <@jace@example.com>, ask <@claude for jace@example.com>";
         let shown_text = shown(text, |actor| {
-            known.iter().find(|k| &k.actor == actor).unwrap().shown()
+            known.iter().find(|k| &k.actor == actor).map(Known::shown)
         });
         assert_eq!(shown_text, "thanks @Jace Babin, ask @claude");
         let edits = find(&shown_text, &known)
@@ -462,7 +468,7 @@ mod tests {
         for one in &known {
             let text = format!("hi {} there", one.actor.token());
             let shown_text = shown(&text, |actor| {
-                known.iter().find(|k| &k.actor == actor).unwrap().shown()
+                known.iter().find(|k| &k.actor == actor).map(Known::shown)
             });
             let edits = find(&shown_text, &known)
                 .into_iter()
@@ -512,7 +518,7 @@ mod tests {
                 .iter()
                 .any(|found| held.iter().any(|(span, _)| span.contains(&found.span.start)));
             proptest::prop_assert!(!again, "a token was found again in {saved:?}");
-            let _ = shown(&saved, Mentioned::token);
+            let _ = shown(&saved, |actor| Some(actor.token()));
         }
     }
 }

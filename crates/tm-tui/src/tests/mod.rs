@@ -235,6 +235,7 @@ fn reported(store: &Store, id: Uuid) -> Result<serde_json::Value, String> {
             "parent": parent,
             "links": [],
             "comments": [],
+            "mentions": [],
         },
         "history": {
             "total": 1,

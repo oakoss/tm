@@ -120,7 +120,11 @@ fn write(here: &mut Here, args: &Handoff) -> Result<(Output, Vec<String>), CliEr
         "claim": claim_json(&handed, now_ms),
         "note": note,
     });
-    let mut output = here.undoable(Output::new(text, data), ops[0].op_id, actor)?;
+    let mut output = here.undoable(
+        mention::named(&here.store, Output::new(text, data))?,
+        ops[0].op_id,
+        actor,
+    )?;
     let undo = crate::output::short(ops[0].op_id);
     // The handoff has landed, so a failed read only warns.
     match here.store.has_written(to) {

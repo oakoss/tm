@@ -147,3 +147,94 @@ fn json_at_a_terminal_is_refused_with_the_text_not_asked() {
     assert!(printed.contains("\"ambiguous_mention\""), "{printed}");
     assert!(printed.contains("\"text\":\"ping @kim\""), "{printed}");
 }
+
+#[test]
+fn a_mention_is_shown_by_name_and_listed_apart_in_json() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    let mut named = jace(
+        &scratch,
+        &repo,
+        &["create", "--type", "task", "--title", "a"],
+    );
+    named
+        .env_remove("TM_ACTOR")
+        .env("GIT_CONFIG_COUNT", "2")
+        .env("GIT_CONFIG_KEY_0", "user.email")
+        .env("GIT_CONFIG_VALUE_0", "kim@example.com")
+        .env("GIT_CONFIG_KEY_1", "user.name")
+        .env("GIT_CONFIG_VALUE_1", "Kim Lee")
+        .stdin(Stdio::null());
+    assert!(named.output().unwrap().status.success());
+    let said = tm(&scratch, &repo, &["comment", "TM-1", "thanks @Kim Lee"]);
+    assert!(said.status.success(), "{said:?}");
+    let printed = crate::support::text(&tm(&scratch, &repo, &["show", "TM-1"]).stdout);
+    assert!(printed.contains("thanks @Kim Lee"), "{printed}");
+    assert!(!printed.contains("<@"), "{printed}");
+    let shown = doc(&tm(&scratch, &repo, &["--json", "show", "TM-1"]));
+    assert_eq!(
+        shown["data"]["mentions"],
+        serde_json::json!([{
+            "token": "<@kim@example.com>",
+            "person": "kim@example.com",
+            "shown": "@Kim Lee",
+        }])
+    );
+    let history = crate::support::text(&tm(&scratch, &repo, &["history", "TM-1"]).stdout);
+    assert!(history.contains("commented: thanks @Kim Lee"), "{history}");
+}
+
+#[test]
+fn only_known_actors_are_named_wherever_their_tokens_sit() {
+    let scratch = Scratch::new();
+    let repo = two_kims(&scratch);
+    let set = tm(
+        &scratch,
+        &repo,
+        &[
+            "edit",
+            "TM-1",
+            "--set",
+            "description=type ` to quote @kim@example.com",
+        ],
+    );
+    assert!(set.status.success(), "{set:?}");
+    for body in [
+        "thanks @kim@example.com, see `x`",
+        "literal <@not-a-person> and <@a for b> here",
+    ] {
+        let said = tm(&scratch, &repo, &["comment", "TM-1", body]);
+        assert!(said.status.success(), "{said:?}");
+    }
+    let history = crate::support::text(&tm(&scratch, &repo, &["history", "TM-1"]).stdout);
+    assert!(
+        history.contains("commented: thanks @kim@example.com, see `x`"),
+        "a backtick in another text does not hide a mention: {history}"
+    );
+    let printed = crate::support::text(&tm(&scratch, &repo, &["show", "TM-1"]).stdout);
+    assert!(
+        printed.contains("literal <@not-a-person> and <@a for b> here"),
+        "{printed}"
+    );
+    let shown = doc(&tm(&scratch, &repo, &["--json", "show", "TM-1"]));
+    let listed: Vec<&str> = shown["data"]["mentions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|mention| mention["token"].as_str().unwrap())
+        .collect();
+    assert_eq!(listed, ["<@kim@example.com>"]);
+    let logged = doc(&tm(&scratch, &repo, &["--json", "history", "TM-1"]));
+    let lines: Vec<&str> = logged["data"]["writes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|write| write["changes"].as_array().unwrap())
+        .map(|change| change["line"].as_str().unwrap())
+        .collect();
+    assert!(
+        lines.contains(&"Description: (none) → type ` to quote @kim@example.com"),
+        "a history line is named, its stored change kept: {lines:?}"
+    );
+}

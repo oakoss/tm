@@ -21,6 +21,7 @@ use crate::guide::HABITS;
 use crate::here;
 use crate::identity;
 use crate::list::{item, line_within, project_keys};
+use crate::mention;
 use crate::next;
 use crate::output::{Output, printable};
 
@@ -86,6 +87,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
         projects,
     } = read.map_err(|err| err.warned(warnings.clone()))?;
     let resumes = resumes(&here.store, &waiting, &mut warnings);
+    let names = asked_names(&here.store, &waiting, &notes)?;
     let scheme = here.store.scheme();
     let touching = path_claims(&here, actor.as_ref(), &mut warnings);
 
@@ -106,27 +108,18 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
     let now_ms = claims.at_ms;
     let memories = memories_section(&mut text, &memories, crate::memory::now_ms());
     let asked = (actor.as_ref(), &resumes);
-    let waiting_items = waiting_section(&mut text, asked, &waiting, &projects, now_ms);
+    let waiting_items = waiting_section(&mut text, asked, (&waiting, &names), &projects, now_ms);
     let sessions = by_session(claims, session);
-    let claim_items = claims_sections(&mut text, (&sessions, &notes), &claimed, &projects, now_ms);
+    let claim_items = claims_sections(
+        &mut text,
+        (&sessions, &notes, &names),
+        &claimed,
+        &projects,
+        now_ms,
+    );
     let path_claims = path_claims_section(&mut text, &here, &touching, now_ms);
     let shortlists = next::lists_section(&mut text, &lists, LISTS_ROOM);
-    section(
-        &mut text,
-        ("In progress", "none", "tm list category:active"),
-        (&active, 0),
-        active_total,
-    );
-    section(
-        &mut text,
-        ("Ready", "nothing is ready", "tm ready"),
-        (&ready, passed),
-        total,
-    );
-    let _ = writeln!(text, "Habits (tm guide has the rest):");
-    for habit in HABITS {
-        let _ = writeln!(text, "  {habit}");
-    }
+    queues(&mut text, (&active, active_total), (&ready, passed, total));
 
     let data = json!({
         "project": project,
@@ -151,7 +144,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
         },
         "habits": HABITS,
     });
-    let mut output = Output::new(text, data);
+    let mut output = mention::named(&here.store, Output::new(text, data))?;
     if json {
         output.warnings = warnings;
     }
@@ -293,10 +286,23 @@ fn resumes(
 
 /// What waits on the session's human. An Agent's session is told to bring the
 /// questions to its human, who is often there; a person's lists them.
+/// How the mentions in the questions and handoff notes shown are named.
+fn asked_names(
+    store: &Store,
+    waiting: &[(IssueView, Option<CommentView>)],
+    notes: &HashMap<Uuid, Handoff>,
+) -> Result<mention::Names, CliError> {
+    let asked = waiting.iter().filter_map(|(_, asked)| asked.as_ref());
+    let texts = asked
+        .map(|asked| asked.body.as_str())
+        .chain(notes.values().map(|(_, note, _)| note.as_str()));
+    Ok(mention::Names::of(store, texts)?)
+}
+
 fn waiting_section(
     text: &mut String,
     (actor, resumes): (Option<&Actor>, &HashMap<Uuid, Resume>),
-    waiting: &[(IssueView, Option<CommentView>)],
+    (waiting, names): (&[(IssueView, Option<CommentView>)], &mention::Names),
     projects: &HashMap<ProjectId, Option<String>>,
     now_ms: i64,
 ) -> Value {
@@ -320,7 +326,8 @@ fn waiting_section(
         if i < CLAIMS_SHOWN {
             let _ = writeln!(text, "  {}", line_within(view, TITLE_BYTES));
             if let Some(question) = question {
-                let first = question.body.lines().next().unwrap_or_default();
+                let body = names.shown(&question.body);
+                let first = body.lines().next().unwrap_or_default();
                 let _ = writeln!(
                     text,
                     "    {} asked {} ago: {}",
@@ -577,7 +584,7 @@ fn by_session(claims: AgentClaims, session: Option<&str>) -> SessionClaims {
 fn handed_section(
     text: &mut String,
     shown: &[(&Claim, &IssueView)],
-    notes: &HashMap<Uuid, Handoff>,
+    (notes, names): (&HashMap<Uuid, Handoff>, &mention::Names),
     projects: &HashMap<ProjectId, Option<String>>,
     now_ms: i64,
 ) -> Vec<Value> {
@@ -601,6 +608,7 @@ fn handed_section(
                 line_within(view, TITLE_BYTES),
                 claim::expiry(handed, now_ms)
             );
+            let note = names.shown(note);
             if let Some(first) = note.lines().next().filter(|line| !line.is_empty()) {
                 let _ = writeln!(text, "    {}", printable(&clip(first, TITLE_BYTES)));
             }
@@ -686,13 +694,13 @@ fn clip(text: &str, bytes: usize) -> String {
 /// sessions hold, each as `--json` gives it.
 fn claims_sections(
     text: &mut String,
-    (claims, notes): (&SessionClaims, &HashMap<Uuid, Handoff>),
+    (claims, notes, names): (&SessionClaims, &HashMap<Uuid, Handoff>, &mention::Names),
     claimed: &[IssueView],
     projects: &HashMap<ProjectId, Option<String>>,
     now_ms: i64,
 ) -> ClaimItems {
     let handed = with_issues(&claims.handed, claimed, |_| true);
-    let handed = handed_section(text, &handed, notes, projects, now_ms);
+    let handed = handed_section(text, &handed, (notes, names), projects, now_ms);
     let mine = with_issues(&claims.mine, claimed, |_| true);
     let others = with_issues(&claims.others, claimed, |_| true);
     let lapsed = with_issues(&claims.lapsed, claimed, claim::takeable);
@@ -803,6 +811,26 @@ fn claims_section(
 /// A heading with the count of `total`, the first of them, and the command
 /// that lists the rest: `words` is the heading, the line for none, and that
 /// command. `passed` of `total` are on a Short-list and only counted.
+/// The In progress and Ready queues, then the habits.
+fn queues(
+    text: &mut String,
+    (active, active_total): (&[IssueView], usize),
+    (ready, passed, total): (&[IssueView], usize, usize),
+) {
+    let in_progress = ("In progress", "none", "tm list category:active");
+    section(text, in_progress, (active, 0), active_total);
+    section(
+        text,
+        ("Ready", "nothing is ready", "tm ready"),
+        (ready, passed),
+        total,
+    );
+    let _ = writeln!(text, "Habits (tm guide has the rest):");
+    for habit in HABITS {
+        let _ = writeln!(text, "  {habit}");
+    }
+}
+
 fn section(
     text: &mut String,
     words: (&str, &str, &str),

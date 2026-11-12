@@ -178,7 +178,11 @@ fn write_ask(here: &mut Here, args: &Ask) -> Result<(Output, Vec<String>), CliEr
         "options": options,
         "kept_for": held.as_ref().map(|held| &held.agent),
     });
-    let mut output = here.undoable(Output::new(text, data), ops[0].op_id, actor)?;
+    let mut output = here.undoable(
+        mention::named(&here.store, Output::new(text, data))?,
+        ops[0].op_id,
+        actor,
+    )?;
     // The question has landed, so a failed read only warns.
     match here.store.has_written(&of) {
         Ok(true) => {}
@@ -211,7 +215,7 @@ fn write_answer(
         Given(given) => resolve(&read("reply", given)?, &question.options)?,
         Typed => {
             let shown = key.clone().unwrap_or_else(|| id.to_string());
-            match ask_reply(&shown, None, &question)? {
+            match ask_reply(here, &shown, None, &question)? {
                 Some(typed) => typed,
                 None => return Err(CliError::new("stopped", prompt::stopped())),
             }
@@ -221,7 +225,11 @@ fn write_answer(
     let mut data = data;
     data["answered_for"] = json!(waiting);
     data["choice"] = json!(choice);
-    let output = here.undoable(Output::new(text, data), batch, actor)?;
+    let output = here.undoable(
+        mention::named(&here.store, Output::new(text, data))?,
+        batch,
+        actor,
+    )?;
     Ok((output, identity.warnings))
 }
 
@@ -275,7 +283,7 @@ fn walk(here: &mut Here) -> Result<(Output, Vec<String>), CliError> {
     let count = asked.len();
     let (mut text, mut answers, mut failed) = (String::new(), Vec::new(), Vec::new());
     for (i, (view, shown, question)) in asked.into_iter().enumerate() {
-        let typed = match ask_reply(&shown, Some((view, i + 1, count)), question) {
+        let typed = match ask_reply(here, &shown, Some((view, i + 1, count)), question) {
             Ok(Some(typed)) => typed,
             Ok(None) => break,
             // What was answered stays reported.
@@ -319,13 +327,17 @@ fn walk(here: &mut Here) -> Result<(Output, Vec<String>), CliError> {
     }
     text.push('\n');
     let data = json!({ "answered": answers, "failed": failed });
-    Ok((Output::new(text, data), warnings))
+    Ok((
+        mention::named(&here.store, Output::new(text, data))?,
+        warnings,
+    ))
 }
 
 /// Shows `question` and reads a reply at the terminal until one resolves:
 /// the reply and its choice, an empty reply for a blank line, or `None` at
 /// end of input.
 fn ask_reply(
+    here: &Here,
     shown: &str,
     place: Option<(&IssueView, usize, usize)>,
     question: &CommentView,
@@ -343,7 +355,8 @@ fn ask_reply(
         None => format!("{shown}\n"),
     };
     let _ = writeln!(asked, "  {} asked:", printable(&question.actor));
-    for line in question.body.lines() {
+    let names = mention::Names::of(&here.store, [question.body.as_str()])?;
+    for line in names.shown(&question.body).lines() {
         let _ = writeln!(asked, "    {}", printable(line));
     }
     if !question.options.is_empty() {
@@ -405,7 +418,11 @@ fn write_withdraw(here: &mut Here, args: &Withdraw) -> Result<(Output, Vec<Strin
         "reason": reason,
         "kept_for": kept_for,
     });
-    let output = here.undoable(Output::new(text, data), ops[0].op_id, actor)?;
+    let output = here.undoable(
+        mention::named(&here.store, Output::new(text, data))?,
+        ops[0].op_id,
+        actor,
+    )?;
     Ok((output, identity.warnings))
 }
 

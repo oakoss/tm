@@ -239,6 +239,7 @@ mod tests {
             "parent": null,
             "links": [],
             "comments": [],
+            "mentions": [],
         }))
         .unwrap()
     }

@@ -293,6 +293,7 @@ fn show_gives_an_issues_fields_parent_labels_and_claim() {
         "key": "TM-2",
         "lapsed_claim": null,
         "links": [],
+        "mentions": [],
         "moves_to": "[statuses]",
         "parent": {
           "id": "[id]",

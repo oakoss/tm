@@ -215,7 +215,7 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
         let _ = writeln!(text, "{name}  {}", summary(change));
     }
     let output = here.undoable(
-        Output::new(text, data(&report)),
+        mention::named(&here.store, Output::new(text, data(&report)))?,
         ops[0].op_id,
         &identity.actor,
     )?;

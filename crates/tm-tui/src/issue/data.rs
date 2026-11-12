@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use serde_json::Value;
+use tm_core::mention;
 use uuid::Uuid;
 
 /// The latest writes shown and read; `tm history` has the rest.
@@ -30,10 +31,26 @@ impl Issue {
     ///
     /// Which command's data does not have the shape this reads, and why.
     pub fn read(shown: Value, history: Value) -> Result<Self, String> {
-        let shown = serde_json::from_value(shown)
+        let mut shown: Shown = serde_json::from_value(shown)
             .map_err(|err| format!("cannot read tm show's JSON: {err}"))?;
-        let history = serde_json::from_value(history)
+        let history: History = serde_json::from_value(history)
             .map_err(|err| format!("cannot read tm history's JSON: {err}"))?;
+        // The text is stored with tokens, which the screen shows by name as
+        // `tm show` lists them; `tm history` names its own lines.
+        let names: BTreeMap<String, String> = shown
+            .mentions
+            .iter()
+            .map(|mention| (mention.token.clone(), mention.shown.clone()))
+            .collect();
+        let by_name = |text: &mut String| {
+            *text = mention::shown(text, |actor| names.get(&actor.token()).cloned());
+        };
+        if let Some(Value::String(description)) = shown.fields.get_mut("description") {
+            by_name(description);
+        }
+        for body in shown.comments.iter_mut().filter_map(|c| c.body.as_mut()) {
+            by_name(body);
+        }
         Ok(Self { shown, history })
     }
 }
@@ -61,6 +78,15 @@ pub struct Shown {
     pub parent: Option<Related>,
     pub links: Vec<Link>,
     pub comments: Vec<Comment>,
+    /// Each mention in the description and comments, as `tm show` shows it.
+    pub mentions: Vec<Mention>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
+pub struct Mention {
+    pub token: String,
+    pub shown: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,4 +175,51 @@ pub struct Logged {
 pub struct Change {
     /// The change as `tm history` prints it.
     pub line: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn mentions_tm_show_lists_read_by_name_and_others_as_written() {
+        let shown = json!({
+            "id": Uuid::nil(),
+            "key": "TM-1",
+            "version": 1,
+            "moves_to": [],
+            "fields": { "description": "for <@kim@example.com>" },
+            "claim": null,
+            "lapsed_claim": null,
+            "parent": null,
+            "links": [],
+            "comments": [{
+                "actor": "jace",
+                "on_behalf_of": null,
+                "body": "ask <@kim@example.com> and <@bo@example.com>",
+                "utc_ms": 0,
+                "retracted": false,
+                "role": null,
+                "edited_utc_ms": null,
+            }],
+            "mentions": [{ "token": "<@kim@example.com>", "shown": "@Kim Lee" }],
+        });
+        let history = json!({
+            "total": 1,
+            "writes": [{
+                "actor": "jace",
+                "on_behalf_of": null,
+                "utc_ms": 0,
+                "changes": [{ "line": "commented: ask <@kim@example.com>" }],
+            }],
+        });
+        let issue = Issue::read(shown, history).unwrap();
+        assert_eq!(issue.shown.fields["description"], "for @Kim Lee");
+        assert_eq!(
+            issue.shown.comments[0].body.as_deref(),
+            Some("ask @Kim Lee and <@bo@example.com>")
+        );
+    }
 }

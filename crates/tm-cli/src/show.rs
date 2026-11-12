@@ -14,6 +14,7 @@ use crate::claim::{self, claim_json};
 use crate::error::CliError;
 use crate::follow;
 use crate::here::{self, Here};
+use crate::mention;
 use crate::output::{Output, local_time, printable, short};
 
 /// How many of an Issue's comments `show` prints, the latest kept.
@@ -128,7 +129,7 @@ pub(crate) fn render_with(
     let mut fields = view.fields.clone();
     fields.remove("shortlist");
     fields.remove("shortlist_rank");
-    let data = json!({
+    let mut data = json!({
         "id": view.id,
         "key": view.key,
         "project": project,
@@ -179,7 +180,27 @@ pub(crate) fn render_with(
     }
     crate::session::write_section(&mut text, &sessions, now_ms);
     write_comments(&mut text, &name, &comments, earlier);
+    let (text, mentions) = by_name(store, &view, &comments[earlier..], &text)?;
+    data["mentions"] = mentions;
     Ok(Output::new(text, data))
+}
+
+/// `text` with each mention shown by name, and the mentions in the
+/// description and `comments` as the JSON lists them.
+fn by_name(
+    store: &Store,
+    view: &IssueView,
+    comments: &[CommentView],
+    text: &str,
+) -> Result<(String, Value), CliError> {
+    let names = mention::Names::of(store, [text])?;
+    let description = view.fields.get("description").and_then(Value::as_str);
+    let bodies = comments
+        .iter()
+        .filter(|comment| !comment.retracted)
+        .map(|comment| comment.body.as_str());
+    let listed = names.json(description.into_iter().chain(bodies));
+    Ok((names.shown(text), listed))
 }
 
 /// An Issue's comments, and how many of the oldest `limit` leaves out,

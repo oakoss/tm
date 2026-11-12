@@ -1,12 +1,93 @@
-//! `@mentions` resolved when text is saved (ADR 0019).
+//! `@mentions` resolved when text is saved, and shown by name (ADR 0019).
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
+use serde_json::{Value, json};
 use tm_core::mention::{self, Found, Known, Mentioned};
+use tm_store::{Store, StoreError};
 
 use crate::error::CliError;
 use crate::here::Here;
+use crate::output::{Output, printable};
 use crate::prompt;
+
+/// How each Actor a token may name is shown, read once per command.
+pub(crate) struct Names(BTreeMap<Mentioned, String>);
+
+impl Names {
+    /// The names `store` holds; none are read when `texts` hold no token.
+    ///
+    /// # Errors
+    ///
+    /// A store failure.
+    pub(crate) fn of<'a>(
+        store: &Store,
+        texts: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Self, StoreError> {
+        if !texts.into_iter().any(|text| text.contains("<@")) {
+            return Ok(Self(BTreeMap::new()));
+        }
+        let known = store.mentionable()?;
+        Ok(Self(
+            known
+                .iter()
+                .map(|known| (known.actor.clone(), known.shown()))
+                .collect(),
+        ))
+    }
+
+    /// The names `store` holds, read whatever the text.
+    ///
+    /// # Errors
+    ///
+    /// A store failure.
+    pub(crate) fn load(store: &Store) -> Result<Self, StoreError> {
+        Self::of(store, ["<@"])
+    }
+
+    /// `text` with each token of a known Actor shown as `@` and its name,
+    /// made printable; any other stays as written.
+    pub(crate) fn shown(&self, text: &str) -> String {
+        mention::shown(text, |actor| self.0.get(actor).map(|name| printable(name)))
+    }
+
+    /// The mentions in `texts`, each token once with how it is shown, as a
+    /// command's JSON lists them beside the stored text.
+    pub(crate) fn json<'a>(&self, texts: impl IntoIterator<Item = &'a str>) -> Value {
+        let mut listed = BTreeMap::new();
+        for text in texts {
+            for (_, actor) in mention::tokens(text) {
+                if let Some(shown) = self.0.get(&actor) {
+                    listed
+                        .entry(actor.token())
+                        .or_insert_with(|| mention_json(&actor, shown));
+                }
+            }
+        }
+        Value::Array(listed.into_values().collect())
+    }
+}
+
+fn mention_json(actor: &Mentioned, shown: &str) -> Value {
+    match actor {
+        Mentioned::Person(key) => json!({ "token": actor.token(), "person": key, "shown": shown }),
+        Mentioned::Agent { name, human } => {
+            json!({ "token": actor.token(), "agent": name, "on_behalf_of": human, "shown": shown })
+        }
+    }
+}
+
+/// `output` with each token in its text shown by name.
+///
+/// # Errors
+///
+/// A store failure.
+pub(crate) fn named(store: &Store, mut output: Output) -> Result<Output, CliError> {
+    let names = Names::of(store, [output.text.as_str()])?;
+    output.text = names.shown(&output.text);
+    Ok(output)
+}
 
 /// `text` with each mention of a known Actor written as its token. One
 /// candidate is taken; of several, a person at a terminal picks one and
