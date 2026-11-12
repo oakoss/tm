@@ -16,6 +16,7 @@ mod init;
 mod json;
 mod link;
 mod list;
+mod mentions;
 mod moves;
 mod names;
 mod next;

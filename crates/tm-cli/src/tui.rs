@@ -16,7 +16,8 @@ use crate::error::CliError;
 use crate::identity::Identity;
 use crate::output;
 use crate::{
-    comment, edit, here, history, identity, instructions, moves, ready, show, undo, views, watch,
+    comment, edit, here, history, identity, instructions, moves, prompt, ready, show, undo, views,
+    watch,
 };
 
 pub(crate) fn run(json: bool) -> ExitCode {
@@ -47,6 +48,7 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
         )
         .fix("tm list"));
     }
+    prompt::hold();
     let here = here::read()?;
     let (project, key) = here::mapped_project(&here.store, &here.found, &here.cwd)?;
     let mut place = key.to_owned();

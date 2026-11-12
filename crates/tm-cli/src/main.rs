@@ -26,6 +26,7 @@ mod instructions;
 mod link;
 mod list;
 mod memory;
+mod mention;
 mod moves;
 mod next;
 mod output;
@@ -601,6 +602,8 @@ fn main() -> ExitCode {
         && command.is_none_or(|arg| arg != "hook");
     if json {
         output::install_panic_hook();
+        // A script reads one JSON document, never a question.
+        prompt::hold();
     }
     let parsed = list::filter_last(&mut Cli::command(), std::env::args_os().collect());
     let cli = match cli()

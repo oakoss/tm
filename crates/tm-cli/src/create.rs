@@ -11,6 +11,7 @@ use crate::fields::{self, quoted, set, split_pair, typed};
 use crate::follow::{self, Starts};
 use crate::here::{self, Here};
 use crate::identity;
+use crate::mention;
 use crate::output::Output;
 use crate::show;
 
@@ -64,6 +65,11 @@ fn write(here: &mut Here, mut create: Create) -> Result<(Output, Vec<String>), C
     // Read once all else is checked, so a mistake keeps the piped text.
     // Stdin is spent once read, so from here on `set` holds what it gave.
     create.set = fields::read_stdin(&create.set, "leave the field out")?;
+    for (field, value) in &mut create.set {
+        if field == "description" {
+            *value = mention::resolve(here, value)?;
+        }
+    }
     let create = &create;
     let issue = Uuid::now_v7();
     let changes = changes(&scheme, create, parent);

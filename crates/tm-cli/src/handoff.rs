@@ -10,6 +10,7 @@ use crate::error::CliError;
 use crate::fields;
 use crate::here::{self, Here};
 use crate::identity;
+use crate::mention;
 use crate::output::Output;
 
 #[derive(clap::Args)]
@@ -102,6 +103,7 @@ fn write(here: &mut Here, args: &Handoff) -> Result<(Output, Vec<String>), CliEr
     } else {
         args.note.clone()
     };
+    let note = mention::resolve(here, &note)?;
     // Nobody renews an untaken handoff, so one to a mistyped Agent still lapses.
     let ttl_ms = held.ttl_ms.or_else(|| here.found.file.claim_ttl_ms());
     let (ops, handed) = here.store.hand(actor, &held, to, ttl_ms, &note)?;

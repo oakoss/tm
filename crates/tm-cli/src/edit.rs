@@ -13,6 +13,7 @@ use crate::error::CliError;
 use crate::fields::{self, quoted, set, split_pair, typed};
 use crate::here::{self, Here};
 use crate::identity;
+use crate::mention;
 use crate::output::{Output, printable};
 
 #[derive(clap::Args)]
@@ -170,6 +171,11 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
         "give the text to add"
     };
     let mut values = fields::read_stdin(&given, blank)?;
+    for (field, value) in &mut values {
+        if field == "description" {
+            *value = mention::resolve(here, value)?;
+        }
+    }
     let appended = values.split_off(edit.set.len());
     let (changes, report) = changes(here, &view, edit, &values, &appended, parent)?;
     let mut warnings = identity.warnings.clone();

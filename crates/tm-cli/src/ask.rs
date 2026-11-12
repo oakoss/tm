@@ -14,6 +14,7 @@ use crate::fields;
 use crate::follow;
 use crate::here::{self, Here};
 use crate::identity;
+use crate::mention;
 use crate::output::{Output, printable, short};
 use crate::prompt;
 use crate::show::numbered;
@@ -151,7 +152,7 @@ fn write_ask(here: &mut Here, args: &Ask) -> Result<(Output, Vec<String>), CliEr
     let held: Option<Claim> = state
         .map(|state| state.claim().clone())
         .filter(|claim| claim.taken_by(actor));
-    let question = read("question", &args.question)?;
+    let question = mention::resolve(here, &read("question", &args.question)?)?;
     let ops = here
         .store
         .ask(actor, id, &question, &options, &of, held.as_ref())?;
@@ -233,6 +234,7 @@ fn answered(
     question: &CommentView,
     reply: &str,
 ) -> Result<(String, Value, Uuid), CliError> {
+    let reply = &mention::resolve(here, reply)?;
     let ops = here.store.answer(actor, id, question.id, reply)?;
     let kept_for = kept_for(here, id)?;
     let shown = key.cloned().unwrap_or_else(|| id.to_string());
@@ -295,6 +297,7 @@ fn walk(here: &mut Here) -> Result<(Output, Vec<String>), CliError> {
                 data["batch"] = json!(batch);
                 answers.push(data);
             }
+            Err(err) if err.code == "stopped" => break,
             Err(err) => {
                 eprintln!("{shown} was not answered: {}", err.message);
                 failed.push(
@@ -388,7 +391,7 @@ fn write_withdraw(here: &mut Here, args: &Withdraw) -> Result<(Output, Vec<Strin
             ),
         ));
     }
-    let reason = read("reason", &args.reason)?;
+    let reason = mention::resolve(here, &read("reason", &args.reason)?)?;
     let ops = here.store.withdraw(actor, id, question.id, &reason)?;
     let kept_for = kept_for(here, id)?;
     let shown = key.clone().unwrap_or_else(|| id.to_string());

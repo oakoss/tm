@@ -10,6 +10,7 @@ use crate::error::CliError;
 use crate::fields;
 use crate::here::{self, Here};
 use crate::identity;
+use crate::mention;
 use crate::output::{Output, id_by_part, id_has_part, printable, short};
 use crate::show::imported_id;
 
@@ -68,6 +69,7 @@ fn write(
     } else {
         body.to_owned()
     };
+    let body = mention::resolve(here, &body)?;
     let change = match edited {
         Some((comment, _)) => Change::EditComment {
             comment,

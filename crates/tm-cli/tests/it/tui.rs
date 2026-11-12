@@ -907,3 +907,35 @@ fn an_agent_is_shown_the_views_but_no_editor_opens_for_one() {
     assert!(!opened.exists(), "no editor opened");
     assert_eq!(fs::read_to_string(&path).unwrap(), before);
 }
+
+#[test]
+fn a_comment_naming_several_actors_is_refused_and_kept_not_asked_about() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    for kim in ["kim@example.com", "kim@other.org"] {
+        let mut made = jace(
+            &scratch,
+            &repo,
+            &["create", "--type", "task", "--title", kim],
+        );
+        made.env("TM_ACTOR", kim);
+        assert!(made.output().unwrap().status.success());
+    }
+    let editor = "printf 'ping @kim' >";
+    let mut tui = sized_with(
+        &scratch,
+        &repo,
+        "tui",
+        &[("VISUAL", editor), ("EDITOR", "false")],
+    );
+    tui.exp_string("kim@other.org").unwrap();
+    press(&mut tui, "\r");
+    tui.exp_string("History").unwrap();
+    press(&mut tui, "c");
+    tui.exp_string("names").unwrap();
+    press(&mut tui, "qq");
+    let rest = tui.exp_eof().unwrap();
+    assert!(!rest.contains("Which one?"), "the TUI asked: {rest}");
+    assert!(rest.contains("a comment not written is kept in"), "{rest}");
+    assert_eq!(exit_code(&tui), 0);
+}
