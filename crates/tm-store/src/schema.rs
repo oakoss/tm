@@ -3,7 +3,7 @@
 
 /// Stamped into `PRAGMA user_version`; a store with a different value is
 /// rebuilt on open.
-pub(crate) const PROJECTION_VERSION: i64 = 22;
+pub(crate) const PROJECTION_VERSION: i64 = 23;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
 /// Until tm v1 is released the log changes in place (ADR 0010).
@@ -202,6 +202,7 @@ DROP TABLE IF EXISTS field_text_rows;
 DROP TABLE IF EXISTS field_text;
 DROP TABLE IF EXISTS issue_text_rows;
 DROP TABLE IF EXISTS issue_text;
+DROP TABLE IF EXISTS people;
 DROP TABLE IF EXISTS memory_versions;
 DROP TABLE IF EXISTS memories;
 DROP TABLE IF EXISTS shortlist_actors;
@@ -446,6 +447,17 @@ CREATE TABLE memories (
 ) STRICT;
 
 CREATE INDEX memories_by_key ON memories (project, key);
+
+-- People's names (ADR 0019), one per email across the Workspace's Projects.
+-- The latest write by clock wins: Projects keep separate server positions.
+CREATE TABLE people (
+  id BLOB PRIMARY KEY,
+  email TEXT NOT NULL,
+  name TEXT NOT NULL,
+  hlc INTEGER NOT NULL,
+  replica_id BLOB NOT NULL,
+  op_id BLOB NOT NULL
+) STRICT;
 
 -- As `field_versions`, for memory fields.
 CREATE TABLE memory_versions (

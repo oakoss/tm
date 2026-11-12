@@ -17,6 +17,7 @@ mod json;
 mod link;
 mod list;
 mod moves;
+mod names;
 mod next;
 mod path_claims;
 mod prime;

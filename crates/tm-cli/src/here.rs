@@ -196,6 +196,9 @@ pub(crate) fn write_with<T>(
     let mut here = open()?;
     let mut warnings = std::mem::take(&mut here.warnings);
     let written = write(&mut here);
+    if written.is_ok() {
+        warnings.extend(here.record_name());
+    }
     warnings.extend(here.passed());
     let published = here.after_write();
     match written {
@@ -336,6 +339,32 @@ impl Here {
     /// As [`mapped_project`], for the working directory.
     pub(crate) fn project(&self) -> Result<ProjectId, CliError> {
         mapped_project(&self.store, &self.found, &self.cwd).map(|(project, _)| project)
+    }
+
+    /// Records git's `user.name` as the name of the person writing as git's
+    /// `user.email` (ADR 0019), once their command has written: a dry run or
+    /// a refusal leaves the log as it was. Under `TM_ACTOR` or as an Agent
+    /// git's name is not the writer's; a warning when recording fails.
+    fn record_name(&mut self) -> Option<String> {
+        let env = crate::identity::env;
+        if env("TM_ACTOR").is_some() || crate::identity::agent_detected(env) {
+            return None;
+        }
+        if self.store.appended() == 0 {
+            return None;
+        }
+        let email = crate::identity::git_email(&self.found.dir).ok()?;
+        let name = match crate::identity::git_name(&self.found.dir) {
+            Ok(name) => name?,
+            Err(why) => return Some(format!("cannot record your name: {why}")),
+        };
+        let project = self.project().ok()?;
+        let recorded = self
+            .store
+            .record_name(&Actor::human(&email), project, &name);
+        recorded
+            .err()
+            .map(|err| format!("cannot record your name {name:?} from git's user.name: {err}"))
     }
 
     /// Records the checked-out branch with the Claim this write takes; a

@@ -20,6 +20,7 @@ mod memories;
 mod merge;
 mod next;
 mod path_claims;
+mod people;
 mod placing;
 mod projects;
 mod protected;

@@ -83,7 +83,9 @@ impl Version {
         }
     }
 
-    fn rank(&self) -> (Hlc, Uuid, Uuid) {
+    /// The clock order alone, for a record whose writes span Projects and so
+    /// share no server position.
+    pub(crate) fn rank(&self) -> (Hlc, Uuid, Uuid) {
         let hlc = self
             .server_received_ms
             .map_or(self.hlc, |ms| self.hlc.capped(ms));
@@ -124,6 +126,10 @@ pub(crate) fn apply(
             let version = Version::of(op, server_seq, server_received_ms);
             return crate::memory::apply(tx, op, &change, &version).map(|()| None);
         }
+        Subject::Person => {
+            let version = Version::of(op, server_seq, server_received_ms);
+            return crate::people::apply(tx, op, &change, &version).map(|()| None);
+        }
         Subject::Issue => check_filed(tx, op, &change)?,
     }
     let version = Version::of(op, server_seq, server_received_ms);
@@ -137,8 +143,9 @@ pub(crate) fn apply(
         | Change::ShortlistSource
         | Change::CreateMemory
         | Change::SetMemory { .. }
-        | Change::MemorySource => {
-            unreachable!("Project, Short-list and memory operations return above")
+        | Change::MemorySource
+        | Change::SetName { .. } => {
+            unreachable!("Project, Short-list, memory and name operations return above")
         }
         Change::SetField { field, value, .. } => {
             // Checked before anything is written, so a value that does not fit

@@ -56,6 +56,7 @@ impl Store {
             scheme: Scheme::built_in(),
             opened: false,
             last_write: None,
+            appended: 0,
             forcing: false,
             passed: Vec::new(),
             based_on: None,

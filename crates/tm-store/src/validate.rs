@@ -34,6 +34,11 @@ pub(crate) fn check_importable(change: &Change) -> Result<(), StoreError> {
             reason: "cannot be imported".into(),
             valid: Vec::new(),
         }),
+        Change::SetName { .. } => Err(StoreError::Invalid {
+            field: "name".into(),
+            reason: "cannot be imported".into(),
+            valid: Vec::new(),
+        }),
         _ => Ok(()),
     }
 }
@@ -119,6 +124,10 @@ pub(crate) fn check(
         Subject::Project => return check_project(change),
         Subject::Shortlist => return crate::shortlist::check(tx, issue_id, change),
         Subject::Memory => return crate::memory::check(tx, issue_id, change),
+        Subject::Person => {
+            crate::people::check(writing.actor, issue_id)?;
+            return Ok(change);
+        }
         Subject::Issue => {}
     }
     if !matches!(change, Change::Create) && !exists(tx, issue_id)? {
@@ -137,8 +146,9 @@ pub(crate) fn check(
         | Change::ShortlistSource
         | Change::CreateMemory
         | Change::SetMemory { .. }
-        | Change::MemorySource => {
-            unreachable!("Project, Short-list and memory operations return above")
+        | Change::MemorySource
+        | Change::SetName { .. } => {
+            unreachable!("Project, Short-list, memory and name operations return above")
         }
         Change::SetField { field, value, .. } => {
             check_set(tx, scheme, writing, issue_id, (field, value))

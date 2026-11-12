@@ -153,7 +153,8 @@ impl Store {
 
     /// The batches a bare undo by `human` may revert, newest first, at most
     /// `limit`: written by `human` as themself, not an undo, not undone, with
-    /// no Project write (ADR 0012) and nothing imported (ADR 0013).
+    /// no Project write (ADR 0012), nothing imported (ADR 0013) and no name,
+    /// which tm records beside a write rather than as one (ADR 0019).
     ///
     /// # Errors
     ///
@@ -168,7 +169,7 @@ impl Store {
                  SELECT 1 FROM op_batches p JOIN ops po ON po.op_id = p.op_id
                  WHERE p.batch = b.batch
                    AND (po.actor <> ?1 OR po.on_behalf_of IS NOT NULL OR po.source IS NOT NULL
-                        OR po.kind IN ('create_project', 'rename_project')))
+                        OR po.kind IN ('create_project', 'rename_project', 'set_name')))
              ORDER BY o.seq DESC",
         )?;
         let mut rows = stmt.query([human])?;
@@ -357,6 +358,11 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
         match &op.change {
             Change::CreateProject { .. } | Change::RenameProject { .. } => {
                 return Err(cannot("it wrote a Project, which undo does not revert"));
+            }
+            Change::SetName { .. } => {
+                return Err(cannot(
+                    "it recorded a name, which undo does not revert; change git's user.name and write again",
+                ));
             }
             Change::Create | Change::CreateShortlist | Change::CreateMemory => {
                 unreachable!("created Issues, Short-lists and memories are handled above")

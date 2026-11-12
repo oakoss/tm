@@ -25,7 +25,7 @@ impl Record {
             Subject::Memory => {
                 Self::Memory(crate::memory::read(conn, id)?.ok_or(StoreError::UnknownMemory(id))?)
             }
-            Subject::Issue | Subject::Project => Self::Issue,
+            Subject::Issue | Subject::Project | Subject::Person => Self::Issue,
         })
     }
 
