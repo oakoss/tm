@@ -132,7 +132,7 @@ fn remove_partial(dir: &Path) {
 
 /// Percent-encoded so `?`, `#` and non-UTF-8 bytes survive; the empty
 /// authority keeps a path starting `//` from reading as a host.
-fn uri(path: &Path) -> String {
+pub(crate) fn uri(path: &Path) -> String {
     let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let mut out = String::from("file://");
     for byte in path.as_os_str().as_encoded_bytes() {

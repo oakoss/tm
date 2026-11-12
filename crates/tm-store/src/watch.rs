@@ -14,6 +14,11 @@ use crate::StoreError;
 pub struct Watch {
     path: PathBuf,
     seen: Seen,
+    /// When the first Claim held at the last read lapses: no write marks a
+    /// lapse, so the Watch reports one itself.
+    lapses: Option<i64>,
+    /// A write seen whose lapse read then failed, reported by the next call.
+    unreported: bool,
 }
 
 enum Seen {
@@ -38,54 +43,101 @@ impl Watch {
     /// Any SQLite failure opening it, or [`StoreError::StoreGone`] when its
     /// metadata cannot be read.
     pub fn store(path: &Path) -> Result<Self, StoreError> {
-        Ok(Self {
+        let mut watch = Self {
             path: path.to_path_buf(),
             seen: opened(path)?,
-        })
+            lapses: None,
+            unreported: false,
+        };
+        watch.lapses = watch.next_lapse(now_ms())?;
+        Ok(watch)
     }
 
     /// Watches the Snapshot at `path` for a publish replacing it.
     ///
     /// # Errors
     ///
-    /// [`StoreError::Snapshot`] when its metadata cannot be read.
+    /// [`StoreError::Snapshot`] when its metadata cannot be read,
+    /// [`StoreError::SnapshotVersion`] when another tm published it, or any
+    /// SQLite failure reading its Claims.
     pub fn snapshot(path: &Path) -> Result<Self, StoreError> {
         let (metadata, modified) = metadata(path)?;
-        Ok(Self {
+        let mut watch = Self {
             path: path.to_path_buf(),
             seen: Seen::Snapshot {
                 file: (metadata.dev(), metadata.ino(), modified, metadata.len()),
             },
-        })
+            lapses: None,
+            unreported: false,
+        };
+        watch.lapses = watch.next_lapse(now_ms())?;
+        Ok(watch)
     }
 
-    /// Whether a write has landed since the last call, or since the Watch
-    /// was made. A store replaced by another file counts as a write.
+    /// Whether a write has landed, or a held Claim has lapsed, since the
+    /// last call or since the Watch was made. A store replaced by another
+    /// file counts as a write.
     ///
     /// # Errors
     ///
     /// As [`Watch::store`] or [`Watch::snapshot`], including when the file
     /// is gone.
     pub fn changed(&mut self) -> Result<bool, StoreError> {
-        match &mut self.seen {
+        let seen = match &mut self.seen {
             Seen::Store {
                 conn,
                 version,
                 file,
             } => {
-                if store_id(&self.path)? != *file {
+                if store_id(&self.path)? == *file {
+                    let now = data_version(conn)?;
+                    std::mem::replace(version, now) != now
+                } else {
                     self.seen = opened(&self.path)?;
-                    return Ok(true);
+                    true
                 }
-                let now = data_version(conn)?;
-                Ok(std::mem::replace(version, now) != now)
             }
             Seen::Snapshot { file } => {
                 let (metadata, modified) = metadata(&self.path)?;
                 let now = (metadata.dev(), metadata.ino(), modified, metadata.len());
-                Ok(std::mem::replace(file, now) != now)
+                std::mem::replace(file, now) != now
             }
+        };
+        let wrote = seen || self.unreported;
+        let now = now_ms();
+        let lapsed = self.lapses.is_some_and(|at| at <= now);
+        if wrote || lapsed {
+            self.unreported = wrote;
+            self.lapses = self.next_lapse(now)?;
+            self.unreported = false;
         }
+        Ok(wrote || lapsed)
+    }
+
+    /// When the first Claim still held at `now` lapses; none when no held
+    /// Claim expires.
+    fn next_lapse(&self, now: i64) -> Result<Option<i64>, StoreError> {
+        const FIRST: &str = "SELECT MIN(expires_ms) FROM claims WHERE expires_ms > ?1";
+        let first = |conn: &Connection| conn.query_row(FIRST, [now], |row| row.get(0));
+        Ok(match &self.seen {
+            Seen::Store { conn, .. } => first(conn)?,
+            Seen::Snapshot { .. } => {
+                let conn = Connection::open_with_flags(
+                    format!("{}?immutable=1", crate::snapshot::uri(&self.path)),
+                    OpenFlags::SQLITE_OPEN_READ_ONLY
+                        | OpenFlags::SQLITE_OPEN_URI
+                        | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )?;
+                let found: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+                if found != crate::schema::PROJECTION_VERSION {
+                    return Err(StoreError::SnapshotVersion {
+                        found,
+                        expected: crate::schema::PROJECTION_VERSION,
+                    });
+                }
+                first(&conn)?
+            }
+        })
     }
 }
 
@@ -107,6 +159,11 @@ fn opened(path: &Path) -> Result<Seen, StoreError> {
             });
         }
     }
+}
+
+/// Wall-clock milliseconds, as a Claim's expiry is written.
+fn now_ms() -> i64 {
+    jiff::Timestamp::now().as_millisecond()
 }
 
 fn data_version(conn: &Connection) -> Result<i64, StoreError> {

@@ -11,6 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use tm_core::Actor;
 
 use crate::support::{Scratch, initialized, jace, tm};
 
@@ -130,6 +131,27 @@ fn text_marks_each_list_after_the_first_with_when_it_was_read() {
         .map(|_| watching.next())
         .find(|line| line.starts_with("-- changed, read at "));
     assert!(marked.is_some(), "no line marks the second list");
+}
+
+#[test]
+fn a_claim_lapsing_prints_the_claims_again_with_no_write() {
+    let scratch = Scratch::new();
+    let (repo, mut store, project) = initialized(&scratch);
+    let (issue, _) = store
+        .create_issue(&Actor::human("jace"), project, "task", "t")
+        .unwrap();
+    store
+        .take(&Actor::agent("claude", "jace"), issue, Some(4_000))
+        .unwrap();
+    drop(store);
+    let watching = Watching::start(&scratch, &repo, &["--json", "claims", "--watch"]);
+    let counts = |line: &str| {
+        let doc: Value = serde_json::from_str(line).unwrap();
+        let count = |section: &str| doc["data"][section].as_array().unwrap().len();
+        (count("held"), count("lapsed"))
+    };
+    assert_eq!(counts(&watching.next()), (1, 0));
+    assert_eq!(counts(&watching.next()), (0, 1));
 }
 
 #[test]
