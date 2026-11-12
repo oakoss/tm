@@ -141,6 +141,7 @@ fn a_repo_file_that_appears_while_tm_asks_is_kept() {
         project: "OTHER".into(),
         paths: Vec::new(),
         claim_expiry: None,
+        views: Vec::new(),
     }
     .render();
     std::fs::create_dir_all(repo.join(".config")).unwrap();

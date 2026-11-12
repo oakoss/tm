@@ -541,6 +541,7 @@ fn a_repo_file_naming_a_missing_workspace_is_reported() {
         project: "TM".into(),
         paths: Vec::new(),
         claim_expiry: None,
+        views: Vec::new(),
     };
     fs::create_dir_all(repo.join(".config")).unwrap();
     fs::write(repo.join(".config/tm.toml"), file.render()).unwrap();

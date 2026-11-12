@@ -1,6 +1,6 @@
 ---
-source: crates/tm-tui/src/lib.rs
-assertion_line: 2035
+source: crates/tm-tui/src/tests/board.rs
+assertion_line: 25
 expression: screen
 ---
 "tm · TM › Issues › Board                                                                                                "
@@ -12,4 +12,4 @@ expression: screen
 "│                            ││                            ││                            ││                            │"
 "│                            ││                            ││                            ││                            │"
 "└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘└────────────────────────────┘"
-"q back · H L move · s status · u undo · ? keys                                                                          "
+"q back · H L move · s status · u undo · ? keys · v views                                                                "

@@ -32,6 +32,7 @@ mod trekker;
 mod undo;
 mod validate;
 mod version;
+pub mod view;
 mod watch;
 pub mod workspace;
 

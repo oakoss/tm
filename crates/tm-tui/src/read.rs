@@ -1,6 +1,7 @@
 //! Issues as the screens show them: their text safe for the terminal, and
 //! the version a write from the screen is checked against.
 
+use serde_json::Value;
 use tm_core::filter::{Context, in_project_unless_named};
 use tm_core::text::printable;
 use tm_store::{IssueView, Store, StoreError};
@@ -19,6 +20,20 @@ pub(crate) struct Read {
 impl Read {
     pub(crate) fn field(&self, name: &str) -> String {
         field(&self.view, name)
+    }
+
+    /// `name`'s value whatever its kind, `-` when unset: a set's elements
+    /// joined, a number or a flag as written.
+    pub(crate) fn value(&self, name: &str) -> String {
+        if let Some(set) = self.view.sets.get(name).filter(|set| !set.is_empty()) {
+            let shown: Vec<&str> = set.values().map(String::as_str).collect();
+            return printable(&shown.join(", ")).replace('\t', " ");
+        }
+        match self.view.fields.get(name) {
+            Some(Value::String(_)) => field(&self.view, name),
+            Some(value @ (Value::Number(_) | Value::Bool(_))) => value.to_string(),
+            _ => "-".to_owned(),
+        }
     }
 }
 

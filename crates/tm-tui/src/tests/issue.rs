@@ -85,7 +85,7 @@ fn c_writes_the_text_composed_as_a_comment_and_u_undoes_it() {
             body: "# Plan\n\n- \u{1b}[2Jfirst\n".into(),
         }]
     );
-    assert_eq!(shell.kept_drafts(), &[] as &[PathBuf]);
+    assert_eq!(shell.kept_drafts(), [] as [(&str, PathBuf); 0]);
     assert!(drawn_sized(&mut shell, 120, 20).contains("✓ TM-2  written · u undo"));
     assert_eq!(shell.key(press(KeyCode::Char('u'))), Flow::Write);
     shell.write(&record);
@@ -120,7 +120,10 @@ fn a_comment_not_written_keeps_its_draft_and_says_why() {
     );
     assert_eq!(
         shell.kept_drafts(),
-        [PathBuf::from("/drafts/one.md"), "/drafts/two.md".into()]
+        [
+            ("comment", PathBuf::from("/drafts/one.md")),
+            ("comment", "/drafts/two.md".into())
+        ]
     );
 }
 
@@ -135,7 +138,7 @@ fn an_editor_giving_no_comment_writes_nothing_and_says_why() {
         kept: None,
     }));
     shell.write(&record);
-    assert_eq!(shell.kept_drafts(), &[] as &[PathBuf]);
+    assert_eq!(shell.kept_drafts(), [] as [(&str, PathBuf); 0]);
     let screen = drawn_sized(&mut shell, 120, 20);
     assert!(
         screen.contains(r"✗ no comment written: vi exited with \u{1b}[2Jexit status: 1"),
@@ -186,21 +189,23 @@ fn a_picker_takes_question_mark_and_esc_as_its_own_keys() {
 }
 
 #[test]
-fn a_picker_opened_over_the_keys_takes_question_mark_and_esc_too() {
+fn a_picker_opened_over_the_keys_takes_their_place_and_question_mark() {
     let store = store();
     let record = Record::new();
     let mut shell = open_with(&store, "TM-2", &record);
     shell.key(press(KeyCode::Char('?')));
     assert!(shell.help);
     shell.key(press(KeyCode::Char('s')));
+    assert!(
+        !shell.help,
+        "the picker is drawn on top, so it has the keys"
+    );
     shell.key(press(KeyCode::Char('?')));
-    assert!(shell.help, "? is text in the picker, not a toggle");
+    assert!(!shell.help, "? is text in the picker, not a toggle");
     assert!(drawn_sized(&mut shell, 120, 30).contains("Status /?"));
     shell.key(press(KeyCode::Esc));
-    assert!(shell.help, "Esc cancels the picker first");
     assert!(!drawn_sized(&mut shell, 120, 30).contains("Status /?"));
-    shell.key(press(KeyCode::Esc));
-    assert!(!shell.help, "then hides the keys");
+    assert!(!shell.help);
     assert!(record.writes.borrow().is_empty());
 }
 

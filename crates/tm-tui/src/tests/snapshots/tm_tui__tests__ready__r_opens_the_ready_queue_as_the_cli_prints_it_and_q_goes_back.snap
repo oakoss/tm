@@ -1,5 +1,6 @@
 ---
-source: crates/tm-tui/src/lib.rs
+source: crates/tm-tui/src/tests/ready.rs
+assertion_line: 98
 expression: drawn(&mut shell)
 ---
 "tm · TM › Issues › Ready                                    "
@@ -11,4 +12,4 @@ expression: drawn(&mut shell)
 "│                                                          │"
 "│                                                          │"
 "└──────────────────────────────────────────────────────────┘"
-"q back · j k scroll · ? keys                                "
+"q back · j k scroll · ? keys · v views                      "

@@ -804,3 +804,83 @@ fn the_board_moves_an_issue_a_column_as_tm_move_does_and_u_undoes_it() {
     tui.exp_eof().unwrap();
     assert_eq!(exit_code(&tui), 0);
 }
+
+/// The repo's `.config/tm.toml` with one View, a comment above it.
+fn with_a_view(repo: &Path) -> PathBuf {
+    let path = repo.join(".config/tm.toml");
+    let mut text = fs::read_to_string(&path).unwrap();
+    text.push_str("\n# kept as written\n[[views]]\nname = \"Mine\"\nfilter = \"title:alpha\"\n");
+    fs::write(&path, text).unwrap();
+    path
+}
+
+#[test]
+fn e_edits_a_view_in_the_editor_and_y_on_its_diff_writes_the_repo_file() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    let path = with_a_view(&repo);
+    let recorded = scratch.home().join("draft-path");
+    let editor = format!(
+        "printf %s \"$1\" > '{}'; printf '[[views]]\\nname = \"Ours\"\\nfilter = \"title:alpha\"\\n' >",
+        recorded.display()
+    );
+    let mut tui = sized_with(&scratch, &repo, "tui", &[("VISUAL", editor.as_str())]);
+    tui.exp_string("Issues").unwrap();
+    press(&mut tui, "v");
+    tui.exp_string("Mine").unwrap();
+    press(&mut tui, "e");
+    // Words are drawn apart, each where it changed.
+    tui.exp_string("change?").unwrap();
+    tui.exp_string("Ours").unwrap();
+    let before = fs::read_to_string(&path).unwrap();
+    assert!(
+        before.contains("name = \"Mine\""),
+        "nothing written before y"
+    );
+    press(&mut tui, "y");
+    settles(|| fs::read_to_string(&path).is_ok_and(|text| text.contains("Ours")));
+    let after = fs::read_to_string(&path).unwrap();
+    assert!(
+        after.contains("# kept as written\n[[views]]\nname = \"Ours\""),
+        "{after}"
+    );
+    let draft = fs::read_to_string(&recorded).unwrap();
+    assert_eq!(
+        Path::new(&draft).extension(),
+        Some("toml".as_ref()),
+        "the editor opened a View's draft: {draft}"
+    );
+    // The draft is removed after the file is written, not with it.
+    settles(|| !Path::new(&draft).exists());
+    press(&mut tui, "q");
+    tui.exp_eof().unwrap();
+    assert_eq!(exit_code(&tui), 0);
+}
+
+#[test]
+fn an_agent_is_shown_the_views_but_no_editor_opens_for_one() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    let path = with_a_view(&repo);
+    let before = fs::read_to_string(&path).unwrap();
+    let opened = scratch.home().join("opened");
+    let editor = format!("touch '{}'; true", opened.display());
+    let mut tui = sized_with(
+        &scratch,
+        &repo,
+        "tui",
+        &[("VISUAL", editor.as_str()), ("TM_AGENT", "claude")],
+    );
+    tui.exp_string("Issues").unwrap();
+    press(&mut tui, "v");
+    tui.exp_string("Mine").unwrap();
+    press(&mut tui, "e");
+    tui.exp_string("person").unwrap();
+    // Esc and q sent together would read as Alt-q.
+    press(&mut tui, "v");
+    press(&mut tui, "q");
+    tui.exp_eof().unwrap();
+    assert_eq!(exit_code(&tui), 0);
+    assert!(!opened.exists(), "no editor opened");
+    assert_eq!(fs::read_to_string(&path).unwrap(), before);
+}
