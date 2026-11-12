@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
+use ratatui::style::Stylize as _;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, Paragraph};
 use tm_core::ProjectId;
@@ -109,6 +110,13 @@ pub trait Actions {
     /// unless a filter names another; `None` reads every Project.
     fn project(&self) -> Option<ProjectId> {
         None
+    }
+
+    /// The warnings every CLI command prints on stderr over `store`, such
+    /// as logged operations that did not apply in full.
+    fn warnings(&self, store: &Store) -> Vec<String> {
+        let _ = store;
+        Vec::new()
     }
 
     /// The Views the repo file holds for that Project, read afresh.
@@ -417,6 +425,8 @@ pub struct Shell {
     /// Drafts of comments not written, named once the terminal is restored,
     /// as the status line is too narrow for their paths.
     kept: Vec<(&'static str, PathBuf)>,
+    /// The store's warnings, read again with the screen.
+    warnings: Vec<String>,
 }
 
 /// What the TUI does after a key.
@@ -452,6 +462,7 @@ impl Shell {
             said: None,
             last_wrote: true,
             kept: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -714,6 +725,7 @@ impl Shell {
 
     /// Reads the screen shown from `store`.
     pub fn load(&mut self, store: &Store, actions: &dyn Actions) {
+        self.warnings = actions.warnings(store);
         self.shown().load(store, actions);
         match &mut self.overlay {
             Some(Overlay::Picker(_)) if self.screens.top().unread() => self.overlay = None,
@@ -874,10 +886,12 @@ impl Shell {
         // What the last action did gets a row of its own, cut at its end,
         // so the start that names the Issue and the reason always shows.
         let said_rows = u16::from(self.said.is_some());
-        let [top, body, said, bottom] = Layout::vertical([
+        let warned = first_of(&self.warnings, "more warnings");
+        let [top, body, said, warning, bottom] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Fill(1),
             Constraint::Length(said_rows),
+            Constraint::Length(u16::from(warned.is_some())),
             Constraint::Length(1),
         ])
         .areas(frame.area());
@@ -893,6 +907,13 @@ impl Shell {
         }
         if let Some(text) = &self.said {
             frame.render_widget(Line::from(cut(text, usize::from(said.width))), said);
+        }
+        if let Some(warned) = warned {
+            let text = printable(&format!("⚠ {warned}"));
+            frame.render_widget(
+                Line::from(cut(&text, usize::from(warning.width))).yellow(),
+                warning,
+            );
         }
         let status = if self.busy {
             Some("store busy, retrying".to_owned())

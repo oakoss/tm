@@ -517,3 +517,60 @@ fn the_screens_read_the_mapped_project_unless_a_filter_names_another() {
     let every = drawn_sized(&mut shell, 140, 20);
     assert!(every.contains("WEB-1"), "{every}");
 }
+
+/// [`Fake`], with the store's warnings set by the test.
+struct Warning(std::cell::RefCell<Vec<String>>);
+
+impl Actions for Warning {
+    fn warnings(&self, _: &Store) -> Vec<String> {
+        self.0.borrow().clone()
+    }
+
+    fn me(&self) -> Result<&str, &str> {
+        Fake.me()
+    }
+
+    fn ready(&self, store: &Store) -> Result<String, String> {
+        Fake.ready(store)
+    }
+
+    fn issue(&self, store: &Store, id: Uuid) -> Result<Issue, String> {
+        Fake.issue(store, id)
+    }
+
+    fn write(&self, write: &Write) -> Result<Written, String> {
+        Fake.write(write)
+    }
+
+    fn undo(&self, batch: Uuid) -> Result<Written, String> {
+        Fake.undo(batch)
+    }
+}
+
+#[test]
+fn the_stores_warnings_hold_a_row_over_the_footer_until_a_load_finds_none() {
+    let store = store();
+    let warning = Warning(std::cell::RefCell::new(vec![
+        "1 logged operation did not apply in full; tm doctor will list it".into(),
+        "read from the Snapshot published 10:42".into(),
+    ]));
+    let mut shell = Shell::new("TM");
+    shell.load(&store, &warning);
+    let warned = drawn_sized(&mut shell, 100, 10);
+    let rows: Vec<&str> = warned.lines().collect();
+    assert!(
+        rows[rows.len() - 2].contains(
+            "⚠ 1 logged operation did not apply in full; tm doctor will list it (+1 more warnings)"
+        ),
+        "{warned}"
+    );
+    shell.key(press(KeyCode::Char('j')));
+    assert!(
+        drawn_sized(&mut shell, 100, 10).contains("⚠ 1 logged"),
+        "a key leaves it"
+    );
+    warning.0.borrow_mut().clear();
+    shell.load(&store, &warning);
+    let cleared = drawn_sized(&mut shell, 100, 10);
+    assert!(!cleared.contains('⚠'), "{cleared}");
+}
