@@ -18,6 +18,7 @@ mod import_record;
 mod log;
 mod membership;
 mod memory;
+mod mentions;
 mod next;
 mod people;
 mod project;
