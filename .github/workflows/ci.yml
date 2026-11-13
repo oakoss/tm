@@ -165,6 +165,80 @@ jobs:
         if: (success() || failure()) && steps.pr-status.outcome == 'failure'
         run: echo "::warning title=oakum ci pr-status::the release plan may not have reached the pull request; oakum check still decides"
 
+  # Renovate commits a Cargo update as fix(deps), which asks for a bump file a
+  # bot cannot write; this writes it from that commit and pushes it as the
+  # oakoss App, whose commits Renovate ignores (gitIgnoredAuthors). See
+  # oakum's guide, "Dependency bot pull requests".
+  bot-bump-file:
+    name: Bump file for Renovate
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.user.login == 'renovate[bot]'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      HAS_BOT: ${{ secrets.BOT_CLIENT_ID != '' }}
+    steps:
+      # The pull request's branch, as the default merge ref cannot be pushed.
+      - name: Harden and checkout
+        uses: $/.github/actions/harden-checkout
+        with:
+          ref: ${{ github.head_ref }}
+
+      - name: Setup
+        uses: $/.github/actions/setup
+        with:
+          tools: github:oakoss/oakum
+
+      # Only while the branch's changes need a bump file: generate writes a new
+      # one on every run, the push starts this workflow again, and with nothing
+      # to cover (a chore update, or a file already pushed) generate fails.
+      - name: Write the bump file
+        id: generate
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$BASE"
+          if oakum check --strict --from "origin/$BASE"; then
+            exit 0
+          fi
+          oakum generate --from "origin/$BASE"
+          if [ -n "$(git status --porcelain -- .changeset)" ]; then
+            echo "written=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A push with the workflow's own token would leave the new run's checks
+      # waiting for approval.
+      - name: Oakoss App token
+        id: app-token
+        if: steps.generate.outputs.written == 'true' && env.HAS_BOT == 'true'
+        uses: $/.github/actions/app-token
+        with:
+          client-id: ${{ secrets.BOT_CLIENT_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          repositories: tm
+          permission-contents: write
+          resolve-identity: 'true'
+
+      - name: Push the bump file
+        if: steps.app-token.outputs.token != ''
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+          BOT_USER: ${{ steps.app-token.outputs.user }}
+          BOT_EMAIL: ${{ steps.app-token.outputs.email }}
+          HEAD: ${{ github.head_ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git add .changeset
+          git -c user.name="$BOT_USER" -c user.email="$BOT_EMAIL" \
+            commit -m "chore(changeset): add the bump file for this update"
+          git push "https://x-access-token:${TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/${HEAD}"
+
   # Its own file because it also runs on a weekly cron against a fresh advisory
   # database. Called here so CI Summary gates it on pull requests.
   audit:
@@ -175,7 +249,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
-    needs: [static-analysis, tests, cold-start, secret-scan, oakum, audit]
+    needs: [
+      static-analysis,
+      tests,
+      cold-start,
+      secret-scan,
+      oakum,
+      bot-bump-file,
+      audit,
+    ]
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3

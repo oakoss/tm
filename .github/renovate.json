@@ -12,6 +12,9 @@
   "labels": [
     "dependencies"
   ],
+  "gitIgnoredAuthors": [
+    "270690705+oakoss[bot]@users.noreply.github.com"
+  ],
   "packageRules": [
     {
       "description": "Reimplements group:allNonMajor plus digest updates, since the preset's minor/patch match misses digests",
@@ -26,6 +29,15 @@
         "digest",
         "pinDigest"
       ]
+    },
+    {
+      "description": "A Cargo update can change the tm binary, so it goes in its own PR committed as fix(deps), and CI's bot-bump-file job writes the bump file that releases it as a tm-cli patch (TM-139). Ordered after the grouping rule, since later packageRules win.",
+      "groupName": "cargo dependencies",
+      "groupSlug": "cargo",
+      "matchManagers": [
+        "cargo"
+      ],
+      "semanticCommitType": "fix"
     },
     {
       "automerge": false,
