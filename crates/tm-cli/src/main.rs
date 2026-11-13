@@ -196,7 +196,8 @@ enum Command {
         /// open work.
         #[arg(long)]
         all: bool,
-        /// List again each time another process writes, until interrupted.
+        /// List again each time another process writes or a held Claim
+        /// lapses, until interrupted.
         #[arg(long)]
         watch: bool,
     },
@@ -208,7 +209,8 @@ enum Command {
         /// Show at most this many.
         #[arg(long)]
         limit: Option<usize>,
-        /// List again each time another process writes, until interrupted.
+        /// List again each time another process writes or a held Claim
+        /// lapses, until interrupted.
         #[arg(long)]
         watch: bool,
     },
@@ -355,7 +357,8 @@ enum Command {
     /// Every held Claim with its time left, and the lapsed ones another Agent
     /// may take.
     Claims {
-        /// List again each time another process writes, until interrupted.
+        /// List again each time another process writes or a held Claim
+        /// lapses, until interrupted.
         #[arg(long)]
         watch: bool,
     },

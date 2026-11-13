@@ -1,5 +1,5 @@
 //! `--watch`: a list command's result again each time another process
-//! writes, until interrupted (ADR 0018).
+//! writes or a held Claim lapses, until interrupted (ADR 0018).
 
 use std::process::ExitCode;
 use std::thread;
@@ -14,10 +14,10 @@ use crate::output::{self, Output};
 const POLL: Duration = Duration::from_millis(250);
 
 /// Prints `read`'s result, then again after each write another process
-/// makes: text after a line with the time it was read, `--json` one
-/// document per line. A busy store is tried again at the next poll; any
-/// other error ends the watch, as does the first print after the reader
-/// closed the pipe.
+/// makes and each time a held Claim lapses: text after a line with the time
+/// it was read, `--json` one document per line. A busy store is tried again
+/// at the next poll; any other error ends the watch, as does the first print
+/// after the reader closed the pipe.
 pub(crate) fn run(json: bool, read: impl FnMut() -> Result<Output, CliError>) -> ExitCode {
     watching(json, watch, read, |result, before, warnings| {
         output::finish_again(json, result, before, warnings)
