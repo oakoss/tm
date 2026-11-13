@@ -574,7 +574,7 @@ fn edited(store: &Store, actions: &Editing, text: &str) -> (Shell, std::path::Pa
     assert!(start.contains("name = \"Firsts\""), "{start}");
     let composed = draft_of(text);
     let path = composed.draft.clone();
-    shell.compose(Ok(composed));
+    shell.compose(Ok(composed), store, actions);
     shell.write(actions);
     (shell, path)
 }
@@ -716,7 +716,7 @@ fn a_new_view_left_untouched_is_dropped_quietly() {
     shell.key(press(KeyCode::Char('n')));
     let composed = draft_of(tm_store::view::BLANK);
     let draft = composed.draft.clone();
-    shell.compose(Ok(composed));
+    shell.compose(Ok(composed), &store, &actions);
     shell.write(&actions);
     assert!(drawn_sized(&mut shell, 100, 12).contains("no View added"));
     assert_eq!(shell.kept_drafts(), [] as [(&str, std::path::PathBuf); 0]);

@@ -75,7 +75,7 @@ fn list(all: bool) -> Result<Output, CliError> {
     Ok(output)
 }
 
-fn read(reference: &str) -> Result<Output, CliError> {
+pub(crate) fn read(reference: &str) -> Result<Output, CliError> {
     here::write(|here| {
         let identity = identity(here)?;
         let actor = &identity.actor;

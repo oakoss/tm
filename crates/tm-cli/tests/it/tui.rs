@@ -909,7 +909,7 @@ fn an_agent_is_shown_the_views_but_no_editor_opens_for_one() {
 }
 
 #[test]
-fn a_comment_naming_several_actors_is_refused_and_kept_not_asked_about() {
+fn a_comment_naming_several_actors_asks_which_and_writes_the_one_picked() {
     let scratch = Scratch::new();
     let (repo, _store, _project) = initialized(&scratch);
     for kim in ["kim@example.com", "kim@other.org"] {
@@ -932,10 +932,62 @@ fn a_comment_naming_several_actors_is_refused_and_kept_not_asked_about() {
     press(&mut tui, "\r");
     tui.exp_string("History").unwrap();
     press(&mut tui, "c");
+    // Each word is drawn at its own cell.
+    tui.exp_string("@kim").unwrap();
     tui.exp_string("names").unwrap();
+    tui.exp_string("leave").unwrap();
+    press(&mut tui, "j\r");
+    tui.exp_string("commented").unwrap();
+    // The list opens on its newest Issue.
+    let shown = tm(
+        &scratch,
+        &repo,
+        &["--json", "show", "TM-2", "--comments", "all"],
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(
+        doc["data"]["comments"][0]["body"], "ping <@kim@other.org>",
+        "{doc}"
+    );
     press(&mut tui, "qq");
     let rest = tui.exp_eof().unwrap();
-    assert!(!rest.contains("Which one?"), "the TUI asked: {rest}");
-    assert!(rest.contains("a comment not written is kept in"), "{rest}");
+    assert!(
+        !rest.contains("Which one?"),
+        "the CLI's prompt stays held: {rest}"
+    );
+    assert_eq!(exit_code(&tui), 0);
+}
+
+#[test]
+fn m_lists_the_mentions_of_you_and_r_marks_one_read() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    let mut made = jace(
+        &scratch,
+        &repo,
+        &["create", "--type", "task", "--title", "alpha"],
+    );
+    made.env("TM_ACTOR", "kim@example.com");
+    assert!(made.output().unwrap().status.success());
+    let said = tm(
+        &scratch,
+        &repo,
+        &["comment", "TM-1", "@kim@example.com QZXQZX"],
+    );
+    assert!(said.status.success(), "{said:?}");
+    let mut tui = sized_with(&scratch, &repo, "tui", &[("TM_ACTOR", "kim@example.com")]);
+    tui.exp_string("unread").unwrap();
+    tui.exp_string("(m)").unwrap();
+    press(&mut tui, "m");
+    tui.exp_string("Notifications").unwrap();
+    tui.exp_string("@kim@example.com").unwrap();
+    press(&mut tui, "r");
+    tui.exp_string("u undo").unwrap();
+    let mut listed = jace(&scratch, &repo, &["--json", "notifications"]);
+    listed.env("TM_ACTOR", "kim@example.com");
+    let doc: serde_json::Value = serde_json::from_slice(&listed.output().unwrap().stdout).unwrap();
+    assert_eq!(doc["data"]["notifications"], serde_json::json!([]), "{doc}");
+    press(&mut tui, "qq");
+    tui.exp_eof().unwrap();
     assert_eq!(exit_code(&tui), 0);
 }
