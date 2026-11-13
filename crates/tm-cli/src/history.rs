@@ -234,9 +234,6 @@ fn header(entry: &HistoryEntry, me: &dyn Fn() -> Option<String>) -> String {
     line
 }
 
-/// One operation as a line; a field set as the Issue is `creating` shows no
-/// earlier value. `before` holds each field's value so far, which an
-/// operation that was not applied or lost its merge leaves as it was.
 /// A Link added or removed, named from `issue`'s end.
 fn link_line(
     issue: Uuid,
@@ -256,6 +253,9 @@ fn link_line(
     Ok(format!("{verb}: {name} {}", names.key(other)?))
 }
 
+/// One operation as a line; a field set as the Issue is `creating` shows no
+/// earlier value. `before` holds each field's value so far, which an
+/// operation that was not applied or lost its merge leaves as it was.
 fn describe(
     issue: Uuid,
     entry: &HistoryEntry,
