@@ -48,7 +48,7 @@ impl Names {
     pub(crate) fn json<'a>(&self, texts: impl IntoIterator<Item = &'a str>) -> Value {
         let mut listed = BTreeMap::new();
         for text in texts {
-            for (_, actor) in mention::tokens(text) {
+            for (_, actor) in mention::every_token(text) {
                 if let Some(shown) = self.0.get(&actor) {
                     listed
                         .entry(actor.token())
@@ -175,9 +175,13 @@ fn ambiguous(found: &Found<'_>) -> CliError {
 /// writes for.
 fn described(known: &Known) -> String {
     match (&known.actor, &known.name) {
-        (Mentioned::Person(key), Some(name)) => format!("{name} <{key}>"),
-        (Mentioned::Person(key), None) => key.clone(),
-        (Mentioned::Agent { name, human }, _) => format!("{name}, an Agent for {human}"),
+        (Mentioned::Person(key), Some(name)) => {
+            format!("{} <{}>", printable(name), printable(key))
+        }
+        (Mentioned::Person(key), None) => printable(key),
+        (Mentioned::Agent { name, human }, _) => {
+            format!("{}, an Agent for {}", printable(name), printable(human))
+        }
     }
 }
 
@@ -236,5 +240,14 @@ mod tests {
             "{}",
             err.message
         );
+    }
+
+    #[test]
+    fn a_candidate_is_listed_printable() {
+        let hidden = Known {
+            actor: Mentioned::Person("kim@example.com".into()),
+            name: Some("Kim\u{200b}Lee".into()),
+        };
+        assert_eq!(described(&hidden), "Kim\\u{200b}Lee <kim@example.com>");
     }
 }

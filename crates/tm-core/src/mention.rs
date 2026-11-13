@@ -108,11 +108,17 @@ pub fn tokens(text: &str) -> Vec<(Range<usize>, Mentioned)> {
 /// stays as written.
 #[must_use]
 pub fn shown(text: &str, name: impl Fn(&Mentioned) -> Option<String>) -> String {
-    let edits = scan(text, &[])
+    let edits = every_token(text)
         .into_iter()
         .filter_map(|(span, actor)| name(&actor).map(|shown| (span, shown)))
         .collect();
     replace(text, edits)
+}
+
+/// Every token in `text`, in code or not, as [`shown`] reads them.
+#[must_use]
+pub fn every_token(text: &str) -> Vec<(Range<usize>, Mentioned)> {
+    scan(text, &[])
 }
 
 /// The tokens in `text` that do not start inside `skip`.
@@ -170,14 +176,12 @@ pub fn find<'a>(text: &'a str, known: &'a [Known]) -> Vec<Found<'a>> {
             .copied()
             .filter(|known| !word.is_empty() && known.addressed_by(word))
             .collect();
-        // The longer reading wins, and an email no one holds names no one,
-        // though `kim` before its `@` names Kim; readings of one length are
+        // The longer reading wins, so `@kim@example.com` is the email though
+        // `kim` names Kim, and a word longer than any name, as `@jace.babin`
+        // or an email no one holds, names no one; readings of one length are
         // all candidates.
-        let email = word.contains('@');
         let (len, candidates) = match named(&offered, after) {
-            Some((len, named)) if (addressed.is_empty() && !email) || len > word.len() => {
-                (len, named)
-            }
+            Some((len, named)) if len > word.len() => (len, named),
             Some((len, mut named)) if len == word.len() => {
                 for known in addressed {
                     if !named.contains(&known) {
@@ -500,6 +504,12 @@ mod tests {
             0,
             "an email no one holds names no one"
         );
+        for longer in ["@jace.babin", "@jace-babin", "@claude-code-2"] {
+            assert_eq!(find(longer, &known).len(), 0, "{longer} names no one");
+        }
+        for punctuated in ["@jace.", "@Jace's", "(@jace)", "@O'Brien,"] {
+            assert_eq!(find(punctuated, &known).len(), 1, "{punctuated}");
+        }
     }
 
     proptest::proptest! {

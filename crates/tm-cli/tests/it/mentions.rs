@@ -225,6 +225,17 @@ fn only_known_actors_are_named_wherever_their_tokens_sit() {
         .map(|mention| mention["token"].as_str().unwrap())
         .collect();
     assert_eq!(listed, ["<@kim@example.com>"]);
+    let coded = tm(
+        &scratch,
+        &repo,
+        &["comment", "TM-2", "in code `<@kim@example.com>`"],
+    );
+    assert!(coded.status.success(), "{coded:?}");
+    let shown = doc(&tm(&scratch, &repo, &["--json", "show", "TM-2"]));
+    assert_eq!(
+        shown["data"]["mentions"][0]["token"], "<@kim@example.com>",
+        "listed as tm show names it, in code or not: {shown}"
+    );
     let logged = doc(&tm(&scratch, &repo, &["--json", "history", "TM-1"]));
     let lines: Vec<&str> = logged["data"]["writes"]
         .as_array()
