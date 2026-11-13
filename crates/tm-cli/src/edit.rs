@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 use tm_core::Change;
 use tm_core::scheme::{FieldType, Scheme};
-use tm_store::{Draft, IssueView, Named, StoreError};
+use tm_store::{Draft, IssueView, Named, StoreError, WriteOptions};
 use uuid::Uuid;
 
 use crate::error::CliError;
@@ -129,7 +129,6 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
             .with("reference", reference)
     })?;
     let based_on = crate::moves::based_on(edit.if_version, read);
-    here.store.base_writes_on(id, based_on);
     let parent = match &edit.parent {
         Some(parent) => Some(here.issue(parent)?),
         None => None,
@@ -147,9 +146,11 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
     let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
         .map_err(|message| CliError::new("no_identity", message))?;
     check_flags(here.store.scheme(), &view, edit)?;
-    if edit.force {
-        here.store.force_past_claims();
-    }
+    let options = WriteOptions {
+        force: edit.force,
+        based_on: Some((id, based_on)),
+        ..WriteOptions::default()
+    };
     let forced = |err| CliError::past_claim(err, "tm edit --force");
     // A refusal would lose piped text, so check before reading it; the write
     // checks again.
@@ -160,7 +161,7 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
             written.push("parent");
         }
         here.store
-            .check_protected(&identity.actor, id, &written)
+            .check_protected(&identity.actor, id, &written, edit.force)
             .map_err(forced)?;
         here.store.check_version(id, based_on, &written)?;
     }
@@ -209,7 +210,7 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
             change,
         })
         .collect();
-    let ops = here.store.append_all(drafts).map_err(forced)?;
+    let ops = here.store.write(drafts, &options).map_err(forced)?;
     let mut text = String::new();
     for change in &report {
         let _ = writeln!(text, "{name}  {}", summary(change));

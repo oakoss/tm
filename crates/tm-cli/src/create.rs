@@ -3,7 +3,7 @@
 use serde_json::{Value, json};
 use tm_core::Change;
 use tm_core::scheme::{Category, FieldType, Scheme};
-use tm_store::{Draft, StoreError};
+use tm_store::{Draft, StoreError, WriteOptions};
 use uuid::Uuid;
 
 use crate::error::CliError;
@@ -89,9 +89,13 @@ fn write(here: &mut Here, mut create: Create) -> Result<(Output, Vec<String>), C
         })
         .collect();
     let written = match parent {
-        Some(parent) if active => here.store.append_with_lineage(drafts, parent, |lineage| {
-            follow::starts(&scheme, lineage.issues(), lineage, &identity.actor)
-        }),
+        Some(parent) if active => {
+            let options = WriteOptions::default();
+            here.store
+                .append_with_lineage(drafts, parent, &options, |lineage| {
+                    follow::starts(&scheme, lineage.issues(), lineage, &identity.actor)
+                })
+        }
         _ => here
             .store
             .append_all(drafts)

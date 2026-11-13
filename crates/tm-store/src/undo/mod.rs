@@ -12,7 +12,7 @@ use tm_core::{Actor, Change, Hlc, Op, ProjectId, Scheme, Subject, link, memory, 
 use uuid::Uuid;
 
 use crate::apply::{Version, issue_project, uuid_from};
-use crate::{Draft, Provenance, Store, StoreError, WallTime};
+use crate::{Draft, Provenance, Store, StoreError, WallTime, WriteOptions};
 
 mod record;
 
@@ -78,7 +78,9 @@ impl Store {
     /// Project write, a batch that only released a Claim or a synced batch, or as
     /// [`Store::append_all`].
     pub fn undo_plan(&mut self, actor: &Actor, batch: Uuid) -> Result<UndoPlan, StoreError> {
-        self.undo_with(actor, batch, false).map(|(plan, _)| plan)
+        let options = WriteOptions::default();
+        self.undo_with(actor, batch, &options, false)
+            .map(|(plan, _)| plan)
     }
 
     /// Undoes `batch` as `actor`, all or nothing: the plan is made again
@@ -88,7 +90,7 @@ impl Store {
     ///
     /// As [`Store::undo_plan`].
     pub fn undo(&mut self, actor: &Actor, batch: Uuid) -> Result<(UndoPlan, Vec<Op>), StoreError> {
-        self.undo_with(actor, batch, true)
+        self.undo_with(actor, batch, &WriteOptions::default(), true)
     }
 
     /// Whether undoing `batch` would succeed. For the batch this Store just
@@ -137,10 +139,17 @@ impl Store {
         rows.map(|batch| uuid_from(&batch?)).collect()
     }
 
-    fn undo_with(
+    /// [`Store::undo`] as `options` asks, or [`Store::undo_plan`] when
+    /// `commit` is false.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::undo_plan`].
+    pub fn undo_with(
         &mut self,
         actor: &Actor,
         batch: Uuid,
+        options: &WriteOptions,
         commit: bool,
     ) -> Result<(UndoPlan, Vec<Op>), StoreError> {
         let planned = self.read(|store| plan(&store.conn, &store.scheme, batch))?;
@@ -153,7 +162,7 @@ impl Store {
                 conflicts: again.restores,
             }),
         };
-        let ops = self.append_with(drafts, |tx, _| guard(tx), commit, Some(batch))?;
+        let ops = self.write_with(drafts, options, |tx, _| guard(tx), commit, Some(batch))?;
         Ok((planned, ops))
     }
 

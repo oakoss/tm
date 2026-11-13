@@ -101,6 +101,14 @@ fn force_and_a_human_write_past_the_claim_with_a_warning() {
         format!("tm: warning: {HELD}\n"),
         "a start that writes no protected field still warns, once"
     );
+
+    for words in [
+        "--json move TM-3 in_progress --set description=z --force",
+        "--json move TM-3 todo --force",
+    ] {
+        let out = ok(as_agent(&scratch, &repo, "s2", words));
+        assert_eq!(doc(&out)["warnings"], json!([HELD]), "{words}");
+    }
 }
 
 #[test]
@@ -117,10 +125,16 @@ fn a_refusal_comes_before_piped_text_is_read() {
         let out = as_agent(&scratch, &repo, "s2", words);
         assert_eq!(doc(&out)["error"], "already_claimed", "{words}: {out:?}");
     }
-    // Staying in its Status writes no protected field, so stdin is read.
-    let words = "--json move TM-3 in_progress --set title=-";
-    let out = as_agent(&scratch, &repo, "s2", words);
-    assert_eq!(doc(&out)["error"], "invalid_value", "{out:?}");
+    // Staying in its Status writes no protected field, so stdin is read, as
+    // it is when forced.
+    for words in [
+        "--json move TM-3 in_progress --set title=-",
+        "--json edit TM-3 --set description=- --force",
+        "--json move TM-3 in_review --set description=- --force",
+    ] {
+        let out = as_agent(&scratch, &repo, "s2", words);
+        assert_eq!(doc(&out)["error"], "invalid_value", "{words}: {out:?}");
+    }
 }
 
 #[test]

@@ -128,9 +128,10 @@ impl Store {
         if planned.drafts().is_empty() {
             return Ok(Vec::new());
         }
-        let ops = self.append_imported_guarded(planned.drafts().to_vec(), |tx| {
+        let drafts = crate::imported(planned.drafts().to_vec())?;
+        let guard = |tx: &rusqlite::Transaction<'_>, _| {
             if plan(tx)? == *planned {
-                Ok(())
+                Ok(Vec::new())
             } else {
                 Err(StoreError::Invalid {
                     field: field.into(),
@@ -138,7 +139,8 @@ impl Store {
                     valid: Vec::new(),
                 })
             }
-        })?;
+        };
+        let ops = self.append_with(drafts, guard, true, None)?;
         Ok(ops.first().map(|op| op.op_id).into_iter().collect())
     }
 }

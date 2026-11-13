@@ -42,6 +42,11 @@ fn show_and_a_write_give_the_version_and_a_stale_one_is_refused() {
     for (words, field) in [
         ("edit TM-1 --set description=mine", "description"),
         ("move TM-1 todo --set description=mine", "description"),
+        (
+            "move TM-1 in_progress --set description=mine",
+            "description",
+        ),
+        ("move TM-1 done --set description=mine", "description"),
         ("edit TM-1 --set description=-", "description"),
         ("move TM-1 in_progress --set description=-", "description"),
         ("edit TM-1 --set title=- --no-parent", "parent"),

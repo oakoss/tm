@@ -4,14 +4,28 @@
 use serde_json::json;
 use tm_core::Change;
 use tm_core::actor::SessionId;
-use tm_store::{Provenance, Store, StoreError, WallTime};
+use tm_store::{Store, StoreError, WriteOptions};
 use uuid::Uuid;
 
 use crate::support::{ManualClock, TempDir, claude, draft, field, new_issue, open, set_field};
 
 fn set(store: &mut Store, issue: Uuid, name: &str, value: &str) -> Result<(), StoreError> {
+    set_based(store, issue, name, value, None)
+}
+
+fn set_based(
+    store: &mut Store,
+    issue: Uuid,
+    name: &str,
+    value: &str,
+    based_on: Option<(Uuid, i64)>,
+) -> Result<(), StoreError> {
+    let options = WriteOptions {
+        based_on,
+        ..WriteOptions::default()
+    };
     store
-        .append_all(vec![draft(issue, set_field(name, json!(value)))])
+        .write(vec![draft(issue, set_field(name, json!(value)))], &options)
         .map(drop)
 }
 
@@ -24,8 +38,8 @@ fn a_field_changed_after_the_version_refuses_the_write_with_its_value() {
     set(&mut store, issue, "description", "theirs").unwrap();
     assert!(store.issue_version(issue).unwrap() > read);
 
-    store.base_writes_on(issue, read);
-    let err = set(&mut store, issue, "description", "mine").unwrap_err();
+    let based_on = Some((issue, read));
+    let err = set_based(&mut store, issue, "description", "mine", based_on).unwrap_err();
     let StoreError::Stale {
         based_on, current, ..
     } = &err
@@ -42,8 +56,7 @@ fn a_field_changed_after_the_version_refuses_the_write_with_its_value() {
 
     set(&mut store, issue, "title", "another field").unwrap();
     let now = store.issue_version(issue).unwrap();
-    store.base_writes_on(issue, now);
-    set(&mut store, issue, "description", "mine").unwrap();
+    set_based(&mut store, issue, "description", "mine", Some((issue, now))).unwrap();
 }
 
 #[test]
@@ -63,7 +76,7 @@ fn a_comment_or_a_claim_moves_no_version() {
 }
 
 #[test]
-fn the_base_covers_its_own_issue_and_never_an_import() {
+fn the_base_covers_only_its_own_issue() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
@@ -72,15 +85,5 @@ fn the_base_covers_its_own_issue_and_never_an_import() {
     set(&mut store, issue, "description", "theirs").unwrap();
     set(&mut store, other, "description", "x").unwrap();
 
-    store.base_writes_on(issue, read);
-    set(&mut store, other, "description", "y").unwrap();
-    let provenance = Provenance {
-        source: "test".into(),
-        at: WallTime {
-            utc_ms: 500,
-            offset_min: 0,
-        },
-    };
-    let imported = draft(issue, set_field("description", json!("from elsewhere")));
-    store.append_imported(vec![(imported, provenance)]).unwrap();
+    set_based(&mut store, other, "description", "y", Some((issue, read))).unwrap();
 }

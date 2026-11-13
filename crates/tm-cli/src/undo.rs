@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 use tm_core::op::{COMMENT_BODY_FIELD, COMMENTS_FIELD};
 use tm_core::{Actor, link};
-use tm_store::{Restore, Target};
+use tm_store::{Restore, Target, WriteOptions};
 use uuid::Uuid;
 
 use crate::error::CliError;
@@ -16,18 +16,14 @@ use crate::output::{Output, id_by_part, printable, short};
 use crate::show;
 
 pub(crate) fn run(reference: Option<&str>, dry_run: bool, force: bool) -> Result<Output, CliError> {
-    here::write(|here| {
-        if force {
-            here.store.force_past_claims();
-        }
-        undo(here, reference, dry_run)
-    })
+    here::write(|here| undo(here, reference, dry_run, force))
 }
 
 fn undo(
     here: &mut Here,
     reference: Option<&str>,
     dry_run: bool,
+    force: bool,
 ) -> Result<(Output, Vec<String>), CliError> {
     let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
         .map_err(|message| CliError::new("no_identity", message))?;
@@ -35,15 +31,14 @@ fn undo(
         Some(reference) => (batch(here, reference)?, None),
         None => last(here, &identity.actor)?,
     };
-    let undone = if dry_run {
-        here.store
-            .undo_plan(&identity.actor, batch)
-            .map(|plan| (plan, None))
-    } else {
-        here.store
-            .undo(&identity.actor, batch)
-            .map(|(plan, ops)| (plan, ops.first().map(|op| op.op_id)))
+    let options = WriteOptions {
+        force,
+        ..WriteOptions::default()
     };
+    let undone = here
+        .store
+        .undo_with(&identity.actor, batch, &options, !dry_run)
+        .map(|(plan, ops)| (plan, ops.first().filter(|_| !dry_run).map(|op| op.op_id)));
     let (plan, written) = undone.map_err(|err| {
         let err = CliError::past_claim(err, "tm undo --force");
         match next {

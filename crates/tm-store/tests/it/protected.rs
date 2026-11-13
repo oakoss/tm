@@ -5,7 +5,7 @@ use serde_json::json;
 use tm_core::actor::SessionId;
 use tm_core::op::ClaimAction;
 use tm_core::{Actor, Change};
-use tm_store::{Draft, Provenance, Store, StoreError, WallTime};
+use tm_store::{Draft, Provenance, Store, StoreError, WallTime, WriteOptions};
 use uuid::Uuid;
 
 use crate::support::{
@@ -94,9 +94,21 @@ fn a_human_or_a_forced_write_goes_past_the_claim_and_is_reported() {
     assert_eq!(passed[0].session.as_deref(), Some("s1"));
     assert_eq!(store.passed_claims(), [], "reported once");
 
-    store.force_past_claims();
-    write(&mut store, &in_session("s2"), issue, "status").unwrap();
+    let forced = Draft {
+        actor: in_session("s2"),
+        ..draft(issue, set_field("status", json!("in_review")))
+    };
+    let force = WriteOptions {
+        force: true,
+        ..WriteOptions::default()
+    };
+    store.write(vec![forced], &force).unwrap();
     assert_eq!(store.passed_claims().len(), 1);
+    let err = write(&mut store, &in_session("s2"), issue, "description").unwrap_err();
+    assert!(
+        matches!(err, StoreError::Protected { .. }),
+        "force covers only its own write: {err}"
+    );
 }
 
 #[test]

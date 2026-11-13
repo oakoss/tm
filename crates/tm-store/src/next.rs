@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::claim::{Claim, current, made_by};
 use crate::membership::{open_blocks, passed_over};
-use crate::{Draft, Lineage, Store, StoreError};
+use crate::{Draft, Lineage, Store, StoreError, Taking};
 
 /// The Issue [`Store::take_next`] took, with what its `extend` made.
 #[derive(Debug)]
@@ -37,12 +37,16 @@ impl Store {
         &mut self,
         actor: &Actor,
         candidates: &[Uuid],
-        ttl_ms: Option<u64>,
+        taking: impl Into<Taking>,
         extend: impl FnOnce(&Lineage) -> (Vec<Draft>, T),
     ) -> Result<Option<Next<T>>, StoreError> {
         let scheme = self.scheme.clone();
         let writer = actor.clone();
-        let (branch, paths) = (self.place.branch.clone(), self.place.paths.clone());
+        let Taking {
+            ttl_ms,
+            branch,
+            paths,
+        } = crate::claim::kept(taking.into());
         let mut extend = Some(extend);
         let mut chosen = None;
         let mut made = T::default();

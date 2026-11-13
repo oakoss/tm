@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use tm_core::op::ClaimAction;
 use tm_core::scheme::{Category, WAITING_ON, Workflow};
 use tm_core::{Actor, Change, Op, ProjectId};
-use tm_store::{ClaimState, Draft, IssueView, Named, StoreError};
+use tm_store::{ClaimState, Draft, IssueView, Named, StoreError, WriteOptions};
 use uuid::Uuid;
 
 use crate::edit::{self, Changed};
@@ -90,7 +90,11 @@ fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>), CliError
             .with("reference", reference)
     })?;
     let based_on = based_on(args.if_version, read);
-    here.store.base_writes_on(id, based_on);
+    let options = WriteOptions {
+        force,
+        based_on: Some((id, based_on)),
+        ..WriteOptions::default()
+    };
     let issue_type = view
         .fields
         .get("type")
@@ -120,9 +124,6 @@ fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>), CliError
     // it (ADR 0009).
     let category = workflow.status(&status).map(|status| status.category);
     let finished = matches!(category, Some(Category::Done | Category::Cancelled));
-    if force {
-        here.store.force_past_claims();
-    }
     let forced = |err| CliError::past_claim(err, "tm move --force");
     if !crate::fields::piped(fields).is_empty() {
         let to = (status.as_str(), finished);
@@ -161,16 +162,17 @@ fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>), CliError
     let drafts = || changes.iter().cloned().map(draft).collect::<Vec<_>>();
     let (ops, starts) = if category == Some(Category::Active) {
         here.store
-            .append_with_lineage(drafts(), id, |lineage| {
+            .append_with_lineage(drafts(), id, &options, |lineage| {
                 let parents = lineage.issues().get(1..).unwrap_or_default();
                 follow::starts(&scheme, parents, lineage, &identity.actor)
             })
             .map_err(forced)?
     } else if !finished {
-        let ops = here.store.append_all(drafts()).map_err(forced)?;
+        let ops = here.store.write(drafts(), &options).map_err(forced)?;
         (ops, Starts::default())
     } else {
-        let ops = finish(here, &identity.actor, (view.project, id), drafts, !force)
+        let issue = (view.project, id);
+        let ops = finish(here, &identity.actor, issue, drafts, (!force, &options))
             .map_err(held_elsewhere)?;
         // Another session can release the Claim this move came to release.
         if ops.is_empty() {
@@ -214,15 +216,15 @@ fn held_elsewhere(err: StoreError) -> CliError {
 }
 
 /// Writes `drafts` for a move of `issue` into done or cancelled, releasing
-/// its Claim in the same batch. With `guarded`, an Agent's move is refused
-/// with [`StoreError::AlreadyClaimed`] while another session holds a live
-/// Claim (ADR 0009).
+/// its Claim in the same batch, as `options` asks. With `guarded`, an Agent's
+/// move is refused with [`StoreError::AlreadyClaimed`] while another session
+/// holds a live Claim (ADR 0009).
 pub(crate) fn finish(
     here: &mut Here,
     actor: &Actor,
     (project, issue): (ProjectId, Uuid),
     drafts: impl Fn() -> Vec<Draft>,
-    guarded: bool,
+    (guarded, options): (bool, &WriteOptions),
 ) -> Result<Vec<Op>, StoreError> {
     let mut tries = 0;
     loop {
@@ -243,7 +245,11 @@ pub(crate) fn finish(
                 },
             });
         }
-        match here.store.append_if_claim(drafts, issue, held.as_ref()) {
+        let options = WriteOptions {
+            claim: Some((issue, held)),
+            ..options.clone()
+        };
+        match here.store.write(drafts, &options) {
             Err(StoreError::ClaimChanged(_)) if tries < MOVE_TRIES => tries += 1,
             written => break written,
         }
@@ -272,7 +278,7 @@ fn refuse_early(
         refuse_finish(here, actor, view.id, !args.force).map_err(held_elsewhere)?;
     } else {
         here.store
-            .check_protected(actor, view.id, &written)
+            .check_protected(actor, view.id, &written, args.force)
             .map_err(|err| CliError::past_claim(err, "tm move --force"))?;
     }
     Ok(here.store.check_version(view.id, based_on, &written)?)

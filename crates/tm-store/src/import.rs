@@ -404,13 +404,15 @@ impl Store {
         if planned.drafts.is_empty() {
             return Ok(Vec::new());
         }
-        self.append_imported_guarded(planned.drafts.clone(), |tx| {
+        let drafts = crate::imported(planned.drafts.clone())?;
+        let guard = |tx: &rusqlite::Transaction<'_>, _| {
             if again(tx)?.as_ref() == Some(planned) {
-                Ok(())
+                Ok(Vec::new())
             } else {
                 Err(StoreError::ImportChanged(issue.into()))
             }
-        })
+        };
+        self.append_with(drafts, guard, true, None)
     }
 }
 

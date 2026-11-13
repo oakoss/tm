@@ -549,23 +549,48 @@ pub struct Store {
     last_write: Option<LastWrite>,
     /// Operations this connection has committed since it opened.
     appended: usize,
-    forcing: bool,
     /// Claims a human's or a forced write went past, for the caller to warn of.
     passed: Vec<Claim>,
-    based_on: Option<(Uuid, i64)>,
     place: Workplace,
 }
 
-/// Where the writer works: the directory a session's resume command names,
-/// and the git branch a Claim it takes records.
+/// Where the writer works: the directory a session's resume command names.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Workplace {
     pub dir: Option<String>,
-    pub branch: Option<String>,
     /// Each harness and the session its variables name here.
     pub harnesses: Vec<(String, String)>,
-    /// The files a Claim taken here covers, as `tm_core::paths` keeps them.
+}
+
+/// How one write is made; the default is a plain write.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WriteOptions {
+    /// Lets an Agent write past another session's Claim, as `--force` asks.
+    pub force: bool,
+    /// The Issue and the version the write was judged from.
+    pub based_on: Option<(Uuid, i64)>,
+    /// The Issue and the Claim, expiry included, the write was judged from.
+    pub claim: Option<(Uuid, Option<Claim>)>,
+}
+
+/// How a Claim is taken.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Taking {
+    /// How long it lasts without renewal; none holds until released.
+    pub ttl_ms: Option<u64>,
+    /// The git branch it records.
+    pub branch: Option<String>,
+    /// The files it covers, as `tm_core::paths` keeps them.
     pub paths: Vec<String>,
+}
+
+impl From<Option<u64>> for Taking {
+    fn from(ttl_ms: Option<u64>) -> Self {
+        Self {
+            ttl_ms,
+            ..Self::default()
+        }
+    }
 }
 
 /// Whether undoing the last batch this Store wrote would succeed, as tried
@@ -767,9 +792,7 @@ impl Store {
             opened: false,
             last_write: None,
             appended: 0,
-            forcing: false,
             passed: Vec::new(),
-            based_on: None,
             place: Workplace::default(),
         };
         store.init()?;
@@ -803,24 +826,11 @@ impl Store {
     }
 
     /// Where later writes are made from: a write in a session records `dir`
-    /// for it, and a Claim taken records `branch`.
+    /// for it.
     #[must_use]
     pub fn working_in(mut self, place: Workplace) -> Self {
         self.place = place;
         self
-    }
-
-    /// Set only by commands that take a Claim, so others never run git.
-    pub fn set_branch(&mut self, branch: Option<String>) {
-        self.place.branch = branch;
-    }
-
-    /// The files the Claims taken from here cover, sorted with none twice as
-    /// a take keeps them.
-    pub fn set_paths(&mut self, mut paths: Vec<String>) {
-        paths.sort();
-        paths.dedup();
-        self.place.paths = paths;
     }
 
     fn init(&mut self) -> Result<(), StoreError> {
@@ -1241,9 +1251,10 @@ impl Store {
         let draft = self.link_draft(actor.clone(), link_type, from, to, false)?;
         let (source, target) = tm_core::link::link_type(link_type)
             .map_or((from, to), |def| tm_core::link::canonical(def, from, to));
-        let mut ops = self.append_guarded(vec![draft], |tx| {
+        let draft = vec![(draft, None)];
+        let guard = |tx: &Transaction<'_>, _| {
             if validate::has_link(tx, link_type, source, target)? {
-                Ok(())
+                Ok(Vec::new())
             } else {
                 Err(StoreError::NotLinked {
                     link_type: link_type.to_owned(),
@@ -1251,7 +1262,8 @@ impl Store {
                     to: Box::new(target.into()),
                 })
             }
-        })?;
+        };
+        let mut ops = self.append_with(draft, guard, true, None)?;
         Ok(ops.remove(0))
     }
 
@@ -1296,7 +1308,23 @@ impl Store {
     /// [`StoreError::Clock`] or [`StoreError::Busy`]; nothing is written
     /// unless every draft succeeds.
     pub fn append_all(&mut self, drafts: Vec<Draft>) -> Result<Vec<Op>, StoreError> {
-        self.append_guarded(drafts, |_| Ok(()))
+        self.write(drafts, &WriteOptions::default())
+    }
+
+    /// [`Store::append_all`] as `options` asks.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::ClaimChanged`] when the Claim `options` names has
+    /// changed, [`StoreError::Stale`] when a field it wrote changed after the
+    /// version `options` names, or as [`Store::append_all`].
+    pub fn write(
+        &mut self,
+        drafts: Vec<Draft>,
+        options: &WriteOptions,
+    ) -> Result<Vec<Op>, StoreError> {
+        let drafts = drafts.into_iter().map(|draft| (draft, None)).collect();
+        self.write_with(drafts, options, |_, _| Ok(Vec::new()), true, None)
     }
 
     /// [`Store::append_all`] for imported changes: each operation carries its
@@ -1311,33 +1339,7 @@ impl Store {
         &mut self,
         drafts: Vec<(Draft, Provenance)>,
     ) -> Result<Vec<Op>, StoreError> {
-        self.append_imported_guarded(drafts, |_| Ok(()))
-    }
-
-    /// [`Store::append_imported`] after `guard` passes inside the write.
-    fn append_imported_guarded(
-        &mut self,
-        drafts: Vec<(Draft, Provenance)>,
-        guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
-    ) -> Result<Vec<Op>, StoreError> {
-        for (draft, provenance) in &drafts {
-            validate::check_importable(&draft.change)?;
-            check_wall(provenance.at).map_err(|reason| StoreError::Invalid {
-                field: "time".into(),
-                reason,
-                valid: Vec::new(),
-            })?;
-        }
-        let drafts = drafts
-            .into_iter()
-            .map(|(draft, provenance)| (draft, Some(provenance)))
-            .collect();
-        self.append_with(drafts, |tx, _| guard(tx).map(|()| Vec::new()), true, None)
-    }
-
-    /// Lets an Agent's later writes past another session's Claim, as `--force` asks.
-    pub fn force_past_claims(&mut self) {
-        self.forcing = true;
+        self.append_with(imported(drafts)?, |_, _| Ok(Vec::new()), true, None)
     }
 
     /// The Claims writes went past since last asked.
@@ -1345,45 +1347,7 @@ impl Store {
         std::mem::take(&mut self.passed)
     }
 
-    /// [`Store::append_all`], refused with [`StoreError::ClaimChanged`] unless
-    /// `issue`'s Claim is still exactly `held`, expiry included, so what was
-    /// judged from it holds when the write begins.
-    ///
-    /// # Errors
-    ///
-    /// [`StoreError::ClaimChanged`], or as [`Store::append_all`].
-    pub fn append_if_claim(
-        &mut self,
-        drafts: Vec<Draft>,
-        issue: Uuid,
-        held: Option<&Claim>,
-    ) -> Result<Vec<Op>, StoreError> {
-        self.append_guarded(drafts, |tx| {
-            if claim::current(tx, issue)?.as_ref() == held {
-                Ok(())
-            } else {
-                Err(StoreError::ClaimChanged(issue.into()))
-            }
-        })
-    }
-
-    /// [`Store::append_all`] after `guard` passes inside the same write
-    /// transaction, so no other writer can change what it checked.
-    fn append_guarded(
-        &mut self,
-        drafts: Vec<Draft>,
-        guard: impl FnOnce(&Transaction<'_>) -> Result<(), StoreError>,
-    ) -> Result<Vec<Op>, StoreError> {
-        let drafts = drafts.into_iter().map(|draft| (draft, None)).collect();
-        self.append_with(drafts, |tx, _| guard(tx).map(|()| Vec::new()), true, None)
-    }
-
-    /// [`Store::append_guarded`], rolled back instead of committed when
-    /// `commit` is false: every check runs, and nothing is kept. With
-    /// `undid`, the batch is recorded as that batch's undo.
-    /// `guard` may add drafts read from inside the write, given the UTC
-    /// milliseconds the write is stamped with, so a Claim it judges lapsed or
-    /// held is judged as the write will be.
+    /// [`Store::write_with`] with the default options.
     fn append_with(
         &mut self,
         drafts: Vec<(Draft, Option<Provenance>)>,
@@ -1391,13 +1355,31 @@ impl Store {
         commit: bool,
         undid: Option<Uuid>,
     ) -> Result<Vec<Op>, StoreError> {
-        self.append_unnamed(drafts, guard, commit, undid)
+        self.write_with(drafts, &WriteOptions::default(), guard, commit, undid)
+    }
+
+    /// The one write every other makes: [`Store::write`], rolled back instead
+    /// of committed when `commit` is false, so every check runs and nothing is
+    /// kept. With `undid`, the batch is recorded as that batch's undo.
+    /// `guard` may refuse, or add drafts read from inside the write, given the
+    /// UTC milliseconds the write is stamped with, so a Claim it judges lapsed
+    /// or held is judged as the write will be.
+    fn write_with(
+        &mut self,
+        drafts: Vec<(Draft, Option<Provenance>)>,
+        options: &WriteOptions,
+        guard: impl FnOnce(&Transaction<'_>, i64) -> Result<Vec<Draft>, StoreError>,
+        commit: bool,
+        undid: Option<Uuid>,
+    ) -> Result<Vec<Op>, StoreError> {
+        self.write_unnamed(drafts, options, guard, commit, undid)
             .map_err(|err| err.named(&self.conn))
     }
 
-    fn append_unnamed(
+    fn write_unnamed(
         &mut self,
         mut drafts: Vec<(Draft, Option<Provenance>)>,
+        options: &WriteOptions,
         guard: impl FnOnce(&Transaction<'_>, i64) -> Result<Vec<Draft>, StoreError>,
         commit: bool,
         undid: Option<Uuid>,
@@ -1409,15 +1391,20 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some((issue, held)) = &options.claim
+            && claim::current(&tx, *issue)?.as_ref() != held.as_ref()
+        {
+            return Err(StoreError::ClaimChanged((*issue).into()));
+        }
         for draft in guard(&tx, now.0.utc_ms)? {
             draft.change.validate()?;
             drafts.push((draft, None));
         }
-        let passed = claim::protected(&tx, &drafts, now.0.utc_ms, self.forcing)?;
+        let passed = claim::protected(&tx, &drafts, now.0.utc_ms, options.force)?;
         for passing in &passed {
             drafts.push((passing.record(&tx)?, None));
         }
-        if let Some((issue, based_on)) = self.based_on {
+        if let Some((issue, based_on)) = options.based_on {
             let fields = version::written(&drafts, issue);
             version::check(&tx, &self.scheme, (issue, based_on), fields)?;
         }
@@ -1883,6 +1870,24 @@ fn rebuild_in(tx: &Transaction<'_>) -> Result<usize, StoreError> {
         schema::PROJECTION_VERSION
     ))?;
     Ok(unapplied)
+}
+
+/// Imported drafts as a write takes them, once each may be imported.
+pub(crate) fn imported(
+    drafts: Vec<(Draft, Provenance)>,
+) -> Result<Vec<(Draft, Option<Provenance>)>, StoreError> {
+    for (draft, provenance) in &drafts {
+        validate::check_importable(&draft.change)?;
+        check_wall(provenance.at).map_err(|reason| StoreError::Invalid {
+            field: "time".into(),
+            reason,
+            valid: Vec::new(),
+        })?;
+    }
+    Ok(drafts
+        .into_iter()
+        .map(|(draft, provenance)| (draft, Some(provenance)))
+        .collect())
 }
 
 /// A wall time's milliseconds, if an operation can hold it.

@@ -135,8 +135,8 @@ impl Store {
             subject: issue,
             change,
         };
-        let drafts = vec![draft(change), draft(self.waiting_on(None))];
-        self.append_guarded(drafts, |tx| {
+        let drafts = vec![(draft(change), None), (draft(self.waiting_on(None)), None)];
+        let guard = |tx: &rusqlite::Transaction<'_>, _| {
             // That it still waits at all is the write's own check.
             let open = read::open_question(tx, issue)?.map(|asked| asked.id);
             if open != Some(question) {
@@ -144,8 +144,9 @@ impl Store {
                     "changed since the question was read; read it again",
                 ));
             }
-            Ok(())
-        })
+            Ok(Vec::new())
+        };
+        self.append_with(drafts, guard, true, None)
     }
 
     /// `issue`'s open question: its latest question not retracted.
