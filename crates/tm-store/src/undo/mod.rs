@@ -48,6 +48,11 @@ pub enum Target {
         /// None when a merge left the memory without one.
         key: Option<String>,
     },
+    /// A Notification's read mark, with the Issue it is about.
+    Notification {
+        notification: Uuid,
+        issue: Uuid,
+    },
 }
 
 /// What undoing a batch writes, and the operations that write it.

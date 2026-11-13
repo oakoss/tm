@@ -39,6 +39,11 @@ pub(crate) fn check_importable(change: &Change) -> Result<(), StoreError> {
             reason: "cannot be imported".into(),
             valid: Vec::new(),
         }),
+        Change::SetRead { .. } => Err(StoreError::Invalid {
+            field: tm_core::notification::READ_FIELD.into(),
+            reason: "cannot be imported".into(),
+            valid: Vec::new(),
+        }),
         _ => Ok(()),
     }
 }
@@ -128,6 +133,10 @@ pub(crate) fn check(
             crate::people::check(writing.actor, issue_id)?;
             return Ok(change);
         }
+        Subject::Notification => {
+            crate::notifications::check(tx, writing.actor, issue_id, &change)?;
+            return Ok(change);
+        }
         Subject::Issue => {}
     }
     if !matches!(change, Change::Create) && !exists(tx, issue_id)? {
@@ -147,8 +156,9 @@ pub(crate) fn check(
         | Change::CreateMemory
         | Change::SetMemory { .. }
         | Change::MemorySource
-        | Change::SetName { .. } => {
-            unreachable!("Project, Short-list, memory and name operations return above")
+        | Change::SetName { .. }
+        | Change::SetRead { .. } => {
+            unreachable!("Project, Short-list, memory, name and read operations return above")
         }
         Change::SetField { field, value, .. } => {
             check_set(tx, scheme, writing, issue_id, (field, value))

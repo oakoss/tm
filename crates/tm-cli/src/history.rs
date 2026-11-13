@@ -237,6 +237,25 @@ fn header(entry: &HistoryEntry, me: &dyn Fn() -> Option<String>) -> String {
 /// One operation as a line; a field set as the Issue is `creating` shows no
 /// earlier value. `before` holds each field's value so far, which an
 /// operation that was not applied or lost its merge leaves as it was.
+/// A Link added or removed, named from `issue`'s end.
+fn link_line(
+    issue: Uuid,
+    entry: &HistoryEntry,
+    (link_type, target, present): (&str, Uuid, bool),
+    names: &mut Names<'_>,
+) -> Result<String, CliError> {
+    let known = tm_core::link::link_type(link_type);
+    let outward = known.map_or(link_type, |known| known.outward);
+    let inward = known.map_or(link_type, |known| known.inward);
+    let (other, name) = if entry.subject == issue {
+        (target, outward)
+    } else {
+        (entry.subject, inward)
+    };
+    let verb = if present { "linked" } else { "unlinked" };
+    Ok(format!("{verb}: {name} {}", names.key(other)?))
+}
+
 fn describe(
     issue: Uuid,
     entry: &HistoryEntry,
@@ -314,18 +333,7 @@ fn describe(
             link_type,
             target,
             present,
-        } => {
-            let known = tm_core::link::link_type(link_type);
-            let outward = known.map_or(link_type.as_str(), |known| known.outward);
-            let inward = known.map_or(link_type.as_str(), |known| known.inward);
-            let (other, name) = if entry.subject == issue {
-                (*target, outward)
-            } else {
-                (entry.subject, inward)
-            };
-            let verb = if *present { "linked" } else { "unlinked" };
-            format!("{verb}: {name} {}", names.key(other)?)
-        }
+        } => link_line(issue, entry, (link_type, *target, *present), names)?,
         Change::Claim { action } => claim_line(action, entry, before),
         Change::CreateProject { .. }
         | Change::RenameProject { .. }
@@ -336,7 +344,8 @@ fn describe(
         | Change::CreateMemory
         | Change::SetMemory { .. }
         | Change::MemorySource
-        | Change::SetName { .. } => entry.change.kind().to_owned(),
+        | Change::SetName { .. }
+        | Change::SetRead { .. } => entry.change.kind().to_owned(),
     };
     let line = match &entry.unapplied {
         Some(reason) => format!("{line}  (not applied: {})", printable(reason)),

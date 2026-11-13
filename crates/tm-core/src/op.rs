@@ -176,6 +176,12 @@ pub enum Change {
     SetName {
         name: String,
     },
+    /// Marks the writer's Notification of operation `op` read or unread, on
+    /// the record [`crate::notification::id`] of the two (ADR 0019).
+    SetRead {
+        op: Uuid,
+        read: bool,
+    },
 }
 
 /// The kind of record an operation's subject id names.
@@ -186,6 +192,7 @@ pub enum Subject {
     Shortlist,
     Memory,
     Person,
+    Notification,
 }
 
 /// The field a Claim is filed under; no other kind may write it.
@@ -275,6 +282,7 @@ impl Change {
             Self::SetMemory { .. } => "set_memory",
             Self::MemorySource => "memory_source",
             Self::SetName { .. } => "set_name",
+            Self::SetRead { .. } => "set_read",
         }
     }
 
@@ -289,6 +297,7 @@ impl Change {
             | Self::ShortlistSource => Subject::Shortlist,
             Self::CreateMemory | Self::SetMemory { .. } | Self::MemorySource => Subject::Memory,
             Self::SetName { .. } => Subject::Person,
+            Self::SetRead { .. } => Subject::Notification,
             Self::Create
             | Self::SetField { .. }
             | Self::Add { .. }
@@ -318,6 +327,7 @@ impl Change {
             Self::SetShortlist { field, .. } => Some(field.as_str()),
             Self::SetMemory { field, .. } => Some(field.as_str()),
             Self::ShortlistActor { .. } => Some(shortlist::ACTORS),
+            Self::SetRead { .. } => Some(crate::notification::READ_FIELD),
             Self::Create
             | Self::Comment { .. }
             | Self::Ask { .. }
@@ -360,7 +370,8 @@ impl Change {
             | Self::CreateMemory
             | Self::SetMemory { .. }
             | Self::MemorySource
-            | Self::SetName { .. } => None,
+            | Self::SetName { .. }
+            | Self::SetRead { .. } => None,
         }
     }
 
@@ -632,6 +643,21 @@ impl Op {
                 reason: "is needed by a memory source operation",
             });
         }
+        // A read mark is the reader's own, on their Notification of `op`.
+        if let Change::SetRead { op, .. } = change {
+            let reader = crate::notification::writer(&self.actor, self.on_behalf_of.as_deref());
+            let reason = if self.source.is_some() {
+                "is not imported"
+            } else if self.subject != crate::notification::id(op, &reader) {
+                "belongs on the writer's own Notification"
+            } else {
+                return Ok(change);
+            };
+            return Err(OpError::InvalidName {
+                field: "read",
+                reason,
+            });
+        }
         // Only a person names themselves, so a name is never another's guess.
         if matches!(change, Change::SetName { .. }) {
             let reason = if self.on_behalf_of.is_some() || self.session.is_some() {
@@ -886,7 +912,62 @@ mod tests {
             Change::SetName {
                 name: "Jace Babin".into(),
             },
+            Change::SetRead {
+                op: Uuid::from_u128(7),
+                read: true,
+            },
         ]
+    }
+
+    /// `actor`'s read mark on its Notification of operation 7.
+    fn marked(actor: &str, on_behalf_of: Option<&str>) -> Op {
+        let change = Change::SetRead {
+            op: Uuid::from_u128(7),
+            read: true,
+        };
+        let reader = crate::notification::writer(actor, on_behalf_of);
+        Op {
+            actor: actor.into(),
+            on_behalf_of: on_behalf_of.map(Into::into),
+            subject: crate::notification::id(Uuid::from_u128(7), &reader),
+            kind: change.kind().into(),
+            payload: serde_json::to_string(&change).unwrap(),
+            ..sample()
+        }
+    }
+
+    #[test]
+    fn a_read_mark_is_its_readers_own() {
+        assert!(marked("kim@example.com", None).change().is_ok());
+        assert!(
+            marked("claude", Some("kim@example.com")).change().is_ok(),
+            "an Agent marks its own"
+        );
+        let refused = |op: Op, reason: &str| {
+            let err = op.change().unwrap_err().to_string();
+            assert!(err.contains(reason), "{err}");
+        };
+        refused(
+            Op {
+                actor: "jace@example.com".into(),
+                ..marked("kim@example.com", None)
+            },
+            "the writer's own Notification",
+        );
+        refused(
+            Op {
+                on_behalf_of: Some("kim@example.com".into()),
+                ..marked("kim@example.com", None)
+            },
+            "the writer's own Notification",
+        );
+        refused(
+            Op {
+                source: Some("beads:tm-1".into()),
+                ..marked("kim@example.com", None)
+            },
+            "is not imported",
+        );
     }
 
     /// A name `actor` records, as `sample` writes it.

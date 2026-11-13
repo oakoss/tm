@@ -8,6 +8,7 @@ pub mod hlc;
 pub mod link;
 pub mod memory;
 pub mod mention;
+pub mod notification;
 pub mod op;
 pub mod paths;
 pub mod person;

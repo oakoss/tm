@@ -14,6 +14,11 @@ pub(super) enum Record {
     Issue,
     List(crate::shortlist::Shortlist),
     Memory(crate::memory::Memory),
+    /// A Notification, by the operation it is about and that one's Issue.
+    Notification {
+        op: Uuid,
+        issue: Uuid,
+    },
 }
 
 impl Record {
@@ -24,6 +29,22 @@ impl Record {
             ),
             Subject::Memory => {
                 Self::Memory(crate::memory::read(conn, id)?.ok_or(StoreError::UnknownMemory(id))?)
+            }
+            Subject::Notification => {
+                let (op, issue) = conn
+                    .query_row(
+                        "SELECT op_id, issue_id FROM notifications WHERE id = ?1",
+                        [id.as_bytes()],
+                        |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
+                    )
+                    .optional()?
+                    .ok_or_else(|| {
+                        StoreError::Corrupt(format!("a read mark names {id}, no Notification"))
+                    })?;
+                Self::Notification {
+                    op: crate::apply::uuid_from(&op)?,
+                    issue: crate::apply::uuid_from(&issue)?,
+                }
             }
             Subject::Issue | Subject::Project | Subject::Person => Self::Issue,
         })
@@ -61,6 +82,10 @@ impl Record {
                 memory: id,
                 key: memory.key.clone(),
             },
+            Self::Notification { issue, .. } => Target::Notification {
+                notification: id,
+                issue: *issue,
+            },
             Self::Issue => Target::Issue { issue: id },
         }
     }
@@ -75,6 +100,7 @@ impl Record {
         match self {
             Self::List(_) => list_state(conn, id, field, elem),
             Self::Memory(memory) => memory_state(memory, field),
+            Self::Notification { .. } => read_state(conn, id),
             Self::Issue => super::current_state(conn, scheme, id, field, elem),
         }
     }
@@ -90,6 +116,7 @@ impl Record {
         Ok(match self {
             Self::List(_) => list_inverse(field, elem, prior),
             Self::Memory(_) => memory_inverse(field, prior),
+            Self::Notification { op, .. } => Some(read_inverse(*op, prior.as_ref())),
             Self::Issue => Some(super::inverse(field, elem, prior, wrote_comment)?),
         })
     }
@@ -100,6 +127,7 @@ impl Record {
             Self::Issue => "Issue",
             Self::List(_) => "Short-list",
             Self::Memory(_) => "memory",
+            Self::Notification { .. } => "Notification",
         }
     }
 
@@ -107,6 +135,9 @@ impl Record {
         match self {
             Self::List(list) => Ok(list.project),
             Self::Memory(memory) => Ok(memory.project),
+            Self::Notification { issue, .. } => {
+                issue_project(conn, *issue)?.ok_or(StoreError::UnknownIssue(*issue))
+            }
             Self::Issue => issue_project(conn, id)?.ok_or(StoreError::UnknownIssue(id)),
         }
     }
@@ -164,6 +195,26 @@ fn list_state(conn: &Connection, list: Uuid, field: &str, elem: &str) -> Result<
         "deleted" => json!(read.deleted),
         other => return Err(StoreError::Corrupt(format!("Short-list field {other:?}"))),
     })
+}
+
+/// Whether a Notification is marked read.
+fn read_state(conn: &Connection, id: Uuid) -> Result<Value, StoreError> {
+    let read: Option<bool> = conn
+        .query_row(
+            "SELECT read FROM notification_reads WHERE id = ?1",
+            [id.as_bytes()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(json!(read.unwrap_or(false)))
+}
+
+/// [`super::inverse`] for a read mark. With no prior winner it is unread.
+fn read_inverse(op: Uuid, prior: Option<&Change>) -> (Value, Change) {
+    match prior {
+        Some(&Change::SetRead { op, read }) => (json!(read), Change::SetRead { op, read }),
+        _ => (json!(false), Change::SetRead { op, read: false }),
+    }
 }
 
 fn memory_state(memory: &crate::memory::Memory, field: &str) -> Result<Value, StoreError> {

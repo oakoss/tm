@@ -20,6 +20,7 @@ mod memories;
 mod mentions;
 mod merge;
 mod next;
+mod notifications;
 mod path_claims;
 mod people;
 mod placing;
