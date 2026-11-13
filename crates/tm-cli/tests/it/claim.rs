@@ -312,7 +312,8 @@ fn a_lapsed_claim_is_shown_as_lapsed_and_another_agent_takes_it() {
     let mut tokens = Vec::new();
     let mut expires_ms = 0;
     for key in ["TM-1", "TM-2", "TM-3"] {
-        let out = as_agent(&scratch, &repo, &["--json", "claim", key, "--for", "1s"]);
+        // Long enough to stay held through the reads below on a slow runner.
+        let out = as_agent(&scratch, &repo, &["--json", "claim", key, "--for", "5s"]);
         assert!(out.status.success(), "{out:?}");
         let data = &doc(&out)["data"]["claim"];
         tokens.push(data["id"].as_str().unwrap().to_owned());
@@ -741,9 +742,13 @@ fn a_heartbeat_renews_the_sessions_due_claims() {
     assert!(out.status.success(), "{out:?}");
     assert_eq!(text(&out.stdout), "no Claim is due for renewal\n");
 
-    let out = as_agent(&scratch, &repo, &["--json", "claim", "TM-1", "--for", "3s"]);
+    // Due a third of the way in; long enough that the commands between a
+    // renewal and the next heartbeat never reach that third on a slow runner.
+    let ttl_ms: i64 = 9_000;
+    let due_after = |expires_ms: i64| expires_ms - (ttl_ms - ttl_ms / 3) + 50;
+    let out = as_agent(&scratch, &repo, &["--json", "claim", "TM-1", "--for", "9s"]);
     let taken = doc(&out)["data"]["claim"]["expires_ms"].as_i64().unwrap();
-    wait_until(taken - 2_000 + 50);
+    wait_until(due_after(taken));
     let out = as_agent(&scratch, &repo, &["heartbeat"]);
     assert_eq!(text(&out.stdout), "renewed TM-1\n", "{out:?}");
     let renewed = claim_of(&scratch, &repo, "TM-1")["expires_ms"]
@@ -761,13 +766,11 @@ fn a_heartbeat_renews_the_sessions_due_claims() {
         "named, it is renewed before it is due: {out:?}"
     );
 
-    wait_until(
+    wait_until(due_after(
         claim_of(&scratch, &repo, "TM-1")["expires_ms"]
             .as_i64()
-            .unwrap()
-            - 2_000
-            + 50,
-    );
+            .unwrap(),
+    ));
     let out = as_agent(&scratch, &repo, &["move", "TM-1", "in_progress"]);
     assert!(
         !text(&out.stdout).contains("Claim released"),
