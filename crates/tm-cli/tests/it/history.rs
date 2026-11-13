@@ -79,7 +79,8 @@ fn history_shows_each_write_oldest_first() {
          <time>  claude for jace  (batch {take})\n  claimed: claude for 1h\n\
          <time>  jace  (batch {edit})\n  Assignee: (none) → jace\n  Labels: + ui\n\
          <time>  jace  (batch {link})\n  linked: is blocked by TM-2\n\
-         <time>  jace  (batch {moved})\n  Status: Todo → In Progress\n\
+         <time>  jace  (batch {moved})\n  Status: Todo → In Progress\n  \
+         wrote status past claude's Claim\n\
          <time>  jace  (batch {comment}, undone by {undo})\n  commented: on it…\n\
          <time>  jace  (batch {undo}, undoes {comment})\n  retracted a comment\n"
     );

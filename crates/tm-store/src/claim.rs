@@ -754,6 +754,33 @@ pub(crate) fn renewing(drafts: &[(Draft, Option<Provenance>)]) -> Option<Actor> 
 /// The fields a live Claim keeps another session from writing (ADR 0009).
 pub const PROTECTED_FIELDS: [&str; 2] = ["status", "description"];
 
+/// A live Claim a batch writes past, with who wrote past it and the
+/// protected fields they set.
+pub(crate) struct Passing {
+    pub(crate) claim: Claim,
+    pub(crate) writer: Actor,
+    pub(crate) fields: Vec<String>,
+}
+
+impl Passing {
+    /// The operation recording it, filed under the Issue's Project.
+    pub(crate) fn record(&self, conn: &Connection) -> Result<Draft, StoreError> {
+        let issue = self.claim.issue;
+        let project = issue_project(conn, issue)?.ok_or(StoreError::UnknownIssue(issue))?;
+        Ok(Draft {
+            actor: self.writer.clone(),
+            project,
+            subject: issue,
+            change: Change::PassedClaim {
+                claim: self.claim.id,
+                holder: self.claim.agent.clone(),
+                held_for: self.claim.on_behalf_of.clone(),
+                fields: self.fields.clone(),
+            },
+        })
+    }
+}
+
 /// The live Claims a local batch writes past: each on an Issue whose
 /// protected field a draft sets while another session holds it. An Agent's
 /// write is refused unless `forced`; a human's goes through. A batch that
@@ -764,7 +791,7 @@ pub(crate) fn protected(
     drafts: &[(Draft, Option<Provenance>)],
     at_ms: i64,
     forced: bool,
-) -> Result<Vec<Claim>, StoreError> {
+) -> Result<Vec<Passing>, StoreError> {
     let taken_or_released: HashSet<Uuid> = drafts
         .iter()
         .filter(|(draft, _)| {
@@ -777,7 +804,7 @@ pub(crate) fn protected(
         })
         .map(|(draft, _)| draft.subject)
         .collect();
-    let mut passed: Vec<Claim> = Vec::new();
+    let mut passed: Vec<Passing> = Vec::new();
     for (draft, provenance) in drafts {
         let Change::SetField { field, .. } = &draft.change else {
             continue;
@@ -800,8 +827,14 @@ pub(crate) fn protected(
                 holder: Box::new(holder),
             });
         }
-        if !passed.contains(&holder) {
-            passed.push(holder);
+        match passed.iter_mut().find(|passing| passing.claim == holder) {
+            Some(passing) if !passing.fields.contains(field) => passing.fields.push(field.clone()),
+            Some(_) => {}
+            None => passed.push(Passing {
+                claim: holder,
+                writer: draft.actor.clone(),
+                fields: vec![field.clone()],
+            }),
         }
     }
     Ok(passed)

@@ -254,3 +254,26 @@ fn an_import_records_no_session() {
     assert_eq!(ops[0].session, None);
     assert_eq!(store.sessions(issue).unwrap(), []);
 }
+
+#[test]
+fn a_write_past_a_claim_counts_once_not_as_its_record_too() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let issue = new_issue(&mut store);
+    store
+        .take(&agent("claude", "s1"), issue, Some(HOUR_MS))
+        .unwrap();
+    store.force_past_claims();
+    let codex = agent("codex", "c1");
+    write(
+        &mut store,
+        &codex,
+        issue,
+        set_field("status", json!("in_review")),
+    );
+    let sessions = store.sessions(issue).unwrap();
+    let c1 = sessions.iter().find(|work| work.session == "c1").unwrap();
+    assert_eq!(c1.moved_to, ["in_review"]);
+    assert_eq!(c1.other, 0, "the passed Claim's record is not more work");
+}

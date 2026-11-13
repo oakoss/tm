@@ -86,7 +86,7 @@ const GLOBAL: [Binding<Global>; 6] = [
     Binding {
         keys: &[ch('m')],
         action: Global::Notifications,
-        does: "your Notifications: the mentions of you",
+        does: "your Notifications, as tm notifications",
         hint: None,
     },
     Binding {

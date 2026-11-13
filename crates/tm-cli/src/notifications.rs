@@ -1,4 +1,5 @@
-//! `tm notifications`: the mentions of you, and marking them read (ADR 0019).
+//! `tm notifications`: the mentions of you and writes past your Claims, and
+//! marking them read (ADR 0019).
 
 use serde_json::{Value, json};
 use tm_core::Actor;
@@ -130,7 +131,7 @@ pub(crate) fn shown(
     for notified in listed {
         let key = key(store, notified)?;
         let by = by(store, notified)?;
-        let said = names.shown(mentioned_line(&notified.text, actor));
+        let said = said(notified, actor, &names);
         shown.lines.push(line(notified, (&key, &by), &said, now_ms));
         shown.briefs.push(format!(
             "{} on {}: {}",
@@ -184,9 +185,19 @@ fn by(store: &Store, notified: &Notification) -> Result<String, CliError> {
         .unwrap_or_else(|| notified.actor.clone()))
 }
 
-/// Where the mention was written.
+/// What it tells the reader: the line that mentions them, shown by name, or
+/// the fields written past their Claim.
+fn said(notified: &Notification, reader: &Actor, names: &Names) -> String {
+    if notified.kind == "passed_claim" {
+        return format!("wrote {} while you held it", notified.text);
+    }
+    names.shown(mentioned_line(&notified.text, reader))
+}
+
+/// Where the mention was written, or the Claim written past.
 fn place(kind: &str) -> &'static str {
     match kind {
+        "passed_claim" => "your Claim",
         "ask" => "a question",
         "answer" => "an answer",
         "withdraw" => "a withdrawn question",
@@ -196,8 +207,7 @@ fn place(kind: &str) -> &'static str {
     }
 }
 
-/// `id  KEY  by in place, age ago: said`, where `said` is the line the
-/// mention sits on, shown by name.
+/// `id  KEY  by in place, age ago: said`.
 fn line(notified: &Notification, (key, by): (&str, &str), said: &str, now_ms: i64) -> String {
     let unread = if notified.read { "" } else { " *" };
     format!(

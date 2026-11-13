@@ -196,6 +196,7 @@ pub(crate) fn apply(
                 return Ok(Some(reason));
             }
         }
+        passed @ Change::PassedClaim { .. } => crate::notifications::passed(tx, op, &passed)?,
         Change::Comment { body } => comment(tx, op, &body, None, &[])?,
         Change::Ask { body, options } => {
             comment(tx, op, &body, Some(CommentRole::Question), &options)?;

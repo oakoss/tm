@@ -1414,6 +1414,9 @@ impl Store {
             drafts.push((draft, None));
         }
         let passed = claim::protected(&tx, &drafts, now.0.utc_ms, self.forcing)?;
+        for passing in &passed {
+            drafts.push((passing.record(&tx)?, None));
+        }
         if let Some((issue, based_on)) = self.based_on {
             let fields = version::written(&drafts, issue);
             version::check(&tx, &self.scheme, (issue, based_on), fields)?;
@@ -1470,7 +1473,8 @@ impl Store {
                 },
             );
         }
-        self.passed.extend(passed);
+        self.passed
+            .extend(passed.into_iter().map(|passing| passing.claim));
         Ok(ops)
     }
 
