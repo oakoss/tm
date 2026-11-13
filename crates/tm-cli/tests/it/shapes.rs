@@ -675,6 +675,10 @@ fn prime_answers_in_a_fixed_shape() {
           "memories": [],
           "total": 0
         },
+        "notifications": {
+          "notifications": [],
+          "total": 0
+        },
         "other_session_claims": [],
         "path_claims": [],
         "project": "TM",

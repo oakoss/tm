@@ -108,6 +108,18 @@ fn lists_are_cut(shown: &str) {
     assert!(shown.contains(more), "{shown}");
 }
 
+/// A long comment by jace mentioning claude on `issue`.
+fn mention_claude(store: &mut Store, project: ProjectId, issue: Uuid) {
+    let body = format!("<@claude for jace> {}", "a long mention ".repeat(20));
+    let said = Draft {
+        actor: Actor::human("jace"),
+        project,
+        subject: issue,
+        change: Change::Comment { body },
+    };
+    store.append(said).unwrap();
+}
+
 #[test]
 fn prime_for_200_issues_fits_the_budget_and_keeps_readys_order() {
     let scratch = Scratch::new();
@@ -129,6 +141,9 @@ fn prime_for_200_issues_fits_the_budget_and_keeps_readys_order() {
         if n % 10 == 5 {
             set(&mut store, project, issue, "status", json!("in_progress"));
         }
+        if n <= 6 {
+            mention_claude(&mut store, project, issue);
+        }
     }
     fill_lists(&mut store, project);
     drop(store);
@@ -143,6 +158,7 @@ fn prime_for_200_issues_fits_the_budget_and_keeps_readys_order() {
         "{} bytes over the budget:\n{shown}",
         shown.len()
     );
+    assert!(shown.contains("Notifications (6 unread"), "{shown}");
     eprintln!(
         "tm prime over 200 Issues: {} bytes in {took:?}",
         shown.len()
@@ -601,4 +617,52 @@ fn prime_and_ready_lead_with_the_sessions_lists() {
     let said = text(&bound.stdout);
     let warned = "warning: TM_SHORTLIST names nope";
     assert!(said.starts_with(warned), "{said}");
+}
+
+#[test]
+fn prime_shows_the_sessions_unread_notifications_until_read() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    let made = as_claude(
+        &scratch,
+        &repo,
+        &["create", "--type", "task", "--title", "t"],
+    );
+    assert!(made.status.success(), "{made:?}");
+    for n in 1..=6 {
+        let said = tm(
+            &scratch,
+            &repo,
+            &["comment", "TM-1", &format!("@claude, look {n}")],
+        );
+        assert!(said.status.success(), "{said:?}");
+    }
+    let shown = text(&as_claude(&scratch, &repo, &["prime"]).stdout);
+    assert!(
+        shown.contains(
+            "Notifications (6 unread, tm notifications lists them): jace on TM-1: @claude, look 6\n"
+        ),
+        "the newest in brief: {shown}"
+    );
+    assert!(!shown.contains("look 5"), "only the newest: {shown}");
+    let doc: Value =
+        serde_json::from_slice(&as_claude(&scratch, &repo, &["--json", "prime"]).stdout).unwrap();
+    assert_eq!(doc["data"]["notifications"]["total"], 6);
+    assert_eq!(
+        doc["data"]["notifications"]["notifications"]
+            .as_array()
+            .unwrap()
+            .len(),
+        5
+    );
+    let read = as_claude(&scratch, &repo, &["notifications", "read", "all"]);
+    assert!(read.status.success(), "{read:?}");
+    let shown = text(&as_claude(&scratch, &repo, &["prime"]).stdout);
+    assert!(!shown.contains("Notifications ("), "{shown}");
+    let mine = text(&tm(&scratch, &repo, &["prime"]).stdout);
+    assert!(
+        !mine.contains("Notifications ("),
+        "the writer's own: {mine}"
+    );
 }

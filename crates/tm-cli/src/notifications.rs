@@ -1,7 +1,5 @@
 //! `tm notifications`: the mentions of you, and marking them read (ADR 0019).
 
-use std::fmt::Write as _;
-
 use serde_json::{Value, json};
 use tm_core::Actor;
 use tm_core::mention::{self, Mentioned};
@@ -17,6 +15,11 @@ use crate::output::{Output, id_by_part, id_has_part, printable, short, span};
 
 /// A Notification's line as a list shows it, in bytes.
 const LINE_BYTES: usize = 100;
+
+/// The writer and the line in a brief, in bytes each, so `tm prime` stays
+/// within its budget.
+const BRIEF_BY_BYTES: usize = 24;
+const BRIEF_LINE_BYTES: usize = 60;
 
 #[derive(clap::Args)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -57,20 +60,9 @@ fn list(all: bool) -> Result<Output, CliError> {
     let identity = identity(&here).map_err(|err| err.warned(warnings.clone()))?;
     warnings.extend(identity.warnings);
     let listed = here.store.notifications(&identity.actor, all)?;
-    let names = Names::of(&here.store, listed.iter().map(|n| n.text.as_str()))?;
-    let now_ms = now_ms();
-    let mut text = String::new();
-    let mut entries = Vec::with_capacity(listed.len());
-    for notified in &listed {
-        let key = key(&here.store, notified)?;
-        let by = by(&here.store, notified)?;
-        let _ = writeln!(
-            text,
-            "{}",
-            line(notified, (&key, &by), &identity.actor, &names, now_ms)
-        );
-        entries.push(entry(notified, &key, &by, &names));
-    }
+    let Shown { lines, entries, .. } = shown(&here.store, &identity.actor, &listed)?;
+    let mut text = lines.join("\n");
+    text.push('\n');
     if listed.is_empty() {
         text = if all {
             "no Notifications\n".to_owned()
@@ -111,6 +103,44 @@ fn read(reference: &str) -> Result<Output, CliError> {
         };
         Ok((output, identity.warnings))
     })
+}
+
+/// Notifications as `actor` reads them, one of each per Notification.
+pub(crate) struct Shown {
+    /// As `tm notifications` lists them.
+    pub(crate) lines: Vec<String>,
+    /// `by on KEY: line`, short enough for `tm prime`.
+    pub(crate) briefs: Vec<String>,
+    pub(crate) entries: Vec<Value>,
+}
+
+/// Each of `listed` as `actor` reads it.
+pub(crate) fn shown(
+    store: &Store,
+    actor: &Actor,
+    listed: &[Notification],
+) -> Result<Shown, CliError> {
+    let names = Names::of(store, listed.iter().map(|n| n.text.as_str()))?;
+    let now_ms = now_ms();
+    let mut shown = Shown {
+        lines: Vec::with_capacity(listed.len()),
+        briefs: Vec::with_capacity(listed.len()),
+        entries: Vec::with_capacity(listed.len()),
+    };
+    for notified in listed {
+        let key = key(store, notified)?;
+        let by = by(store, notified)?;
+        let said = names.shown(mentioned_line(&notified.text, actor));
+        shown.lines.push(line(notified, (&key, &by), &said, now_ms));
+        shown.briefs.push(format!(
+            "{} on {}: {}",
+            crate::list::cut(&printable(&by), BRIEF_BY_BYTES),
+            printable(&key),
+            crate::list::cut(&printable(&said), BRIEF_LINE_BYTES)
+        ));
+        shown.entries.push(entry(notified, &key, &by, &names));
+    }
+    Ok(shown)
 }
 
 /// `actor`'s Notification a full id, or a unique start or end of one, names.
@@ -166,16 +196,10 @@ fn place(kind: &str) -> &'static str {
     }
 }
 
-/// `id  KEY  by in place, age ago: line`, the line the mention sits on.
-fn line(
-    notified: &Notification,
-    (key, by): (&str, &str),
-    reader: &Actor,
-    names: &Names,
-    now_ms: i64,
-) -> String {
+/// `id  KEY  by in place, age ago: said`, where `said` is the line the
+/// mention sits on, shown by name.
+fn line(notified: &Notification, (key, by): (&str, &str), said: &str, now_ms: i64) -> String {
     let unread = if notified.read { "" } else { " *" };
-    let shown = names.shown(mentioned_line(&notified.text, reader));
     format!(
         "{}{unread}  {}  {} in {}, {} ago: {}",
         short(notified.id),
@@ -183,7 +207,7 @@ fn line(
         printable(by),
         place(&notified.kind),
         span(now_ms - notified.utc_ms),
-        crate::list::cut(&printable(&shown), LINE_BYTES)
+        crate::list::cut(&printable(said), LINE_BYTES)
     )
 }
 

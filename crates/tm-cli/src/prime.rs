@@ -32,6 +32,10 @@ pub(crate) const READY_SHOWN: usize = 15;
 /// Fewer for a session with Short-lists, which `tm next` takes from first.
 const READY_SHOWN_WITH_LISTS: usize = 3;
 
+/// Unread Notifications `--json` lists; text shows the newest and counts
+/// them, as the budget has no room for more.
+const NOTIFICATIONS_SHOWN: usize = 5;
+
 /// The files a Path Claim's line names before counting the rest.
 const PATH_FILES_SHOWN: usize = 3;
 
@@ -90,6 +94,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
     let names = asked_names(&here.store, &waiting, &notes)?;
     let scheme = here.store.scheme();
     let touching = path_claims(&here, actor.as_ref(), &mut warnings);
+    let unread = notifications(&here.store, actor.as_ref(), &mut warnings);
 
     let mut text = String::new();
     if !json {
@@ -120,6 +125,11 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
     let path_claims = path_claims_section(&mut text, &here, &touching, now_ms);
     let shortlists = next::lists_section(&mut text, &lists, LISTS_ROOM);
     queues(&mut text, (&active, active_total), (&ready, passed, total));
+    let notifications = notifications_section(&mut text, unread);
+    let _ = writeln!(text, "Habits (tm guide has the rest):");
+    for habit in HABITS {
+        let _ = writeln!(text, "  {habit}");
+    }
 
     let data = json!({
         "project": project,
@@ -142,6 +152,7 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
             "total": total,
             "on_shortlists": passed,
         },
+        "notifications": notifications,
         "habits": HABITS,
     });
     let mut output = mention::named(&here.store, Output::new(text, data))?;
@@ -811,7 +822,7 @@ fn claims_section(
 /// A heading with the count of `total`, the first of them, and the command
 /// that lists the rest: `words` is the heading, the line for none, and that
 /// command. `passed` of `total` are on a Short-list and only counted.
-/// The In progress and Ready queues, then the habits.
+/// The In progress and Ready queues.
 fn queues(
     text: &mut String,
     (active, active_total): (&[IssueView], usize),
@@ -825,10 +836,41 @@ fn queues(
         (ready, passed),
         total,
     );
-    let _ = writeln!(text, "Habits (tm guide has the rest):");
-    for habit in HABITS {
-        let _ = writeln!(text, "  {habit}");
+}
+
+/// How many Notifications are unread, the newest in brief, and the newest
+/// few as JSON.
+type Unread = (usize, Option<String>, Vec<Value>);
+
+/// The session's unread Notifications; a read that fails warns, as prime
+/// never fails a session start.
+fn notifications(store: &Store, actor: Option<&Actor>, warnings: &mut Vec<String>) -> Unread {
+    let Some(actor) = actor else {
+        return (0, None, Vec::new());
+    };
+    let unread = store.notifications(actor, false).map_err(CliError::from);
+    let shown = unread.and_then(|unread| {
+        let first = &unread[..unread.len().min(NOTIFICATIONS_SHOWN)];
+        let shown = crate::notifications::shown(store, actor, first)?;
+        let newest = shown.briefs.into_iter().next();
+        Ok((unread.len(), newest, shown.entries))
+    });
+    shown.unwrap_or_else(|err| {
+        warnings.push(format!("your Notifications: {}", err.message));
+        (0, None, Vec::new())
+    })
+}
+
+/// A line counting the unread Notifications, with the newest in brief,
+/// until they are marked read.
+fn notifications_section(text: &mut String, (total, newest, entries): Unread) -> Value {
+    if let Some(newest) = newest {
+        let _ = writeln!(
+            text,
+            "Notifications ({total} unread, tm notifications lists them): {newest}"
+        );
     }
+    json!({ "notifications": entries, "total": total })
 }
 
 fn section(
