@@ -421,7 +421,8 @@ enum Command {
     /// List the Notifications of you, or mark them read.
     ///
     /// A comment, question, answer or description that mentions you notifies
-    /// you; unread ones are listed unless --all is given.
+    /// you, as does a write past your Claim; unread ones are listed unless
+    /// --all is given.
     Notifications(notifications::Notifications),
     /// Remember a fact about this Project for every session.
     ///

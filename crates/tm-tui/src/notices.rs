@@ -176,7 +176,8 @@ impl Notices {
             return;
         }
         if self.rows.is_empty() {
-            let none = "No Notifications: a mention of you lands here.";
+            let none =
+                "No Notifications: a mention of you, or a write past your Claim, lands here.";
             frame.render_widget(Paragraph::new(none).block(block), area);
             return;
         }

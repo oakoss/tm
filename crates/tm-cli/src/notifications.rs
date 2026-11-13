@@ -1,4 +1,5 @@
-//! `tm notifications`: the mentions of you, and marking them read (ADR 0019).
+//! `tm notifications`: the mentions of you and writes past your Claims, and
+//! marking them read (ADR 0019).
 
 use serde_json::{Value, json};
 use tm_core::Actor;
@@ -206,8 +207,7 @@ fn place(kind: &str) -> &'static str {
     }
 }
 
-/// `id  KEY  by in place, age ago: said`, where `said` is the line the
-/// mention sits on, shown by name.
+/// `id  KEY  by in place, age ago: said`.
 fn line(notified: &Notification, (key, by): (&str, &str), said: &str, now_ms: i64) -> String {
     let unread = if notified.read { "" } else { " *" };
     format!(
