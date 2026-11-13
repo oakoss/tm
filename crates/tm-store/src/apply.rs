@@ -14,6 +14,7 @@ use tm_core::scheme::priority_rank;
 use tm_core::{Change, Hlc, Op, ProjectId, Subject, link};
 use uuid::Uuid;
 
+use crate::notifications::Mentioning;
 use crate::read::CommentRole;
 use crate::{StoreError, project, shortlist};
 
@@ -116,23 +117,12 @@ pub(crate) fn apply(
         assigned_key,
     } = effects;
     let change = op.change()?;
+    let version = Version::of(op, server_seq, server_received_ms);
     match change.subject() {
         Subject::Project => return project::apply(tx, op, change).map(|()| None),
-        Subject::Shortlist => {
-            let version = Version::of(op, server_seq, server_received_ms);
-            return shortlist::apply(tx, op, &change, &version).map(|()| None);
-        }
-        Subject::Memory => {
-            let version = Version::of(op, server_seq, server_received_ms);
-            return crate::memory::apply(tx, op, &change, &version).map(|()| None);
-        }
-        Subject::Person => {
-            let version = Version::of(op, server_seq, server_received_ms);
-            return crate::people::apply(tx, op, &change, &version).map(|()| None);
-        }
         Subject::Issue => check_filed(tx, op, &change)?,
+        other => return apply_record(tx, op, &change, other, &version).map(|()| None),
     }
-    let version = Version::of(op, server_seq, server_received_ms);
     match change {
         Change::Create => return create(tx, op, assigned_key),
         Change::CreateProject { .. }
@@ -144,13 +134,19 @@ pub(crate) fn apply(
         | Change::CreateMemory
         | Change::SetMemory { .. }
         | Change::MemorySource
-        | Change::SetName { .. } => {
-            unreachable!("Project, Short-list, memory and name operations return above")
+        | Change::SetName { .. }
+        | Change::SetRead { .. } => {
+            unreachable!("Project, Short-list, memory, name and read operations return above")
         }
         Change::SetField { field, value, .. } => {
             // Checked before anything is written, so a value that does not fit
             // leaves the projection untouched.
             let target = target(&field, &value)?;
+            if field == "description"
+                && let Some(text) = value.as_str()
+            {
+                description_mentions(tx, op, text)?;
+            }
             if wins(tx, op.subject, &field, "", &version)? {
                 record(tx, op.subject, &field, "", true, &version)?;
                 write_target(tx, op.subject, &field, target)?;
@@ -217,6 +213,24 @@ pub(crate) fn apply(
     Ok(None)
 }
 
+/// Applies a change to a record other than an Issue or Project, which never
+/// touches an Issue's version or activity.
+fn apply_record(
+    tx: &Transaction<'_>,
+    op: &Op,
+    change: &Change,
+    subject: Subject,
+    version: &Version,
+) -> Result<(), StoreError> {
+    match subject {
+        Subject::Shortlist => shortlist::apply(tx, op, change, version),
+        Subject::Memory => crate::memory::apply(tx, op, change, version),
+        Subject::Person => crate::people::apply(tx, op, change, version),
+        Subject::Notification => crate::notifications::apply(tx, op, change, version),
+        Subject::Issue | Subject::Project => unreachable!("Issues and Projects apply above"),
+    }
+}
+
 fn comment(
     tx: &Transaction<'_>,
     op: &Op,
@@ -248,6 +262,12 @@ fn comment(
             options,
         ],
     )?;
+    let mentioning = Mentioning {
+        text: body,
+        before: None,
+        comment: Some(op.op_id),
+    };
+    crate::notifications::derive(tx, op, &mentioning)?;
     if role.is_none() {
         pending_edit(tx, op)?;
     }
@@ -338,6 +358,12 @@ fn edit_comment(
     if let Some(reason) = crate::validate::not_editable(tx, op.subject, comment)? {
         return Ok(Some(reason));
     }
+    let mentioning = Mentioning {
+        text: body,
+        before: replaced_text(tx, comment)?,
+        comment: Some(comment),
+    };
+    crate::notifications::derive(tx, op, &mentioning)?;
     let elem = comment.to_string();
     if !wins(tx, op.subject, COMMENT_BODY_FIELD, &elem, version)? {
         return Ok(None);
@@ -348,6 +374,50 @@ fn edit_comment(
         params![body, op.utc_ms, comment.as_bytes(), op.subject.as_bytes()],
     )?;
     Ok(None)
+}
+
+/// Notifies whom a description adds a mention of, against the text it
+/// replaces now.
+fn description_mentions(tx: &Transaction<'_>, op: &Op, text: &str) -> Result<(), StoreError> {
+    let before = tx.query_row(
+        "SELECT description FROM issues WHERE id = ?1",
+        [op.subject.as_bytes()],
+        |row| row.get(0),
+    )?;
+    let mentioning = Mentioning {
+        text,
+        before,
+        comment: None,
+    };
+    crate::notifications::derive(tx, op, &mentioning)
+}
+
+/// The text an edit of `comment` replaces: the comment's text now, or as
+/// written when the edit replays before it.
+fn replaced_text(tx: &Transaction<'_>, comment: Uuid) -> Result<Option<String>, StoreError> {
+    let shown: Option<String> = tx
+        .query_row(
+            "SELECT body FROM comments WHERE op_id = ?1",
+            [comment.as_bytes()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if shown.is_some() {
+        return Ok(shown);
+    }
+    let payload: Option<String> = tx
+        .query_row(
+            "SELECT payload FROM ops WHERE op_id = ?1",
+            [comment.as_bytes()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(
+        payload.and_then(|payload| match serde_json::from_str(&payload) {
+            Ok(Change::Comment { body }) => Some(body),
+            _ => None,
+        }),
+    )
 }
 
 /// Labels compare without case. Writes already store them lowercased; this

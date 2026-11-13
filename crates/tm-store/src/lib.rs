@@ -20,6 +20,7 @@ mod membership;
 mod memory;
 mod mentions;
 mod next;
+mod notifications;
 mod people;
 mod project;
 mod query;
@@ -72,6 +73,7 @@ pub use import_memory::MemoryOutcome;
 pub use membership::{Member, PassedOver, Place, Placed};
 pub use memory::{Memory, Remembered};
 pub use next::Next;
+pub use notifications::Notification;
 pub use read::{CommentRole, CommentView, Direction, IssueView, LinkView, Settled};
 pub use ready::Ready;
 pub use record::{

@@ -20,6 +20,7 @@ mod mentions;
 mod moves;
 mod names;
 mod next;
+mod notifications;
 mod path_claims;
 mod prime;
 mod prompts;

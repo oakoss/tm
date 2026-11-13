@@ -3,7 +3,7 @@
 
 /// Stamped into `PRAGMA user_version`; a store with a different value is
 /// rebuilt on open.
-pub(crate) const PROJECTION_VERSION: i64 = 23;
+pub(crate) const PROJECTION_VERSION: i64 = 24;
 
 /// Format of the log tables; a binary refuses a store with a higher one.
 /// Until tm v1 is released the log changes in place (ADR 0010).
@@ -202,6 +202,8 @@ DROP TABLE IF EXISTS field_text_rows;
 DROP TABLE IF EXISTS field_text;
 DROP TABLE IF EXISTS issue_text_rows;
 DROP TABLE IF EXISTS issue_text;
+DROP TABLE IF EXISTS notification_reads;
+DROP TABLE IF EXISTS notifications;
 DROP TABLE IF EXISTS people;
 DROP TABLE IF EXISTS memory_versions;
 DROP TABLE IF EXISTS memories;
@@ -454,6 +456,35 @@ CREATE TABLE people (
   id BLOB PRIMARY KEY,
   email TEXT NOT NULL,
   name TEXT NOT NULL,
+  hlc INTEGER NOT NULL,
+  replica_id BLOB NOT NULL,
+  op_id BLOB NOT NULL
+) STRICT;
+
+-- Notifications (ADR 0019), derived from the operation `op_id` that
+-- mentions `recipient`, a mention token. `comment` is the comment the text
+-- belongs to, if any, whose retraction hides it.
+CREATE TABLE notifications (
+  id BLOB PRIMARY KEY,
+  recipient TEXT NOT NULL,
+  op_id BLOB NOT NULL,
+  issue_id BLOB NOT NULL,
+  comment BLOB,
+  kind TEXT NOT NULL,
+  text TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  on_behalf_of TEXT,
+  hlc INTEGER NOT NULL,
+  utc_ms INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX notifications_by_recipient ON notifications (recipient, hlc);
+
+-- Read marks, apart from the Notifications they mark so either may replay
+-- first; the latest by clock wins, as for `people`.
+CREATE TABLE notification_reads (
+  id BLOB PRIMARY KEY,
+  read INTEGER NOT NULL,
   hlc INTEGER NOT NULL,
   replica_id BLOB NOT NULL,
   op_id BLOB NOT NULL

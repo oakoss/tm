@@ -29,6 +29,7 @@ mod memory;
 mod mention;
 mod moves;
 mod next;
+mod notifications;
 mod output;
 mod prime;
 mod prompt;
@@ -74,7 +75,17 @@ const GROUPS: [(&str, &[&str]); 5] = [
     (
         "Everyday",
         &[
-            "create", "list", "ready", "show", "edit", "move", "comment", "link", "unlink", "tui",
+            "create",
+            "list",
+            "ready",
+            "show",
+            "edit",
+            "move",
+            "comment",
+            "notifications",
+            "link",
+            "unlink",
+            "tui",
         ],
     ),
     ("History and undo", &["history", "undo"]),
@@ -294,7 +305,7 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Take and start the next Issue on your Short-lists or ready queue.
+    /// Start the next Issue on your Short-lists or ready queue.
     ///
     /// As `tm start` does, it takes the first Issue your Short-lists hold
     /// that can start now (`TM_SHORTLIST` names one list), or the most urgent
@@ -377,7 +388,7 @@ enum Command {
     /// cannot be taken next stays on its list, marked with why: blocked,
     /// claimed, started, archived, an epic or in triage.
     Shortlist(shortlist::Shortlists),
-    /// Ask a person a question the Issue waits on, then take other work.
+    /// Ask a person a question the Issue waits on and take other work.
     ///
     /// The question joins its comments and the Issue leaves the ready queue;
     /// a Claim your session holds is kept for your Agent, which resumes it
@@ -407,6 +418,11 @@ enum Command {
     Guide,
     /// Open the screens over this Workspace in the terminal.
     Tui,
+    /// List the Notifications of you, or mark them read.
+    ///
+    /// A comment, question, answer or description that mentions you notifies
+    /// you; unread ones are listed unless --all is given.
+    Notifications(notifications::Notifications),
     /// Remember a fact about this Project for every session.
     ///
     /// Every session's tm prime shows it. A memory is a durable fact a future
@@ -695,6 +711,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
         Some(Command::Ask(args)) => ask::ask(&args),
         Some(Command::Answer(args)) => ask::answer(&args, json),
         Some(Command::Withdraw(args)) => ask::withdraw(&args),
+        Some(Command::Notifications(args)) => notifications::run(&args),
         Some(Command::Remember(args)) => memory::remember(&args),
         Some(Command::Memories(args)) => memory::memories(&args),
         Some(Command::Forget(args)) => memory::forget(&args),

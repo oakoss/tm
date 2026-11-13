@@ -78,7 +78,11 @@ Keep it current
   To name someone in a comment, description, question or answer, write @
   and their email, its local part or a word of their name, as in @kim;
   it is saved as a mention and shown by name. A word that names several
-  is refused with each one as you can write it.
+  is refused with each one as you can write it. A mention notifies whom
+  it names; see yours with
+    tm notifications                     (unread; --all adds read ones)
+    tm notifications read all            (or one, by its id; tm undo
+                                          reverts it)
   Pipe long text in, from a file or a heredoc whose marker is quoted, so
   the shell leaves $, backticks and quotes in it alone:
     tm edit KEY --set description=- < plan.md

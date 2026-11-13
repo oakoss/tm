@@ -365,6 +365,8 @@ pub(crate) fn dump(store: &Store) -> Vec<String> {
         "shortlists",
         "shortlist_versions",
         "shortlist_actors",
+        "notifications",
+        "notification_reads",
     ] {
         let mut stmt = conn.prepare(&format!("SELECT * FROM {table}")).unwrap();
         let columns = stmt.column_count();
