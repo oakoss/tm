@@ -40,7 +40,7 @@ Chosen options: **a token naming the Actor, Notifications derived from the opera
 ### Read state and names
 
 - A Notification's read mark is a record of its own, keyed by the Notification's id, set and cleared by `tm notifications read`; `tm undo` clears it. The Issue it is about does not change.
-- A person's name is a record of its own, keyed by their email and taken from git's `user.name`, written only when it differs from what tm holds.
+- A person's name is a record of its own, keyed by their email and taken from git's `user.name`, written only when it differs from the name that Replica last recorded, so Replicas whose git names differ do not rewrite it in turn.
 
 ### Out of scope
 

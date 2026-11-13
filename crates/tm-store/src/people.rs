@@ -102,8 +102,33 @@ impl Store {
         name_of(&self.conn, email)
     }
 
+    /// The name this replica last recorded for the person writing as
+    /// `email`, whatever another replica recorded since.
+    fn recorded_here(&self, email: &str) -> Result<Option<String>, StoreError> {
+        let payload: Option<String> = self
+            .conn
+            .query_row(
+                // Without planner stats SQLite walks this replica's ops by
+                // `ops_by_replica` instead, tens of ms on each write.
+                "SELECT payload FROM ops INDEXED BY ops_target
+                 WHERE issue_id = ?1 AND kind = 'set_name'
+                   AND replica_id = (SELECT v FROM meta WHERE k = 'replica_id')
+                 ORDER BY hlc DESC LIMIT 1",
+                [person::id(email).as_bytes()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(
+            payload.and_then(|payload| match serde_json::from_str(&payload) {
+                Ok(Change::SetName { name }) => Some(name),
+                _ => None,
+            }),
+        )
+    }
+
     /// Records `name` as the human `actor`'s own, in `project`, unless it is
-    /// the name tm holds already; the operation written, if any.
+    /// the name this replica last recorded, so replicas whose git names
+    /// differ do not each rewrite it; the operation written, if any.
     ///
     /// # Errors
     ///
@@ -117,7 +142,7 @@ impl Store {
         name: &str,
     ) -> Result<Option<Op>, StoreError> {
         let name = name.trim();
-        if self.name_of(actor.name())?.as_deref() == Some(name) {
+        if self.recorded_here(actor.name())?.as_deref() == Some(name) {
             return Ok(None);
         }
         self.append(Draft {

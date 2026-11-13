@@ -125,3 +125,39 @@ fn an_import_brings_in_no_name() {
     );
     assert_eq!(store.name_of("jace@example.com").unwrap(), None);
 }
+
+#[test]
+fn a_name_another_replica_recorded_since_is_not_written_over_again() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let jace = Actor::human("jace@example.com");
+    assert!(store.record_name(&jace, PROJECT, "Jace").unwrap().is_some());
+    let elsewhere = Op {
+        actor: "jace@example.com".into(),
+        ..remote_op(
+            7,
+            person::id("jace@example.com"),
+            &Change::SetName {
+                name: "Jace B.".into(),
+            },
+            Hlc::new(5_000, 0),
+            0,
+        )
+    };
+    insert_acked(&store, &elsewhere, 10, 1);
+    store.rebuild().unwrap();
+    assert_eq!(
+        store.name_of("jace@example.com").unwrap().as_deref(),
+        Some("Jace B.")
+    );
+    assert!(
+        store.record_name(&jace, PROJECT, "Jace").unwrap().is_none(),
+        "this replica already recorded Jace"
+    );
+    assert!(
+        store
+            .record_name(&jace, PROJECT, "Jace Babin")
+            .unwrap()
+            .is_some()
+    );
+}
