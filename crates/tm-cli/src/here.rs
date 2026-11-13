@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tm_core::{Actor, ProjectId};
 use tm_store::workspace::{self, Found, Workspace, WorkspaceError};
@@ -110,16 +110,43 @@ pub(crate) fn read() -> Result<Here, CliError> {
     };
     let store = Store::open_snapshot(&path, workspace.id)?;
     let mut here = opened(home, found, &cwd, workspace, store)?;
-    let published_ms = published
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |age| i64::try_from(age.as_millis()).unwrap_or(i64::MAX));
-    let published = format!(
-        "read from the Snapshot published {}",
-        local_time(published_ms)
-    );
+    let published = snapshot_read(published);
     here.warnings.insert(0, published.clone());
     here.snapshot = Some(published);
     Ok(here)
+}
+
+/// The warning that what is shown was read from a Snapshot published at
+/// `published`.
+pub(crate) fn snapshot_read(published: SystemTime) -> String {
+    let published_ms = published
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |age| i64::try_from(age.as_millis()).unwrap_or(i64::MAX));
+    format!(
+        "read from the Snapshot published {}",
+        local_time(published_ms)
+    )
+}
+
+/// The warning every command gives while logged operations have not applied
+/// in full, a lost Claim apart.
+///
+/// # Errors
+///
+/// Reading the store.
+pub(crate) fn unapplied(store: &Store) -> Result<Option<String>, StoreError> {
+    let unapplied = store
+        .unapplied()?
+        .iter()
+        .filter(|row| !row.is_lost_claim())
+        .count();
+    Ok((unapplied > 0).then(|| {
+        format!(
+            "{unapplied} logged operation{} did not apply in full; tm doctor will list {}",
+            if unapplied == 1 { "" } else { "s" },
+            if unapplied == 1 { "it" } else { "them" }
+        )
+    }))
 }
 
 /// The store this process was refused, when that is why opening failed.
@@ -137,20 +164,7 @@ fn opened(
     workspace: Workspace,
     store: Store,
 ) -> Result<Here, CliError> {
-    let unapplied = store
-        .unapplied()?
-        .iter()
-        .filter(|row| !row.is_lost_claim())
-        .count();
-    let warnings = if unapplied == 0 {
-        Vec::new()
-    } else {
-        vec![format!(
-            "{unapplied} logged operation{} did not apply in full; tm doctor will list {}",
-            if unapplied == 1 { "" } else { "s" },
-            if unapplied == 1 { "it" } else { "them" }
-        )]
-    };
+    let warnings = unapplied(&store)?.into_iter().collect();
     let cwd = canonical(cwd)?;
     let log_end = store.log_end()?;
     let store = store.working_in(Workplace {

@@ -72,12 +72,14 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
     let mut pending = false;
     let agent = identity::agent_detected(identity::env);
     let edits = views::editable(&here.found.path, snapshot, agent);
+    let published = snapshot.then(|| workspace.snapshot_path());
     let actions = Cli {
         me,
         project,
         reader: reader.as_ref().map_err(String::as_str),
         repo: Some((&here.found.path, key)),
         edits,
+        snapshot: published.as_deref(),
     };
     tm_tui::run(place, store, &actions, |store| {
         let (opened, seen) = refresh(watch.changed(), &mut pending, open, || {
@@ -122,9 +124,32 @@ struct Cli<'a> {
     repo: Option<(&'a Path, &'a str)>,
     /// Whether the person here may change that file's Views, or why not.
     edits: Result<(), String>,
+    /// The Snapshot read in place of a store this process may not open.
+    snapshot: Option<&'a Path>,
 }
 
 impl tm_tui::Actions for Cli<'_> {
+    /// As `here::read` warns, but what did not apply first: the row shows
+    /// one warning, and the title already says a Snapshot is read.
+    fn warnings(&self, store: &Store) -> Vec<String> {
+        let mut warnings = Vec::new();
+        match here::unapplied(store) {
+            Ok(unapplied) => warnings.extend(unapplied),
+            Err(err) => warnings.push(format!(
+                "cannot count the logged operations that did not apply: {err}"
+            )),
+        }
+        if let Some(path) = self.snapshot {
+            warnings.push(
+                match std::fs::metadata(path).and_then(|meta| meta.modified()) {
+                    Ok(published) => here::snapshot_read(published),
+                    Err(err) => format!("{}: read as the Snapshot, {err}", path.display()),
+                },
+            );
+        }
+        warnings
+    }
+
     fn may_edit_views(&self) -> Result<(), String> {
         self.edits.clone()
     }
@@ -367,6 +392,7 @@ mod tests {
             reader: Err("unused"),
             repo: None,
             edits: Ok(()),
+            snapshot: None,
         };
         assert_eq!(cli.project(), Some(project));
         let shown = cli.issue(&store, id).unwrap().shown;
@@ -445,6 +471,7 @@ mod tests {
             reader: Err("unused"),
             repo: None,
             edits: Ok(()),
+            snapshot: None,
         };
         let issue = cli.issue(&store, id).unwrap();
         let shown = &issue.shown;
@@ -492,6 +519,7 @@ mod tests {
             reader: Err("unused"),
             repo: Some((&path, key)),
             edits: Ok(()),
+            snapshot: None,
         };
         let names = |key| -> Vec<String> {
             let views = cli(key).views().unwrap();
@@ -520,6 +548,7 @@ mod tests {
             reader: Err("unused"),
             repo: Some((&path, "TM")),
             edits: Ok(()),
+            snapshot: None,
         };
         let mine = cli.views().unwrap().remove(0);
         let ours = View {
@@ -560,6 +589,7 @@ mod tests {
 
         let refused = Cli {
             edits: Err("an Agent".into()),
+            snapshot: None,
             ..cli
         };
         assert_eq!(refused.propose(&edit).unwrap_err(), "an Agent");
@@ -610,6 +640,7 @@ mod tests {
             reader: Ok(&identity),
             repo: None,
             edits: Ok(()),
+            snapshot: None,
         };
         let text = cli.ready(&store).unwrap();
         assert!(text.starts_with("warning: found two harnesses\n"), "{text}");
@@ -624,6 +655,7 @@ mod tests {
             reader: Err("set TM_ACTOR"),
             repo: None,
             edits: Ok(()),
+            snapshot: None,
         };
         let text = nobody.ready(&store).unwrap();
         assert!(
@@ -700,5 +732,49 @@ mod tests {
             refresh(Ok(true), &mut pending, gone, now),
             Err(Ended::Store(_))
         ));
+    }
+
+    #[test]
+    fn the_warnings_are_what_did_not_apply_then_the_snapshot_read_read_afresh() {
+        let dir = std::env::temp_dir().join(format!("tm-warn-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut store = Store::open(&dir.join("store.db")).unwrap();
+        let (project, _) = store
+            .create_project(&Actor::human("jace"), "TM", "Core")
+            .unwrap();
+        let published = dir.join("snapshot.db");
+        std::fs::write(&published, "").unwrap();
+        let missing = dir.join("gone.db");
+        let cli = |snapshot| Cli {
+            me: Ok("jace"),
+            project,
+            reader: Err("unused"),
+            repo: None,
+            edits: Ok(()),
+            snapshot,
+        };
+        assert_eq!(cli(None).warnings(&store), Vec::<String>::new());
+        store
+            .connection()
+            .execute(
+                "INSERT INTO unapplied (op_id, reason) VALUES (?1, ?2)",
+                (Uuid::now_v7().as_bytes().to_vec(), "unknown field"),
+            )
+            .unwrap();
+        let warnings = cli(Some(&published)).warnings(&store);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert_eq!(
+            warnings[0],
+            "1 logged operation did not apply in full; tm doctor will list it"
+        );
+        assert!(
+            warnings[1].starts_with("read from the Snapshot published "),
+            "{warnings:?}"
+        );
+        let warnings = cli(Some(&missing)).warnings(&store);
+        assert!(
+            warnings[1].starts_with(&format!("{}: read as the Snapshot, ", missing.display())),
+            "{warnings:?}"
+        );
     }
 }

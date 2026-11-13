@@ -2,6 +2,7 @@
 //! elsewhere, and leaves the terminal as it found it (ADR 0018).
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -103,6 +104,28 @@ fn at_a_terminal_it_names_the_project_shows_its_keys_and_quits_on_q() {
     press(&mut tui, "q");
     let rest = tui.exp_eof().unwrap();
     assert!(rest.contains(LEFT), "left the alternate screen");
+    assert_eq!(exit_code(&tui), 0);
+}
+
+#[test]
+fn a_reader_refused_the_store_is_warned_it_reads_the_snapshot() {
+    let scratch = Scratch::new();
+    let (repo, store, _project) = initialized(&scratch);
+    drop(store);
+    let made = tm(
+        &scratch,
+        &repo,
+        &["create", "--type", "task", "--title", "a"],
+    );
+    assert!(made.status.success(), "{made:?}");
+    let path = store_path(&scratch);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    let mut tui = sized(&scratch, &repo, "tui");
+    let shown = tui.exp_string("published");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    shown.unwrap();
+    press(&mut tui, "q");
+    tui.exp_eof().unwrap();
     assert_eq!(exit_code(&tui), 0);
 }
 
