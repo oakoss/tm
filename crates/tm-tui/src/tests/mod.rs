@@ -4,6 +4,7 @@
 mod board;
 mod issue;
 mod list;
+mod notices;
 mod ready;
 mod shell;
 mod triage;
@@ -378,7 +379,11 @@ impl Actions for Record {
 fn list(shell: &Shell) -> &List {
     match shell.screens.base() {
         Screen::List(list) => list,
-        Screen::Ready(_) | Screen::Issue(_) | Screen::Triage(_) | Screen::Board(_) => {
+        Screen::Ready(_)
+        | Screen::Issue(_)
+        | Screen::Triage(_)
+        | Screen::Board(_)
+        | Screen::Notices(_) => {
             unreachable!("the list is first")
         }
     }

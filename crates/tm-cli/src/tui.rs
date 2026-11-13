@@ -4,7 +4,7 @@ use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::process::ExitCode;
 
-use tm_core::ProjectId;
+use tm_core::{Actor, ProjectId};
 use tm_store::view::View;
 use tm_store::workspace::RepoFile;
 use tm_store::{Store, StoreError};
@@ -16,8 +16,8 @@ use crate::error::CliError;
 use crate::identity::Identity;
 use crate::output;
 use crate::{
-    comment, edit, here, history, identity, instructions, moves, prompt, ready, show, undo, views,
-    watch,
+    comment, edit, here, history, identity, instructions, mention, moves, notifications, prompt,
+    ready, show, undo, views, watch,
 };
 
 pub(crate) fn run(json: bool) -> ExitCode {
@@ -56,6 +56,9 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
         place.push_str(" (read-only Snapshot)");
     }
     let (me, reader) = session(identity::env, || identity::git_email(&here.found.dir));
+    // Whom Notifications are listed for, as `tm notifications` marks them.
+    let writer = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
+        .map(|identity| identity.actor);
     // A Snapshot is opened immutable and a replaced store file is another
     // file, so the list's reader is opened again on each change, and first
     // after the watch starts, so no change between the two is missed.
@@ -78,6 +81,7 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
     let actions = Cli {
         me,
         project,
+        writer: writer.as_ref().map_err(String::as_str),
         reader: reader.as_ref().map_err(String::as_str),
         repo: Some((&here.found.path, key)),
         edits,
@@ -122,6 +126,9 @@ fn session(
 struct Cli<'a> {
     me: Result<&'a str, &'a str>,
     project: ProjectId,
+    /// The person or Agent as the CLI writes for them, whose Notifications
+    /// are listed.
+    writer: Result<&'a Actor, &'a str>,
     reader: Result<&'a Identity, &'a str>,
     repo: Option<(&'a Path, &'a str)>,
     /// Whether the person here may change that file's Views, or why not.
@@ -215,6 +222,54 @@ impl tm_tui::Actions for Cli<'_> {
             .collect())
     }
 
+    fn unread(&self, store: &Store) -> usize {
+        self.writer
+            .ok()
+            .and_then(|actor| store.notifications(actor, false).ok())
+            .map_or(0, |unread| unread.len())
+    }
+
+    fn notifications(&self, store: &Store) -> Result<Vec<tm_tui::Notice>, String> {
+        let actor = self
+            .writer
+            .map_err(|why| format!("no identity, so no Notifications: {why}"))?;
+        let listed = store
+            .notifications(actor, true)
+            .map_err(|err| err.to_string())?;
+        let shown = notifications::shown(store, actor, &listed).map_err(|err| err.message)?;
+        Ok(listed
+            .iter()
+            .zip(shown.lines)
+            .zip(shown.entries)
+            .map(|((notified, line), entry)| tm_tui::Notice {
+                id: notified.id,
+                issue: notified.issue_id,
+                key: entry["issue"].as_str().unwrap_or_default().to_owned(),
+                line,
+                read: notified.read,
+            })
+            .collect())
+    }
+
+    fn mentions(&self, store: &Store, text: &str) -> Result<Vec<tm_tui::Ambiguous>, String> {
+        if !text.contains('@') {
+            return Ok(Vec::new());
+        }
+        let known = store.mentionable().map_err(|err| err.to_string())?;
+        Ok(tm_core::mention::find(text, &known)
+            .into_iter()
+            .filter(|found| found.candidates.len() > 1)
+            .map(|found| tm_tui::Ambiguous {
+                typed: found.typed.to_owned(),
+                candidates: found
+                    .candidates
+                    .iter()
+                    .map(|known| (known.actor.clone(), mention::described(known)))
+                    .collect(),
+            })
+            .collect())
+    }
+
     fn issue(&self, store: &Store, id: Uuid) -> Result<tm_tui::Issue, String> {
         let me = || self.me.ok().map(str::to_owned);
         let shown = show::render_with(store, id, show::Comments::All, None);
@@ -268,7 +323,8 @@ impl tm_tui::Actions for Cli<'_> {
                 value.as_deref(),
                 if_version(*version),
             )),
-            tm_tui::Write::Comment { key, body } => comment::add(key, body),
+            tm_tui::Write::Comment { key, body, picks } => comment::add_picked(key, body, picks),
+            tm_tui::Write::Read { id } => notifications::read(id),
         };
         output.map(|output| written(&output)).map_err(refusal)
     }
@@ -391,6 +447,7 @@ mod tests {
         let cli = Cli {
             me: Ok("jace"),
             project,
+            writer: Err("unused"),
             reader: Err("unused"),
             repo: None,
             edits: Ok(()),
@@ -470,6 +527,7 @@ mod tests {
         let cli = Cli {
             me: Ok("jace"),
             project,
+            writer: Err("unused"),
             reader: Err("unused"),
             repo: None,
             edits: Ok(()),
@@ -518,6 +576,7 @@ mod tests {
         let cli = |key| Cli {
             me: Err("unused"),
             project: ProjectId::new(),
+            writer: Err("unused"),
             reader: Err("unused"),
             repo: Some((&path, key)),
             edits: Ok(()),
@@ -547,6 +606,7 @@ mod tests {
         let cli = Cli {
             me: Err("unused"),
             project: ProjectId::new(),
+            writer: Err("unused"),
             reader: Err("unused"),
             repo: Some((&path, "TM")),
             edits: Ok(()),
@@ -639,6 +699,7 @@ mod tests {
         let cli = Cli {
             me: Ok("jace"),
             project,
+            writer: Err("unused"),
             reader: Ok(&identity),
             repo: None,
             edits: Ok(()),
@@ -654,6 +715,7 @@ mod tests {
         let nobody = Cli {
             me: Err("unused"),
             project,
+            writer: Err("unused"),
             reader: Err("set TM_ACTOR"),
             repo: None,
             edits: Ok(()),
@@ -750,6 +812,7 @@ mod tests {
         let cli = |snapshot| Cli {
             me: Ok("jace"),
             project,
+            writer: Err("unused"),
             reader: Err("unused"),
             repo: None,
             edits: Ok(()),

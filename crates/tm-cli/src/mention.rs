@@ -103,6 +103,41 @@ pub(crate) fn resolve(here: &Here, text: &str) -> Result<String, CliError> {
     })
 }
 
+/// [`resolve`], with `picks` answering in order each mention that names
+/// several Actors: the one meant, or none for plain text. A mention past
+/// them, or a pick not among its candidates, as when the store changed since
+/// they were asked, is refused as [`resolve`] refuses it.
+///
+/// # Errors
+///
+/// As [`resolve`].
+pub(crate) fn resolve_picked(
+    here: &Here,
+    text: &str,
+    picks: &[Option<Mentioned>],
+) -> Result<String, CliError> {
+    if !text.contains('@') {
+        return Ok(text.to_owned());
+    }
+    let known = here.store.mentionable()?;
+    resolve_with(text, &known, by_picks(picks, text))
+}
+
+/// Answers each mention naming several Actors with the next of `picks`.
+fn by_picks<'a>(
+    picks: &'a [Option<Mentioned>],
+    text: &'a str,
+) -> impl FnMut(&Found<'_>) -> Result<Option<Mentioned>, CliError> + 'a {
+    let mut picks = picks.iter();
+    move |found| match picks.next() {
+        Some(None) => Ok(None),
+        Some(Some(pick)) if found.candidates.iter().any(|known| known.actor == *pick) => {
+            Ok(Some(pick.clone()))
+        }
+        _ => Err(ambiguous(found).with("text", text)),
+    }
+}
+
 /// [`resolve`] over `known`, with `choose` deciding a mention that names
 /// several Actors: the one meant, or none for plain text.
 pub(crate) fn resolve_with(
@@ -173,7 +208,7 @@ fn ambiguous(found: &Found<'_>) -> CliError {
 
 /// An Actor as a list shows it: its name and email, or an Agent and whom it
 /// writes for.
-fn described(known: &Known) -> String {
+pub(crate) fn described(known: &Known) -> String {
     match (&known.actor, &known.name) {
         (Mentioned::Person(key), Some(name)) => {
             format!("{} <{}>", printable(name), printable(key))
@@ -240,6 +275,24 @@ mod tests {
             "{}",
             err.message
         );
+    }
+
+    #[test]
+    fn picks_answer_in_order_and_one_past_them_or_not_offered_is_refused() {
+        let known = known();
+        let lee = Mentioned::Person("lee@example.com".into());
+        let text = "@lee and @lee";
+        let picks = [Some(lee.clone()), None];
+        assert_eq!(
+            resolve_with(text, &known, by_picks(&picks, text)).unwrap(),
+            "<@lee@example.com> and @lee"
+        );
+        let short = [Some(lee)];
+        let err = resolve_with(text, &known, by_picks(&short, text)).unwrap_err();
+        assert_eq!(err.code, "ambiguous_mention");
+        let stranger = [Some(Mentioned::Person("ann@example.com".into()))];
+        let err = resolve_with("@lee", &known, by_picks(&stranger, "@lee")).unwrap_err();
+        assert_eq!(err.code, "ambiguous_mention", "a pick no longer among them");
     }
 
     #[test]

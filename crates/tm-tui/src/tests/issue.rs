@@ -72,10 +72,14 @@ fn c_writes_the_text_composed_as_a_comment_and_u_undoes_it() {
     assert_eq!(shell.key(press(KeyCode::Char('c'))), Flow::Compose);
     let draft = std::env::temp_dir().join(format!("tm-comment-test-{}.md", Uuid::now_v7()));
     std::fs::write(&draft, "saved").unwrap();
-    shell.compose(Ok(Composed {
-        text: "# Plan\n\n- \u{1b}[2Jfirst\n".into(),
-        draft: draft.clone(),
-    }));
+    shell.compose(
+        Ok(Composed {
+            text: "# Plan\n\n- \u{1b}[2Jfirst\n".into(),
+            draft: draft.clone(),
+        }),
+        &store,
+        &record,
+    );
     shell.write(&record);
     assert!(!draft.exists(), "the draft of a comment written goes");
     assert_eq!(
@@ -83,6 +87,7 @@ fn c_writes_the_text_composed_as_a_comment_and_u_undoes_it() {
         [Write::Comment {
             key: "TM-2".into(),
             body: "# Plan\n\n- \u{1b}[2Jfirst\n".into(),
+            picks: Vec::new(),
         }]
     );
     assert_eq!(shell.kept_drafts(), [] as [(&str, PathBuf); 0]);
@@ -101,7 +106,7 @@ fn a_comment_not_written_keeps_its_draft_and_says_why() {
     };
     let mut shell = open_with(&store, "TM-2", &record);
     shell.key(press(KeyCode::Char('c')));
-    shell.compose(Ok(composed("a long careful comment")));
+    shell.compose(Ok(composed("a long careful comment")), &store, &record);
     shell.write(&record);
     let screen = drawn_sized(&mut shell, 80, 20);
     assert!(
@@ -109,10 +114,14 @@ fn a_comment_not_written_keeps_its_draft_and_says_why() {
         "the reason shows at 80 columns: {screen}"
     );
     shell.key(press(KeyCode::Char('c')));
-    shell.compose(Err(Unwritten {
-        why: "vi exited with exit status: 1".into(),
-        kept: Some("/drafts/two.md".into()),
-    }));
+    shell.compose(
+        Err(Unwritten {
+            why: "vi exited with exit status: 1".into(),
+            kept: Some("/drafts/two.md".into()),
+        }),
+        &store,
+        &record,
+    );
     let screen = drawn_sized(&mut shell, 80, 20);
     assert!(
         screen.contains("✗ comment kept, its path printed on exit · vi exited"),
@@ -133,10 +142,14 @@ fn an_editor_giving_no_comment_writes_nothing_and_says_why() {
     let record = Record::new();
     let mut shell = open_with(&store, "TM-2", &record);
     shell.key(press(KeyCode::Char('c')));
-    shell.compose(Err(Unwritten {
-        why: "vi exited with \u{1b}[2Jexit status: 1\nmore".to_owned(),
-        kept: None,
-    }));
+    shell.compose(
+        Err(Unwritten {
+            why: "vi exited with \u{1b}[2Jexit status: 1\nmore".to_owned(),
+            kept: None,
+        }),
+        &store,
+        &record,
+    );
     shell.write(&record);
     assert_eq!(shell.kept_drafts(), [] as [(&str, PathBuf); 0]);
     let screen = drawn_sized(&mut shell, 120, 20);

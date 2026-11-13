@@ -2,6 +2,7 @@
 //! a correction of one.
 
 use serde_json::json;
+use tm_core::mention::Mentioned;
 use tm_core::{Actor, Change};
 use tm_store::{CommentView, Draft};
 use uuid::Uuid;
@@ -15,18 +16,24 @@ use crate::output::{Output, id_by_part, id_has_part, printable, short};
 use crate::show::imported_id;
 
 pub(crate) fn run(reference: &str, body: &str, edit: Option<&str>) -> Result<Output, CliError> {
-    here::write(|here| write(here, reference, body, body == "-", edit))
+    here::write(|here| write(here, reference, (body, &[]), body == "-", edit))
 }
 
-/// A new comment of `body` as written, `-` included.
-pub(crate) fn add(reference: &str, body: &str) -> Result<Output, CliError> {
-    here::write(|here| write(here, reference, body, false, None))
+/// A new comment of `body` as written, `-` included, with `picks` answering
+/// each mention in it that names several Actors, as
+/// [`mention::resolve_picked`] takes them.
+pub(crate) fn add_picked(
+    reference: &str,
+    body: &str,
+    picks: &[Option<Mentioned>],
+) -> Result<Output, CliError> {
+    here::write(|here| write(here, reference, (body, picks), false, None))
 }
 
 fn write(
     here: &mut Here,
     reference: &str,
-    body: &str,
+    (body, picks): (&str, &[Option<Mentioned>]),
     stdin: bool,
     edit: Option<&str>,
 ) -> Result<(Output, Vec<String>), CliError> {
@@ -69,7 +76,11 @@ fn write(
     } else {
         body.to_owned()
     };
-    let body = mention::resolve(here, &body)?;
+    let body = if picks.is_empty() {
+        mention::resolve(here, &body)?
+    } else {
+        mention::resolve_picked(here, &body, picks)?
+    };
     let change = match edited {
         Some((comment, _)) => Change::EditComment {
             comment,

@@ -49,7 +49,7 @@ Done when:
 
 Built once the CLI has settled through Phase 2 and the polish between phases, so the screens rest on commands that no longer change underneath them.
 
-Issue list with filters, Issue detail with history, Triage, Board, ready queue, opened with `tm tui` and built as [ADR 0018](../decisions/0018-the-tui-opens-with-tm-tui-reads-the-store-and-writes-through-the-cli.md) sets out. Views defined in config. `--watch`, streaming list changes as they are written (`TM-84`), which the screens' live updates rest on. Notifications and `@mentions` (`TM-82`), and the holder's Notification of a forced write (`TM-130`), which need a screen that shows them unasked and completes a mention as it is typed.
+Issue list with filters, Issue detail with history, Triage, Board, ready queue, opened with `tm tui` and built as [ADR 0018](../decisions/0018-the-tui-opens-with-tm-tui-reads-the-store-and-writes-through-the-cli.md) sets out. Views defined in config. `--watch`, streaming list changes as they are written (`TM-84`), which the screens' live updates rest on. Notifications and `@mentions` (`TM-82`), and the holder's Notification of a forced write (`TM-130`), which need a screen that shows them unasked and asks which Actor a mention means when it names several; completing a mention as it is typed waits on an editor of the TUI's own (`TM-169`).
 
 Done when daily triage and planning for this project happen in the TUI.
 

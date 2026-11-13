@@ -7,6 +7,8 @@ mod issue;
 mod keys;
 mod list;
 mod markdown;
+mod mention;
+mod notices;
 mod picker;
 mod read;
 mod ready;
@@ -27,6 +29,7 @@ use ratatui::style::Stylize as _;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, Paragraph};
 use tm_core::ProjectId;
+use tm_core::mention::Mentioned;
 use tm_store::Store;
 use uuid::Uuid;
 
@@ -38,6 +41,8 @@ pub use issue::{
 };
 use keys::{Binding, ch, ctrl, plain};
 use list::List;
+use mention::MentionPicker;
+use notices::Notices;
 use picker::{Picked, Picker};
 use ready::Ready;
 use stack::Stack;
@@ -60,11 +65,12 @@ enum Global {
     Help,
     HideHelp,
     Views,
+    Notifications,
 }
 
 /// Keys every screen has, ahead of its own: Ctrl-C and Ctrl-Z even while
 /// text is typed, and Esc only while these keys are shown.
-const GLOBAL: [Binding<Global>; 5] = [
+const GLOBAL: [Binding<Global>; 6] = [
     Binding {
         keys: &[ch('?')],
         action: Global::Help,
@@ -76,6 +82,12 @@ const GLOBAL: [Binding<Global>; 5] = [
         action: Global::Views,
         does: "pick a View from .config/tm.toml",
         hint: Some("views"),
+    },
+    Binding {
+        keys: &[ch('m')],
+        action: Global::Notifications,
+        does: "your Notifications: the mentions of you",
+        hint: None,
     },
     Binding {
         keys: &[plain(KeyCode::Esc)],
@@ -155,6 +167,35 @@ pub trait Actions {
         Err("Views are read-only here".to_owned())
     }
 
+    /// How many of the person's Notifications are unread, shown on every
+    /// screen; none when no one can be named.
+    fn unread(&self, store: &Store) -> usize {
+        let _ = store;
+        0
+    }
+
+    /// The person's Notifications, newest first, as `tm notifications --all`
+    /// lists them.
+    ///
+    /// # Errors
+    ///
+    /// Why they cannot be read.
+    fn notifications(&self, store: &Store) -> Result<Vec<Notice>, String> {
+        let _ = store;
+        Ok(Vec::new())
+    }
+
+    /// Each `@word` in `text` that names several Actors, in order, with
+    /// them, as `tm comment` would find it.
+    ///
+    /// # Errors
+    ///
+    /// Why the Actors cannot be read.
+    fn mentions(&self, store: &Store, text: &str) -> Result<Vec<Ambiguous>, String> {
+        let _ = (store, text);
+        Ok(Vec::new())
+    }
+
     /// `tm show --json` and `tm history --json` for `id`, read from `store`.
     ///
     /// # Errors
@@ -203,16 +244,45 @@ pub enum Write {
         version: i64,
     },
     /// `tm comment KEY BODY`; comments are append-only, so no version.
-    Comment { key: String, body: String },
+    /// `picks` answers, in order, each mention that names several Actors:
+    /// the one meant, or none to leave it as text.
+    Comment {
+        key: String,
+        body: String,
+        picks: Vec<Option<Mentioned>>,
+    },
+    /// `tm notifications read ID`, or `all`.
+    Read { id: String },
 }
 
 impl Write {
+    /// What it writes to, as a refusal names it: an Issue's Key, or a
+    /// Notification's id.
     #[must_use]
     pub fn key(&self) -> &str {
         match self {
             Self::Move { key, .. } | Self::Set { key, .. } | Self::Comment { key, .. } => key,
+            Self::Read { id } => id,
         }
     }
+}
+
+/// A Notification as `tm notifications` lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub id: Uuid,
+    pub issue: Uuid,
+    /// The Issue's Key, or its id when it has none.
+    pub key: String,
+    pub line: String,
+    pub read: bool,
+}
+
+/// An `@word` that names several Actors, each with how a list shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ambiguous {
+    pub typed: String,
+    pub candidates: Vec<(Mentioned, String)>,
 }
 
 /// What a write did: the CLI's line for it, the batch `tm undo` names (none
@@ -241,6 +311,7 @@ pub(crate) enum Screen {
     Issue(IssueScreen),
     Triage(Triage),
     Board(Board),
+    Notices(Notices),
 }
 
 /// What a key on a screen asks of the Shell.
@@ -271,6 +342,7 @@ impl Screen {
             Self::Issue(issue) => issue.load(store, actions),
             Self::Triage(triage) => triage.load(store, actions),
             Self::Board(board) => board.load(store, actions),
+            Self::Notices(notices) => notices.load(store, actions),
         }
     }
 
@@ -282,6 +354,7 @@ impl Screen {
             Self::Issue(issue) => issue.title(),
             Self::Triage(_) => "Triage".to_owned(),
             Self::Board(board) => board.title(),
+            Self::Notices(_) => "Notifications".to_owned(),
         }
     }
 
@@ -292,6 +365,7 @@ impl Screen {
             Self::Issue(issue) => issue.key(key),
             Self::Triage(triage) => triage.key(key),
             Self::Board(board) => board.key(key),
+            Self::Notices(notices) => notices.key(key),
         }
     }
 
@@ -324,6 +398,7 @@ impl Screen {
             Self::Issue(_) => keys::help(&issue::KEYS),
             Self::Triage(_) => keys::help(&triage::KEYS),
             Self::Board(_) => keys::help(&board::KEYS),
+            Self::Notices(_) => keys::help(&notices::KEYS),
         }
     }
 
@@ -338,6 +413,7 @@ impl Screen {
             Self::Issue(_) => keys::hints(&issue::KEYS),
             Self::Triage(_) => keys::hints(&triage::KEYS),
             Self::Board(_) => keys::hints(&board::KEYS),
+            Self::Notices(_) => keys::hints(&notices::KEYS),
         };
         hints.extend(keys::hints(&GLOBAL));
         hints.join(" · ")
@@ -350,6 +426,7 @@ impl Screen {
             Self::Issue(issue) => issue.render(frame, area),
             Self::Triage(triage) => triage.render(frame, area),
             Self::Board(board) => board.render(frame, area),
+            Self::Notices(notices) => notices.render(frame, area),
         }
     }
 }
@@ -400,6 +477,8 @@ enum Overlay {
     Picker(Picker),
     Views(Sidebar),
     Confirm(Confirm),
+    /// Which Actor each mention of a saved comment means.
+    Mention(MentionPicker),
 }
 
 /// The frame around the screens: where it reads from, the keys, and what
@@ -427,6 +506,8 @@ pub struct Shell {
     kept: Vec<(&'static str, PathBuf)>,
     /// The store's warnings, read again with the screen.
     warnings: Vec<String>,
+    /// How many of the person's Notifications are unread.
+    notified: usize,
 }
 
 /// What the TUI does after a key.
@@ -463,6 +544,7 @@ impl Shell {
             last_wrote: true,
             kept: Vec::new(),
             warnings: Vec::new(),
+            notified: 0,
         }
     }
 
@@ -518,8 +600,15 @@ impl Shell {
     }
 
     /// Takes what an editor saved for the comment a key asked for, or why
-    /// nothing was; [`Shell::write`] then writes it.
-    pub fn compose(&mut self, composed: Result<Composed, Unwritten>) {
+    /// nothing was; [`Shell::write`] then writes it, unless a mention in it
+    /// names several Actors read from `store`, which a picker asks about
+    /// first.
+    pub fn compose(
+        &mut self,
+        composed: Result<Composed, Unwritten>,
+        store: &Store,
+        actions: &dyn Actions,
+    ) {
         let key = match self.pending.take() {
             Some(Pending::Compose(key)) => key,
             Some(Pending::ComposeView(was)) => return self.composed_view(was, composed),
@@ -529,10 +618,25 @@ impl Shell {
             }
         };
         match composed {
-            Ok(Composed { text, draft }) => {
-                let write = Write::Comment { key, body: text };
-                self.pending = Some(Pending::Comment { write, draft });
-            }
+            Ok(Composed { text, draft }) => match actions.mentions(store, &text) {
+                Ok(ambiguous) if ambiguous.is_empty() => {
+                    let write = Write::Comment {
+                        key,
+                        body: text,
+                        picks: Vec::new(),
+                    };
+                    self.pending = Some(Pending::Comment { write, draft });
+                }
+                Ok(ambiguous) => {
+                    self.help = false;
+                    let picker = MentionPicker::new(key, text, draft, ambiguous);
+                    self.overlay = Some(Overlay::Mention(picker));
+                }
+                Err(why) => {
+                    let said = self.keep("comment", draft, &why);
+                    self.said = Some(printable(said.lines().next().unwrap_or_default()));
+                }
+            },
             Err(Unwritten { why, kept }) => {
                 let why = why.lines().next().unwrap_or_default();
                 let said = match kept {
@@ -603,6 +707,11 @@ impl Shell {
     /// as the TUI can end before the diff is answered.
     pub(crate) fn kept_drafts(&self) -> Vec<(&'static str, PathBuf)> {
         let waiting = match (&self.overlay, &self.pending) {
+            (Some(Overlay::Mention(picker)), _) => {
+                let mut kept = self.kept.clone();
+                kept.push(("comment", picker.draft().clone()));
+                return kept;
+            }
             (Some(Overlay::Confirm(confirm)), _) => confirm.draft(),
             (_, Some(Pending::Propose { draft, .. } | Pending::Save { draft, .. })) => {
                 draft.as_ref()
@@ -726,6 +835,7 @@ impl Shell {
     /// Reads the screen shown from `store`.
     pub fn load(&mut self, store: &Store, actions: &dyn Actions) {
         self.warnings = actions.warnings(store);
+        self.notified = actions.unread(store);
         self.shown().load(store, actions);
         match &mut self.overlay {
             Some(Overlay::Picker(_)) if self.screens.top().unread() => self.overlay = None,
@@ -762,6 +872,24 @@ impl Shell {
                 Flow::Write
             }
             views::Picked::Stay | views::Picked::Refused(_) | views::Picked::Closed => Flow::Stay,
+        }
+    }
+
+    /// Writes the comment once every mention is answered; Esc keeps its
+    /// draft unwritten.
+    fn picked_mention(&mut self, picked: mention::Picked) -> Flow {
+        match picked {
+            mention::Picked::Open => Flow::Stay,
+            mention::Picked::Cancelled(draft) => {
+                self.overlay = None;
+                self.said = Some(self.keep("comment", draft, "not written"));
+                Flow::Stay
+            }
+            mention::Picked::Done(write, draft) => {
+                self.overlay = None;
+                self.pending = Some(Pending::Comment { write, draft });
+                Flow::Write
+            }
         }
     }
 
@@ -821,6 +949,10 @@ impl Shell {
                 let answer = confirm.key(key);
                 return self.answered(answer);
             }
+            Some(Overlay::Mention(picker)) => {
+                let answer = picker.key(key);
+                return self.picked_mention(answer);
+            }
             None => {}
         }
         if self.shown().prompt().is_none() {
@@ -836,6 +968,13 @@ impl Shell {
                 Some(Global::Views) => {
                     self.help = false;
                     self.overlay = Some(Overlay::Views(Sidebar::default()));
+                    return Flow::Reload;
+                }
+                Some(Global::Notifications) => {
+                    self.help = false;
+                    if !matches!(self.shown(), Screen::Notices(_)) {
+                        self.screens.push(Screen::Notices(Notices::default()));
+                    }
                     return Flow::Reload;
                 }
                 _ => {}
@@ -896,13 +1035,18 @@ impl Shell {
         ])
         .areas(frame.area());
         let titles: Vec<String> = self.screens.iter().map(Screen::title).collect();
-        let crumbs = crumbs(&self.place, &titles, usize::from(top.width));
+        let place = match self.notified {
+            0 => self.place.clone(),
+            n => format!("{} · {n} unread (m)", self.place),
+        };
+        let crumbs = crumbs(&place, &titles, usize::from(top.width));
         frame.render_widget(Line::from(crumbs), top);
         self.shown().render(frame, body);
         match &mut self.overlay {
             Some(Overlay::Picker(picker)) => picker.render(frame, body),
             Some(Overlay::Views(sidebar)) => sidebar.render(frame, body),
             Some(Overlay::Confirm(confirm)) => confirm.render(frame, body),
+            Some(Overlay::Mention(picker)) => picker.render(frame, body),
             None => {}
         }
         if let Some(text) = &self.said {
@@ -933,6 +1077,7 @@ impl Shell {
             Some(Overlay::Picker(picker)) => picker.prompt(),
             Some(Overlay::Views(_)) => Sidebar::prompt(),
             Some(Overlay::Confirm(_)) => Confirm::prompt(),
+            Some(Overlay::Mention(_)) => MentionPicker::prompt(),
             None => self.screens.top().footer(),
         };
         frame.render_widget(Line::from(footer), keys);

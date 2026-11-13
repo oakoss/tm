@@ -306,7 +306,7 @@ fn drive<E: From<io::Error>>(
                     };
                     let composed = suspended(terminal, || editor::compose(draft));
                     signals.listen()?;
-                    shell.compose(composed?);
+                    shell.compose(composed?, &store, actions);
                     shell.write(actions);
                     shell.load(&store, actions);
                 }
