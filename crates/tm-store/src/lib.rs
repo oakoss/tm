@@ -19,6 +19,7 @@ mod log;
 mod membership;
 mod memory;
 mod next;
+mod people;
 mod project;
 mod query;
 mod read;
@@ -543,6 +544,8 @@ pub struct Store {
     scheme: Scheme,
     opened: bool,
     last_write: Option<LastWrite>,
+    /// Operations this connection has committed since it opened.
+    appended: usize,
     forcing: bool,
     /// Claims a human's or a forced write went past, for the caller to warn of.
     passed: Vec<Claim>,
@@ -760,6 +763,7 @@ impl Store {
             scheme: Scheme::built_in(),
             opened: false,
             last_write: None,
+            appended: 0,
             forcing: false,
             passed: Vec::new(),
             based_on: None,
@@ -1451,6 +1455,7 @@ impl Store {
         )?;
         if commit {
             tx.commit()?;
+            self.appended += ops.len();
             // The write is committed; a mark that cannot be read only loses
             // the answer, never the write.
             self.last_write = probed.zip(self.write_mark().ok()).map(

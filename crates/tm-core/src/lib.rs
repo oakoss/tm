@@ -9,6 +9,7 @@ pub mod link;
 pub mod memory;
 pub mod op;
 pub mod paths;
+pub mod person;
 pub mod project;
 pub mod rank;
 pub mod scheme;

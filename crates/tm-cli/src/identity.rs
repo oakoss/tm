@@ -275,6 +275,29 @@ pub(crate) fn git_branch(root: &Path) -> Result<Option<String>, String> {
     }
 }
 
+/// git's `user.name` at `root`; none when it is unset or git cannot say.
+///
+/// # Errors
+///
+/// A message when the name is not UTF-8.
+pub(crate) fn git_name(root: &Path) -> Result<Option<String>, String> {
+    let Ok(output) = Command::new("git")
+        .args(["config", "--get", "user.name"])
+        .current_dir(root)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .output()
+    else {
+        return Ok(None);
+    };
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let name =
+        String::from_utf8(output.stdout).map_err(|_| "git's user.name is not UTF-8".to_owned())?;
+    let name = name.trim();
+    Ok((!name.is_empty()).then(|| name.to_owned()))
+}
+
 /// git's `user.email` for the repo at `root`.
 ///
 /// # Errors

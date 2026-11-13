@@ -171,6 +171,11 @@ pub enum Change {
     /// Carries a source an import matched a memory to by key, so a later
     /// import from it finds the memory (ADR 0017).
     MemorySource,
+    /// The writer's own name, from git's `user.name`, on the record
+    /// [`crate::person::id`] of their email (ADR 0019).
+    SetName {
+        name: String,
+    },
 }
 
 /// The kind of record an operation's subject id names.
@@ -180,6 +185,7 @@ pub enum Subject {
     Project,
     Shortlist,
     Memory,
+    Person,
 }
 
 /// The field a Claim is filed under; no other kind may write it.
@@ -268,6 +274,7 @@ impl Change {
             Self::CreateMemory => "create_memory",
             Self::SetMemory { .. } => "set_memory",
             Self::MemorySource => "memory_source",
+            Self::SetName { .. } => "set_name",
         }
     }
 
@@ -281,6 +288,7 @@ impl Change {
             | Self::ShortlistActor { .. }
             | Self::ShortlistSource => Subject::Shortlist,
             Self::CreateMemory | Self::SetMemory { .. } | Self::MemorySource => Subject::Memory,
+            Self::SetName { .. } => Subject::Person,
             Self::Create
             | Self::SetField { .. }
             | Self::Add { .. }
@@ -320,7 +328,8 @@ impl Change {
             | Self::CreateShortlist
             | Self::ShortlistSource
             | Self::CreateMemory
-            | Self::MemorySource => None,
+            | Self::MemorySource
+            | Self::SetName { .. } => None,
         }
     }
 
@@ -350,7 +359,8 @@ impl Change {
             | Self::ShortlistSource
             | Self::CreateMemory
             | Self::SetMemory { .. }
-            | Self::MemorySource => None,
+            | Self::MemorySource
+            | Self::SetName { .. } => None,
         }
     }
 
@@ -414,6 +424,28 @@ impl Change {
                     return Err(OpError::InvalidShortlist {
                         field: "actor",
                         reason: "must be lowercase, without surrounding spaces",
+                    });
+                }
+                Ok(())
+            }
+            Self::SetName { name } => {
+                check_name("name", name)?;
+                if name.trim() != name {
+                    return Err(OpError::InvalidName {
+                        field: "name",
+                        reason: "has surrounding spaces",
+                    });
+                }
+                if name.chars().count() > crate::person::MAX_NAME_CHARS {
+                    return Err(OpError::InvalidName {
+                        field: "name",
+                        reason: "is longer than 200 characters",
+                    });
+                }
+                if name.chars().any(crate::person::breaks) {
+                    return Err(OpError::InvalidName {
+                        field: "name",
+                        reason: "holds a line separator or a character that reorders text",
                     });
                 }
                 Ok(())
@@ -598,6 +630,22 @@ impl Op {
             return Err(OpError::InvalidName {
                 field: "source",
                 reason: "is needed by a memory source operation",
+            });
+        }
+        // Only a person names themselves, so a name is never another's guess.
+        if matches!(change, Change::SetName { .. }) {
+            let reason = if self.on_behalf_of.is_some() || self.session.is_some() {
+                "is written by the person it names, not an Agent"
+            } else if self.source.is_some() {
+                "is not imported"
+            } else if self.subject != crate::person::id(&self.actor) {
+                "belongs on the record of the email writing it"
+            } else {
+                return Ok(change);
+            };
+            return Err(OpError::InvalidName {
+                field: "name",
+                reason,
             });
         }
         Ok(change)
@@ -835,7 +883,68 @@ mod tests {
                 field: memory::Field::Key,
                 value: serde_json::json!("tests-need-race"),
             },
+            Change::SetName {
+                name: "Jace Babin".into(),
+            },
         ]
+    }
+
+    /// A name `actor` records, as `sample` writes it.
+    fn named(actor: &str, name: &str) -> Op {
+        let change = Change::SetName { name: name.into() };
+        Op {
+            actor: actor.into(),
+            subject: crate::person::id(actor),
+            kind: change.kind().into(),
+            payload: serde_json::to_string(&change).unwrap(),
+            ..sample()
+        }
+    }
+
+    #[test]
+    fn a_name_is_its_writers_own_and_fits_on_a_line() {
+        assert!(named("jace@example.com", "Jace Babin").change().is_ok());
+        let refused = |op: Op, reason: &str| {
+            let err = op.change().unwrap_err().to_string();
+            assert!(err.contains(reason), "{err}");
+        };
+        refused(
+            Op {
+                subject: crate::person::id("kim@example.com"),
+                ..named("jace@example.com", "Kim")
+            },
+            "the record of the email writing it",
+        );
+        refused(
+            Op {
+                on_behalf_of: Some("jace@example.com".into()),
+                ..named("claude", "Claude")
+            },
+            "not an Agent",
+        );
+        refused(
+            Op {
+                source: Some("beads:tm-1".into()),
+                ..named("jace@example.com", "Jace")
+            },
+            "is not imported",
+        );
+        refused(
+            named("jace@example.com", "Jace\nBabin"),
+            "control character",
+        );
+        refused(named("jace@example.com", " Jace"), "surrounding spaces");
+        refused(
+            named("jace@example.com", &"j".repeat(201)),
+            "longer than 200",
+        );
+        assert!(named("jace@example.com", &"é".repeat(200)).change().is_ok());
+        for breaking in ["Jace\u{2028}Babin", "Jace\u{202E}", "Jace\u{061C}"] {
+            refused(named("jace@example.com", breaking), "reorders text");
+        }
+        for emoji in ["Kim \u{2615}\u{FE0F}", "Kim \u{1F468}\u{200D}\u{1F4BB}"] {
+            assert!(named("kim@example.com", emoji).change().is_ok(), "{emoji}");
+        }
     }
 
     #[test]

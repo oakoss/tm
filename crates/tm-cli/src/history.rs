@@ -333,7 +333,8 @@ fn describe(
         | Change::ShortlistSource
         | Change::CreateMemory
         | Change::SetMemory { .. }
-        | Change::MemorySource => entry.change.kind().to_owned(),
+        | Change::MemorySource
+        | Change::SetName { .. } => entry.change.kind().to_owned(),
     };
     let line = match &entry.unapplied {
         Some(reason) => format!("{line}  (not applied: {})", printable(reason)),
