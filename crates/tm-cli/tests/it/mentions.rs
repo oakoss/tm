@@ -238,3 +238,21 @@ fn only_known_actors_are_named_wherever_their_tokens_sit() {
         "a history line is named, its stored change kept: {lines:?}"
     );
 }
+
+#[test]
+fn a_mention_only_in_the_description_is_named_in_history_json() {
+    let scratch = Scratch::new();
+    let repo = two_kims(&scratch);
+    let set = tm(
+        &scratch,
+        &repo,
+        &["edit", "TM-1", "--set", "description=ping @kim@example.com"],
+    );
+    assert!(set.status.success(), "{set:?}");
+    let logged = doc(&tm(&scratch, &repo, &["--json", "history", "TM-1"]));
+    let lines = logged["data"]["writes"].to_string();
+    assert!(
+        lines.contains("\"line\":\"Description: (none) → ping @kim@example.com\""),
+        "{lines}"
+    );
+}

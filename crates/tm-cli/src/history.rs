@@ -91,7 +91,7 @@ pub(crate) fn render(
             .with("id", id.to_string())
     })?;
     let entries = store.history(id)?;
-    let mut names = Names::new(store)?;
+    let mut names = Names::new(store, &entries)?;
     // A new Issue is unarchived without an operation saying so.
     let unarchived = Before {
         stored: Value::Bool(false),
@@ -509,11 +509,22 @@ struct Names<'a> {
 }
 
 impl<'a> Names<'a> {
-    fn new(store: &'a Store) -> Result<Self, CliError> {
+    /// Names for `entries`, whose mentions' names are read only when one
+    /// of their texts holds a token.
+    fn new(store: &'a Store, entries: &[HistoryEntry]) -> Result<Self, CliError> {
+        let texts = entries.iter().filter_map(|entry| match &entry.change {
+            Change::Comment { body }
+            | Change::Ask { body, .. }
+            | Change::Answer { body }
+            | Change::Withdraw { body }
+            | Change::EditComment { body, .. } => Some(body.as_str()),
+            Change::SetField { value, .. } => value.as_str(),
+            _ => None,
+        });
         Ok(Self {
             store,
             keys: HashMap::new(),
-            mentions: mention::Names::load(store)?,
+            mentions: mention::Names::of(store, texts)?,
         })
     }
 
@@ -639,7 +650,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tm-history-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("tm.db")).unwrap();
-        let mut names = Names::new(&store).unwrap();
+        let mut names = Names::new(&store, &[]).unwrap();
         let mut before = HashMap::new();
         let lost = HistoryEntry {
             lost: true,
@@ -729,7 +740,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tm-history-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("tm.db")).unwrap();
-        let mut names = Names::new(&store).unwrap();
+        let mut names = Names::new(&store, &[]).unwrap();
         let mut before = HashMap::new();
         let hostile = "L\u{1b}[2J";
         let add = Change::Add {

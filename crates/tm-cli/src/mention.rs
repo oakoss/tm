@@ -37,15 +37,6 @@ impl Names {
         ))
     }
 
-    /// The names `store` holds, read whatever the text.
-    ///
-    /// # Errors
-    ///
-    /// A store failure.
-    pub(crate) fn load(store: &Store) -> Result<Self, StoreError> {
-        Self::of(store, ["<@"])
-    }
-
     /// `text` with each token of a known Actor shown as `@` and its name,
     /// made printable; any other stays as written.
     pub(crate) fn shown(&self, text: &str) -> String {
