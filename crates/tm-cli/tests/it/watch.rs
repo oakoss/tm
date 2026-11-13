@@ -26,7 +26,12 @@ struct Watching {
 
 impl Watching {
     fn start(scratch: &Scratch, repo: &Path, args: &[&str]) -> Self {
+        Self::start_with(scratch, repo, args, &[])
+    }
+
+    fn start_with(scratch: &Scratch, repo: &Path, args: &[&str], env: &[(&str, &str)]) -> Self {
         let mut child = jace(scratch, repo, args)
+            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -118,6 +123,18 @@ fn a_write_elsewhere_prints_the_list_again_as_one_document_a_line() {
     );
     create(&scratch, &repo, "b");
     assert_eq!(keys(&watching.next()).len(), 2);
+}
+
+#[test]
+fn a_startup_warning_comes_in_the_first_document_only() {
+    let scratch = Scratch::new();
+    let (repo, _store, _project) = initialized(&scratch);
+    let args = ["--json", "list", "--watch"];
+    let watching = Watching::start_with(&scratch, &repo, &args, &[("TM_LOG", "===")]);
+    let warnings = |line: &str| serde_json::from_str::<Value>(line).unwrap()["warnings"].clone();
+    assert_eq!(warnings(&watching.next()).as_array().map(Vec::len), Some(2));
+    create(&scratch, &repo, "a");
+    assert_eq!(warnings(&watching.next()), serde_json::json!([]));
 }
 
 #[test]
