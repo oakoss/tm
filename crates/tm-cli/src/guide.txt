@@ -75,6 +75,10 @@ Keep it current
     tm comment KEY -                     (reads the text from stdin)
     tm comment KEY --edit COMMENT TEXT   (corrects one you wrote, by the
                                           id tm show prints)
+  To name someone in a comment, description, question or answer, write @
+  and their email, its local part or a word of their name, as in @kim;
+  it is saved as a mention and shown by name. A word that names several
+  is refused with each one as you can write it.
   Pipe long text in, from a file or a heredoc whose marker is quoted, so
   the shell leaves $, backticks and quotes in it alone:
     tm edit KEY --set description=- < plan.md
