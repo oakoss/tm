@@ -1852,7 +1852,7 @@ impl Store {
 /// where it came from rather than who ran it. A source operation is refused
 /// without a source.
 fn written_in(draft: &Draft, source: Option<&str>) -> Result<Option<String>, StoreError> {
-    if source.is_none() && matches!(draft.change, Change::ShortlistSource | Change::MemorySource) {
+    if source.is_none() && draft.change.source_only() {
         return Err(StoreError::Invalid {
             field: "source".into(),
             reason: "a source operation is written only by an import".into(),

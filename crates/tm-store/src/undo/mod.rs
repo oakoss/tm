@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Serialize;
 use serde_json::{Value, json};
+use tm_core::kind::{UNDO_REFUSED_KINDS, Undo};
 use tm_core::op::{COMMENT_BODY_FIELD, COMMENTS_FIELD, ClaimAction};
 use tm_core::{Actor, Change, Hlc, Op, ProjectId, Scheme, Subject, link, memory, shortlist};
 use uuid::Uuid;
@@ -166,7 +167,10 @@ impl Store {
     /// Any SQLite failure, or [`StoreError::Corrupt`] for a malformed row.
     pub fn undo_candidates(&self, human: &str, limit: usize) -> Result<Vec<Uuid>, StoreError> {
         let undone = undone(&self.conn)?;
-        let mut stmt = self.conn.prepare_cached(
+        let refused = UNDO_REFUSED_KINDS
+            .map(|kind| format!("'{kind}'"))
+            .join(", ");
+        let mut stmt = self.conn.prepare_cached(&format!(
             "SELECT b.batch FROM op_batches b JOIN ops o ON o.op_id = b.op_id
              WHERE b.op_id = b.batch
                AND b.batch NOT IN (SELECT batch FROM undo_batches)
@@ -174,9 +178,9 @@ impl Store {
                  SELECT 1 FROM op_batches p JOIN ops po ON po.op_id = p.op_id
                  WHERE p.batch = b.batch
                    AND (po.actor <> ?1 OR po.on_behalf_of IS NOT NULL OR po.source IS NOT NULL
-                        OR po.kind IN ('create_project', 'rename_project', 'set_name')))
-             ORDER BY o.seq DESC",
-        )?;
+                        OR po.kind IN ({refused})))
+             ORDER BY o.seq DESC"
+        ))?;
         let mut rows = stmt.query([human])?;
         let mut candidates = Vec::new();
         while candidates.len() < limit {
@@ -360,18 +364,19 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
         if created.contains(&op.issue) {
             continue;
         }
-        match &op.change {
-            Change::CreateProject { .. } | Change::RenameProject { .. } => {
-                return Err(cannot("it wrote a Project, which undo does not revert"));
-            }
-            Change::SetName { .. } => {
-                return Err(cannot(
-                    "it recorded a name, which undo does not revert; change git's user.name and write again",
-                ));
-            }
-            Change::Create | Change::CreateShortlist | Change::CreateMemory => {
+        match op.change.undo() {
+            Undo::Refuse(reason) => return Err(cannot(reason)),
+            Undo::Created => {
                 unreachable!("created Issues, Short-lists and memories are handled above")
             }
+            Undo::Leave => continue,
+            Undo::Restore => {
+                targets.insert(target(op));
+                continue;
+            }
+            Undo::Claim => {}
+        }
+        match &op.change {
             // A Claim taken since holds the Issue, so nothing stays released.
             Change::Claim {
                 action: ClaimAction::Release { .. },
@@ -401,10 +406,7 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
             Change::Claim {
                 action: ClaimAction::Take { .. } | ClaimAction::Hand { .. },
             } => release(conn, op, &mut plan, &mut conflicts)?,
-            change if records(change) => {}
-            _ => {
-                targets.insert(target(op));
-            }
+            other => unreachable!("{} is no Claim action undo handles", other.kind()),
         }
     }
     let ignored = ignored_since(conn, first_seq)?;
@@ -441,20 +443,6 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
         ));
     }
     Ok(plan)
-}
-
-/// Whether `change` records what happened rather than setting anything: a
-/// renewal (ADR 0009), a passed Claim, a list's or memory's source. Undoing
-/// its batch makes none untrue, so later imports still find a source.
-const fn records(change: &Change) -> bool {
-    matches!(
-        change,
-        Change::Claim {
-            action: ClaimAction::Renew { .. },
-        } | Change::ShortlistSource
-            | Change::MemorySource
-            | Change::PassedClaim { .. }
-    )
 }
 
 /// Writes refuse a deleted list or forgotten memory and a list left with no
