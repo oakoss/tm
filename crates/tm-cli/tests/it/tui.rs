@@ -982,7 +982,8 @@ fn m_lists_the_mentions_of_you_and_r_marks_one_read() {
     tui.exp_string("Notifications").unwrap();
     tui.exp_string("@kim@example.com").unwrap();
     press(&mut tui, "r");
-    tui.exp_string("u undo").unwrap();
+    // The write's own line; the screen's footer already offers `u undo`.
+    tui.exp_string("marked").unwrap();
     let mut listed = jace(&scratch, &repo, &["--json", "notifications"]);
     listed.env("TM_ACTOR", "kim@example.com");
     let doc: serde_json::Value = serde_json::from_slice(&listed.output().unwrap().stdout).unwrap();
