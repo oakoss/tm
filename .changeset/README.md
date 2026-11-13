@@ -59,7 +59,7 @@ Scoped npm names are the exception and must be quoted, because `@` starts a rese
 
 **A package that merely depends on what you changed releases without being named.** Oakum works that out from the dependency graph, including whether the dependent needs releasing at all: a library whose published range still covers the new version does not, and a binary that bakes its dependencies in at build time always does, at patch. Name a dependent only to give it more than that, such as a binary whose users see a library's new feature: name the binary at `minor` beside the library.
 
-Dependents that will release appear in `oakum status`. If one you expected is missing, paste the status table and report it.
+Dependents that will release appear in `oakum status`, and `oakum check --explain` says why each dependent does or does not. If one you expected is missing and the explanation does not account for it, paste both and report it.
 
 ## Choosing a level
 

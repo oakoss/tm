@@ -16,6 +16,10 @@ inputs:
     description: Checkout token; defaults to the workflow token when unset
     required: false
     default: ''
+  ref:
+    description: Branch, tag or SHA to check out; the event's ref when unset
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -33,3 +37,4 @@ runs:
         fetch-depth: ${{ inputs.fetch-depth }}
         persist-credentials: ${{ inputs.persist-credentials }}
         token: ${{ inputs.token != '' && inputs.token || github.token }}
+        ref: ${{ inputs.ref }}
