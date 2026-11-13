@@ -10,6 +10,7 @@ use crate::error::CliError;
 use crate::fields;
 use crate::here::{self, Here};
 use crate::identity;
+use crate::mention;
 use crate::output::{Output, id_by_part, id_has_part, printable, short};
 use crate::show::imported_id;
 
@@ -68,6 +69,7 @@ fn write(
     } else {
         body.to_owned()
     };
+    let body = mention::resolve(here, &body)?;
     let change = match edited {
         Some((comment, _)) => Change::EditComment {
             comment,
@@ -100,7 +102,7 @@ fn write(
         ),
     };
     let data = json!({ "issue": { "id": id, "key": key }, "comment": comment });
-    let output = Output::new(text, data);
+    let output = mention::named(&here.store, Output::new(text, data))?;
     Ok((
         here.undoable(output, op.op_id, &identity.actor)?,
         identity.warnings,

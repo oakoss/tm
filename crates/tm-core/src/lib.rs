@@ -7,6 +7,7 @@ pub mod filter;
 pub mod hlc;
 pub mod link;
 pub mod memory;
+pub mod mention;
 pub mod op;
 pub mod paths;
 pub mod person;

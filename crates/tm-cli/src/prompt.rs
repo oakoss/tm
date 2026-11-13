@@ -2,8 +2,18 @@
 //! with what is shown on stdout.
 
 use std::io::{self, BufRead, IsTerminal, Write as _};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::identity;
+
+/// Set while `tm tui` draws on the terminal, where a question would print
+/// into its screen, and under `--json`.
+static HELD: AtomicBool = AtomicBool::new(false);
+
+/// No one is asked for the rest of this process.
+pub(crate) fn hold() {
+    HELD.store(true, Ordering::Relaxed);
+}
 
 /// Reads a line for a question; `None` at end of input.
 pub(crate) trait Prompt: FnMut(&str) -> Result<Option<String>, String> {}
@@ -12,10 +22,11 @@ impl<F: FnMut(&str) -> Result<Option<String>, String>> Prompt for F {}
 /// A person at a terminal, the only one tm asks: stdin and stdout are
 /// terminals and no Agent is detected.
 pub(crate) fn human() -> bool {
-    is_human(
-        io::stdin().is_terminal() && io::stdout().is_terminal(),
-        identity::agent_detected(identity::env),
-    )
+    !HELD.load(Ordering::Relaxed)
+        && is_human(
+            io::stdin().is_terminal() && io::stdout().is_terminal(),
+            identity::agent_detected(identity::env),
+        )
 }
 
 fn is_human(terminal: bool, agent: bool) -> bool {

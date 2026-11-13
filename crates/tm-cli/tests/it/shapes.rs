@@ -75,6 +75,7 @@ fn create_answers_in_a_fixed_shape() {
         "key": "TM-3",
         "lapsed_claim": null,
         "links": [],
+        "mentions": [],
         "moves_to": [
           {
             "category": "triage",
@@ -178,6 +179,7 @@ fn move_answers_in_a_fixed_shape() {
             "type": "blocks"
           }
         ],
+        "mentions": [],
         "moves_to": [
           {
             "category": "triage",
@@ -494,6 +496,7 @@ fn undo_answers_in_a_fixed_shape() {
                 "type": "blocks"
               }
             ],
+            "mentions": [],
             "moves_to": "[statuses]",
             "parent": null,
             "project": "TM",

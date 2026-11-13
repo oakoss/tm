@@ -14,6 +14,7 @@ use crate::edit::{self, Changed};
 use crate::error::CliError;
 use crate::here;
 use crate::identity;
+use crate::mention;
 use crate::output::{Output, local_offset_min, local_time, printable, short, span, time_at};
 
 /// One write: the operations of one batch, or one operation another Replica
@@ -90,7 +91,7 @@ pub(crate) fn render(
             .with("id", id.to_string())
     })?;
     let entries = store.history(id)?;
-    let mut names = Names::new(store);
+    let mut names = Names::new(store, &entries)?;
     // A new Issue is unarchived without an operation saying so.
     let unarchived = Before {
         stored: Value::Bool(false),
@@ -111,6 +112,7 @@ pub(crate) fn render(
         }
         let creating = entry.batch.is_some() && entry.batch == created;
         let (line, stored) = describe(id, entry, creating, &mut before, &mut names)?;
+        let line = names.mentions.shown(&line);
         // Renewals repeat with every write and heartbeat.
         if renewal && !all {
             continue;
@@ -167,7 +169,7 @@ pub(crate) fn render(
     }
     let writes: Vec<Value> = shown.iter().map(write_json).collect();
     let data = json!({ "id": id, "key": view.key, "total": total, "writes": writes });
-    Ok(Output::new(text, data))
+    mention::named(store, Output::new(text, data))
 }
 
 /// Whether `entry` belongs to the write `first` began: the same batch, by the
@@ -297,16 +299,16 @@ fn describe(
             let shown = elem_label.as_ref().unwrap_or(elem);
             printable(&format!("{}: - {shown}", shown_name(field, label)))
         }
-        Change::Comment { body } => format!("commented: {}", first_line(body)),
-        Change::Ask { body, .. } => format!("asked: {}", first_line(body)),
-        Change::Answer { body } => format!("answered: {}", first_line(body)),
-        Change::Withdraw { body } => format!("withdrew the question: {}", first_line(body)),
+        Change::Comment { body } => format!("commented: {}", names.first(body)),
+        Change::Ask { body, .. } => format!("asked: {}", names.first(body)),
+        Change::Answer { body } => format!("answered: {}", names.first(body)),
+        Change::Withdraw { body } => format!("withdrew the question: {}", names.first(body)),
         Change::Retract {
             retracted: true, ..
         } => "retracted a comment".to_owned(),
         Change::Retract { .. } => "showed a retracted comment again".to_owned(),
         Change::EditComment { comment, body } => {
-            format!("edited comment {}: {}", short(*comment), first_line(body))
+            format!("edited comment {}: {}", short(*comment), names.first(body))
         }
         Change::Link {
             link_type,
@@ -499,18 +501,36 @@ fn claim_line(
     }
 }
 
-/// Other Issues' Keys, read once each.
+/// Other Issues' Keys, read once each, and how each mention is shown.
 struct Names<'a> {
     store: &'a Store,
     keys: HashMap<Uuid, String>,
+    mentions: mention::Names,
 }
 
 impl<'a> Names<'a> {
-    fn new(store: &'a Store) -> Self {
-        Self {
+    /// Names for `entries`, whose mentions' names are read only when one
+    /// of their texts holds a token.
+    fn new(store: &'a Store, entries: &[HistoryEntry]) -> Result<Self, CliError> {
+        let texts = entries.iter().filter_map(|entry| match &entry.change {
+            Change::Comment { body }
+            | Change::Ask { body, .. }
+            | Change::Answer { body }
+            | Change::Withdraw { body }
+            | Change::EditComment { body, .. } => Some(body.as_str()),
+            Change::SetField { value, .. } => value.as_str(),
+            _ => None,
+        });
+        Ok(Self {
             store,
             keys: HashMap::new(),
-        }
+            mentions: mention::Names::of(store, texts)?,
+        })
+    }
+
+    /// A text's first line, its mentions shown by name before it is cut.
+    fn first(&self, body: &str) -> String {
+        first_line(&self.mentions.shown(body))
     }
 
     /// `issue`'s Key, or its id when it has none or no longer exists.
@@ -630,7 +650,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tm-history-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("tm.db")).unwrap();
-        let mut names = Names::new(&store);
+        let mut names = Names::new(&store, &[]).unwrap();
         let mut before = HashMap::new();
         let lost = HistoryEntry {
             lost: true,
@@ -720,7 +740,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tm-history-{}", Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("tm.db")).unwrap();
-        let mut names = Names::new(&store);
+        let mut names = Names::new(&store, &[]).unwrap();
         let mut before = HashMap::new();
         let hostile = "L\u{1b}[2J";
         let add = Change::Add {

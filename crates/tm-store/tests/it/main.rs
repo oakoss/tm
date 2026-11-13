@@ -17,6 +17,7 @@ mod import_lists;
 mod links;
 mod members;
 mod memories;
+mod mentions;
 mod merge;
 mod next;
 mod path_claims;
