@@ -240,6 +240,7 @@ pub(crate) fn record_places(
 
 fn tally(entry: &mut SessionWork, change: Change) {
     match change {
+        records if records.records_only() => {}
         Change::Claim { action } => match action {
             ClaimAction::Take { branch, .. } => {
                 entry.claimed = true;
@@ -252,8 +253,6 @@ fn tally(entry: &mut SessionWork, change: Change) {
             ClaimAction::Hand { .. } => entry.handed = true,
             ClaimAction::Renew { .. } | ClaimAction::Release { .. } => {}
         },
-        // A record beside the write it notes, which is counted itself.
-        Change::PassedClaim { .. } => {}
         Change::Comment { .. } => entry.comments += 1,
         Change::Ask { .. } => entry.asked += 1,
         Change::Answer { .. } => entry.answered += 1,

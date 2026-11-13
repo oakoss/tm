@@ -779,7 +779,7 @@ fn put_optional(buf: &mut Vec<u8>, value: Option<&str>) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     type Mutation = Box<dyn Fn(&mut Op)>;
@@ -855,7 +855,7 @@ mod tests {
 
     /// One change of every kind; `every_change_has_every_kind` fails until a
     /// new kind is added.
-    fn every_change() -> Vec<Change> {
+    pub(crate) fn every_change() -> Vec<Change> {
         vec![
             Change::Create,
             Change::SetField {

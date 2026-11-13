@@ -7,7 +7,7 @@ use std::collections::{HashMap, VecDeque};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
-use tm_core::op::{CLAIM_FIELD, COMMENTS_FIELD, question_options};
+use tm_core::op::{COMMENTS_FIELD, question_options};
 use tm_core::scheme::{Field, FieldType, Scheme, WAITING_ON, is_date, priority_rank};
 use tm_core::{Actor, Change, Subject, link};
 use uuid::Uuid;
@@ -27,24 +27,13 @@ pub(crate) struct Writing<'a> {
 /// Refuses a change no import may bring in, checked before anything else
 /// about the batch.
 pub(crate) fn check_importable(change: &Change) -> Result<(), StoreError> {
-    match change {
-        // A Claim is who works on an Issue now, not history to bring in.
-        Change::Claim { .. } | Change::PassedClaim { .. } => Err(StoreError::Invalid {
-            field: CLAIM_FIELD.into(),
+    match change.import_refusal() {
+        Some(field) => Err(StoreError::Invalid {
+            field: field.into(),
             reason: "cannot be imported".into(),
             valid: Vec::new(),
         }),
-        Change::SetName { .. } => Err(StoreError::Invalid {
-            field: "name".into(),
-            reason: "cannot be imported".into(),
-            valid: Vec::new(),
-        }),
-        Change::SetRead { .. } => Err(StoreError::Invalid {
-            field: tm_core::notification::READ_FIELD.into(),
-            reason: "cannot be imported".into(),
-            valid: Vec::new(),
-        }),
-        _ => Ok(()),
+        None => Ok(()),
     }
 }
 

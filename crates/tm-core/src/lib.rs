@@ -5,6 +5,7 @@ pub mod duration;
 pub mod entities;
 pub mod filter;
 pub mod hlc;
+pub mod kind;
 pub mod link;
 pub mod memory;
 pub mod mention;
