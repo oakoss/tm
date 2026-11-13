@@ -6,6 +6,7 @@ use std::fs::File;
 use std::io::{self, Write as _};
 use std::os::fd::AsFd as _;
 use std::process::ExitCode;
+use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -13,6 +14,19 @@ use uuid::Uuid;
 use crate::error::CliError;
 
 pub(crate) const SCHEMA_VERSION: u32 = 1;
+
+/// Warnings found before the command ran, such as `TM_LOG`'s, which every
+/// JSON document carries; text mode prints them when they are found.
+static STARTUP_WARNINGS: OnceLock<Vec<String>> = OnceLock::new();
+
+/// Keeps `warnings` for every JSON document this run prints.
+pub(crate) fn warn_in_json(warnings: Vec<String>) {
+    let _ = STARTUP_WARNINGS.set(warnings);
+}
+
+fn startup_warnings() -> &'static [String] {
+    STARTUP_WARNINGS.get().map_or(&[], Vec::as_slice)
+}
 
 /// A command's result, in both forms.
 pub(crate) struct Output {
@@ -186,7 +200,7 @@ pub(crate) fn install_panic_hook() {
         let err = CliError::new("internal", message)
             .with("cause", "panic")
             .with("location", info.location().map(ToString::to_string));
-        let _ = write(&format!("{}\n", err.document(&[])));
+        let _ = write(&format!("{}\n", err.document(startup_warnings())));
         std::process::exit(1);
     }));
 }
@@ -244,6 +258,13 @@ fn rendered(
     result: Result<Output, CliError>,
     warnings: &[String],
 ) -> Result<(String, ExitCode), ExitCode> {
+    let joined: Vec<String>;
+    let warnings = if json && !startup_warnings().is_empty() {
+        joined = startup_warnings().iter().chain(warnings).cloned().collect();
+        &joined[..]
+    } else {
+        warnings
+    };
     Ok(match (json, result) {
         // The keys in the order a JSON value sorts them, so the bytes match.
         (

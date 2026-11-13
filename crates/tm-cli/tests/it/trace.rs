@@ -37,10 +37,20 @@ fn a_traced_command_logs_to_the_home_and_prints_as_untraced() {
         log,
         "unset, nothing is traced"
     );
+    let off = jace(&scratch, &repo, &["list"])
+        .env("TM_LOG", "off")
+        .output()
+        .unwrap();
+    assert!(off.status.success(), "{off:?}");
+    assert_eq!(
+        fs::read_to_string(scratch.home().join("logs").join("tm.log")).unwrap(),
+        log,
+        "off, nothing is traced"
+    );
 }
 
 #[test]
-fn a_log_that_cannot_be_written_warns_in_text_and_stays_silent_in_json() {
+fn a_log_that_cannot_be_written_warns_on_stderr_in_text_and_in_the_document_in_json() {
     let scratch = Scratch::new();
     let (repo, _, _) = initialized(&scratch);
     fs::write(scratch.home().join("logs"), "not a directory").unwrap();
@@ -62,11 +72,16 @@ fn a_log_that_cannot_be_written_warns_in_text_and_stays_silent_in_json() {
         .unwrap();
     assert!(out.status.success(), "{out:?}");
     assert_eq!(text(&out.stderr), "");
-    serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        format!("tm: warning: {}\n", doc["warnings"][0].as_str().unwrap()),
+        stderr,
+        "{doc}"
+    );
 }
 
 #[test]
-fn an_unreadable_filter_warns_only_in_text_and_a_crate_filter_keeps_the_command() {
+fn an_unreadable_filter_warns_in_either_mode_and_a_crate_filter_keeps_the_command() {
     let scratch = Scratch::new();
     let (repo, _, _) = initialized(&scratch);
     let run = |args: &[&str], log: &str| {
@@ -78,6 +93,16 @@ fn an_unreadable_filter_warns_only_in_text_and_a_crate_filter_keeps_the_command(
     let out = run(&["--json", "list"], "tm_store=debug,===");
     assert!(out.status.success(), "{out:?}");
     assert_eq!(text(&out.stderr), "");
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        doc["warnings"],
+        serde_json::json!(["TM_LOG's \"===\" is not a filter tm can read, so it is left out"])
+    );
+    let out = run(&["--json", "show", "TM-9"], "===");
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["error"], "not_found", "{doc}");
+    assert_eq!(doc["warnings"].as_array().unwrap().len(), 2, "{doc}");
     let out = run(&["list"], "tm_store=debug,===");
     assert_eq!(
         text(&out.stderr),

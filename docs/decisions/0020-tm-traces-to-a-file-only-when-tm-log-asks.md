@@ -25,18 +25,18 @@ tm had no logging. A slow command, a write that waited on another session's lock
 
 Chosen option: **`tracing`, to a file under tm's home**, because it gives timed spans and per-crate filtering without tm's own code for either, and showed no difference above run-to-run noise when off.
 
-- `TM_LOG` unset or blank installs no subscriber. Set, its comma-separated directives are read one by one; one tm cannot read is left out, and when none can be read nothing is traced. `tracing-subscriber` would print its own complaint about an unreadable directive to stderr, so tm never hands it one.
+- `TM_LOG` unset, blank, or only turning targets `off` installs no subscriber. Set, its comma-separated directives are read one by one; one tm cannot read is left out, and when none can be read nothing is traced. tm's own lines are under `tm` and `tm::<module>` (`tm::init=trace`), the store's under `tm_store`; a target matches by prefix, so `tm=debug` also takes in `tm_store`. `tracing-subscriber` would print its own complaint about an unreadable directive to stderr, so tm never hands it one.
 - Traces are appended to `logs/tm.log` under the tm home (`~/.tm`, or `TM_HOME`), never to stdout or stderr; the subscriber's own report of a failed write is turned off. When the file passes 10 MB at startup it is renamed `tm.log.1`, so at most two files remain; when the rename fails, tm keeps appending.
 - Lines are plain text, without colour codes: the time, level, the spans they are in and their fields. Every line is inside a `command` span naming the command and the process id, whose target (`tm_command`) every filter enables, so concurrent sessions' lines tell apart under a filter such as `tm_store=debug`; each span's close gives its duration.
-- A directive left out, a log that cannot be written or set aside, or no tm home: text mode warns on stderr and goes on; JSON mode says nothing, per ADR 0011.
+- A directive left out, a log that cannot be written or set aside, or no tm home is a warning, and the command goes on: text mode prints it on stderr as tm starts; JSON mode adds it to every document's `warnings`, per ADR 0011. An export's records are not a document, so they carry none; a write to the log that fails after it opens is not reported either way.
 - Trace points start where questions came from: each command, each write (its drafts, how long it waited for the lock, what it wrote or why it was refused), each rebuild and the operations it set aside, Claim renewals and heartbeats, and each git call. More are added when a question needs them.
 
 ### Consequences
 
 - Good, because a slow or surprising run can be explained after the fact with `TM_LOG=debug`, without changing tm.
-- Good, because output is unchanged whether tracing is on or off, so scripts, hooks and the TUI cannot tell.
+- Good, because a command's output is unchanged whether tracing is on or off, so scripts, hooks and the TUI cannot tell; only a `TM_LOG` tm cannot act on adds a warning.
 - Bad, because the release binary grows by 7.0% (measured below), and the workspace gains `tracing` and `tracing-subscriber` with its `env-filter`.
-- Bad, because a misspelled level such as `debgu` reads as a target name, which matches nothing, so the log gets only each command's line, without a warning; `off` does the same.
+- Bad, because a misspelled level such as `debgu` reads as a target name, which matches nothing, so the log gets only each command's line, without a warning.
 - Neutral, because a trace point is code to keep accurate; one that no question needs is removed.
 
 ### Confirmation

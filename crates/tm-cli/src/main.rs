@@ -627,8 +627,11 @@ fn main() -> ExitCode {
         tm_store::workspace::home(std::env::var_os("TM_HOME"), std::env::home_dir())
             .map_err(|err| err.to_string())
     };
-    for warning in trace::start(std::env::var("TM_LOG").ok().as_deref(), home) {
-        if !json {
+    let warnings = trace::start(std::env::var("TM_LOG").ok().as_deref(), home);
+    if json {
+        output::warn_in_json(warnings);
+    } else {
+        for warning in warnings {
             eprintln!("tm: warning: {warning}");
         }
     }

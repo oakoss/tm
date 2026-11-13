@@ -17,9 +17,10 @@ const ROLL_BYTES: u64 = 10 * 1024 * 1024;
 pub(crate) const COMMAND_TARGET: &str = "tm_command";
 
 /// Starts tracing at `filter`, a `RUST_LOG`-style filter, into `logs/tm.log`
-/// under the tm home `home` finds. Nothing starts when `filter` is unset or
-/// blank. Returns warnings for text mode: the parts of `filter` tm cannot
-/// read, which are left out, and why the log cannot be written or set aside.
+/// under the tm home `home` finds. Nothing starts when `filter` is unset,
+/// blank or only turns tracing off. Returns warnings: the parts of `filter`
+/// tm cannot read, which are left out, and why the log cannot be written or
+/// set aside.
 pub(crate) fn start(
     filter: Option<&str>,
     home: impl FnOnce() -> Result<PathBuf, String>,
@@ -36,6 +37,13 @@ pub(crate) fn start(
         warnings.push("TM_LOG names no filter tm can read, so nothing is traced".into());
         return warnings;
     }
+    if read
+        .iter()
+        .all(|(_, directive)| off(&directive.to_string()))
+    {
+        return warnings;
+    }
+    let read = read.into_iter().map(|(_, directive)| directive);
     let path = match home() {
         Ok(home) => home.join("logs").join("tm.log"),
         Err(err) => {
@@ -64,7 +72,6 @@ pub(crate) fn start(
         }
     };
     let filter = read
-        .into_iter()
         .chain(format!("{COMMAND_TARGET}=info").parse())
         .fold(EnvFilter::default(), EnvFilter::add_directive);
     let started = tracing_subscriber::fmt()
@@ -84,7 +91,7 @@ pub(crate) fn start(
 
 /// The comma-separated parts of `filter` that read as directives, and those
 /// that do not, as `EnvFilter` splits them.
-fn directives(filter: &str) -> (Vec<Directive>, Vec<&str>) {
+fn directives(filter: &str) -> (Vec<(&str, Directive)>, Vec<&str>) {
     let mut read = Vec::new();
     let mut unread = Vec::new();
     for part in filter
@@ -93,11 +100,18 @@ fn directives(filter: &str) -> (Vec<Directive>, Vec<&str>) {
         .filter(|part| !part.is_empty())
     {
         match part.parse() {
-            Ok(directive) => read.push(directive),
+            Ok(directive) => read.push((part, directive)),
             Err(_) => unread.push(part),
         }
     }
     (read, unread)
+}
+
+/// Whether a directive, as it prints, turns its target off: `off`, or ends
+/// `=off`; it prints `0` as `off`.
+fn off(part: &str) -> bool {
+    let level = part.rsplit_once('=').map_or(part, |(_, level)| level);
+    level.trim().eq_ignore_ascii_case("off")
 }
 
 /// `path` opened to append, after setting it aside past [`ROLL_BYTES`], with
@@ -138,7 +152,14 @@ mod tests {
 
     #[test]
     fn nothing_starts_without_a_filter() {
-        for filter in [None, Some(""), Some("  ")] {
+        for filter in [
+            None,
+            Some(""),
+            Some("  "),
+            Some("off"),
+            Some("OFF,tm_store=off"),
+            Some("0,tm_store[write]=0"),
+        ] {
             assert_eq!(
                 start(filter, || Err("unreached".into())),
                 Vec::<String>::new()
@@ -148,8 +169,15 @@ mod tests {
 
     #[test]
     fn unreadable_parts_are_named_and_left_out() {
-        let (read, unread) = directives("debug, tm_store=nonsense,===,tm_cli=trace");
-        assert_eq!(read.len(), 2);
+        let (read, unread) = directives("debug, tm_store=nonsense,===,tm::init=trace");
+        assert_eq!(
+            read.iter().map(|(part, _)| *part).collect::<Vec<_>>(),
+            ["debug", "tm::init=trace"]
+        );
+        assert!(
+            read.iter()
+                .all(|(_, directive)| !off(&directive.to_string()))
+        );
         assert_eq!(unread, ["tm_store=nonsense", "==="]);
         let warnings = start(Some("==="), || Err("unreached".into()));
         assert_eq!(
