@@ -637,6 +637,7 @@ impl Store {
         writer: &Actor,
         issue: Option<Uuid>,
     ) -> Result<Vec<Op>, StoreError> {
+        let _heartbeat = tracing::debug_span!("heartbeat").entered();
         let writer = writer.clone();
         self.append_with(Vec::new(), |tx, at_ms| {
             renewals(tx, &writer, |claim| {
@@ -874,6 +875,9 @@ pub(crate) fn renewals(
                 },
             },
         });
+    }
+    if !drafts.is_empty() {
+        tracing::debug!(writer = writer.name(), claims = drafts.len(), "renewing");
     }
     Ok(drafts)
 }

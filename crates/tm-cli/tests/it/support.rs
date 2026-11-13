@@ -146,6 +146,7 @@ pub(crate) fn tm_command() -> Command {
     for var in SESSION_VARS {
         command.env_remove(var);
     }
+    command.env_remove("TM_LOG");
     command
 }
 

@@ -450,6 +450,7 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, CliError> {
 /// What `git args` printed in `dir`, however it exited. Trace variables are
 /// left out, so what git writes on stderr is only what it has to say.
 pub(crate) fn git_output(dir: &Path, args: &[&str]) -> Result<std::process::Output, CliError> {
+    let _git = tracing::debug_span!("git", ?args).entered();
     let mut command = Command::new("git");
     command
         .args(args)

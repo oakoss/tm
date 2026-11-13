@@ -626,6 +626,7 @@ fn check_git_sees(root: &Path, relative: &str) -> Result<(), String> {
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    let _git = tracing::debug_span!("git", ?args).entered();
     Command::new("git")
         .args(args)
         .current_dir(root)

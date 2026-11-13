@@ -41,6 +41,7 @@ mod setup;
 mod shortlist;
 mod show;
 mod start;
+mod trace;
 mod tui;
 mod undo;
 mod views;
@@ -622,6 +623,22 @@ fn main() -> ExitCode {
         // A script reads one JSON document, never a question.
         prompt::hold();
     }
+    let home = || {
+        tm_store::workspace::home(std::env::var_os("TM_HOME"), std::env::home_dir())
+            .map_err(|err| err.to_string())
+    };
+    for warning in trace::start(std::env::var("TM_LOG").ok().as_deref(), home) {
+        if !json {
+            eprintln!("tm: warning: {warning}");
+        }
+    }
+    let _command = tracing::info_span!(
+        target: trace::COMMAND_TARGET,
+        "command",
+        name = command.map_or("", String::as_str),
+        pid = std::process::id()
+    )
+    .entered();
     let parsed = list::filter_last(&mut Cli::command(), std::env::args_os().collect());
     let cli = match cli()
         .try_get_matches_from(parsed)

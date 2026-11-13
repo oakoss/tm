@@ -39,6 +39,7 @@ mod snapshot;
 mod start;
 mod subagent;
 mod support;
+mod trace;
 mod tui;
 mod undo;
 mod versions;
