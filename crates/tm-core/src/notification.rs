@@ -39,6 +39,17 @@ pub fn writer(actor: &str, on_behalf_of: Option<&str>) -> Mentioned {
     }
 }
 
+/// The Actor holding a Claim taken by `holder` for `held_for`: an Agent, or
+/// the person when they took it themselves.
+#[must_use]
+pub fn holder(holder: &str, held_for: &str) -> Mentioned {
+    if holder.trim().eq_ignore_ascii_case(held_for.trim()) {
+        Mentioned::Person(person::key(held_for))
+    } else {
+        writer(holder, Some(held_for))
+    }
+}
+
 /// Whom `text` notifies when it replaces `before`: each Actor mentioned
 /// outside code that `before` did not mention, apart from `writer`.
 #[must_use]
@@ -91,6 +102,18 @@ mod tests {
                 human: "kim@example.com".into(),
             }
         );
+    }
+
+    #[test]
+    fn a_claim_is_held_by_its_agent_or_the_person_who_took_it() {
+        assert_eq!(
+            holder("claude", "Kim@example.com"),
+            Mentioned::Agent {
+                name: "claude".into(),
+                human: "kim@example.com".into(),
+            }
+        );
+        assert_eq!(holder("Kim@example.com", "kim@example.com"), kim());
     }
 
     #[test]

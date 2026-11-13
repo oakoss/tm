@@ -182,6 +182,15 @@ pub enum Change {
         op: Uuid,
         read: bool,
     },
+    /// Records that its batch wrote `fields`, which Claim `claim` protects,
+    /// while `holder` held it for `held_for`, so the holder is notified
+    /// (ADR 0009, ADR 0019).
+    PassedClaim {
+        claim: Uuid,
+        holder: String,
+        held_for: String,
+        fields: Vec<String>,
+    },
 }
 
 /// The kind of record an operation's subject id names.
@@ -283,6 +292,7 @@ impl Change {
             Self::MemorySource => "memory_source",
             Self::SetName { .. } => "set_name",
             Self::SetRead { .. } => "set_read",
+            Self::PassedClaim { .. } => "passed_claim",
         }
     }
 
@@ -309,7 +319,8 @@ impl Change {
             | Self::Retract { .. }
             | Self::EditComment { .. }
             | Self::Link { .. }
-            | Self::Claim { .. } => Subject::Issue,
+            | Self::Claim { .. }
+            | Self::PassedClaim { .. } => Subject::Issue,
         }
     }
 
@@ -339,7 +350,8 @@ impl Change {
             | Self::ShortlistSource
             | Self::CreateMemory
             | Self::MemorySource
-            | Self::SetName { .. } => None,
+            | Self::SetName { .. }
+            | Self::PassedClaim { .. } => None,
         }
     }
 
@@ -371,7 +383,8 @@ impl Change {
             | Self::SetMemory { .. }
             | Self::MemorySource
             | Self::SetName { .. }
-            | Self::SetRead { .. } => None,
+            | Self::SetRead { .. }
+            | Self::PassedClaim { .. } => None,
         }
     }
 
@@ -435,6 +448,22 @@ impl Change {
                     return Err(OpError::InvalidShortlist {
                         field: "actor",
                         reason: "must be lowercase, without surrounding spaces",
+                    });
+                }
+                Ok(())
+            }
+            Self::PassedClaim {
+                holder,
+                held_for,
+                fields,
+                ..
+            } => {
+                check_name("holder", holder)?;
+                check_name("held_for", held_for)?;
+                if fields.is_empty() || fields.iter().any(|field| !crate::scheme::is_id(field)) {
+                    return Err(OpError::InvalidName {
+                        field: "fields",
+                        reason: "names no field, or one that is not a field id",
                     });
                 }
                 Ok(())
@@ -641,6 +670,13 @@ impl Op {
             return Err(OpError::InvalidName {
                 field: "source",
                 reason: "is needed by a memory source operation",
+            });
+        }
+        // A record of what happened here, which an import never brings.
+        if matches!(change, Change::PassedClaim { .. }) && self.source.is_some() {
+            return Err(OpError::InvalidName {
+                field: "source",
+                reason: "is not imported on a passed Claim",
             });
         }
         // A read mark is the reader's own, on their Notification of `op`.
@@ -909,12 +945,28 @@ mod tests {
                 field: memory::Field::Key,
                 value: serde_json::json!("tests-need-race"),
             },
+        ]
+        .into_iter()
+        .chain(records())
+        .collect()
+    }
+
+    /// The changes to records of their own: names, read marks and passed
+    /// Claims.
+    fn records() -> Vec<Change> {
+        vec![
             Change::SetName {
                 name: "Jace Babin".into(),
             },
             Change::SetRead {
                 op: Uuid::from_u128(7),
                 read: true,
+            },
+            Change::PassedClaim {
+                claim: Uuid::from_u128(8),
+                holder: "claude".into(),
+                held_for: "jace".into(),
+                fields: vec!["status".into()],
             },
         ]
     }
@@ -934,6 +986,32 @@ mod tests {
             payload: serde_json::to_string(&change).unwrap(),
             ..sample()
         }
+    }
+
+    #[test]
+    fn a_passed_claim_names_fields_and_is_never_imported() {
+        let passed = |fields: Vec<String>| {
+            let change = Change::PassedClaim {
+                claim: Uuid::from_u128(8),
+                holder: "claude".into(),
+                held_for: "jace".into(),
+                fields,
+            };
+            Op {
+                kind: change.kind().into(),
+                payload: serde_json::to_string(&change).unwrap(),
+                ..sample()
+            }
+        };
+        assert!(passed(vec!["status".into()]).change().is_ok());
+        let err = passed(Vec::new()).change().unwrap_err().to_string();
+        assert!(err.contains("names no field"), "{err}");
+        let imported = Op {
+            source: Some("beads:tm-1".into()),
+            ..passed(vec!["status".into()])
+        };
+        let err = imported.change().unwrap_err().to_string();
+        assert!(err.contains("not imported"), "{err}");
     }
 
     #[test]

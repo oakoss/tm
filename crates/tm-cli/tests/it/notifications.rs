@@ -155,3 +155,28 @@ fn an_agent_reads_the_mentions_of_it() {
         "{read:?}"
     );
 }
+
+#[test]
+fn a_write_past_an_agents_claim_tells_the_agent_and_shows_in_history() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    let claude = |args: &[&str]| as_actor(&scratch, &repo, "jace", Some("claude"), args);
+    let made = claude(&["create", "--type", "task", "--title", "t"]);
+    assert!(made.status.success(), "{made:?}");
+    let started = claude(&["start", "TM-1"]);
+    assert!(started.status.success(), "{started:?}");
+    let moved = tm(&scratch, &repo, &["move", "TM-1", "in_review"]);
+    assert!(moved.status.success(), "{moved:?}");
+    let listed = text(&claude(&["notifications"]).stdout);
+    assert!(
+        listed.contains("TM-1  jace in your Claim")
+            && listed.contains(": wrote status while you held it"),
+        "{listed}"
+    );
+    let history = text(&tm(&scratch, &repo, &["history", "TM-1"]).stdout);
+    assert!(
+        history.contains("wrote status past claude's Claim"),
+        "{history}"
+    );
+}

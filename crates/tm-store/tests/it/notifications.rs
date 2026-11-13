@@ -229,3 +229,116 @@ fn an_import_notifies_no_one() {
         .unwrap();
     assert_eq!(store.notifications(&kim(), true).unwrap().len(), 0);
 }
+
+/// TM's Issue, which claude takes in session s1 for an hour.
+fn claimed(store: &mut Store) -> Uuid {
+    let issue = new_issue(store);
+    let session = tm_core::actor::SessionId::parse("s1").unwrap();
+    store
+        .take(&claude().in_session(session), issue, Some(3_600_000))
+        .unwrap();
+    issue
+}
+
+fn passed_records(store: &Store) -> i64 {
+    store
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM ops WHERE kind = 'passed_claim'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_write_past_a_claim_is_recorded_and_notifies_its_holder() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = claimed(&mut store);
+    let batch = store
+        .append_all(vec![
+            draft(issue, set_field("status", json!("in_review"))),
+            draft(issue, set_field("description", json!("redone"))),
+        ])
+        .unwrap();
+    assert_eq!(passed_records(&store), 1, "one record per Claim and batch");
+    let heard = unread(&store, &claude());
+    assert_eq!(heard.len(), 1, "{heard:?}");
+    assert_eq!(heard[0].kind, "passed_claim");
+    assert_eq!(heard[0].text, "status, description");
+    assert_eq!(heard[0].actor, "jace");
+    assert_eq!(unread(&store, &jace()).len(), 0, "the writer");
+    let before = dump(&store);
+    store.rebuild().unwrap();
+    assert_eq!(dump(&store), before);
+    store.undo(&jace(), batch[0].op_id).unwrap();
+    assert_eq!(
+        unread(&store, &claude()).len(),
+        2,
+        "undo leaves the record, and writes past the Claim again"
+    );
+}
+
+#[test]
+fn a_forced_agent_write_notifies_and_the_holder_or_a_finishing_move_does_not() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = claimed(&mut store);
+    let codex = Actor::agent("codex", "jace");
+    store.force_past_claims();
+    store
+        .append(Draft {
+            actor: codex,
+            ..draft(issue, set_field("description", json!("forced")))
+        })
+        .unwrap();
+    assert_eq!(unread(&store, &claude()).len(), 1);
+    let session = tm_core::actor::SessionId::parse("s1").unwrap();
+    store
+        .append(Draft {
+            actor: claude().in_session(session),
+            ..draft(issue, set_field("status", json!("in_review")))
+        })
+        .unwrap();
+    let claim = store.claim_state(issue).unwrap().unwrap().claim().id;
+    store
+        .append_all(vec![
+            draft(issue, set_field("status", json!("done"))),
+            draft(
+                issue,
+                Change::Claim {
+                    action: tm_core::op::ClaimAction::Release { claim },
+                },
+            ),
+        ])
+        .unwrap();
+    assert_eq!(
+        passed_records(&store),
+        1,
+        "neither the holder nor a release"
+    );
+}
+
+#[test]
+fn a_passed_claim_cannot_be_imported_or_written_with_a_source() {
+    let change = Change::PassedClaim {
+        claim: Uuid::from_u128(1),
+        holder: "claude".into(),
+        held_for: "jace".into(),
+        fields: vec!["status".into()],
+    };
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = new_issue(&mut store);
+    let at = tm_store::WallTime {
+        utc_ms: 1,
+        offset_min: 0,
+    };
+    let provenance = tm_store::Provenance {
+        source: "beads:a".into(),
+        at,
+    };
+    let refused = store.append_imported(vec![(draft(issue, change), provenance)]);
+    assert!(refused.is_err(), "{refused:?}");
+}

@@ -401,14 +401,7 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
             Change::Claim {
                 action: ClaimAction::Take { .. } | ClaimAction::Hand { .. },
             } => release(conn, op, &mut plan, &mut conflicts)?,
-            // A renewal records that the session was active (ADR 0009), and a
-            // list's or memory's source where it came from; undoing the batch
-            // makes neither untrue, so later imports still find it.
-            Change::Claim {
-                action: ClaimAction::Renew { .. },
-            }
-            | Change::ShortlistSource
-            | Change::MemorySource => {}
+            change if records(change) => {}
             _ => {
                 targets.insert(target(op));
             }
@@ -448,6 +441,20 @@ fn plan(conn: &Connection, scheme: &Scheme, batch: Uuid) -> Result<UndoPlan, Sto
         ));
     }
     Ok(plan)
+}
+
+/// Whether `change` records what happened rather than setting anything: a
+/// renewal (ADR 0009), a passed Claim, a list's or memory's source. Undoing
+/// its batch makes none untrue, so later imports still find a source.
+const fn records(change: &Change) -> bool {
+    matches!(
+        change,
+        Change::Claim {
+            action: ClaimAction::Renew { .. },
+        } | Change::ShortlistSource
+            | Change::MemorySource
+            | Change::PassedClaim { .. }
+    )
 }
 
 /// Writes refuse a deleted list or forgotten memory and a list left with no

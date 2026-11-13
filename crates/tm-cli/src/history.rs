@@ -335,6 +335,10 @@ fn describe(
             present,
         } => link_line(issue, entry, (link_type, *target, *present), names)?,
         Change::Claim { action } => claim_line(action, entry, before),
+        Change::PassedClaim { holder, fields, .. } => printable(&format!(
+            "wrote {} past {holder}'s Claim",
+            fields.join(", ")
+        )),
         Change::CreateProject { .. }
         | Change::RenameProject { .. }
         | Change::CreateShortlist

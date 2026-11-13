@@ -49,26 +49,53 @@ pub(crate) fn derive(
     let recipients =
         notification::recipients(mentioning.text, mentioning.before.as_deref(), &writer);
     for recipient in recipients {
-        tx.execute(
-            "INSERT OR IGNORE INTO notifications
-             (id, recipient, op_id, issue_id, comment, kind, text, actor, on_behalf_of,
-              hlc, utc_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                notification::id(op.op_id, &recipient).as_bytes(),
-                recipient.token(),
-                op.op_id.as_bytes(),
-                op.subject.as_bytes(),
-                mentioning.comment.map(|comment| *comment.as_bytes()),
-                op.kind,
-                mentioning.text,
-                op.actor,
-                op.on_behalf_of,
-                sql_int(op.hlc.raw())?,
-                op.utc_ms,
-            ],
-        )?;
+        notify(tx, op, &recipient, mentioning.text, mentioning.comment)?;
     }
+    Ok(())
+}
+
+/// Notifies a Claim's holder that `op`'s batch wrote past it; the text
+/// names the fields written.
+pub(crate) fn passed(tx: &Transaction<'_>, op: &Op, passed: &Change) -> Result<(), StoreError> {
+    let Change::PassedClaim {
+        holder,
+        held_for,
+        fields,
+        ..
+    } = passed
+    else {
+        unreachable!("only a passed Claim reaches here")
+    };
+    let recipient = notification::holder(holder, held_for);
+    notify(tx, op, &recipient, &fields.join(", "), None)
+}
+
+fn notify(
+    tx: &Transaction<'_>,
+    op: &Op,
+    recipient: &Mentioned,
+    text: &str,
+    comment: Option<Uuid>,
+) -> Result<(), StoreError> {
+    tx.execute(
+        "INSERT OR IGNORE INTO notifications
+         (id, recipient, op_id, issue_id, comment, kind, text, actor, on_behalf_of,
+          hlc, utc_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            notification::id(op.op_id, recipient).as_bytes(),
+            recipient.token(),
+            op.op_id.as_bytes(),
+            op.subject.as_bytes(),
+            comment.map(|comment| *comment.as_bytes()),
+            op.kind,
+            text,
+            op.actor,
+            op.on_behalf_of,
+            sql_int(op.hlc.raw())?,
+            op.utc_ms,
+        ],
+    )?;
     Ok(())
 }
 

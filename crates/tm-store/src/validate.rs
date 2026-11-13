@@ -29,7 +29,7 @@ pub(crate) struct Writing<'a> {
 pub(crate) fn check_importable(change: &Change) -> Result<(), StoreError> {
     match change {
         // A Claim is who works on an Issue now, not history to bring in.
-        Change::Claim { .. } => Err(StoreError::Invalid {
+        Change::Claim { .. } | Change::PassedClaim { .. } => Err(StoreError::Invalid {
             field: CLAIM_FIELD.into(),
             reason: "cannot be imported".into(),
             valid: Vec::new(),
@@ -143,7 +143,7 @@ pub(crate) fn check(
         return Err(StoreError::UnknownIssue(issue_id));
     }
     match change {
-        Change::Create | Change::Comment { .. } => Ok(change),
+        Change::Create | Change::Comment { .. } | Change::PassedClaim { .. } => Ok(change),
         Change::Ask { .. } | Change::Answer { .. } | Change::Withdraw { .. } => {
             check_question(tx, writing.actor, issue_id, change)
         }
