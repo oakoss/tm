@@ -124,12 +124,6 @@ impl Store {
         version(&self.conn, issue)
     }
 
-    /// Later writes to `issue`'s fields are refused with
-    /// [`StoreError::Stale`] when a field they set changed after `version`.
-    pub fn base_writes_on(&mut self, issue: Uuid, version: i64) {
-        self.based_on = Some((issue, version));
-    }
-
     /// Refuses as a write based on `version` would when it sets `fields` on
     /// `issue`. The write checks again; this only fails early, such as
     /// before piped text is read.

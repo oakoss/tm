@@ -11,7 +11,7 @@ use tm_core::{Actor, Change, Op, paths};
 use uuid::Uuid;
 
 use crate::apply::{issue_project, uuid_from};
-use crate::{Draft, Lineage, Provenance, Store, StoreError};
+use crate::{Draft, Lineage, Provenance, Store, StoreError, Taking, WriteOptions};
 
 /// Begins the `unapplied` reason of a take or release that lost to another,
 /// telling lost Claims apart from operations that do not fit.
@@ -223,9 +223,13 @@ impl Store {
         &mut self,
         actor: &Actor,
         issue: Uuid,
-        ttl_ms: Option<u64>,
+        taking: impl Into<Taking>,
     ) -> Result<Claim, StoreError> {
-        let (branch, paths) = (self.place.branch.clone(), self.place.paths.clone());
+        let Taking {
+            ttl_ms,
+            branch,
+            paths,
+        } = kept(taking.into());
         let take = |prev, paths| ClaimAction::Take {
             agent: actor.name().to_owned(),
             ttl_ms,
@@ -236,22 +240,17 @@ impl Store {
         };
         let draft = self.claim_draft(actor.clone(), issue, take(None, Vec::new()))?;
         // `prev` is read inside the write, so no other take slips in between.
-        let ops = self.append_with(
-            Vec::new(),
-            |tx, _| {
-                let held = current(tx, issue)?;
-                let paths = covering(held.as_ref(), actor, &paths);
-                let prev = held.map(|held| held.id);
-                Ok(vec![Draft {
-                    change: Change::Claim {
-                        action: take(prev, paths),
-                    },
-                    ..draft
-                }])
-            },
-            true,
-            None,
-        )?;
+        let ops = self.append_with(Vec::new(), |tx, _| {
+            let held = current(tx, issue)?;
+            let paths = covering(held.as_ref(), actor, &paths);
+            let prev = held.map(|held| held.id);
+            Ok(vec![Draft {
+                change: Change::Claim {
+                    action: take(prev, paths),
+                },
+                ..draft
+            }])
+        })?;
         // From the operation, not the table: another writer may already have
         // released and retaken the Issue.
         made_by(&ops[0])
@@ -269,10 +268,14 @@ impl Store {
         &mut self,
         actor: &Actor,
         issue: Uuid,
-        ttl_ms: Option<u64>,
+        taking: impl Into<Taking>,
         extend: impl FnOnce(&Lineage) -> (Vec<Draft>, T),
     ) -> Result<TakenWith<T>, StoreError> {
-        let (branch, paths) = (self.place.branch.clone(), self.place.paths.clone());
+        let Taking {
+            ttl_ms,
+            branch,
+            paths,
+        } = kept(taking.into());
         let take = |prev, paths| ClaimAction::Take {
             agent: actor.name().to_owned(),
             ttl_ms,
@@ -285,35 +288,30 @@ impl Store {
         let scheme = self.scheme.clone();
         let mut made = T::default();
         let mut kept = None;
-        let ops = self.append_with(
-            Vec::new(),
-            |tx, at_ms| {
-                let held = current(tx, issue)?;
-                let (more, out) = extend(&crate::family::lineage(tx, &scheme, issue, at_ms)?);
-                made = out;
-                // Taken again when it is to cover other files.
-                if let Some(own) = held.as_ref().filter(|held| {
-                    held.taken_by(actor)
-                        && !held.lapsed(at_ms)
-                        && (paths.is_empty() || held.paths == paths)
-                }) {
-                    kept = Some(own.clone());
-                    return Ok(more);
-                }
-                let paths = covering(held.as_ref(), actor, &paths);
-                let prev = held.map(|held| held.id);
-                let mut drafts = vec![Draft {
-                    change: Change::Claim {
-                        action: take(prev, paths),
-                    },
-                    ..draft
-                }];
-                drafts.extend(more);
-                Ok(drafts)
-            },
-            true,
-            None,
-        )?;
+        let ops = self.append_with(Vec::new(), |tx, at_ms| {
+            let held = current(tx, issue)?;
+            let (more, out) = extend(&crate::family::lineage(tx, &scheme, issue, at_ms)?);
+            made = out;
+            // Taken again when it is to cover other files.
+            if let Some(own) = held.as_ref().filter(|held| {
+                held.taken_by(actor)
+                    && !held.lapsed(at_ms)
+                    && (paths.is_empty() || held.paths == paths)
+            }) {
+                kept = Some(own.clone());
+                return Ok(more);
+            }
+            let paths = covering(held.as_ref(), actor, &paths);
+            let prev = held.map(|held| held.id);
+            let mut drafts = vec![Draft {
+                change: Change::Claim {
+                    action: take(prev, paths),
+                },
+                ..draft
+            }];
+            drafts.extend(more);
+            Ok(drafts)
+        })?;
         if let Some(claim) = kept {
             return Ok(TakenWith {
                 claim,
@@ -366,13 +364,14 @@ impl Store {
         actor: &Actor,
         issue: Uuid,
         fields: &[&str],
+        force: bool,
     ) -> Result<(), StoreError> {
         let Some(field) = fields.iter().find(|field| PROTECTED_FIELDS.contains(field)) else {
             return Ok(());
         };
         match self.claim_state(issue)? {
             Some(ClaimState::Held(holder))
-                if actor.is_agent() && !self.forcing && !holder.taken_by(actor) =>
+                if actor.is_agent() && !force && !holder.taken_by(actor) =>
             {
                 Err(StoreError::Protected {
                     issue: issue.into(),
@@ -415,7 +414,11 @@ impl Store {
         };
         // The Claim must be as judged, expiry included: one renewed since was
         // judged lapsed but holds again.
-        let ops = self.append_if_claim(vec![hand, comment], held.issue, Some(held))?;
+        let options = WriteOptions {
+            claim: Some((held.issue, Some(held.clone()))),
+            ..WriteOptions::default()
+        };
+        let ops = self.write(vec![hand, comment], &options)?;
         // From the operation, not the table: the receiver may take it at once.
         let handed = Claim {
             on_behalf_of: held.on_behalf_of.clone(),
@@ -635,16 +638,11 @@ impl Store {
         issue: Option<Uuid>,
     ) -> Result<Vec<Op>, StoreError> {
         let writer = writer.clone();
-        self.append_with(
-            Vec::new(),
-            |tx, at_ms| {
-                renewals(tx, &writer, |claim| {
-                    Some(claim.issue) == issue || claim.due(at_ms)
-                })
-            },
-            true,
-            None,
-        )
+        self.append_with(Vec::new(), |tx, at_ms| {
+            renewals(tx, &writer, |claim| {
+                Some(claim.issue) == issue || claim.due(at_ms)
+            })
+        })
     }
 
     /// The Claims that now hold an Issue `batch` wrote, or any Issue when
@@ -931,6 +929,13 @@ pub(crate) fn retook(conn: &Connection, issue: Uuid, take: Uuid) -> Result<bool,
         )
         .optional()?;
     Ok(retook.unwrap_or(false))
+}
+
+/// `taking` with its paths sorted and none twice, as a take keeps them.
+pub(crate) fn kept(mut taking: Taking) -> Taking {
+    taking.paths.sort();
+    taking.paths.dedup();
+    taking
 }
 
 /// The paths a take covers: `paths`, or when it names none and takes up a

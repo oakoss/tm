@@ -2,7 +2,7 @@
 //! itself.
 
 use serde_json::json;
-use tm_store::{IssueView, Store};
+use tm_store::{IssueView, Store, WriteOptions};
 use uuid::Uuid;
 
 use crate::support::{ManualClock, TempDir, draft, field, new_issue, open, set_field};
@@ -14,7 +14,7 @@ fn ids(views: &[IssueView]) -> Vec<Uuid> {
 /// `issue` and its ancestors as [`Store::append_with_lineage`] reads them.
 fn lineage(store: &mut Store, issue: Uuid) -> Vec<Uuid> {
     store
-        .append_with_lineage(Vec::new(), issue, |lineage| {
+        .append_with_lineage(Vec::new(), issue, &WriteOptions::default(), |lineage| {
             (Vec::new(), ids(lineage.issues()))
         })
         .unwrap()
@@ -85,6 +85,7 @@ fn the_drafts_made_from_the_lineage_share_the_batch() {
         .append_with_lineage(
             vec![draft(child, set_field("status", json!("in_progress")))],
             child,
+            &WriteOptions::default(),
             |lineage| {
                 let more = lineage
                     .issues()

@@ -169,9 +169,7 @@ fn opened(
     let log_end = store.log_end()?;
     let store = store.working_in(Workplace {
         dir: Some(found.dir.display().to_string()),
-        branch: None,
         harnesses: crate::identity::harness_sessions(crate::identity::env),
-        paths: Vec::new(),
     });
     Ok(Here {
         home,
@@ -379,21 +377,6 @@ impl Here {
         recorded
             .err()
             .map(|err| format!("cannot record your name {name:?} from git's user.name: {err}"))
-    }
-
-    /// Records the checked-out branch with the Claim this write takes; a
-    /// warning when git cannot say, as the Claim lands without one.
-    pub(crate) fn record_branch(&mut self) -> Option<String> {
-        match crate::identity::git_branch(&self.found.dir) {
-            Ok(branch) => {
-                self.store.set_branch(branch);
-                None
-            }
-            Err(err) => {
-                self.store.set_branch(None);
-                Some(format!("the Claim records no branch: {err}"))
-            }
-        }
     }
 
     /// The Issue a Key, matched without case and through retired Project

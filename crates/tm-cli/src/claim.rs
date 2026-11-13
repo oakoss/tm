@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use serde_json::json;
 use tm_core::Actor;
 use tm_core::actor::SessionId;
-use tm_store::{Claim, IssueView, Named, StoreError};
+use tm_store::{Claim, IssueView, Named, StoreError, Taking};
 use uuid::Uuid;
 
 use crate::error::CliError;
@@ -34,11 +34,10 @@ pub(crate) fn take(reference: &str, lasts: &Lasts) -> Result<Output, CliError> {
         let issue = here.issue(reference)?;
         let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
             .map_err(|message| CliError::new("no_identity", message))?;
-        let ttl_ms = lasts.apply(here);
-        let branch_warning = here.record_branch();
+        let (taking, branch_warning) = lasts.taking(here);
         let claim = here
             .store
-            .take(&identity.actor, issue, ttl_ms)
+            .take(&identity.actor, issue, taking)
             .map_err(|err| {
                 let err = CliError::from(err);
                 if err.code == "no_agent" {
@@ -104,15 +103,25 @@ pub(crate) struct Lasts {
 }
 
 impl Lasts {
-    /// Gives the store the files the take covers, and returns the duration
-    /// it records, falling back to the repo file's.
-    pub(crate) fn apply(&self, here: &mut Here) -> Option<u64> {
-        here.store.set_paths(self.paths.clone());
-        if self.no_expiry {
+    /// How the take is made: its duration, falling back to the repo file's,
+    /// the files it covers and the checked-out branch, with a warning when
+    /// git cannot say which, as the Claim then records none.
+    pub(crate) fn taking(&self, here: &Here) -> (Taking, Option<String>) {
+        let ttl_ms = if self.no_expiry {
             None
         } else {
             self.ttl_ms.or_else(|| here.found.file.claim_ttl_ms())
-        }
+        };
+        let (branch, warning) = match identity::git_branch(&here.found.dir) {
+            Ok(branch) => (branch, None),
+            Err(err) => (None, Some(format!("the Claim records no branch: {err}"))),
+        };
+        let taking = Taking {
+            ttl_ms,
+            branch,
+            paths: self.paths.clone(),
+        };
+        (taking, warning)
     }
 }
 

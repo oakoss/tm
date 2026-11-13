@@ -3,7 +3,7 @@
 
 use serde_json::json;
 use tm_core::{Actor, Change};
-use tm_store::{Draft, Notification, Store, StoreError};
+use tm_store::{Draft, Notification, Store, StoreError, WriteOptions};
 use uuid::Uuid;
 
 use crate::support::{
@@ -286,13 +286,15 @@ fn a_forced_agent_write_notifies_and_the_holder_or_a_finishing_move_does_not() {
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = claimed(&mut store);
     let codex = Actor::agent("codex", "jace");
-    store.force_past_claims();
-    store
-        .append(Draft {
-            actor: codex,
-            ..draft(issue, set_field("description", json!("forced")))
-        })
-        .unwrap();
+    let forced = Draft {
+        actor: codex,
+        ..draft(issue, set_field("description", json!("forced")))
+    };
+    let force = WriteOptions {
+        force: true,
+        ..WriteOptions::default()
+    };
+    store.write(vec![forced], &force).unwrap();
     assert_eq!(unread(&store, &claude()).len(), 1);
     let session = tm_core::actor::SessionId::parse("s1").unwrap();
     store

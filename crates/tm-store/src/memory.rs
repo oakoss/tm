@@ -81,41 +81,36 @@ impl Store {
         }
         let writer = actor.clone();
         let mut planned = None;
-        let ops = self.append_with(
-            Vec::new(),
-            |tx, at_ms| {
-                let written = |memory: Memory| Memory {
-                    body: Some(body.to_owned()),
-                    forgotten: false,
-                    written_by: Some(writer.name().to_owned()),
-                    written_for: writer.on_behalf_of().map(str::to_owned),
-                    written_ms: Some(at_ms),
-                    ..memory
-                };
-                let plan = if let Some(key) = key {
-                    named(tx, project, key, body, written)?
-                } else {
-                    let key = free_key(tx, project, &core::key_from(body))?;
-                    let memory = written(Memory {
-                        id: Uuid::now_v7(),
-                        project,
-                        key: Some(key.clone()),
-                        ..blank()
-                    });
-                    Plan {
-                        changes: created(&key, body),
-                        memory,
-                        replaced: None,
-                        restored: false,
-                    }
-                };
-                let drafts = drafts(&writer, project, plan.memory.id, plan.changes.clone());
-                planned = Some(plan);
-                Ok(drafts)
-            },
-            true,
-            None,
-        )?;
+        let ops = self.append_with(Vec::new(), |tx, at_ms| {
+            let written = |memory: Memory| Memory {
+                body: Some(body.to_owned()),
+                forgotten: false,
+                written_by: Some(writer.name().to_owned()),
+                written_for: writer.on_behalf_of().map(str::to_owned),
+                written_ms: Some(at_ms),
+                ..memory
+            };
+            let plan = if let Some(key) = key {
+                named(tx, project, key, body, written)?
+            } else {
+                let key = free_key(tx, project, &core::key_from(body))?;
+                let memory = written(Memory {
+                    id: Uuid::now_v7(),
+                    project,
+                    key: Some(key.clone()),
+                    ..blank()
+                });
+                Plan {
+                    changes: created(&key, body),
+                    memory,
+                    replaced: None,
+                    restored: false,
+                }
+            };
+            let drafts = drafts(&writer, project, plan.memory.id, plan.changes.clone());
+            planned = Some(plan);
+            Ok(drafts)
+        })?;
         let Some(Plan {
             memory,
             replaced,
@@ -161,23 +156,18 @@ impl Store {
     ) -> Result<(Memory, Vec<Op>), StoreError> {
         let writer = actor.clone();
         let mut forgotten = None;
-        let ops = self.append_with(
-            Vec::new(),
-            |tx, _| {
-                let memory = resolve(tx, project, key)?
-                    .ok_or_else(|| StoreError::MemoryNotFound(key.into()))?;
-                let id = memory.id;
-                forgotten = Some(memory);
-                Ok(drafts(
-                    &writer,
-                    project,
-                    id,
-                    vec![set(Field::Forgotten, json!(true))],
-                ))
-            },
-            true,
-            None,
-        )?;
+        let ops = self.append_with(Vec::new(), |tx, _| {
+            let memory =
+                resolve(tx, project, key)?.ok_or_else(|| StoreError::MemoryNotFound(key.into()))?;
+            let id = memory.id;
+            forgotten = Some(memory);
+            Ok(drafts(
+                &writer,
+                project,
+                id,
+                vec![set(Field::Forgotten, json!(true))],
+            ))
+        })?;
         let memory = forgotten.ok_or_else(|| StoreError::MemoryNotFound(key.into()))?;
         Ok((memory, ops))
     }

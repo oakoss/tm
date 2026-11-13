@@ -6,15 +6,28 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 use tm_core::actor::SessionId;
 use tm_core::op::ClaimAction;
-use tm_core::{Actor, Change, Hlc, OpError};
+use tm_core::{Actor, Change, Hlc, Op, OpError};
 use tm_store::{
     AgentClaims, Claim, ClaimState, Draft, Holder, Provenance, Store, StoreError, Unapplied,
-    WallTime,
+    WallTime, WriteOptions,
 };
 use uuid::Uuid;
 
 fn session(id: &str) -> SessionId {
     SessionId::parse(id).unwrap()
+}
+
+fn if_claim(
+    store: &mut Store,
+    drafts: Vec<Draft>,
+    issue: Uuid,
+    held: Option<&Claim>,
+) -> Result<Vec<Op>, StoreError> {
+    let options = WriteOptions {
+        claim: Some((issue, held.cloned())),
+        ..WriteOptions::default()
+    };
+    store.write(drafts, &options)
 }
 
 use crate::support::{
@@ -296,9 +309,7 @@ fn a_write_guarded_on_a_lapsed_claim_is_refused_once_its_holder_renews_it() {
     // The renewal keeps the Claim's id, so only its expiry tells it apart.
     store.heartbeat(&claude(), Some(issue)).unwrap();
     let done = vec![draft(issue, set_field("status", json!("done")))];
-    let err = store
-        .append_if_claim(done, issue, Some(&lapsed))
-        .unwrap_err();
+    let err = if_claim(&mut store, done, issue, Some(&lapsed)).unwrap_err();
     assert!(matches!(err, StoreError::ClaimChanged(_)), "{err}");
 }
 
@@ -341,9 +352,7 @@ fn a_write_guarded_on_a_claim_is_refused_once_the_claim_changes() {
 
     // Read unclaimed, then claimed before the write.
     let claim = store.take(&claude(), issue, None).unwrap();
-    let err = store
-        .append_if_claim(done(), issue, before.as_ref())
-        .unwrap_err();
+    let err = if_claim(&mut store, done(), issue, before.as_ref()).unwrap_err();
     assert!(
         matches!(&err, StoreError::ClaimChanged(named) if named.id == issue),
         "{err:?}"
@@ -358,9 +367,7 @@ fn a_write_guarded_on_a_claim_is_refused_once_the_claim_changes() {
 
     // Read claimed, then released before the write.
     store.release(&claude(), issue, claim.id).unwrap();
-    let err = store
-        .append_if_claim(done(), issue, Some(&claim))
-        .unwrap_err();
+    let err = if_claim(&mut store, done(), issue, Some(&claim)).unwrap_err();
     assert!(
         matches!(&err, StoreError::ClaimChanged(named) if named.id == issue),
         "{err:?}"
@@ -371,7 +378,7 @@ fn a_write_guarded_on_a_claim_is_refused_once_the_claim_changes() {
         "a refused write writes nothing"
     );
 
-    store.append_if_claim(done(), issue, None).unwrap();
+    if_claim(&mut store, done(), issue, None).unwrap();
     assert_eq!(
         store.issue(issue).unwrap().unwrap().fields["status"],
         json!("done")
@@ -865,11 +872,9 @@ fn a_lapsed_claim_reads_as_lapsed_until_its_holder_releases_it() {
         Err(StoreError::UnknownIssue(_))
     ));
     let edit = || vec![draft(issue, set_field("title", json!("u")))];
-    let err = store.append_if_claim(edit(), issue, None).unwrap_err();
+    let err = if_claim(&mut store, edit(), issue, None).unwrap_err();
     assert!(matches!(err, StoreError::ClaimChanged(_)), "{err}");
-    store
-        .append_if_claim(edit(), issue, Some(&lapsing))
-        .unwrap();
+    if_claim(&mut store, edit(), issue, Some(&lapsing)).unwrap();
     store.release(&claude(), issue, lapsing.id).unwrap();
     assert_eq!(store.claim_state(issue).unwrap(), None);
     let none = store.claims_by("claude", "jace").unwrap();

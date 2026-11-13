@@ -10,7 +10,7 @@ use std::process::Command;
 use serde_json::{Value, json};
 use tm_core::scheme::Category;
 use tm_core::{Actor, Change};
-use tm_store::Draft;
+use tm_store::{Draft, WriteOptions};
 use uuid::Uuid;
 
 use crate::error::CliError;
@@ -306,7 +306,8 @@ fn close(
         None
     } else {
         // A merged Closes line says the work is done, whoever holds it.
-        let ops = moves::finish(here, actor, (view.project, id), drafts, false)?;
+        let unguarded = (false, &WriteOptions::default());
+        let ops = moves::finish(here, actor, (view.project, id), drafts, unguarded)?;
         Some(ops[0].op_id)
     };
     let before = view.fields.get("status").and_then(Value::as_str);

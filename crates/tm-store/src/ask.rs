@@ -59,28 +59,23 @@ impl Store {
         }
         let scheme = self.scheme.clone();
         let drafts = drafts.into_iter().map(|draft| (draft, None)).collect();
-        self.append_with(
-            drafts,
-            |tx, now_ms| {
-                if crate::shortlist::finished(tx, &scheme, issue)? {
-                    return Err(invalid_wait(
-                        "cannot wait on anyone once the Issue is finished",
-                    ));
-                }
-                if waiting_on_now(tx, issue)?.is_some() {
-                    return Err(invalid_wait("already names who the Issue waits on"));
-                }
-                let current = current(tx, issue)?;
-                let live = current.as_ref().filter(|claim| !claim.lapsed(now_ms));
-                match (live, held) {
-                    (None, None) => Ok(Vec::new()),
-                    (_, Some(held)) if current.as_ref() == Some(held) => Ok(Vec::new()),
-                    _ => Err(StoreError::ClaimChanged(issue.into())),
-                }
-            },
-            true,
-            None,
-        )
+        self.append_with(drafts, |tx, now_ms| {
+            if crate::shortlist::finished(tx, &scheme, issue)? {
+                return Err(invalid_wait(
+                    "cannot wait on anyone once the Issue is finished",
+                ));
+            }
+            if waiting_on_now(tx, issue)?.is_some() {
+                return Err(invalid_wait("already names who the Issue waits on"));
+            }
+            let current = current(tx, issue)?;
+            let live = current.as_ref().filter(|claim| !claim.lapsed(now_ms));
+            match (live, held) {
+                (None, None) => Ok(Vec::new()),
+                (_, Some(held)) if current.as_ref() == Some(held) => Ok(Vec::new()),
+                _ => Err(StoreError::ClaimChanged(issue.into())),
+            }
+        })
     }
 
     /// Answers `issue`'s open question `question`, the id of the operation
@@ -135,8 +130,8 @@ impl Store {
             subject: issue,
             change,
         };
-        let drafts = vec![draft(change), draft(self.waiting_on(None))];
-        self.append_guarded(drafts, |tx| {
+        let drafts = vec![(draft(change), None), (draft(self.waiting_on(None)), None)];
+        let guard = |tx: &rusqlite::Transaction<'_>, _| {
             // That it still waits at all is the write's own check.
             let open = read::open_question(tx, issue)?.map(|asked| asked.id);
             if open != Some(question) {
@@ -144,8 +139,9 @@ impl Store {
                     "changed since the question was read; read it again",
                 ));
             }
-            Ok(())
-        })
+            Ok(Vec::new())
+        };
+        self.append_with(drafts, guard)
     }
 
     /// `issue`'s open question: its latest question not retracted.

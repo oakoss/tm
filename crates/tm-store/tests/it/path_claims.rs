@@ -4,7 +4,7 @@
 use tm_core::actor::SessionId;
 use tm_core::op::ClaimAction;
 use tm_core::{Actor, Change, Hlc};
-use tm_store::{Store, StoreError};
+use tm_store::{Store, StoreError, Taking};
 use uuid::Uuid;
 
 use crate::support::{ManualClock, TempDir, held, insert_acked, new_issue, open, remote_op};
@@ -15,8 +15,19 @@ fn agent(session: &str) -> Actor {
     Actor::agent("claude", "jace").in_session(SessionId::parse(session).unwrap())
 }
 
-fn covering(store: &mut Store, paths: &[&str]) {
-    store.set_paths(paths.iter().map(|&path| path.to_owned()).collect());
+fn covering(paths: &[&str]) -> Taking {
+    Taking {
+        ttl_ms: Some(HOUR_MS),
+        branch: None,
+        paths: paths.iter().map(|&path| path.to_owned()).collect(),
+    }
+}
+
+fn on_branch(paths: &[&str]) -> Taking {
+    Taking {
+        branch: Some("feat/x".into()),
+        ..covering(paths)
+    }
 }
 
 #[test]
@@ -24,9 +35,8 @@ fn a_take_keeps_the_files_and_branch_it_covers_through_a_rebuild() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    covering(&mut store, &["crates/tm-store/**", "docs"]);
-    store.set_branch(Some("feat/x".into()));
-    let claim = store.take(&agent("s1"), issue, Some(HOUR_MS)).unwrap();
+    let taking = on_branch(&["crates/tm-store/**", "docs"]);
+    let claim = store.take(&agent("s1"), issue, taking).unwrap();
     assert_eq!(claim.paths, ["crates/tm-store/**", "docs"]);
     assert_eq!(claim.branch.as_deref(), Some("feat/x"));
     assert_eq!(held(&store, issue), Some(claim.clone()));
@@ -39,22 +49,21 @@ fn only_its_own_session_takes_it_again_and_only_to_cover_other_files() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    covering(&mut store, &["src"]);
-    let first = store.take(&agent("s1"), issue, Some(HOUR_MS)).unwrap();
+    let first = store.take(&agent("s1"), issue, covering(&["src"])).unwrap();
 
-    covering(&mut store, &["lib", "docs/**", "lib"]);
-    let again = store.take(&agent("s1"), issue, Some(HOUR_MS)).unwrap();
+    let taking = covering(&["lib", "docs/**", "lib"]);
+    let again = store.take(&agent("s1"), issue, taking).unwrap();
     assert_ne!(again.id, first.id);
     assert_eq!(held(&store, issue).unwrap().paths, ["docs/**", "lib"]);
 
     for unchanged in [&[][..], &["lib", "docs/**"]] {
-        covering(&mut store, unchanged);
-        let same = store.take(&agent("s1"), issue, Some(HOUR_MS)).unwrap_err();
+        let same = store
+            .take(&agent("s1"), issue, covering(unchanged))
+            .unwrap_err();
         assert!(matches!(same, StoreError::AlreadyClaimed { .. }), "{same}");
     }
-    covering(&mut store, &["web"]);
     for other in [agent("s2"), Actor::agent("codex", "jace")] {
-        let err = store.take(&other, issue, Some(HOUR_MS)).unwrap_err();
+        let err = store.take(&other, issue, covering(&["web"])).unwrap_err();
         assert!(matches!(err, StoreError::AlreadyClaimed { .. }), "{err}");
     }
     assert_eq!(held(&store, issue).unwrap().id, again.id);
@@ -65,9 +74,9 @@ fn a_handoff_keeps_the_files_the_claim_covered() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    covering(&mut store, &["src"]);
-    store.set_branch(Some("feat/x".into()));
-    let taken = store.take(&agent("s1"), issue, Some(HOUR_MS)).unwrap();
+    let taken = store
+        .take(&agent("s1"), issue, on_branch(&["src"]))
+        .unwrap();
     let (_, handed) = store
         .hand(&agent("s1"), &taken, "codex", taken.ttl_ms, "over to you")
         .unwrap();
@@ -135,14 +144,12 @@ fn a_handed_claim_taken_up_naming_no_paths_keeps_the_ones_it_covered() {
     let (by_take, by_start) = (new_issue(&mut store), new_issue(&mut store));
     let receiver = Actor::agent("codex", "jace").in_session(SessionId::parse("c1").unwrap());
     for issue in [by_take, by_start] {
-        covering(&mut store, &["src"]);
-        let taken = store.take(&agent("s1"), issue, Some(HOUR_MS)).unwrap();
+        let taken = store.take(&agent("s1"), issue, covering(&["src"])).unwrap();
         store
             .hand(&agent("s1"), &taken, "codex", taken.ttl_ms, "over to you")
             .unwrap();
     }
-    covering(&mut store, &[]);
-    let took = store.take(&receiver, by_take, Some(HOUR_MS)).unwrap();
+    let took = store.take(&receiver, by_take, covering(&[])).unwrap();
     assert_eq!(took.paths, ["src"]);
     let started = store
         .take_with(&receiver, by_start, Some(HOUR_MS), |_| (Vec::new(), ()))
@@ -159,21 +166,18 @@ fn start_keeps_its_sessions_claim_unless_it_is_to_cover_other_files() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    let start = |store: &mut Store| {
+    let start = |store: &mut Store, paths: &[&str]| {
         store
-            .take_with(&agent("s1"), issue, Some(HOUR_MS), |_| (Vec::new(), ()))
+            .take_with(&agent("s1"), issue, covering(paths), |_| (Vec::new(), ()))
             .unwrap()
     };
-    covering(&mut store, &["src"]);
-    let first = start(&mut store).claim;
+    let first = start(&mut store, &["src"]).claim;
     for unchanged in [&["src"][..], &[]] {
-        covering(&mut store, unchanged);
-        let again = start(&mut store);
+        let again = start(&mut store, unchanged);
         assert!(again.kept, "{unchanged:?}");
         assert_eq!(again.claim.id, first.id);
     }
-    covering(&mut store, &["lib"]);
-    let other = start(&mut store);
+    let other = start(&mut store, &["lib"]);
     assert!(!other.kept);
     assert_ne!(other.claim.id, first.id);
     assert_eq!(held(&store, issue), Some(other.claim));
@@ -184,10 +188,9 @@ fn next_takes_its_issue_covering_the_paths_and_branch() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    covering(&mut store, &["web/**"]);
-    store.set_branch(Some("feat/x".into()));
+    let taking = on_branch(&["web/**"]);
     let next = store
-        .take_next(&agent("s1"), &[issue], Some(HOUR_MS), |_| (Vec::new(), ()))
+        .take_next(&agent("s1"), &[issue], taking, |_| (Vec::new(), ()))
         .unwrap()
         .unwrap();
     let claim = next.claim.unwrap();
@@ -240,10 +243,8 @@ fn undoing_a_change_of_paths_is_refused_but_a_lapsed_claim_taken_back_is_release
     let clock = ManualClock::at(1_000);
     let mut store = open(&dir.db(), &clock);
     let live = new_issue(&mut store);
-    covering(&mut store, &["src"]);
-    store.take(&agent("s1"), live, Some(HOUR_MS)).unwrap();
-    covering(&mut store, &["lib"]);
-    let changed = store.take(&agent("s1"), live, Some(HOUR_MS)).unwrap();
+    store.take(&agent("s1"), live, covering(&["src"])).unwrap();
+    let changed = store.take(&agent("s1"), live, covering(&["lib"])).unwrap();
     let err = store.undo(&agent("s1"), changed.id).unwrap_err();
     assert!(matches!(err, StoreError::CannotUndo { .. }), "{err}");
     assert_eq!(held(&store, live).unwrap().paths, ["lib"]);
@@ -256,11 +257,9 @@ fn undoing_a_change_of_paths_is_refused_but_a_lapsed_claim_taken_back_is_release
 
     for again in [&["src"][..], &["lib"], &[]] {
         let issue = new_issue(&mut store);
-        covering(&mut store, &["src"]);
-        store.take(&agent("s1"), issue, Some(HOUR_MS)).unwrap();
+        store.take(&agent("s1"), issue, covering(&["src"])).unwrap();
         clock.advance(i64::try_from(HOUR_MS).unwrap() + 1);
-        covering(&mut store, again);
-        let took = store.take(&agent("s1"), issue, Some(HOUR_MS)).unwrap();
+        let took = store.take(&agent("s1"), issue, covering(again)).unwrap();
         store.undo(&agent("s1"), took.id).unwrap();
         assert_eq!(held(&store, issue), None, "taken back covering {again:?}");
     }
@@ -272,16 +271,18 @@ fn only_the_agent_a_claim_was_handed_to_takes_up_its_paths() {
     let clock = ManualClock::at(1_000);
     let mut store = open(&dir.db(), &clock);
     let (lapsed, handed) = (new_issue(&mut store), new_issue(&mut store));
-    covering(&mut store, &["src"]);
-    store.take(&agent("s1"), lapsed, Some(HOUR_MS)).unwrap();
-    let taken = store.take(&agent("s1"), handed, Some(HOUR_MS)).unwrap();
+    store
+        .take(&agent("s1"), lapsed, covering(&["src"]))
+        .unwrap();
+    let taken = store
+        .take(&agent("s1"), handed, covering(&["src"]))
+        .unwrap();
     store
         .hand(&agent("s1"), &taken, "codex", taken.ttl_ms, "over to you")
         .unwrap();
     clock.advance(i64::try_from(HOUR_MS).unwrap() + 1);
-    covering(&mut store, &[]);
     for issue in [lapsed, handed] {
-        let took = store.take(&agent("s2"), issue, Some(HOUR_MS)).unwrap();
+        let took = store.take(&agent("s2"), issue, covering(&[])).unwrap();
         assert!(took.paths.is_empty(), "{issue}: {:?}", took.paths);
     }
 }
@@ -291,14 +292,12 @@ fn undoing_a_live_handed_claim_taken_up_releases_it() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    covering(&mut store, &["src"]);
-    let taken = store.take(&agent("s1"), issue, Some(HOUR_MS)).unwrap();
+    let taken = store.take(&agent("s1"), issue, covering(&["src"])).unwrap();
     store
         .hand(&agent("s1"), &taken, "codex", taken.ttl_ms, "over to you")
         .unwrap();
     let receiver = Actor::agent("codex", "jace").in_session(SessionId::parse("c1").unwrap());
-    covering(&mut store, &["lib"]);
-    let up = store.take(&receiver, issue, Some(HOUR_MS)).unwrap();
+    let up = store.take(&receiver, issue, covering(&["lib"])).unwrap();
     assert_eq!(store.rebuild().unwrap(), 0);
     store.undo(&receiver, up.id).unwrap();
     assert_eq!(held(&store, issue), None);

@@ -255,14 +255,15 @@ impl Store {
                 _ => (line, source.clone()),
             };
             let subject = planned.drafts[0].0.subject;
-            let ops = self
-                .append_imported_guarded(planned.drafts.clone(), |tx| {
-                    if plan(tx)? == planned {
-                        Ok(())
-                    } else {
-                        Err(StoreError::ImportChanged(subject.into()))
-                    }
-                })
+            let guard = |tx: &rusqlite::Transaction<'_>, _| {
+                if plan(tx)? == planned {
+                    Ok(Vec::new())
+                } else {
+                    Err(StoreError::ImportChanged(subject.into()))
+                }
+            };
+            let ops = crate::imported(planned.drafts.clone())
+                .and_then(|drafts| self.append_with(drafts, guard))
                 .map_err(|cause| refused(line, &source, cause, (written, records)))?;
             let batch = ops.first().map(|op| op.op_id);
             written.extend(batch);

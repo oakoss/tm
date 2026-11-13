@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 use tm_core::scheme::Category;
 use tm_core::{Actor, Change, Op, Scheme};
-use tm_store::{Claim, Draft, IssueView, Lineage};
+use tm_store::{Claim, Draft, IssueView, Lineage, WriteOptions};
 use uuid::Uuid;
 
 use crate::claim::{self, Lasts};
@@ -68,9 +68,9 @@ fn write(
     let mut branch_warning = None;
     // A human starts the work without a Claim, which only an Agent holds.
     let (claim, held, ops, begun) = if actor.is_agent() {
-        let ttl_ms = lasts.apply(here);
-        branch_warning = here.record_branch();
-        let started = here.store.take_with(&actor, id, ttl_ms, drafts)?;
+        let taking;
+        (taking, branch_warning) = lasts.taking(here);
+        let started = here.store.take_with(&actor, id, taking, drafts)?;
         let (taken, kept) = if started.kept {
             (None, Some(started.claim))
         } else {
@@ -78,7 +78,10 @@ fn write(
         };
         (taken, kept, started.ops, started.made)
     } else {
-        let (ops, begun) = here.store.append_with_lineage(Vec::new(), id, drafts)?;
+        let options = WriteOptions::default();
+        let (ops, begun) = here
+            .store
+            .append_with_lineage(Vec::new(), id, &options, drafts)?;
         (None, None, ops, begun)
     };
     let started = Started {

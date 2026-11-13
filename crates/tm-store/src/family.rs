@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension};
 use uuid::Uuid;
 
 use crate::apply::uuid_from;
-use crate::{Claim, Draft, IssueView, Op, Store, StoreError, claim, read};
+use crate::{Claim, Draft, IssueView, Op, Store, StoreError, WriteOptions, claim, read};
 
 impl Store {
     /// The Issues whose parent is `issue`, archived ones included.
@@ -27,26 +27,28 @@ impl Store {
         })
     }
 
-    /// [`Store::append_all`] with the drafts `extend` makes from `issue` and
-    /// its ancestors, nearest first, read inside the same write so no other
+    /// [`Store::write`] with the drafts `extend` makes from `issue` and its
+    /// ancestors, nearest first, read inside the same write so no other
     /// writer can change them in between. An ancestor that does not exist is
     /// left out, and the walk stops at an Issue it has seen, since a merge can
     /// leave a cycle.
     ///
     /// # Errors
     ///
-    /// As [`Store::append_all`].
+    /// As [`Store::write`].
     pub fn append_with_lineage<T: Default>(
         &mut self,
         drafts: Vec<Draft>,
         issue: Uuid,
+        options: &WriteOptions,
         extend: impl FnOnce(&Lineage) -> (Vec<Draft>, T),
     ) -> Result<(Vec<Op>, T), StoreError> {
         let scheme = self.scheme.clone();
         let mut made = T::default();
         let drafts = drafts.into_iter().map(|draft| (draft, None)).collect();
-        let ops = self.append_with(
+        let ops = self.write_with(
             drafts,
+            options,
             |tx, at_ms| {
                 let (more, out) = extend(&lineage(tx, &scheme, issue, at_ms)?);
                 made = out;

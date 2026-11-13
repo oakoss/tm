@@ -4,7 +4,7 @@ use serde_json::json;
 use tm_core::actor::SessionId;
 use tm_core::filter::Context;
 use tm_core::{Actor, Change};
-use tm_store::{Draft, Store, Workplace};
+use tm_store::{Draft, Store, Taking, Workplace, WriteOptions};
 use uuid::Uuid;
 
 use crate::support::{ManualClock, PROJECT, TempDir, jace, new_issue, open, set_field};
@@ -30,10 +30,9 @@ fn comment(body: &str) -> Change {
     Change::Comment { body: body.into() }
 }
 
-fn placed(store: Store, dir: &str, branch: Option<&str>) -> Store {
+fn placed(store: Store, dir: &str) -> Store {
     store.working_in(Workplace {
         dir: Some(dir.into()),
-        branch: branch.map(str::to_owned),
         ..Workplace::default()
     })
 }
@@ -43,10 +42,15 @@ fn each_session_reads_as_what_it_did_and_where_it_resumes() {
     let dir = TempDir::new();
     let clock = ManualClock::at(1_000);
     let store = open(&dir.db(), &clock);
-    let mut store = placed(store, "/work/tm", Some("feat/x"));
+    let mut store = placed(store, "/work/tm");
     let issue = new_issue(&mut store);
     let claude = agent("claude", "s1");
-    store.take(&claude, issue, Some(HOUR_MS)).unwrap();
+    let taking = Taking {
+        ttl_ms: Some(HOUR_MS),
+        branch: Some("feat/x".into()),
+        ..Taking::default()
+    };
+    store.take(&claude, issue, taking).unwrap();
     write(&mut store, &claude, issue, comment("found it"));
     write(&mut store, &claude, issue, comment("fixed it"));
     write(
@@ -107,7 +111,7 @@ fn a_session_written_elsewhere_has_no_directory_here() {
 fn the_session_survives_export_restore_and_rebuild_but_its_directory_stays_here() {
     let dir = TempDir::new();
     let clock = ManualClock::at(1_000);
-    let mut store = placed(open(&dir.db(), &clock), "/work/tm", None);
+    let mut store = placed(open(&dir.db(), &clock), "/work/tm");
     store.set_workspace_id(Uuid::from_u128(77)).unwrap();
     let issue = new_issue(&mut store);
     write(&mut store, &agent("claude", "s1"), issue, comment("noted"));
@@ -264,14 +268,17 @@ fn a_write_past_a_claim_counts_once_not_as_its_record_too() {
     store
         .take(&agent("claude", "s1"), issue, Some(HOUR_MS))
         .unwrap();
-    store.force_past_claims();
-    let codex = agent("codex", "c1");
-    write(
-        &mut store,
-        &codex,
-        issue,
-        set_field("status", json!("in_review")),
-    );
+    let forced = Draft {
+        actor: agent("codex", "c1"),
+        project: PROJECT,
+        subject: issue,
+        change: set_field("status", json!("in_review")),
+    };
+    let force = WriteOptions {
+        force: true,
+        ..WriteOptions::default()
+    };
+    store.write(vec![forced], &force).unwrap();
     let sessions = store.sessions(issue).unwrap();
     let c1 = sessions.iter().find(|work| work.session == "c1").unwrap();
     assert_eq!(c1.moved_to, ["in_review"]);
