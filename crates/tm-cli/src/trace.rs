@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::filter::Directive;
+use tracing_subscriber::filter::{Directive, LevelFilter};
 use tracing_subscriber::fmt::format::FmtSpan;
 
 /// Past this size the log is set aside as `tm.log.1` when tm starts.
@@ -33,6 +33,13 @@ pub(crate) fn start(
         .iter()
         .map(|part| format!("TM_LOG's {part:?} is not a filter tm can read, so it is left out"))
         .collect();
+    warnings.extend(
+        read.iter()
+            .filter(|(part, _)| matches_nothing(part))
+            .map(|(part, _)| {
+                format!("TM_LOG's {part:?} names nothing tm traces, so it adds nothing")
+            }),
+    );
     if read.is_empty() {
         warnings.push("TM_LOG names no filter tm can read, so nothing is traced".into());
         return warnings;
@@ -107,6 +114,22 @@ fn directives(filter: &str) -> (Vec<(&str, Directive)>, Vec<&str>) {
     (read, unread)
 }
 
+/// Whether `part` names a target that matches nothing tm traces, as a
+/// misspelled level or crate does: a target matches by string prefix, and a
+/// bare word may be a level instead.
+fn matches_nothing(part: &str) -> bool {
+    const CRATES: [&str; 2] = ["tm", "tm_store"];
+    let target = part.split(['[', '=']).next().unwrap_or_default();
+    let bare = !part.contains(['=', '[']);
+    !target.is_empty()
+        && (!bare || target.parse::<LevelFilter>().is_err())
+        && !COMMAND_TARGET.starts_with(target)
+        && !CRATES.iter().any(|known| {
+            let module = format!("{known}::");
+            known.starts_with(target) || module.starts_with(target) || target.starts_with(&module)
+        })
+}
+
 /// Whether a directive, as it prints, turns its target off: `off`, or ends
 /// `=off`; it prints `0` as `off`.
 fn off(part: &str) -> bool {
@@ -136,8 +159,13 @@ mod tests {
     fn a_log_past_its_size_is_set_aside_and_a_new_one_begun() {
         let dir = std::env::temp_dir().join(format!("tm-trace-{}", uuid::Uuid::now_v7()));
         let path = dir.join("logs").join("tm.log");
+        let full = usize::try_from(ROLL_BYTES).unwrap();
         drop(open(&path).unwrap());
-        fs::write(&path, vec![b'x'; usize::try_from(ROLL_BYTES).unwrap() + 1]).unwrap();
+        fs::write(&path, vec![b'x'; full]).unwrap();
+        drop(open(&path).unwrap());
+        assert_eq!(fs::metadata(&path).unwrap().len(), ROLL_BYTES);
+        assert!(!dir.join("logs").join("tm.log.1").exists());
+        fs::write(&path, vec![b'x'; full + 1]).unwrap();
         let (_, unrolled) = open(&path).unwrap();
         assert!(unrolled.is_none());
         assert_eq!(fs::metadata(&path).unwrap().len(), 0);
@@ -187,5 +215,39 @@ mod tests {
                 "TM_LOG names no filter tm can read, so nothing is traced",
             ]
         );
+    }
+
+    #[test]
+    fn a_target_that_matches_nothing_tm_traces_is_named() {
+        for traced in [
+            "debug",
+            "TRACE",
+            "tm",
+            "tm:",
+            "tm_st",
+            "tm_store:",
+            "tm::init",
+            "tm_store::claim",
+            "tm_command",
+            "tm_store=debug",
+            "tm[write]=trace",
+            "[write]",
+            "[write]=debug",
+        ] {
+            assert!(!matches_nothing(traced), "{traced}");
+        }
+        for nothing in [
+            "debgu",
+            "rusqlite",
+            "tm-store",
+            "tmx",
+            "debgu=info",
+            "tm_stroe=debug",
+            "debug=trace",
+            "tm_store =debug",
+            "tm_command::x=info",
+        ] {
+            assert!(matches_nothing(nothing), "{nothing}");
+        }
     }
 }

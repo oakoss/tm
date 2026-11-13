@@ -36,7 +36,7 @@ Chosen option: **`tracing`, to a file under tm's home**, because it gives timed 
 - Good, because a slow or surprising run can be explained after the fact with `TM_LOG=debug`, without changing tm.
 - Good, because a command's output is unchanged whether tracing is on or off, so scripts, hooks and the TUI cannot tell; only a `TM_LOG` tm cannot act on adds a warning.
 - Bad, because the release binary grows by 7.0% (measured below), and the workspace gains `tracing` and `tracing-subscriber` with its `env-filter`.
-- Bad, because a misspelled level such as `debgu` reads as a target name, which matches nothing, so the log gets only each command's line, without a warning.
+- Neutral, because a misspelled level or crate, such as `debgu` or `tm_stroe=debug`, is a valid target that matches nothing; tm keeps it and warns that it names nothing tm traces. A misspelled module under a real crate, such as `tm_store::clam`, is not caught.
 - Neutral, because a trace point is code to keep accurate; one that no question needs is removed.
 
 ### Confirmation

@@ -47,6 +47,12 @@ fn a_traced_command_logs_to_the_home_and_prints_as_untraced() {
         log,
         "off, nothing is traced"
     );
+    assert!(run(Some("debug")).status.success());
+    let again = fs::read_to_string(scratch.home().join("logs").join("tm.log")).unwrap();
+    assert!(
+        again.starts_with(&log) && again.len() > log.len(),
+        "a second run appends: {again}"
+    );
 }
 
 #[test]
