@@ -412,7 +412,7 @@ impl Store {
                 Err(StoreError::ImportChanged(issue.into()))
             }
         };
-        self.append_with(drafts, guard, true, None)
+        self.append_with(drafts, guard)
     }
 }
 

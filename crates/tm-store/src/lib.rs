@@ -1263,7 +1263,7 @@ impl Store {
                 })
             }
         };
-        let mut ops = self.append_with(draft, guard, true, None)?;
+        let mut ops = self.append_with(draft, guard)?;
         Ok(ops.remove(0))
     }
 
@@ -1339,7 +1339,7 @@ impl Store {
         &mut self,
         drafts: Vec<(Draft, Provenance)>,
     ) -> Result<Vec<Op>, StoreError> {
-        self.append_with(imported(drafts)?, |_, _| Ok(Vec::new()), true, None)
+        self.append_with(imported(drafts)?, |_, _| Ok(Vec::new()))
     }
 
     /// The Claims writes went past since last asked.
@@ -1347,15 +1347,13 @@ impl Store {
         std::mem::take(&mut self.passed)
     }
 
-    /// [`Store::write_with`] with the default options.
+    /// [`Store::write_with`] with the default options, committed.
     fn append_with(
         &mut self,
         drafts: Vec<(Draft, Option<Provenance>)>,
         guard: impl FnOnce(&Transaction<'_>, i64) -> Result<Vec<Draft>, StoreError>,
-        commit: bool,
-        undid: Option<Uuid>,
     ) -> Result<Vec<Op>, StoreError> {
-        self.write_with(drafts, &WriteOptions::default(), guard, commit, undid)
+        self.write_with(drafts, &WriteOptions::default(), guard, true, None)
     }
 
     /// The one write every other makes: [`Store::write`], rolled back instead

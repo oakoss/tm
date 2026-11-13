@@ -161,23 +161,18 @@ impl Store {
     ) -> Result<Placed, StoreError> {
         let (scheme, writer) = (self.scheme.clone(), actor.clone());
         let mut from = Vec::new();
-        let ops = self.append_with(
-            Vec::new(),
-            |tx, _| {
-                let list = live(tx, list)?;
-                let drafts = placing(tx, &scheme, &writer, &list, issues, at, true)?;
-                for issue in distinct(issues) {
-                    match list_of(tx, &scheme, issue) {
-                        Ok(was) if was != list.id => from.push((issue, was)),
-                        Ok(_) | Err(StoreError::NotOnShortlist(_)) => {}
-                        Err(err) => return Err(err),
-                    }
+        let ops = self.append_with(Vec::new(), |tx, _| {
+            let list = live(tx, list)?;
+            let drafts = placing(tx, &scheme, &writer, &list, issues, at, true)?;
+            for issue in distinct(issues) {
+                match list_of(tx, &scheme, issue) {
+                    Ok(was) if was != list.id => from.push((issue, was)),
+                    Ok(_) | Err(StoreError::NotOnShortlist(_)) => {}
+                    Err(err) => return Err(err),
                 }
-                Ok(drafts)
-            },
-            true,
-            None,
-        )?;
+            }
+            Ok(drafts)
+        })?;
         Ok(Placed { ops, from })
     }
 
@@ -195,16 +190,11 @@ impl Store {
     ) -> Result<Placed, StoreError> {
         let (scheme, writer) = (self.scheme.clone(), actor.clone());
         let mut from = Vec::new();
-        let ops = self.append_with(
-            Vec::new(),
-            |tx, _| {
-                let list = live(tx, list_of(tx, &scheme, issue)?)?;
-                from.push((issue, list.id));
-                placing(tx, &scheme, &writer, &list, &[issue], at, false)
-            },
-            true,
-            None,
-        )?;
+        let ops = self.append_with(Vec::new(), |tx, _| {
+            let list = live(tx, list_of(tx, &scheme, issue)?)?;
+            from.push((issue, list.id));
+            placing(tx, &scheme, &writer, &list, &[issue], at, false)
+        })?;
         Ok(Placed { ops, from })
     }
 
@@ -221,22 +211,17 @@ impl Store {
     ) -> Result<Placed, StoreError> {
         let (scheme, writer) = (self.scheme.clone(), actor.clone());
         let mut from = Vec::new();
-        let ops = self.append_with(
-            Vec::new(),
-            |tx, _| {
-                let mut drafts = Vec::new();
-                for issue in distinct(issues) {
-                    from.push((issue, list_of(tx, &scheme, issue)?));
-                    let project = view(tx, &scheme, issue)?.project;
-                    for field in ["shortlist", "shortlist_rank"] {
-                        drafts.push(draft(&writer, project, issue, field, Value::Null));
-                    }
+        let ops = self.append_with(Vec::new(), |tx, _| {
+            let mut drafts = Vec::new();
+            for issue in distinct(issues) {
+                from.push((issue, list_of(tx, &scheme, issue)?));
+                let project = view(tx, &scheme, issue)?.project;
+                for field in ["shortlist", "shortlist_rank"] {
+                    drafts.push(draft(&writer, project, issue, field, Value::Null));
                 }
-                Ok(drafts)
-            },
-            true,
-            None,
-        )?;
+            }
+            Ok(drafts)
+        })?;
         Ok(Placed { ops, from })
     }
 }

@@ -240,22 +240,17 @@ impl Store {
         };
         let draft = self.claim_draft(actor.clone(), issue, take(None, Vec::new()))?;
         // `prev` is read inside the write, so no other take slips in between.
-        let ops = self.append_with(
-            Vec::new(),
-            |tx, _| {
-                let held = current(tx, issue)?;
-                let paths = covering(held.as_ref(), actor, &paths);
-                let prev = held.map(|held| held.id);
-                Ok(vec![Draft {
-                    change: Change::Claim {
-                        action: take(prev, paths),
-                    },
-                    ..draft
-                }])
-            },
-            true,
-            None,
-        )?;
+        let ops = self.append_with(Vec::new(), |tx, _| {
+            let held = current(tx, issue)?;
+            let paths = covering(held.as_ref(), actor, &paths);
+            let prev = held.map(|held| held.id);
+            Ok(vec![Draft {
+                change: Change::Claim {
+                    action: take(prev, paths),
+                },
+                ..draft
+            }])
+        })?;
         // From the operation, not the table: another writer may already have
         // released and retaken the Issue.
         made_by(&ops[0])
@@ -293,35 +288,30 @@ impl Store {
         let scheme = self.scheme.clone();
         let mut made = T::default();
         let mut kept = None;
-        let ops = self.append_with(
-            Vec::new(),
-            |tx, at_ms| {
-                let held = current(tx, issue)?;
-                let (more, out) = extend(&crate::family::lineage(tx, &scheme, issue, at_ms)?);
-                made = out;
-                // Taken again when it is to cover other files.
-                if let Some(own) = held.as_ref().filter(|held| {
-                    held.taken_by(actor)
-                        && !held.lapsed(at_ms)
-                        && (paths.is_empty() || held.paths == paths)
-                }) {
-                    kept = Some(own.clone());
-                    return Ok(more);
-                }
-                let paths = covering(held.as_ref(), actor, &paths);
-                let prev = held.map(|held| held.id);
-                let mut drafts = vec![Draft {
-                    change: Change::Claim {
-                        action: take(prev, paths),
-                    },
-                    ..draft
-                }];
-                drafts.extend(more);
-                Ok(drafts)
-            },
-            true,
-            None,
-        )?;
+        let ops = self.append_with(Vec::new(), |tx, at_ms| {
+            let held = current(tx, issue)?;
+            let (more, out) = extend(&crate::family::lineage(tx, &scheme, issue, at_ms)?);
+            made = out;
+            // Taken again when it is to cover other files.
+            if let Some(own) = held.as_ref().filter(|held| {
+                held.taken_by(actor)
+                    && !held.lapsed(at_ms)
+                    && (paths.is_empty() || held.paths == paths)
+            }) {
+                kept = Some(own.clone());
+                return Ok(more);
+            }
+            let paths = covering(held.as_ref(), actor, &paths);
+            let prev = held.map(|held| held.id);
+            let mut drafts = vec![Draft {
+                change: Change::Claim {
+                    action: take(prev, paths),
+                },
+                ..draft
+            }];
+            drafts.extend(more);
+            Ok(drafts)
+        })?;
         if let Some(claim) = kept {
             return Ok(TakenWith {
                 claim,
@@ -648,16 +638,11 @@ impl Store {
         issue: Option<Uuid>,
     ) -> Result<Vec<Op>, StoreError> {
         let writer = writer.clone();
-        self.append_with(
-            Vec::new(),
-            |tx, at_ms| {
-                renewals(tx, &writer, |claim| {
-                    Some(claim.issue) == issue || claim.due(at_ms)
-                })
-            },
-            true,
-            None,
-        )
+        self.append_with(Vec::new(), |tx, at_ms| {
+            renewals(tx, &writer, |claim| {
+                Some(claim.issue) == issue || claim.due(at_ms)
+            })
+        })
     }
 
     /// The Claims that now hold an Issue `batch` wrote, or any Issue when

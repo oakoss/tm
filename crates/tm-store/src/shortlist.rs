@@ -82,18 +82,13 @@ impl Store {
         edit: &ShortlistEdit<'_>,
     ) -> Result<Vec<Op>, StoreError> {
         let writer = actor.clone();
-        self.append_with(
-            Vec::new(),
-            |tx, _| {
-                let list = read(tx, id)?
-                    .filter(|list| !list.deleted)
-                    .ok_or(StoreError::UnknownShortlist(id))?;
-                let changes = edited(&list, edit)?;
-                Ok(drafts(&writer, list.project, id, changes))
-            },
-            true,
-            None,
-        )
+        self.append_with(Vec::new(), |tx, _| {
+            let list = read(tx, id)?
+                .filter(|list| !list.deleted)
+                .ok_or(StoreError::UnknownShortlist(id))?;
+            let changes = edited(&list, edit)?;
+            Ok(drafts(&writer, list.project, id, changes))
+        })
     }
 
     /// Deletes a Short-list, keeping its record so an undo restores it.

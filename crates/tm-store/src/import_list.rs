@@ -263,7 +263,7 @@ impl Store {
                 }
             };
             let ops = crate::imported(planned.drafts.clone())
-                .and_then(|drafts| self.append_with(drafts, guard, true, None))
+                .and_then(|drafts| self.append_with(drafts, guard))
                 .map_err(|cause| refused(line, &source, cause, (written, records)))?;
             let batch = ops.first().map(|op| op.op_id);
             written.extend(batch);

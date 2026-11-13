@@ -50,41 +50,35 @@ impl Store {
         let mut extend = Some(extend);
         let mut chosen = None;
         let mut made = T::default();
-        let ops = self.append_with(
-            Vec::new(),
-            |tx, at_ms| {
-                let blocks = open_blocks(tx, &scheme)?;
-                for view in crate::read::issues(tx, &scheme, candidates)? {
-                    let todo = view.category == Some(Category::Todo);
-                    if !todo || !passed_over(tx, &view, &blocks, at_ms)?.is_empty() {
-                        continue;
-                    }
-                    let twice = || StoreError::Corrupt("tm next began two Issues".into());
-                    let extend = extend.take().ok_or_else(twice)?;
-                    let (begin, out) =
-                        extend(&crate::family::lineage(tx, &scheme, view.id, at_ms)?);
-                    made = out;
-                    chosen = Some(view.id);
-                    let mut drafts = Vec::with_capacity(begin.len() + 1);
-                    if writer.is_agent() {
-                        let prev = current(tx, view.id)?.map(|held| held.id);
-                        drafts.push(Draft {
-                            actor: writer.clone(),
-                            project: view.project,
-                            subject: view.id,
-                            change: Change::Claim {
-                                action: take(&writer, ttl_ms, prev, (&branch, &paths)),
-                            },
-                        });
-                    }
-                    drafts.extend(begin);
-                    return Ok(drafts);
+        let ops = self.append_with(Vec::new(), |tx, at_ms| {
+            let blocks = open_blocks(tx, &scheme)?;
+            for view in crate::read::issues(tx, &scheme, candidates)? {
+                let todo = view.category == Some(Category::Todo);
+                if !todo || !passed_over(tx, &view, &blocks, at_ms)?.is_empty() {
+                    continue;
                 }
-                Ok(Vec::new())
-            },
-            true,
-            None,
-        )?;
+                let twice = || StoreError::Corrupt("tm next began two Issues".into());
+                let extend = extend.take().ok_or_else(twice)?;
+                let (begin, out) = extend(&crate::family::lineage(tx, &scheme, view.id, at_ms)?);
+                made = out;
+                chosen = Some(view.id);
+                let mut drafts = Vec::with_capacity(begin.len() + 1);
+                if writer.is_agent() {
+                    let prev = current(tx, view.id)?.map(|held| held.id);
+                    drafts.push(Draft {
+                        actor: writer.clone(),
+                        project: view.project,
+                        subject: view.id,
+                        change: Change::Claim {
+                            action: take(&writer, ttl_ms, prev, (&branch, &paths)),
+                        },
+                    });
+                }
+                drafts.extend(begin);
+                return Ok(drafts);
+            }
+            Ok(Vec::new())
+        })?;
         let Some(issue) = chosen else {
             return Ok(None);
         };
