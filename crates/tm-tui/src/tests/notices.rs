@@ -49,11 +49,11 @@ impl Actions for Noticed {
         self.record.ready(store)
     }
 
-    fn write(&self, write: &Write) -> Result<Written, String> {
+    fn write(&self, write: &Write) -> Result<Written, Refused> {
         self.record.write(write)
     }
 
-    fn undo(&self, batch: Uuid) -> Result<Written, String> {
+    fn undo(&self, batch: Uuid) -> Result<Written, Refused> {
         self.record.undo(batch)
     }
 

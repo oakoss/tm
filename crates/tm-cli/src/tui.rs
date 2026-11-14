@@ -309,7 +309,7 @@ impl tm_tui::Actions for Cli<'_> {
         Ok(lead + &text)
     }
 
-    fn write(&self, write: &tm_tui::Write) -> Result<tm_tui::Written, String> {
+    fn write(&self, write: &tm_tui::Write) -> Result<tm_tui::Written, tm_tui::Refused> {
         let output = here::write_at(self.at, |here| match write {
             tm_tui::Write::Move {
                 key,
@@ -334,7 +334,7 @@ impl tm_tui::Actions for Cli<'_> {
         output.map(|output| written(&output)).map_err(refusal)
     }
 
-    fn undo(&self, batch: Uuid) -> Result<tm_tui::Written, String> {
+    fn undo(&self, batch: Uuid) -> Result<tm_tui::Written, tm_tui::Refused> {
         let mut lines = Vec::new();
         let output = here::write_at(self.at, |here| {
             let (undone, warnings) = undo::undo(here, Some(&batch.to_string()), false, false)?;
@@ -356,11 +356,15 @@ impl tm_tui::Actions for Cli<'_> {
 }
 
 /// A refused write as the status line says it: the CLI's message, then the
-/// command that fixes it when the CLI gives one.
-fn refusal(err: CliError) -> String {
-    match err.fix {
+/// command that fixes it when the CLI gives one, with the CLI's warnings.
+fn refusal(err: CliError) -> tm_tui::Refused {
+    let why = match err.fix {
         Some(fix) => format!("{} — try: {fix}", err.message),
         None => err.message,
+    };
+    tm_tui::Refused {
+        why,
+        warnings: err.warnings,
     }
 }
 
@@ -517,7 +521,8 @@ mod tests {
                 status: "done".into(),
                 version: 1,
             })
-            .unwrap_err();
+            .unwrap_err()
+            .why;
         assert!(
             stale.contains("status changed after version 1, so nothing was written"),
             "{stale}"
@@ -557,6 +562,37 @@ mod tests {
         assert_eq!(read.said, "marked 2 Notifications read", "{read:?}");
         let here = here::read_at(&at).unwrap();
         assert_eq!(here.store.notifications(&jace, false).unwrap(), []);
+    }
+
+    #[test]
+    fn a_refused_write_or_undo_carries_the_stores_warnings() {
+        let at = here::fixture();
+        let mut here = here::open_at(&at).unwrap();
+        let project = here.project().unwrap();
+        here.store
+            .create_issue(&Actor::human("jace"), project, "task", "alpha")
+            .unwrap();
+        here.store
+            .connection()
+            .execute(
+                "INSERT INTO unapplied (op_id, reason) VALUES (?1, ?2)",
+                (Uuid::now_v7().as_bytes().to_vec(), "unknown field"),
+            )
+            .unwrap();
+        drop(here);
+        let cli = writing(&at, project);
+        let unapplied = "1 logged operation did not apply in full; tm doctor will list it";
+
+        let stale = cli
+            .write(&tm_tui::Write::Move {
+                key: "TM-1".into(),
+                status: "done".into(),
+                version: 1_000,
+            })
+            .unwrap_err();
+        assert_eq!(stale.warnings, [unapplied], "{stale:?}");
+        let unknown = cli.undo(Uuid::now_v7()).unwrap_err();
+        assert_eq!(unknown.warnings, [unapplied], "{unknown:?}");
     }
 
     #[test]
@@ -926,11 +962,25 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_carries_the_command_that_fixes_it() {
+    fn a_refusal_carries_the_command_that_fixes_it_and_the_warnings() {
         let plain = CliError::new("not_found", "no Issue is TM-9");
-        assert_eq!(refusal(plain), "no Issue is TM-9");
-        let fixable = CliError::new("claimed", "TM-2 is claimed").fix("tm take TM-2");
-        assert_eq!(refusal(fixable), "TM-2 is claimed — try: tm take TM-2");
+        assert_eq!(
+            refusal(plain),
+            tm_tui::Refused {
+                why: "no Issue is TM-9".into(),
+                warnings: Vec::new(),
+            }
+        );
+        let fixable = CliError::new("claimed", "TM-2 is claimed")
+            .fix("tm take TM-2")
+            .warned(vec!["the read-only Snapshot was not updated: full".into()]);
+        assert_eq!(
+            refusal(fixable),
+            tm_tui::Refused {
+                why: "TM-2 is claimed — try: tm take TM-2".into(),
+                warnings: vec!["the read-only Snapshot was not updated: full".into()],
+            }
+        );
     }
 
     #[test]

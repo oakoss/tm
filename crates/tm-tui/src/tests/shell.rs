@@ -398,6 +398,36 @@ fn every_refusal_and_warning_is_counted() {
 }
 
 #[test]
+fn a_refused_write_or_undo_says_the_clis_warning() {
+    let store = triage_store();
+    let mut record = Record {
+        refused_warning: Some("the Snapshot was not updated"),
+        ..Record::new()
+    };
+    let mut shell = triaging(&store, &record);
+    pick(&mut shell, 'p', "high");
+    shell.write(&record);
+    shell.load(&store, &record);
+    record.refuse_undo.set(true);
+    shell.key(press(KeyCode::Char('u')));
+    shell.write(&record);
+    let screen = drawn_sized(&mut shell, 160, 10);
+    assert!(
+        screen.contains("✗ not undone: changed since · warning: the Snapshot was not updated"),
+        "{screen}"
+    );
+
+    record.refuse = true;
+    pick(&mut shell, 'p', "low");
+    shell.write(&record);
+    let screen = drawn_sized(&mut shell, 160, 10);
+    assert!(
+        screen.contains("TM-2 changed since you read it · warning: the Snapshot was not updated"),
+        "{screen}"
+    );
+}
+
+#[test]
 fn a_refused_undo_of_an_earlier_action_says_so() {
     let store = triage_store();
     let mut record = Record::new();
@@ -422,11 +452,11 @@ fn a_refused_undo_of_an_earlier_action_says_so() {
 struct Mapped(ProjectId);
 
 impl Actions for Mapped {
-    fn write(&self, write: &Write) -> Result<Written, String> {
+    fn write(&self, write: &Write) -> Result<Written, Refused> {
         Fake.write(write)
     }
 
-    fn undo(&self, batch: Uuid) -> Result<Written, String> {
+    fn undo(&self, batch: Uuid) -> Result<Written, Refused> {
         Fake.undo(batch)
     }
 
@@ -538,11 +568,11 @@ impl Actions for Warning {
         Fake.issue(store, id)
     }
 
-    fn write(&self, write: &Write) -> Result<Written, String> {
+    fn write(&self, write: &Write) -> Result<Written, Refused> {
         Fake.write(write)
     }
 
-    fn undo(&self, batch: Uuid) -> Result<Written, String> {
+    fn undo(&self, batch: Uuid) -> Result<Written, Refused> {
         Fake.undo(batch)
     }
 }
