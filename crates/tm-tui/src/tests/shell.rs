@@ -348,7 +348,23 @@ fn a_warning_every_write_carries_counts_once() {
 }
 
 #[test]
-fn a_writes_own_warning_leads_the_ones_the_store_already_shows() {
+fn a_write_that_changes_nothing_still_shows_its_warning() {
+    let store = triage_store();
+    let mut record = Record {
+        unchanged_warning: Some("a backup was not made"),
+        ..Record::new()
+    };
+    let mut shell = triaging(&store, &record);
+    record.unchanged_key = queue_key(&mut shell);
+    pick(&mut shell, 'p', "none");
+    shell.write(&record);
+    let screen = drawn_sized(&mut shell, 110, 10);
+    assert!(screen.contains(": nothing changed "), "{screen}");
+    assert!(screen.contains("\"⚠ a backup was not made "), "{screen}");
+}
+
+#[test]
+fn a_writes_own_warning_leads_the_stores() {
     let store = triage_store();
     let record = Record {
         store_warning: Some("1 logged operation did not apply in full"),

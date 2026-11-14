@@ -321,9 +321,10 @@ struct Record {
     refused_warning: Option<&'static str>,
     /// Why a write is refused, when not the default.
     refused_why: Option<&'static str>,
-    /// A warning the store reports on every read, which each landed write
-    /// also carries first, as the CLI's do.
+    /// A warning the store reports on every read.
     store_warning: Option<&'static str>,
+    /// The warning a write that changes nothing carries.
+    unchanged_warning: Option<&'static str>,
     writes: std::cell::RefCell<Vec<Write>>,
     issued: std::cell::RefCell<Vec<Uuid>>,
     undone: std::cell::RefCell<Vec<Uuid>>,
@@ -340,6 +341,7 @@ impl Record {
             refused_warning: None,
             refused_why: None,
             store_warning: None,
+            unchanged_warning: None,
             writes: std::cell::RefCell::default(),
             issued: std::cell::RefCell::default(),
             undone: std::cell::RefCell::default(),
@@ -385,17 +387,19 @@ impl Actions for Record {
             return Ok(Written {
                 said: format!("{}: nothing changed", write.key()),
                 batch: None,
-                warnings: Vec::new(),
+                warnings: self
+                    .unchanged_warning
+                    .iter()
+                    .map(|w| (*w).to_owned())
+                    .collect(),
             });
         }
         let batch = Uuid::now_v7();
         self.issued.borrow_mut().push(batch);
-        let mut warnings: Vec<String> = self.store_warning.iter().map(|w| (*w).into()).collect();
-        warnings.push("the Snapshot was not updated".into());
         Ok(Written {
             said: format!("{}  written", write.key()),
             batch: Some(batch),
-            warnings,
+            warnings: vec!["the Snapshot was not updated".into()],
         })
     }
 

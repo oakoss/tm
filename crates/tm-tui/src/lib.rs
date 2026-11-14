@@ -1041,10 +1041,10 @@ impl Shell {
         // What the last action did gets a row of its own, cut at its end,
         // so the start that names the Issue and the reason always shows.
         let said_rows = u16::from(self.said.is_some());
-        // The action's own warnings lead; one the store also reports keeps
-        // the store's place.
-        let own = (self.said_warnings.iter()).filter(|warning| !self.warnings.contains(warning));
-        let warnings: Vec<String> = own.chain(&self.warnings).cloned().collect();
+        let warnings: Vec<String> = (self.said_warnings.iter())
+            .chain(&self.warnings)
+            .cloned()
+            .collect();
         let warned = first_of(&warnings, "more warnings");
         let [top, body, said, warning, bottom] = Layout::vertical([
             Constraint::Length(1),
