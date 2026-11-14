@@ -319,6 +319,11 @@ struct Record {
     refuse_undo: std::cell::Cell<bool>,
     /// The warning a refused write or undo carries.
     refused_warning: Option<&'static str>,
+    /// Why a write is refused, when not the default.
+    refused_why: Option<&'static str>,
+    /// A warning the store reports on every read, which each landed write
+    /// also carries first, as the CLI's do.
+    store_warning: Option<&'static str>,
     writes: std::cell::RefCell<Vec<Write>>,
     issued: std::cell::RefCell<Vec<Uuid>>,
     undone: std::cell::RefCell<Vec<Uuid>>,
@@ -333,6 +338,8 @@ impl Record {
             unchanged_key: None,
             refuse_undo: std::cell::Cell::new(false),
             refused_warning: None,
+            refused_why: None,
+            store_warning: None,
             writes: std::cell::RefCell::default(),
             issued: std::cell::RefCell::default(),
             undone: std::cell::RefCell::default(),
@@ -352,6 +359,10 @@ impl Record {
 }
 
 impl Actions for Record {
+    fn warnings(&self, _: &Store) -> Vec<String> {
+        self.store_warning.iter().map(|w| (*w).into()).collect()
+    }
+
     fn me(&self) -> Result<&str, &str> {
         self.me
     }
@@ -366,7 +377,8 @@ impl Actions for Record {
 
     fn write(&self, write: &Write) -> Result<Written, Refused> {
         if self.refuse || self.refuse_key.as_deref() == Some(write.key()) {
-            return Err(self.refused("TM-2 changed since you read it"));
+            let why = self.refused_why.unwrap_or("TM-2 changed since you read it");
+            return Err(self.refused(why));
         }
         self.writes.borrow_mut().push(write.clone());
         if self.unchanged_key.as_deref() == Some(write.key()) {
@@ -378,10 +390,12 @@ impl Actions for Record {
         }
         let batch = Uuid::now_v7();
         self.issued.borrow_mut().push(batch);
+        let mut warnings: Vec<String> = self.store_warning.iter().map(|w| (*w).into()).collect();
+        warnings.push("the Snapshot was not updated".into());
         Ok(Written {
             said: format!("{}  written", write.key()),
             batch: Some(batch),
-            warnings: vec!["the Snapshot was not updated".into()],
+            warnings,
         })
     }
 
