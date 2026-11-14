@@ -334,7 +334,7 @@ impl tm_tui::Actions for Cli<'_> {
     }
 
     fn write(&self, write: &tm_tui::Write) -> Result<tm_tui::Written, tm_tui::Refused> {
-        let output = here::write_at(self.at, |here| match write {
+        let output = here::write_shown_at(self.at, |here| match write {
             tm_tui::Write::Move {
                 key,
                 status,
@@ -360,7 +360,7 @@ impl tm_tui::Actions for Cli<'_> {
 
     fn undo(&self, batch: Uuid) -> Result<tm_tui::Written, tm_tui::Refused> {
         let mut lines = Vec::new();
-        let output = here::write_at(self.at, |here| {
+        let output = here::write_shown_at(self.at, |here| {
             let (undone, warnings) = undo::undo(here, Some(&batch.to_string()), false, false)?;
             lines = undone.lines;
             Ok((undone.output, warnings))
@@ -594,7 +594,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_write_or_undo_carries_the_stores_warnings() {
+    fn a_write_or_undo_leaves_the_stores_warnings_to_the_screens() {
         let at = here::fixture();
         let mut here = here::open_at(&at).unwrap();
         let project = here.project().unwrap();
@@ -610,7 +610,6 @@ mod tests {
             .unwrap();
         drop(here);
         let cli = writing(&at, project);
-        let unapplied = "1 logged operation did not apply in full; tm doctor will list it";
 
         let stale = cli
             .write(&tm_tui::Write::Move {
@@ -619,9 +618,11 @@ mod tests {
                 version: 1_000,
             })
             .unwrap_err();
-        assert_eq!(stale.warnings, [unapplied], "{stale:?}");
+        assert_eq!(stale.warnings, Vec::<String>::new(), "{stale:?}");
         let unknown = cli.undo(Uuid::now_v7()).unwrap_err();
-        assert_eq!(unknown.warnings, [unapplied], "{unknown:?}");
+        assert_eq!(unknown.warnings, Vec::<String>::new(), "{unknown:?}");
+        let read = cli.write(&tm_tui::Write::Read { id: "all".into() });
+        assert_eq!(read.unwrap().warnings, Vec::<String>::new());
     }
 
     #[test]

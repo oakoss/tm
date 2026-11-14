@@ -268,9 +268,13 @@ fn a_warning_from_the_cli_shows_with_the_write() {
     shell.write(&record);
     let screen = drawn_sized(&mut shell, 140, 10);
     assert!(
-        screen.contains("warning: the Snapshot was not updated"),
+        screen.contains("\"⚠ the Snapshot was not updated"),
         "{screen}"
     );
+    assert!(!screen.contains("· warning:"), "{screen}");
+    shell.key(press(KeyCode::Char('j')));
+    let screen = drawn_sized(&mut shell, 140, 10);
+    assert!(!screen.contains('⚠'), "gone with the next key: {screen}");
 }
 
 #[test]
@@ -281,16 +285,100 @@ fn a_refusal_with_a_warning_keeps_its_start_on_a_narrow_terminal() {
     shell.key(press(KeyCode::Char(' ')));
     shell.key(press(KeyCode::Char(' ')));
     record.refuse_key = Some("TM-8".into());
+    record.refused_why =
+        Some("TM-8 changed since you read it, its priority moved by another session");
     pick(&mut shell, 'p', "high");
     shell.write(&record);
     let screen = drawn_sized(&mut shell, 80, 12);
-    let said = screen.lines().rev().nth(1).unwrap_or_default();
+    let said = screen.lines().rev().nth(2).unwrap_or_default();
     assert!(said.starts_with("\"✗ TM-8: "), "{screen}");
     assert!(said.ends_with("…\""), "cut at its end: {screen}");
+    let warned = screen.lines().rev().nth(1).unwrap_or_default();
+    assert!(
+        warned.starts_with("\"⚠ the Snapshot was not updated"),
+        "the warning keeps its own row: {screen}"
+    );
     let footer = screen.lines().last().unwrap_or_default();
     assert!(
         footer.starts_with("\"q back"),
         "the keys keep their row: {screen}"
+    );
+}
+
+#[test]
+fn a_refusal_over_two_lines_still_shows_its_warning() {
+    let store = triage_store();
+    let record = Record {
+        refuse: true,
+        refused_warning: Some("the Snapshot was not updated"),
+        refused_why: Some("TM-2 is claimed\nby another session"),
+        ..Record::new()
+    };
+    let mut shell = triaging(&store, &record);
+    pick(&mut shell, 'p', "high");
+    shell.write(&record);
+    let screen = drawn_sized(&mut shell, 140, 10);
+    assert!(screen.contains(": TM-2 is claimed "), "{screen}");
+    assert!(
+        screen.contains("\"⚠ the Snapshot was not updated "),
+        "{screen}"
+    );
+}
+
+#[test]
+fn a_warning_every_write_carries_counts_once() {
+    let store = triage_store();
+    let record = Record {
+        refuse: true,
+        refused_warning: Some("the Snapshot was not updated"),
+        ..Record::new()
+    };
+    let mut shell = triaging(&store, &record);
+    shell.key(press(KeyCode::Char(' ')));
+    shell.key(press(KeyCode::Char(' ')));
+    pick(&mut shell, 'p', "high");
+    shell.write(&record);
+    let screen = drawn_sized(&mut shell, 140, 10);
+    assert!(screen.contains("(+1 more refused)"), "{screen}");
+    assert!(
+        screen.contains("\"⚠ the Snapshot was not updated "),
+        "{screen}"
+    );
+    assert!(!screen.contains("more warnings"), "{screen}");
+}
+
+#[test]
+fn a_write_that_changes_nothing_still_shows_its_warning() {
+    let store = triage_store();
+    let mut record = Record {
+        unchanged_warning: Some("a backup was not made"),
+        ..Record::new()
+    };
+    let mut shell = triaging(&store, &record);
+    record.unchanged_key = queue_key(&mut shell);
+    pick(&mut shell, 'p', "none");
+    shell.write(&record);
+    let screen = drawn_sized(&mut shell, 110, 10);
+    assert!(screen.contains(": nothing changed "), "{screen}");
+    assert!(screen.contains("\"⚠ a backup was not made "), "{screen}");
+}
+
+#[test]
+fn a_writes_own_warning_leads_the_stores() {
+    let store = triage_store();
+    let record = Record {
+        store_warning: Some("1 logged operation did not apply in full"),
+        ..Record::new()
+    };
+    let mut shell = triaging(&store, &record);
+    shell.load(&store, &record);
+    pick(&mut shell, 'p', "high");
+    shell.write(&record);
+    shell.load(&store, &record);
+    let screen = drawn_sized(&mut shell, 140, 10);
+    assert!(
+        screen.contains("\"⚠ the Snapshot was not updated (+1 more warnings) "),
+        "{screen}"
     );
 }
 
@@ -304,10 +392,8 @@ fn an_undo_says_the_clis_warning() {
     shell.key(press(KeyCode::Char('u')));
     shell.write(&record);
     let screen = drawn_sized(&mut shell, 140, 10);
-    assert!(
-        screen.contains("✓ undid the write · warning: a backup was not made"),
-        "{screen}"
-    );
+    assert!(screen.contains("\"✓ undid the write "), "{screen}");
+    assert!(screen.contains("\"⚠ a backup was not made"), "{screen}");
 }
 
 #[test]
@@ -413,7 +499,11 @@ fn a_refused_write_or_undo_says_the_clis_warning() {
     shell.write(&record);
     let screen = drawn_sized(&mut shell, 160, 10);
     assert!(
-        screen.contains("✗ not undone: changed since · warning: the Snapshot was not updated"),
+        screen.contains("\"✗ not undone: changed since "),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("\"⚠ the Snapshot was not updated"),
         "{screen}"
     );
 
@@ -422,7 +512,11 @@ fn a_refused_write_or_undo_says_the_clis_warning() {
     shell.write(&record);
     let screen = drawn_sized(&mut shell, 160, 10);
     assert!(
-        screen.contains("TM-2 changed since you read it · warning: the Snapshot was not updated"),
+        screen.contains("TM-2 changed since you read it "),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("\"⚠ the Snapshot was not updated"),
         "{screen}"
     );
 }

@@ -509,6 +509,9 @@ pub struct Shell {
     written: Vec<Vec<Uuid>>,
     /// What the last action did, until the next key.
     said: Option<String>,
+    /// The last action's warnings, until the next key; on the warning row,
+    /// so a long or broken line in `said` cannot cut them off.
+    said_warnings: Vec<String>,
     /// Whether the last action wrote anything, so `u` can say when it
     /// reaches back past one that did not.
     last_wrote: bool,
@@ -552,6 +555,7 @@ impl Shell {
             pending: None,
             written: Vec::new(),
             said: None,
+            said_warnings: Vec::new(),
             last_wrote: true,
             kept: Vec::new(),
             warnings: Vec::new(),
@@ -778,26 +782,24 @@ impl Shell {
         if count > 0 {
             self.written.push(batches);
         }
-        let warned = first_of(&warnings, "more warnings")
-            .map(|warning| format!(" · warning: {warning}"))
-            .unwrap_or_default();
+        self.said_warnings = warnings;
         if let Some(refused) = first_of(&refused, "more refused") {
             let landed = match count {
                 0 => String::new(),
                 n => format!(" ({n} written; u undoes them)"),
             };
-            return (true, format!("✗ {refused}{landed}{warned}"));
+            return (true, format!("✗ {refused}{landed}"));
         }
         if count == 0 {
             let said = first_of(&unchanged, "more unchanged").unwrap_or_default();
-            return (false, format!("{said}{warned}"));
+            return (false, said);
         }
         let said = first_of(&written_lines, "more written").unwrap_or_default();
         let unchanged = match unchanged.len() {
             0 => String::new(),
             n => format!(" · {n} unchanged"),
         };
-        (false, format!("✓ {said}{unchanged} · u undo{warned}"))
+        (false, format!("✓ {said}{unchanged} · u undo"))
     }
 
     /// Undoes this session's last action, newest batch first; a batch that
@@ -832,20 +834,16 @@ impl Shell {
                 }
             }
         }
-        let warned = first_of(&warnings, "more warnings")
-            .map(|warning| format!(" · warning: {warning}"))
-            .unwrap_or_default();
+        self.said_warnings = warnings;
         let Some(why) = refused else {
-            return format!("✓ {earlier}{}{warned}", undone.join("; "));
+            return format!("✓ {earlier}{}", undone.join("; "));
         };
         let total = batches.len();
         kept.reverse();
         self.written.push(kept);
         match undone.len() {
-            0 => format!("✗ {earlier}not undone: {why}{warned}"),
-            n => {
-                format!("✗ {earlier}{why} ({n} of {total} undone; u tries the rest again){warned}")
-            }
+            0 => format!("✗ {earlier}not undone: {why}"),
+            n => format!("✗ {earlier}{why} ({n} of {total} undone; u tries the rest again)"),
         }
     }
 
@@ -945,6 +943,7 @@ impl Shell {
             return Flow::Stay;
         }
         self.said = None;
+        self.said_warnings.clear();
         let global = keys::action(&GLOBAL, key);
         match global {
             Some(Global::Quit) => return Flow::Quit,
@@ -1050,7 +1049,11 @@ impl Shell {
         // What the last action did gets a row of its own, cut at its end,
         // so the start that names the Issue and the reason always shows.
         let said_rows = u16::from(self.said.is_some());
-        let warned = first_of(&self.warnings, "more warnings");
+        let warnings: Vec<String> = (self.said_warnings.iter())
+            .chain(&self.warnings)
+            .cloned()
+            .collect();
+        let warned = first_of(&warnings, "more warnings");
         let [top, body, said, warning, bottom] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Fill(1),

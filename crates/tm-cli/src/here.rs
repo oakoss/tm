@@ -251,18 +251,41 @@ pub(crate) fn write(
 }
 
 /// [`write`] at `place`.
-pub(crate) fn write_at(
+fn write_at(
     place: &Place,
     write: impl FnOnce(&mut Here) -> Result<(Output, Vec<String>), CliError>,
 ) -> Result<Output, CliError> {
-    let (mut output, mut warnings, published) = write_with_at(place, write)?;
+    let (output, warnings, published) = write_with_at(place, write)?;
+    Ok(merged(output, warnings, published))
+}
+
+/// [`write`] at `place` for the TUI, whose screens read the store's warnings
+/// afresh after each write: the write carries only its own.
+pub(crate) fn write_shown_at(
+    place: &Place,
+    write: impl FnOnce(&mut Here) -> Result<(Output, Vec<String>), CliError>,
+) -> Result<Output, CliError> {
+    let Wrote {
+        result,
+        own,
+        published,
+        ..
+    } = wrote_at(place, write)?;
+    match result {
+        Ok(output) => Ok(merged(output, own, published)),
+        Err(err) => Err(err.warned(own).warned(published)),
+    }
+}
+
+/// `warnings`, then the output's own, then `published`, each once.
+fn merged(mut output: Output, mut warnings: Vec<String>, published: Vec<String>) -> Output {
     warnings.append(&mut output.warnings);
     warnings.extend(published);
     // A command may warn of a Claim the store also reports passing.
     let mut seen = HashSet::new();
     warnings.retain(|warning| seen.insert(warning.clone()));
     output.warnings = warnings;
-    Ok(output)
+    output
 }
 
 /// As [`write`], for a caller that places its own warnings: the store's and
@@ -277,24 +300,54 @@ fn write_with_at<T>(
     place: &Place,
     write: impl FnOnce(&mut Here) -> Result<(T, Vec<String>), CliError>,
 ) -> Result<(T, Vec<String>, Vec<String>), CliError> {
-    let mut here = open_at(place)?;
-    let mut warnings = std::mem::take(&mut here.warnings);
-    let written = write(&mut here);
-    if written.is_ok() {
-        warnings.extend(here.record_name());
-    }
-    warnings.extend(here.passed());
-    let published = here.after_write();
-    match written {
-        Ok((value, identity_warnings)) => {
-            warnings.extend(identity_warnings);
-            Ok((value, warnings, published))
-        }
+    let Wrote {
+        result,
+        mut store,
+        own,
+        published,
+    } = wrote_at(place, write)?;
+    store.extend(own);
+    match result {
+        Ok(value) => Ok((value, store, published)),
         Err(err) => {
-            warnings.extend(published);
-            Err(err.warned(warnings))
+            store.extend(published);
+            Err(err.warned(store))
         }
     }
+}
+
+/// A write's result with its warnings apart: the store's as it was opened,
+/// the write's own, and those of a failed publish or backup.
+struct Wrote<T> {
+    result: Result<T, CliError>,
+    store: Vec<String>,
+    own: Vec<String>,
+    published: Vec<String>,
+}
+
+fn wrote_at<T>(
+    place: &Place,
+    write: impl FnOnce(&mut Here) -> Result<(T, Vec<String>), CliError>,
+) -> Result<Wrote<T>, CliError> {
+    let mut here = open_at(place)?;
+    let store = std::mem::take(&mut here.warnings);
+    let written = write(&mut here);
+    let mut own = Vec::new();
+    if written.is_ok() {
+        own.extend(here.record_name());
+    }
+    own.extend(here.passed());
+    let published = here.after_write();
+    let result = written.map(|(value, identity_warnings)| {
+        own.extend(identity_warnings);
+        value
+    });
+    Ok(Wrote {
+        result,
+        store,
+        own,
+        published,
+    })
 }
 
 /// tm's home, the working directory and its repo file, with the store unopened.
