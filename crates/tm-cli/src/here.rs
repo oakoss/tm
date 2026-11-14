@@ -219,9 +219,9 @@ fn opened(
     workspace: Workspace,
     store: Store,
 ) -> Result<Here, CliError> {
-    let warnings = unapplied(&store)?.into_iter().collect();
     let cwd = canonical(&place.cwd)?;
     let log_end = store.log_end()?;
+    let warnings = unapplied(&store)?.into_iter().collect();
     let store = store.working_in(Workplace {
         dir: Some(found.dir.display().to_string()),
         harnesses: identity::harness_sessions(place.env),
