@@ -1,0 +1,46 @@
+---
+source: crates/tm-cli/tests/it/prime.rs
+expression: shown
+---
+tm: Project TM, writing as claude for jace in session s1
+Scheme default: types epic, story, task, bug, sub_task, spike, design
+  statuses: triage (triage), todo (todo), in_progress (active), in_review (active), done (done), cancelled (cancelled)
+  required: type, title, status
+Remember (tm remember "..." adds one):
+  check  Run mise run check before a commit  (jace, under a minute ago)
+Waiting on jace (1): ask them, then tm answer KEY "..." records each reply:
+  TM-1  todo  none  asked
+    claude asked under a minute ago: Which way?
+      options: 1. left  2. right
+      the asking session resumes with: cd [repo] && claude -r s0
+  Claude deletes a session unused for 30 days by default, so an old one may not resume.
+Handed to you (tm start KEY takes one):
+  TM-2  todo  none  handed  (from codex, no expiry)
+    Pick this up; the tests pass
+Your Claims:
+  TM-3  todo  none  mine  (Claim [mine], no expiry)
+Held by your other sessions:
+  TM-4  todo  none  other  (session s2, no expiry)
+Your lapsed Claims (another Agent may take these; tm heartbeat KEY takes one back):
+  TM-5  todo  none  lapsed  (Claim [lapsed], lapsed [lapsed at])
+Path Claims on your changes (1):
+  TM-6  codex for jace covers notes.txt
+Short-lists (tm next takes the first that can start):
+  next-up (2 Issues)
+    next  TM-9  todo  none  ready 1
+          TM-10  todo  none  ready 2
+In progress (1):
+  TM-7  in_progress  none  started
+Ready (8):
+  TM-5  todo  none  lapsed
+  TM-8  todo  none  mentioned
+  TM-11  todo  none  ready 3
+  2 on Short-lists, passed over: tm ready marks them
+  and 3 more: tm ready
+Notifications (1 unread, tm notifications lists them): jace on TM-8: @claude a long mention a long mention a long mention a lo…
+Habits (tm guide has the rest):
+  tm start KEY when work starts
+  after a merge: git fetch, then tm git scan moves what it closed to done
+  your writes renew your Claims; a person's tm setup claude or codex adds hooks that heartbeat between them
+  the description holds the current plan; tm edit changes it
+  tm comment KEY for progress, what was learned and changes of plan

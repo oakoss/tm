@@ -6,9 +6,10 @@ use std::process::Output;
 use std::time::Instant;
 
 use serde_json::{Value, json};
+use tm_core::actor::SessionId;
 use tm_core::{Actor, Change, ProjectId};
 use tm_store::workspace::{PathProject, RepoFile};
-use tm_store::{Draft, Store};
+use tm_store::{Draft, Store, Taking};
 use uuid::Uuid;
 
 use crate::support::{Scratch, initialized, text, tm, tm_command, unpassed};
@@ -667,4 +668,154 @@ fn prime_shows_the_sessions_unread_notifications_until_read() {
         !mine.contains("Notifications ("),
         "the writer's own: {mine}"
     );
+}
+
+/// Whether `text` is a UUID's hyphenated form.
+fn is_uuid(text: &str) -> bool {
+    text.len() == 36
+        && text.char_indices().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        })
+}
+
+/// `doc` with each id and instant replaced, so it reads the same each run.
+fn scrubbed(doc: &mut Value) {
+    match doc {
+        Value::String(text) if is_uuid(text) => *text = "[id]".into(),
+        Value::Array(items) => items.iter_mut().for_each(scrubbed),
+        Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                let instant = key.ends_with("_ms") || matches!(key.as_str(), "created" | "updated");
+                if instant && value.is_number() {
+                    *value = json!("[ms]");
+                } else {
+                    scrubbed(value);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A Workspace that fills every section prime prints for claude's session
+/// `s1`: its repo, and the session's Claim and lapsed Claim, whose ids and
+/// expiry the text prints.
+fn every_section(scratch: &Scratch) -> (std::path::PathBuf, tm_store::Claim, tm_store::Claim) {
+    let (repo, mut store, project) = initialized(scratch);
+    let jace = Actor::human("jace");
+    let codex = Actor::agent("codex", "jace");
+    let session =
+        |id: &str| Actor::agent("claude", "jace").in_session(SessionId::parse(id).unwrap());
+    let mut issue = |title: &str| store.create_issue(&jace, project, "task", title).unwrap().0;
+    let [
+        _asked,
+        handed,
+        mine,
+        other,
+        lapsed,
+        covered,
+        started,
+        mentioned,
+    ] = [
+        "asked",
+        "handed",
+        "mine",
+        "other",
+        "lapsed",
+        "covered",
+        "started",
+        "mentioned",
+    ]
+    .map(&mut issue);
+    let ready: Vec<Uuid> = (1..=6).map(|n| issue(&format!("ready {n}"))).collect();
+
+    store
+        .remember(
+            &jace,
+            project,
+            "Run mise run check before a commit",
+            Some("check"),
+        )
+        .unwrap();
+    let held = store.take(&codex, handed, None).unwrap();
+    store
+        .hand(
+            &codex,
+            &held,
+            "claude",
+            None,
+            "Pick this up; the tests pass",
+        )
+        .unwrap();
+    let mine = store.take(&session("s1"), mine, None).unwrap();
+    store.take(&session("s2"), other, None).unwrap();
+    let lapsed = store.take(&session("s1"), lapsed, Some(1)).unwrap();
+    let paths = Taking {
+        paths: vec!["notes.txt".into()],
+        ..Taking::default()
+    };
+    store.take(&codex, covered, paths).unwrap();
+    fs::write(repo.join("notes.txt"), "changed\n").unwrap();
+    set(&mut store, project, started, "status", json!("in_progress"));
+    mention_claude(&mut store, project, mentioned);
+    let (list, _) = store
+        .create_shortlist(&jace, project, "next-up", &["claude".to_owned()], None)
+        .unwrap();
+    store
+        .shortlist_add(&jace, list, &ready[..2], tm_store::Place::End)
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    drop(store);
+    // Asked from a session tm records the directory of, so prime can say how
+    // to resume it.
+    let ask = [
+        "ask",
+        "TM-1",
+        "Which way?",
+        "--option",
+        "left",
+        "--option",
+        "right",
+    ];
+    let env = [("CLAUDE_CODE_SESSION_ID", "s0")];
+    let out = as_agent(scratch, &repo, "claude", &env, &ask);
+    assert!(out.status.success(), "{out:?}");
+    (repo, mine, lapsed)
+}
+
+/// Every section prime prints, as an Agent's session reads it, in text and
+/// JSON: a change to either shows here.
+#[test]
+fn every_section_prints_as_pinned_in_text_and_json() {
+    let scratch = Scratch::new();
+    let (repo, mine, lapsed) = every_section(&scratch);
+    let env = [("CLAUDE_CODE_SESSION_ID", "s1"), ("TZ", "UTC")];
+    let lapsed_at = jiff::Timestamp::from_millisecond(lapsed.expires_ms.unwrap())
+        .unwrap()
+        .in_tz("UTC")
+        .unwrap()
+        .strftime("%Y-%m-%d %H:%M %Z")
+        .to_string();
+    let repo_path = repo.display().to_string();
+    // A temporary directory with a space or `~` in it prints quoted.
+    let unrepo = |text: String| {
+        text.replace(&format!("'{repo_path}'"), "[repo]")
+            .replace(&repo_path, "[repo]")
+    };
+    let out = as_agent(&scratch, &repo, "claude", &env, &["prime"]);
+    assert!(out.status.success(), "{out:?}");
+    let shown = unrepo(text(&out.stdout))
+        .replace(&mine.id.to_string(), "[mine]")
+        .replace(&lapsed.id.to_string(), "[lapsed]")
+        .replace(&lapsed_at, "[lapsed at]");
+    insta::assert_snapshot!("prime_text", shown);
+
+    let out = as_agent(&scratch, &repo, "claude", &env, &["--json", "prime"]);
+    assert!(out.status.success(), "{out:?}");
+    let mut doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    scrubbed(&mut doc);
+    let doc = unrepo(doc.to_string());
+    let doc: Value = serde_json::from_str(&doc).unwrap();
+    insta::assert_json_snapshot!("prime_json", doc);
 }
