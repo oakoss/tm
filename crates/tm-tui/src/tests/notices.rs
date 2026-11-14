@@ -13,6 +13,7 @@ struct Noticed {
     record: Record,
     notices: RefCell<Vec<Notice>>,
     ambiguous: Vec<Ambiguous>,
+    unreadable: Option<String>,
 }
 
 impl Noticed {
@@ -32,6 +33,7 @@ impl Noticed {
                 notice(3, "TM-3", true),
             ]),
             ambiguous: Vec::new(),
+            unreadable: None,
         }
     }
 }
@@ -57,12 +59,16 @@ impl Actions for Noticed {
         self.record.undo(batch)
     }
 
-    fn unread(&self, _: &Store) -> usize {
-        self.notices
+    fn unread(&self, _: &Store) -> Result<usize, String> {
+        if let Some(why) = &self.unreadable {
+            return Err(why.clone());
+        }
+        Ok(self
+            .notices
             .borrow()
             .iter()
             .filter(|notice| !notice.read)
-            .count()
+            .count())
     }
 
     fn notifications(&self, _: &Store) -> Result<Vec<Notice>, String> {
@@ -128,6 +134,23 @@ fn the_unread_count_shows_unasked_and_m_lists_them_to_open_or_read() {
     assert!(
         drawn_at(&mut shell, 80).contains("› Notifications › TM-2"),
         "opens its Issue"
+    );
+}
+
+#[test]
+fn a_count_that_cannot_be_read_warns_instead_of_showing_none() {
+    let store = store();
+    let noticed = Noticed {
+        unreadable: Some("database is locked".into()),
+        ..Noticed::new(&store)
+    };
+    let mut shell = Shell::new("TM");
+    shell.load(&store, &noticed);
+    let screen = drawn_at(&mut shell, 80);
+    assert!(!screen.contains("unread (m)"), "{screen}");
+    assert!(
+        screen.contains("cannot count unread Notifications: database is locked"),
+        "{screen}"
     );
 }
 

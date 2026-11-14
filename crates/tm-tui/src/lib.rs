@@ -169,9 +169,13 @@ pub trait Actions {
 
     /// How many of the person's Notifications are unread, shown on every
     /// screen; none when no one can be named.
-    fn unread(&self, store: &Store) -> usize {
+    ///
+    /// # Errors
+    ///
+    /// Why they cannot be read.
+    fn unread(&self, store: &Store) -> Result<usize, String> {
         let _ = store;
-        0
+        Ok(0)
     }
 
     /// The person's Notifications, newest first, as `tm notifications --all`
@@ -852,7 +856,11 @@ impl Shell {
     /// Reads the screen shown from `store`.
     pub fn load(&mut self, store: &Store, actions: &dyn Actions) {
         self.warnings = actions.warnings(store);
-        self.notified = actions.unread(store);
+        self.notified = actions.unread(store).unwrap_or_else(|why| {
+            self.warnings
+                .push(format!("cannot count unread Notifications: {why}"));
+            0
+        });
         self.shown().load(store, actions);
         match &mut self.overlay {
             Some(Overlay::Picker(_)) if self.screens.top().unread() => self.overlay = None,
