@@ -11,7 +11,6 @@ use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::here::{self, Here};
-use crate::identity::{self, Identity};
 use crate::list::{Item, line, project_keys};
 use crate::output::{Output, printable};
 
@@ -124,7 +123,7 @@ pub(crate) fn run(args: &Shortlists, json: bool) -> Result<Output, CliError> {
             }
         }
         Some(action) => here::write(|here| {
-            let identity = identity(here)?;
+            let identity = here.writer()?;
             match write(here, action, &identity.actor) {
                 Ok(output) => Ok((output, identity.warnings)),
                 Err(err) => Err(err.warned(identity.warnings)),
@@ -133,16 +132,11 @@ pub(crate) fn run(args: &Shortlists, json: bool) -> Result<Output, CliError> {
     }
 }
 
-fn identity(here: &Here) -> Result<Identity, CliError> {
-    identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map_err(|message| CliError::new("no_identity", message))
-}
-
 /// The lists the session works through, or every list with `all`, each with
 /// its members in order.
 fn show(here: &Here, all: bool, json: bool) -> Result<Output, CliError> {
     let project = here.project()?;
-    let actor = if all { None } else { Some(identity(here)?) };
+    let actor = if all { None } else { Some(here.writer()?) };
     let lists = match &actor {
         Some(identity) => here.store.shortlists_of(project, &identity.actor)?,
         None => here.store.shortlists(project)?,

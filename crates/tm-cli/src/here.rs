@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::backup;
 use crate::error::CliError;
+use crate::identity::{self, Identity};
 use crate::output::{Output, local_time};
 
 pub(crate) struct Here {
@@ -377,6 +378,25 @@ impl Here {
         recorded
             .err()
             .map(|err| format!("cannot record your name {name:?} from git's user.name: {err}"))
+    }
+
+    /// Who writes from here. A command that goes on without one asks
+    /// [`identity::writer_in`] instead.
+    ///
+    /// # Errors
+    ///
+    /// `no_identity` when tm cannot tell.
+    pub(crate) fn writer(&self) -> Result<Identity, CliError> {
+        identity::required_in(&self.found.dir)
+    }
+
+    /// Who reads from here, as [`identity::reader`] tells writers apart.
+    ///
+    /// # Errors
+    ///
+    /// Why tm cannot tell, for the caller to word.
+    pub(crate) fn reader(&self) -> Result<Identity, String> {
+        identity::reader_in(&self.found.dir)
     }
 
     /// The Issue a Key, matched without case and through retired Project

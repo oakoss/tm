@@ -11,7 +11,6 @@ use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::here::{self, Here};
-use crate::identity;
 use crate::output::{Output, id_by_part, printable, short};
 use crate::show;
 
@@ -25,8 +24,7 @@ fn undo(
     dry_run: bool,
     force: bool,
 ) -> Result<(Output, Vec<String>), CliError> {
-    let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map_err(|message| CliError::new("no_identity", message))?;
+    let identity = here.writer()?;
     let (batch, next) = match reference {
         Some(reference) => (batch(here, reference)?, None),
         None => last(here, &identity.actor)?,

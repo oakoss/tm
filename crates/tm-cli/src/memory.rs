@@ -10,7 +10,6 @@ use tm_store::{Memory, Remembered};
 
 use crate::error::CliError;
 use crate::here::{self, Here};
-use crate::identity::{self, Identity};
 use crate::output::{Output, printable, span};
 
 /// Memories `tm prime` shows.
@@ -44,7 +43,7 @@ pub(crate) struct Forget {
 
 pub(crate) fn remember(args: &Remember) -> Result<Output, CliError> {
     here::write(|here| {
-        let identity = identity(here)?;
+        let identity = here.writer()?;
         match write_remember(here, args, &identity.actor) {
             Ok(output) => Ok((output, identity.warnings)),
             Err(err) => Err(err.warned(identity.warnings)),
@@ -54,7 +53,7 @@ pub(crate) fn remember(args: &Remember) -> Result<Output, CliError> {
 
 pub(crate) fn forget(args: &Forget) -> Result<Output, CliError> {
     here::write(|here| {
-        let identity = identity(here)?;
+        let identity = here.writer()?;
         let project = here.project()?;
         let (memory, ops) = here.store.forget(&identity.actor, project, &args.key)?;
         let key = memory.key.as_deref().unwrap_or(&args.key);
@@ -73,11 +72,6 @@ pub(crate) fn memories(args: &Memories) -> Result<Output, CliError> {
     all.append(&mut output.warnings);
     output.warnings = all;
     Ok(output)
-}
-
-fn identity(here: &Here) -> Result<Identity, CliError> {
-    identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map_err(|message| CliError::new("no_identity", message))
 }
 
 fn write_remember(here: &mut Here, args: &Remember, actor: &Actor) -> Result<Output, CliError> {

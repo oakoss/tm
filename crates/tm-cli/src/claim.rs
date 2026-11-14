@@ -32,8 +32,7 @@ pub(crate) fn duration(text: &str) -> Result<u64, String> {
 pub(crate) fn take(reference: &str, lasts: &Lasts) -> Result<Output, CliError> {
     here::write(|here| {
         let issue = here.issue(reference)?;
-        let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-            .map_err(|message| CliError::new("no_identity", message))?;
+        let identity = here.writer()?;
         let (taking, branch_warning) = lasts.taking(here);
         let claim = here
             .store
@@ -178,8 +177,7 @@ pub(crate) fn beat(reference: Option<&str>) -> Result<Beat, CliError> {
         let issue = reference
             .map(|reference| here.issue(reference))
             .transpose()?;
-        let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-            .map_err(|message| CliError::new("no_identity", message))?;
+        let identity = here.writer()?;
         if !identity.actor.is_agent() {
             return Err(CliError::new(
                 "no_agent",
@@ -294,8 +292,7 @@ pub(crate) fn release_session() -> Result<Output, CliError> {
 
 fn release_all(whole_session: bool) -> Result<Output, CliError> {
     here::write(|here| {
-        let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-            .map_err(|message| CliError::new("no_identity", message))?;
+        let identity = here.writer()?;
         let writer = &identity.actor;
         if !writer.is_agent() {
             return Err(CliError::new(
@@ -365,8 +362,7 @@ fn release_all(whole_session: bool) -> Result<Output, CliError> {
 pub(crate) fn release(reference: &str, claim: Option<Uuid>) -> Result<Output, CliError> {
     here::write(|here| {
         let issue = here.issue(reference)?;
-        let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-            .map_err(|message| CliError::new("no_identity", message))?;
+        let identity = here.writer()?;
         let claim = match claim {
             Some(claim) => claim,
             None => own_claim(here, issue, &identity.actor, reference)?,

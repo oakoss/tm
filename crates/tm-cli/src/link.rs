@@ -7,7 +7,6 @@ use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::here::{self, Here};
-use crate::identity;
 use crate::output::Output;
 
 pub(crate) fn run(words: &[String], present: bool) -> Result<Output, CliError> {
@@ -40,8 +39,7 @@ fn write(
     };
     let (from, to) = (here.issue(from)?, here.issue(to)?);
     let (source, target) = if reversed { (to, from) } else { (from, to) };
-    let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map_err(|message| CliError::new("no_identity", message))?;
+    let identity = here.writer()?;
 
     let op = if present {
         here.store

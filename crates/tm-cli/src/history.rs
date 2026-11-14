@@ -58,8 +58,7 @@ pub(crate) fn run(reference: &str, limit: Option<usize>, all: bool) -> Result<Ou
     let me = OnceCell::new();
     let me = || {
         me.get_or_init(|| {
-            let viewer = identity::resolve(identity::env, || identity::git_email(&here.found.dir));
-            viewer.ok().map(|identity| {
+            identity::writer_in(&here.found.dir).ok().map(|identity| {
                 let actor = identity.actor;
                 actor.on_behalf_of().unwrap_or(actor.name()).to_owned()
             })

@@ -17,7 +17,6 @@ use crate::error::CliError;
 use crate::fields::set;
 use crate::follow;
 use crate::here::{self, Here};
-use crate::identity;
 use crate::moves;
 use crate::output::{Output, printable, short};
 
@@ -83,8 +82,7 @@ pub(crate) fn run(dry_run: bool) -> Result<Output, CliError> {
 }
 
 fn write(here: &mut Here, dry_run: bool) -> Result<(Output, Vec<String>), CliError> {
-    let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map_err(|message| CliError::new("no_identity", message))?;
+    let identity = here.writer()?;
     let dir = here.found.dir.clone();
     let branch = default_branch(&dir)?;
     let log = git(

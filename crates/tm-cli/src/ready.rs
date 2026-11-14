@@ -169,7 +169,7 @@ fn session_lists(here: &mut Here, project: ProjectId) -> Vec<(Shortlist, Vec<Mem
         warnings,
         ..
     } = here;
-    let actor = || match identity::reader(identity::env, || identity::git_email(&found.dir)) {
+    let actor = || match identity::reader_in(&found.dir) {
         Ok(identity) => {
             warnings.extend(identity.warnings);
             Ok(identity.actor)
