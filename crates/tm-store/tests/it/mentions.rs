@@ -4,7 +4,7 @@ use serde_json::json;
 use tm_core::Actor;
 use tm_core::mention::{Known, Mentioned};
 
-use crate::support::{ManualClock, PROJECT, TempDir, claude, draft, open, set_field};
+use crate::support::{ManualClock, PROJECT, TempDir, claude, draft, open, set_field, unpassed};
 
 #[test]
 fn writers_those_agents_write_for_assignees_and_list_actors_may_be_named() {
@@ -13,12 +13,14 @@ fn writers_those_agents_write_for_assignees_and_list_actors_may_be_named() {
     let jace = Actor::human("Jace@Example.com");
     store.record_name(&jace, PROJECT, "Jace Babin").unwrap();
     let (issue, _) = store.create_issue(&claude(), PROJECT, "task", "t").unwrap();
-    store
-        .append(draft(
-            issue,
-            set_field("assignee", json!("ana@example.com")),
-        ))
-        .unwrap();
+    unpassed(
+        store
+            .append(draft(
+                issue,
+                set_field("assignee", json!("ana@example.com")),
+            ))
+            .unwrap(),
+    );
     store
         .create_shortlist(
             &Actor::human("jace"),

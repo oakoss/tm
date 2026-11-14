@@ -12,6 +12,14 @@ use tm_store::Store;
 use tm_store::workspace::Workspace;
 use uuid::Uuid;
 
+/// What a write wrote, asserting it passed no Claim.
+pub(crate) fn unpassed<T>(written: tm_store::Written<T>) -> T {
+    let mut passed = Vec::new();
+    let inner = written.into_inner(&mut passed);
+    assert_eq!(passed, [], "a test that passes a Claim checks it");
+    inner
+}
+
 /// A scratch directory outside any other repo's reach. Not under the target
 /// directory: this repo maps itself in `.config/tm.toml`, and a command run
 /// outside a fixture repo would find that file.

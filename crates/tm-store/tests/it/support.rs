@@ -320,6 +320,14 @@ pub(crate) fn set_field(field: &str, value: serde_json::Value) -> Change {
     }
 }
 
+/// What a write wrote, asserting it passed no Claim.
+pub(crate) fn unpassed<T>(written: tm_store::Written<T>) -> T {
+    let mut passed = Vec::new();
+    let inner = written.into_inner(&mut passed);
+    assert_eq!(passed, [], "a test that passes a Claim checks it");
+    inner
+}
+
 /// The present Links, as `(type, source, target)`, sorted.
 pub(crate) fn links(store: &Store) -> Vec<(String, Uuid, Uuid)> {
     let mut stmt = store

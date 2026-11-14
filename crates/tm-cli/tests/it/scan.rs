@@ -9,22 +9,24 @@ use tm_core::{Actor, Change, ProjectId};
 use tm_store::{Draft, Store};
 use uuid::Uuid;
 
-use crate::support::{self, Scratch, git, git_with, initialized, text, tm, tm_command};
+use crate::support::{self, Scratch, git, git_with, initialized, text, tm, tm_command, unpassed};
 
 fn set(store: &mut Store, project: ProjectId, issue: Uuid, field: &str, value: Value) {
-    store
-        .append(Draft {
-            actor: Actor::human("jace"),
-            project,
-            subject: issue,
-            change: Change::SetField {
-                field: field.into(),
-                label: String::new(),
-                value,
-                value_label: None,
-            },
-        })
-        .unwrap();
+    unpassed(
+        store
+            .append(Draft {
+                actor: Actor::human("jace"),
+                project,
+                subject: issue,
+                change: Change::SetField {
+                    field: field.into(),
+                    label: String::new(),
+                    value,
+                    value_label: None,
+                },
+            })
+            .unwrap(),
+    );
 }
 
 /// An empty commit on the current branch, returning its id.

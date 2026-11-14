@@ -7,7 +7,9 @@ use tm_store::{Place, Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::PROJECT;
-use crate::support::{ManualClock, TempDir, draft, insert_acked, jace, open, remote_op, set_field};
+use crate::support::{
+    ManualClock, TempDir, draft, insert_acked, jace, open, remote_op, set_field, unpassed,
+};
 
 const ME: Context<'static> = Context { me: Some("jace") };
 
@@ -22,9 +24,11 @@ fn issue(
     clock.advance(1_000);
     let (issue, _) = store.create_issue(&jace(), PROJECT, "task", "t").unwrap();
     for (name, value) in fields {
-        store
-            .append(draft(issue, set_field(name, value.clone())))
-            .unwrap();
+        unpassed(
+            store
+                .append(draft(issue, set_field(name, value.clone())))
+                .unwrap(),
+        );
     }
     for label in labels {
         let add = Change::Add {
@@ -33,7 +37,7 @@ fn issue(
             elem: (*label).into(),
             elem_label: None,
         };
-        store.append(draft(issue, add)).unwrap();
+        unpassed(store.append(draft(issue, add)).unwrap());
     }
     issue
 }
@@ -117,7 +121,7 @@ fn scheme_values_match_by_type() {
         elem: "x".into(),
         elem_label: None,
     };
-    store.append(draft(half, add)).unwrap();
+    unpassed(store.append(draft(half, add)).unwrap());
     assert_eq!(find(&store, "area:3"), [three]);
     assert_eq!(find(&store, "area:2.5"), [half]);
     assert_eq!(find(&store, "flag:true"), [three]);
@@ -138,7 +142,7 @@ fn has_and_no_on_a_set_follow_its_current_members() {
         elem: "bug".into(),
         elem_label: None,
     };
-    store.append(draft(emptied, remove)).unwrap();
+    unpassed(store.append(draft(emptied, remove)).unwrap());
     let tagged = issue(&mut store, &clock, &[], &[]);
     let add = Change::Add {
         field: "tags".into(),
@@ -146,7 +150,7 @@ fn has_and_no_on_a_set_follow_its_current_members() {
         elem: "y".into(),
         elem_label: None,
     };
-    store.append(draft(tagged, add)).unwrap();
+    unpassed(store.append(draft(tagged, add)).unwrap());
     assert_eq!(find(&store, "has:labels"), [labeled]);
     assert_eq!(
         sorted(find(&store, "no:labels")),
@@ -161,7 +165,7 @@ fn has_and_no_on_a_set_follow_its_current_members() {
 
 fn comment(store: &mut Store, issue: Uuid, body: &str) -> Uuid {
     let change = Change::Comment { body: body.into() };
-    store.append(draft(issue, change)).unwrap().op_id
+    unpassed(store.append(draft(issue, change)).unwrap()).op_id
 }
 
 #[test]
@@ -211,9 +215,11 @@ fn a_text_field_searches_only_its_own_words() {
     );
     assert_eq!(find(&store, "has:notes"), [described]);
 
-    store
-        .append(draft(described, set_field("notes", json!("replaced"))))
-        .unwrap();
+    unpassed(
+        store
+            .append(draft(described, set_field("notes", json!("replaced"))))
+            .unwrap(),
+    );
     assert_eq!(find(&store, "notes:timeout"), Vec::<Uuid>::new());
     assert_eq!(find(&store, "notes:replaced"), [described]);
     store.rebuild().unwrap();
@@ -222,9 +228,11 @@ fn a_text_field_searches_only_its_own_words() {
         [described],
         "a rebuild fills it"
     );
-    store
-        .append(draft(described, set_field("notes", Value::Null)))
-        .unwrap();
+    unpassed(
+        store
+            .append(draft(described, set_field("notes", Value::Null)))
+            .unwrap(),
+    );
     assert_eq!(
         find(&store, "notes:replaced"),
         Vec::<Uuid>::new(),
@@ -241,9 +249,11 @@ fn an_edit_after_a_vacuum_replaces_the_issues_own_words() {
     let first = issue(&mut store, &clock, &[("title", json!("apple"))], &[]);
     let second = issue(&mut store, &clock, &[("title", json!("banana"))], &[]);
     store.connection().execute_batch("VACUUM").unwrap();
-    store
-        .append(draft(first, set_field("title", json!("cherry"))))
-        .unwrap();
+    unpassed(
+        store
+            .append(draft(first, set_field("title", json!("cherry"))))
+            .unwrap(),
+    );
     assert_eq!(find(&store, "cherry"), [first]);
     assert_eq!(find(&store, "apple"), Vec::<Uuid>::new());
     assert_eq!(find(&store, "banana"), [second]);
@@ -274,7 +284,7 @@ fn words_search_titles_descriptions_and_comments_not_retracted() {
         comment: said,
         retracted: true,
     };
-    store.append(draft(retracted, undo)).unwrap();
+    unpassed(store.append(draft(retracted, undo)).unwrap());
     let split = issue(&mut store, &clock, &[("title", json!("alpha"))], &[]);
     comment(&mut store, split, "beta");
 
@@ -309,9 +319,11 @@ fn words_search_titles_descriptions_and_comments_not_retracted() {
     assert!(store.find("---", ME).is_err());
     assert!(store.find("has:text", ME).is_err());
 
-    store
-        .append(draft(titled, set_field("title", json!("Renamed"))))
-        .unwrap();
+    unpassed(
+        store
+            .append(draft(titled, set_field("title", json!("Renamed"))))
+            .unwrap(),
+    );
     assert_eq!(
         find(&store, "timeout"),
         Vec::<Uuid>::new(),
@@ -326,9 +338,11 @@ fn words_search_titles_descriptions_and_comments_not_retracted() {
         "a rebuild fills the index"
     );
     assert_eq!(find(&store, "timeout"), Vec::<Uuid>::new());
-    store
-        .append(draft(described, set_field("description", json!("gone"))))
-        .unwrap();
+    unpassed(
+        store
+            .append(draft(described, set_field("description", json!("gone"))))
+            .unwrap(),
+    );
     assert_eq!(
         find(&store, "session"),
         Vec::<Uuid>::new(),
@@ -359,7 +373,7 @@ fn an_edited_comment_is_found_by_its_new_words_only() {
             comment: said,
             body: body.into(),
         };
-        store.append(draft(issue, edit)).unwrap();
+        unpassed(store.append(draft(issue, edit)).unwrap());
     }
     assert_eq!(
         find(&store, "cafe"),
@@ -495,9 +509,11 @@ fn people_match_and_sort_without_case_beyond_ascii() {
     assert_eq!(find(&store, "assignee:élodie"), [accented]);
     let sharp = issue(&mut store, &clock, &[("assignee", json!("Straße"))], &[]);
     assert_eq!(find(&store, "assignee:STRASSE"), [sharp]);
-    store
-        .append(draft(sharp, set_field("assignee", serde_json::Value::Null)))
-        .unwrap();
+    unpassed(
+        store
+            .append(draft(sharp, set_field("assignee", serde_json::Value::Null)))
+            .unwrap(),
+    );
     assert_eq!(
         sorted(find(&store, "-assignee:ÉLODIE")),
         sorted(vec![capital, lower, codex, sharp])
@@ -545,9 +561,11 @@ fn booleans_types_and_priority_presence_filter_as_written() {
         &[],
     );
     let off = issue(&mut store, &clock, &[("flag", json!(false))], &[]);
-    store
-        .append(draft(off, set_field("type", json!("bug"))))
-        .unwrap();
+    unpassed(
+        store
+            .append(draft(off, set_field("type", json!("bug"))))
+            .unwrap(),
+    );
     assert_eq!(find(&store, "flag:false"), [off]);
     assert_eq!(find(&store, "flag:true"), [on]);
     assert_eq!(find(&store, "type:BUG"), [off]);

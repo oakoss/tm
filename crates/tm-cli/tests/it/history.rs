@@ -8,7 +8,7 @@ use tm_core::op::ClaimAction;
 use tm_core::{Actor, Change};
 use tm_store::Draft;
 
-use crate::support::{Scratch, initialized, text, tm, tm_piped};
+use crate::support::{Scratch, initialized, text, tm, tm_piped, unpassed};
 
 /// The text with each write's local time, whatever its zone, cut from its
 /// header line; the time is the only part of a header before two spaces.
@@ -50,7 +50,7 @@ fn history_shows_each_write_oldest_first() {
         subject: issue,
         change: renew,
     };
-    store.append(draft).unwrap();
+    unpassed(store.append(draft).unwrap());
     drop(store);
     for args in [
         &["edit", "TM-1", "--set", "assignee=jace", "--label", "ui"][..],
@@ -139,14 +139,16 @@ fn history_names_takeovers_releases_links_and_long_text() {
     std::thread::sleep(std::time::Duration::from_millis(20));
     let codex = Actor::agent("codex", "jace");
     store.take(&codex, child, None).unwrap();
-    let comment = store
-        .append(Draft {
-            actor: jace.clone(),
-            project,
-            subject: child,
-            change: Change::Comment { body: "ok".into() },
-        })
-        .unwrap();
+    let comment = unpassed(
+        store
+            .append(Draft {
+                actor: jace.clone(),
+                project,
+                subject: child,
+                change: Change::Comment { body: "ok".into() },
+            })
+            .unwrap(),
+    );
     for retracted in [true, false] {
         let retract = Change::Retract {
             comment: comment.op_id,
@@ -158,7 +160,7 @@ fn history_names_takeovers_releases_links_and_long_text() {
             subject: child,
             change: retract,
         };
-        store.append(draft).unwrap();
+        unpassed(store.append(draft).unwrap());
     }
     let archive = Change::SetField {
         field: "archived".into(),
@@ -172,7 +174,7 @@ fn history_names_takeovers_releases_links_and_long_text() {
         subject: child,
         change: archive,
     };
-    store.append(draft).unwrap();
+    unpassed(store.append(draft).unwrap());
     for args in [
         &["link", "TM-2", "relates_to", "TM-1"][..],
         &["unlink", "TM-2", "relates_to", "TM-1"],

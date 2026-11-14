@@ -442,6 +442,14 @@ mod tests {
 
     use super::*;
 
+    /// What a write wrote, asserting it passed no Claim.
+    fn unpassed<T>(written: tm_store::Written<T>) -> T {
+        let mut passed = Vec::new();
+        let inner = written.into_inner(&mut passed);
+        assert_eq!(passed, [], "a test that passes a Claim checks it");
+        inner
+    }
+
     /// For a test that writes nothing.
     static NOWHERE: std::sync::LazyLock<Place> = std::sync::LazyLock::new(|| Place {
         home: std::path::PathBuf::new(),
@@ -480,7 +488,7 @@ mod tests {
                 subject: id,
                 change: Change::Comment { body: body.into() },
             };
-            here.store.append(draft).unwrap();
+            unpassed(here.store.append(draft).unwrap());
         }
         let version = || {
             let here = here::read_at(&at).unwrap();
@@ -672,7 +680,7 @@ mod tests {
                 subject,
                 change,
             };
-            store.append(draft).unwrap();
+            unpassed(store.append(draft).unwrap());
         }
         store.link(&jace, "blocks", id, other).unwrap();
         let said = |change| Draft {
@@ -681,16 +689,18 @@ mod tests {
             subject: id,
             change,
         };
-        let oops = store
-            .append(said(Change::Comment {
-                body: "oops".into(),
-            }))
-            .unwrap();
+        let oops = unpassed(
+            store
+                .append(said(Change::Comment {
+                    body: "oops".into(),
+                }))
+                .unwrap(),
+        );
         let retract = Change::Retract {
             comment: oops.op_id,
             retracted: true,
         };
-        store.append(said(retract)).unwrap();
+        unpassed(store.append(said(retract)).unwrap());
         let cli = Cli {
             me: Ok("jace"),
             project,

@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::claim::{Claim, current, made_by};
 use crate::membership::{open_blocks, passed_over};
-use crate::{Draft, Lineage, Store, StoreError, Taking};
+use crate::{Draft, Lineage, Store, StoreError, Taking, Written};
 
 /// The Issue [`Store::take_next`] took, with what its `extend` made.
 #[derive(Debug)]
@@ -26,8 +26,8 @@ impl Store {
     /// write, so two sessions never take the same Issue and none takes one
     /// a human started meanwhile. An Agent claims it, for `ttl_ms`; a human
     /// begins it without a Claim. `extend` makes the drafts that begin it
-    /// from it and its ancestors, as [`Store::take_with`] does. `Ok(None)`,
-    /// writing nothing, when none may be taken.
+    /// from it and its ancestors, as [`Store::take_with`] does, so a human's
+    /// can pass a Claim. Holds `None`, writing nothing, when none may be taken.
     ///
     /// # Errors
     ///
@@ -39,7 +39,7 @@ impl Store {
         candidates: &[Uuid],
         taking: impl Into<Taking>,
         extend: impl FnOnce(&Lineage) -> (Vec<Draft>, T),
-    ) -> Result<Option<Next<T>>, StoreError> {
+    ) -> Result<Written<Option<Next<T>>>, StoreError> {
         let scheme = self.scheme.clone();
         let writer = actor.clone();
         let Taking {
@@ -50,7 +50,7 @@ impl Store {
         let mut extend = Some(extend);
         let mut chosen = None;
         let mut made = T::default();
-        let ops = self.append_with(Vec::new(), |tx, at_ms| {
+        let written = self.append_with(Vec::new(), |tx, at_ms| {
             let blocks = open_blocks(tx, &scheme)?;
             for view in crate::read::issues(tx, &scheme, candidates)? {
                 let todo = view.category == Some(Category::Todo);
@@ -80,9 +80,10 @@ impl Store {
             Ok(Vec::new())
         })?;
         let Some(issue) = chosen else {
-            return Ok(None);
+            return Ok(written.map(|_| None));
         };
-        let claim = ops
+        let claim = written
+            .inner
             .iter()
             .find(|op| {
                 op.subject == issue
@@ -95,11 +96,13 @@ impl Store {
             })
             .map(made_by)
             .transpose()?;
-        Ok(Some(Next {
-            issue,
-            claim,
-            ops,
-            made,
+        Ok(written.map(|ops| {
+            Some(Next {
+                issue,
+                claim,
+                ops,
+                made,
+            })
         }))
     }
 }

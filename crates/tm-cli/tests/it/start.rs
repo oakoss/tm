@@ -7,7 +7,7 @@ use std::process::Output;
 use serde_json::{Value, json};
 use tm_core::Actor;
 
-use crate::support::{Scratch, initialized, text, tm, tm_command};
+use crate::support::{Scratch, initialized, text, tm, tm_command, unpassed};
 
 /// `tm` as the Agent `claude` for `jace`, in `session`.
 fn as_agent(scratch: &Scratch, repo: &Path, session: &str, args: &[&str]) -> Output {
@@ -43,19 +43,21 @@ fn an_agent_claims_moves_and_assigns_in_one_undo() {
     let (task, _) = store
         .create_issue(&jace, project, "task", "Claim and start work, in one step")
         .unwrap();
-    store
-        .append(tm_store::Draft {
-            actor: jace.clone(),
-            project,
-            subject: task,
-            change: tm_core::Change::SetField {
-                field: "parent".into(),
-                label: String::new(),
-                value: json!(epic.to_string()),
-                value_label: None,
-            },
-        })
-        .unwrap();
+    unpassed(
+        store
+            .append(tm_store::Draft {
+                actor: jace.clone(),
+                project,
+                subject: task,
+                change: tm_core::Change::SetField {
+                    field: "parent".into(),
+                    label: String::new(),
+                    value: json!(epic.to_string()),
+                    value_label: None,
+                },
+            })
+            .unwrap(),
+    );
     drop(store);
 
     let out = as_agent(&scratch, &repo, "s1", &["start", "TM-2"]);

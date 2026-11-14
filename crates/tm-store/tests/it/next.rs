@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::support::{
     ManualClock, TempDir, claude, draft, field, held, jace, new_issue, open, run_children,
-    set_field,
+    set_field, unpassed,
 };
 
 /// What `tm start` would write: the Issue's Status to in progress.
@@ -26,7 +26,7 @@ fn begin(lineage: &Lineage) -> (Vec<Draft>, ()) {
 }
 
 fn next(store: &mut Store, actor: &Actor, candidates: &[Uuid]) -> Option<Next<()>> {
-    store.take_next(actor, candidates, None, begin).unwrap()
+    unpassed(store.take_next(actor, candidates, None, begin).unwrap())
 }
 
 #[test]
@@ -37,21 +37,29 @@ fn the_first_eligible_issue_is_taken_and_the_rest_passed_over() {
     let [done, started, claimed, epic, archived, blocked, free] = ids[..] else {
         unreachable!()
     };
-    store
-        .append(draft(done, set_field("status", json!("done"))))
-        .unwrap();
-    store
-        .append(draft(started, set_field("status", json!("in_progress"))))
-        .unwrap();
+    unpassed(
+        store
+            .append(draft(done, set_field("status", json!("done"))))
+            .unwrap(),
+    );
+    unpassed(
+        store
+            .append(draft(started, set_field("status", json!("in_progress"))))
+            .unwrap(),
+    );
     store
         .take(&Actor::agent("codex", "jace"), claimed, None)
         .unwrap();
-    store
-        .append(draft(epic, set_field("type", json!("epic"))))
-        .unwrap();
-    store
-        .append(draft(archived, set_field("archived", json!(true))))
-        .unwrap();
+    unpassed(
+        store
+            .append(draft(epic, set_field("type", json!("epic"))))
+            .unwrap(),
+    );
+    unpassed(
+        store
+            .append(draft(archived, set_field("archived", json!(true))))
+            .unwrap(),
+    );
     store.link(&jace(), "blocks", free, blocked).unwrap();
 
     let taken = next(&mut store, &claude(), &ids).unwrap();

@@ -13,7 +13,7 @@ use tm_core::{Actor, Change, Op, ProjectId, Scheme, Subject};
 use uuid::Uuid;
 
 use crate::apply::{Version, Versions, project_from, record_in, uuid_from, wins_in};
-use crate::{Draft, Provenance, Store, StoreError, WallTime, drafts};
+use crate::{Draft, Provenance, Store, StoreError, WallTime, Written, drafts};
 
 /// A Short-list as read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -64,7 +64,7 @@ impl Store {
         ];
         changes.extend(actors.iter().map(|who| actor_change(who, true)));
         let ops = self.append_all(drafts(actor, project, id, changes))?;
-        Ok((id, ops))
+        Ok((id, ops.unpassed()))
     }
 
     /// Changes a Short-list's name, size or Actors in one batch; an empty
@@ -89,6 +89,7 @@ impl Store {
             let changes = edited(&list, edit)?;
             Ok(drafts(&writer, list.project, id, changes))
         })
+        .map(Written::unpassed)
     }
 
     /// Deletes a Short-list, keeping its record so an undo restores it.
@@ -101,6 +102,7 @@ impl Store {
         let project = live(&self.conn, id)?;
         let changes = vec![set(Field::Deleted, json!(true))];
         self.append_all(drafts(actor, project, id, changes))
+            .map(Written::unpassed)
     }
 
     /// The lists in `project` that are not deleted, oldest first.

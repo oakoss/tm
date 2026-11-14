@@ -11,7 +11,7 @@ use tm_store::workspace::{PathProject, RepoFile};
 use tm_store::{Draft, Store};
 use uuid::Uuid;
 
-use crate::support::{Scratch, initialized, text, tm, tm_command};
+use crate::support::{Scratch, initialized, text, tm, tm_command, unpassed};
 
 /// Prime for a 200-Issue Workspace, every title at its cut, fits in 4.5 KB,
 /// about 1.1k tokens: TM-10's 4 KB, plus room for the habit lines.
@@ -46,19 +46,21 @@ fn as_agent(
 }
 
 fn set(store: &mut Store, project: ProjectId, issue: Uuid, field: &str, value: Value) {
-    store
-        .append(Draft {
-            actor: Actor::human("jace"),
-            project,
-            subject: issue,
-            change: Change::SetField {
-                field: field.into(),
-                label: String::new(),
-                value,
-                value_label: None,
-            },
-        })
-        .unwrap();
+    unpassed(
+        store
+            .append(Draft {
+                actor: Actor::human("jace"),
+                project,
+                subject: issue,
+                change: Change::SetField {
+                    field: field.into(),
+                    label: String::new(),
+                    value,
+                    value_label: None,
+                },
+            })
+            .unwrap(),
+    );
 }
 
 /// The indented lines under `heading` in prime's text.
@@ -117,7 +119,7 @@ fn mention_claude(store: &mut Store, project: ProjectId, issue: Uuid) {
         subject: issue,
         change: Change::Comment { body },
     };
-    store.append(said).unwrap();
+    unpassed(store.append(said).unwrap());
 }
 
 #[test]

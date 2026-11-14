@@ -8,7 +8,7 @@ use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, OTHER, PROJECT, TempDir, claude, insert_acked, jace, open, remote_op,
+    ManualClock, OTHER, PROJECT, TempDir, claude, insert_acked, jace, open, remote_op, unpassed,
 };
 
 /// A memory another Replica wrote with `fields`, brought in as a merge
@@ -162,7 +162,7 @@ fn a_forgotten_memory_comes_back_by_its_key_or_an_undo() {
         "{missing:?}"
     );
 
-    store.undo(&jace(), ops[0].op_id).unwrap();
+    unpassed(store.undo(&jace(), ops[0].op_id).unwrap().1);
     assert_eq!(body(&store, "database").as_deref(), Some("Use Postgres"));
 
     store.forget(&jace(), PROJECT, "database").unwrap();
@@ -184,9 +184,9 @@ fn undoing_a_remember_forgets_it_or_restores_what_it_replaced() {
     let replaced = store
         .remember(&jace(), PROJECT, "Use SQLite", Some("database"))
         .unwrap();
-    store.undo(&jace(), replaced.ops[0].op_id).unwrap();
+    unpassed(store.undo(&jace(), replaced.ops[0].op_id).unwrap().1);
     assert_eq!(body(&store, "database").as_deref(), Some("Use Postgres"));
-    store.undo(&jace(), made.ops[0].op_id).unwrap();
+    unpassed(store.undo(&jace(), made.ops[0].op_id).unwrap().1);
     assert_eq!(
         keys(&store),
         Vec::<String>::new(),

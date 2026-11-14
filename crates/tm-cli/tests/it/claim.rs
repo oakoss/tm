@@ -7,7 +7,7 @@ use tm_core::{Actor, Change, ProjectId};
 use tm_store::{Draft, Store};
 use uuid::Uuid;
 
-use crate::support::{Scratch, initialized, text, tm, tm_command, wait_until};
+use crate::support::{Scratch, initialized, text, tm, tm_command, unpassed, wait_until};
 
 /// `tm` writing as the Agent `claude` for `jace`.
 fn as_agent(scratch: &Scratch, repo: &Path, args: &[&str]) -> Output {
@@ -283,19 +283,21 @@ fn an_agent_claims_with_a_token_and_releases_with_it() {
 }
 
 fn archive(store: &mut Store, project: ProjectId, issue: Uuid) {
-    store
-        .append(Draft {
-            actor: Actor::human("jace"),
-            project,
-            subject: issue,
-            change: Change::SetField {
-                field: "archived".into(),
-                label: String::new(),
-                value: json!(true),
-                value_label: None,
-            },
-        })
-        .unwrap();
+    unpassed(
+        store
+            .append(Draft {
+                actor: Actor::human("jace"),
+                project,
+                subject: issue,
+                change: Change::SetField {
+                    field: "archived".into(),
+                    label: String::new(),
+                    value: json!(true),
+                    value_label: None,
+                },
+            })
+            .unwrap(),
+    );
 }
 
 #[test]

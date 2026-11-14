@@ -8,7 +8,7 @@ use tm_core::Change;
 use tm_store::{Draft, Store};
 use uuid::Uuid;
 
-use crate::support::{TempDir, draft, jace, run_children, set_field};
+use crate::support::{TempDir, draft, jace, run_children, set_field, unpassed};
 
 /// Set in child processes: the store path to write to, and the shared Issue.
 const CHILD_DB: &str = "TM_STORE_TEST_CHILD_DB";
@@ -30,12 +30,14 @@ fn reads_in_one_read_see_one_commit() {
     let (first, second) = reader
         .read(|store| {
             let first = title(store);
-            writer
-                .append(Draft {
-                    project,
-                    ..draft(issue, set_field("title", json!("after")))
-                })
-                .unwrap();
+            unpassed(
+                writer
+                    .append(Draft {
+                        project,
+                        ..draft(issue, set_field("title", json!("after")))
+                    })
+                    .unwrap(),
+            );
             Ok::<_, tm_store::StoreError>((first, title(store)))
         })
         .unwrap();
@@ -107,13 +109,15 @@ fn of_many_processes_undoing_one_batch_only_one_writes() {
     let mut store = Store::open(&dir.db()).unwrap();
     let (project, _) = store.create_project(&jace(), "CPL", "Core").unwrap();
     let (issue, _) = store.create_issue(&jace(), project, "task", "t").unwrap();
-    let batch = store
-        .append(Draft {
-            project,
-            ..draft(issue, set_field("priority", json!("high")))
-        })
-        .unwrap()
-        .op_id;
+    let batch = unpassed(
+        store
+            .append(Draft {
+                project,
+                ..draft(issue, set_field("priority", json!("high")))
+            })
+            .unwrap(),
+    )
+    .op_id;
     drop(store);
 
     run_children(
@@ -214,6 +218,6 @@ fn write_as_child(db: &std::path::Path, issue: Uuid) {
         };
         let mut draft = draft(issue, change);
         draft.project = project;
-        store.append(draft).unwrap();
+        unpassed(store.append(draft).unwrap());
     }
 }

@@ -493,7 +493,7 @@ fn an_archived_child_is_listed_and_marked() {
         subject: child,
         change,
     };
-    store.append(draft).unwrap();
+    let _ = store.append(draft).unwrap();
     let mut shell = open(&store, "TM-1");
     let screen = drawn_sized(&mut shell, 140, 20);
     assert!(screen.contains("child  TM-2  todo, archived"), "{screen}");

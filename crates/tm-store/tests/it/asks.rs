@@ -6,7 +6,9 @@ use tm_core::{Actor, Change};
 use tm_store::CommentRole;
 use uuid::Uuid;
 
-use crate::support::{ManualClock, TempDir, draft, field, held, jace, new_issue, open, set_field};
+use crate::support::{
+    ManualClock, TempDir, draft, field, held, jace, new_issue, open, set_field, unpassed,
+};
 
 const HOUR_MS: u64 = 3_600_000;
 
@@ -127,9 +129,11 @@ fn a_question_is_guarded_inside_the_write() {
     assert!(unheld.is_err(), "another holds a live Claim: {unheld:?}");
 
     let done = new_issue(&mut store);
-    store
-        .append(draft(done, set_field("status", json!("done"))))
-        .unwrap();
+    unpassed(
+        store
+            .append(draft(done, set_field("status", json!("done"))))
+            .unwrap(),
+    );
     let finished = store.ask(&jace(), done, "Which?", &[], "kim", None);
     assert!(
         finished.is_err(),
@@ -280,7 +284,7 @@ fn undoing_a_question_clears_the_wait_and_releases_the_handed_claim() {
     let ops = store
         .ask(&claude("s1"), issue, "Which?", &[], "jace", Some(&taken))
         .unwrap();
-    store.undo(&claude("s1"), ops[0].op_id).unwrap();
+    unpassed(store.undo(&claude("s1"), ops[0].op_id).unwrap().1);
     assert_eq!(field(&store, issue, "waiting_on"), None);
     let comments = store.comments(issue).unwrap();
     assert!(comments[0].retracted, "{comments:?}");

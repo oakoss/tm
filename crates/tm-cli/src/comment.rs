@@ -87,12 +87,13 @@ fn write(
         },
         None => Change::Comment { body: body.clone() },
     };
-    let op = here.store.append(Draft {
+    let written = here.store.append(Draft {
         actor: identity.actor.clone(),
         project,
         subject: id,
         change,
     })?;
+    let op = here.passing(written);
     let key = here.store.issue(id)?.and_then(|view| view.key);
     let shown = key.clone().unwrap_or_else(|| id.to_string());
     let (text, comment) = match edited {

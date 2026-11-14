@@ -7,7 +7,9 @@ use tm_core::{Actor, Change, Hlc};
 use tm_store::{Store, StoreError, Taking};
 use uuid::Uuid;
 
-use crate::support::{ManualClock, TempDir, held, insert_acked, new_issue, open, remote_op};
+use crate::support::{
+    ManualClock, TempDir, held, insert_acked, new_issue, open, remote_op, unpassed,
+};
 
 const HOUR_MS: u64 = 3_600_000;
 
@@ -151,9 +153,11 @@ fn a_handed_claim_taken_up_naming_no_paths_keeps_the_ones_it_covered() {
     }
     let took = store.take(&receiver, by_take, covering(&[])).unwrap();
     assert_eq!(took.paths, ["src"]);
-    let started = store
-        .take_with(&receiver, by_start, Some(HOUR_MS), |_| (Vec::new(), ()))
-        .unwrap();
+    let started = unpassed(
+        store
+            .take_with(&receiver, by_start, Some(HOUR_MS), |_| (Vec::new(), ()))
+            .unwrap(),
+    );
     assert!(!started.kept);
     assert_eq!(started.claim.paths, ["src"]);
     for issue in [by_take, by_start] {
@@ -167,9 +171,11 @@ fn start_keeps_its_sessions_claim_unless_it_is_to_cover_other_files() {
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
     let start = |store: &mut Store, paths: &[&str]| {
-        store
-            .take_with(&agent("s1"), issue, covering(paths), |_| (Vec::new(), ()))
-            .unwrap()
+        unpassed(
+            store
+                .take_with(&agent("s1"), issue, covering(paths), |_| (Vec::new(), ()))
+                .unwrap(),
+        )
     };
     let first = start(&mut store, &["src"]).claim;
     for unchanged in [&["src"][..], &[]] {
@@ -189,10 +195,12 @@ fn next_takes_its_issue_covering_the_paths_and_branch() {
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
     let taking = on_branch(&["web/**"]);
-    let next = store
-        .take_next(&agent("s1"), &[issue], taking, |_| (Vec::new(), ()))
-        .unwrap()
-        .unwrap();
+    let next = unpassed(
+        store
+            .take_next(&agent("s1"), &[issue], taking, |_| (Vec::new(), ()))
+            .unwrap(),
+    )
+    .unwrap();
     let claim = next.claim.unwrap();
     assert_eq!(claim.paths, ["web/**"]);
     assert_eq!(claim.branch.as_deref(), Some("feat/x"));
@@ -260,7 +268,7 @@ fn undoing_a_change_of_paths_is_refused_but_a_lapsed_claim_taken_back_is_release
         store.take(&agent("s1"), issue, covering(&["src"])).unwrap();
         clock.advance(i64::try_from(HOUR_MS).unwrap() + 1);
         let took = store.take(&agent("s1"), issue, covering(again)).unwrap();
-        store.undo(&agent("s1"), took.id).unwrap();
+        unpassed(store.undo(&agent("s1"), took.id).unwrap().1);
         assert_eq!(held(&store, issue), None, "taken back covering {again:?}");
     }
 }
@@ -299,6 +307,6 @@ fn undoing_a_live_handed_claim_taken_up_releases_it() {
     let receiver = Actor::agent("codex", "jace").in_session(SessionId::parse("c1").unwrap());
     let up = store.take(&receiver, issue, covering(&["lib"])).unwrap();
     assert_eq!(store.rebuild().unwrap(), 0);
-    store.undo(&receiver, up.id).unwrap();
+    unpassed(store.undo(&receiver, up.id).unwrap().1);
     assert_eq!(held(&store, issue), None);
 }

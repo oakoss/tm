@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension};
 use uuid::Uuid;
 
 use crate::apply::uuid_from;
-use crate::{Claim, Draft, IssueView, Op, Store, StoreError, WriteOptions, claim, read};
+use crate::{Claim, Draft, IssueView, Op, Store, StoreError, WriteOptions, Written, claim, read};
 
 impl Store {
     /// The Issues whose parent is `issue`, archived ones included.
@@ -42,7 +42,7 @@ impl Store {
         issue: Uuid,
         options: &WriteOptions,
         extend: impl FnOnce(&Lineage) -> (Vec<Draft>, T),
-    ) -> Result<(Vec<Op>, T), StoreError> {
+    ) -> Result<(Written<Vec<Op>>, T), StoreError> {
         let scheme = self.scheme.clone();
         let mut made = T::default();
         let drafts = drafts.into_iter().map(|draft| (draft, None)).collect();

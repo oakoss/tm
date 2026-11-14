@@ -284,7 +284,7 @@ fn label(store: &mut Store, key: &str, label: &str) {
         elem: label.into(),
         elem_label: None,
     };
-    store
+    let _ = store
         .append(Draft {
             actor: Actor::human("jace"),
             project,

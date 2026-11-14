@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::apply::issue_project;
 use crate::claim::{Claim, current};
 use crate::read::{self, CommentView, Settled};
-use crate::{Draft, Store, StoreError};
+use crate::{Draft, Store, StoreError, Written};
 
 impl Store {
     /// Asks `question` of `of` on `issue` in one batch: the question joins
@@ -76,6 +76,7 @@ impl Store {
                 _ => Err(StoreError::ClaimChanged(issue.into())),
             }
         })
+        .map(Written::unpassed)
     }
 
     /// Answers `issue`'s open question `question`, the id of the operation
@@ -141,7 +142,7 @@ impl Store {
             }
             Ok(Vec::new())
         };
-        self.append_with(drafts, guard)
+        self.append_with(drafts, guard).map(Written::unpassed)
     }
 
     /// `issue`'s open question: its latest question not retracted.

@@ -5,17 +5,19 @@ use tm_core::{Actor, Change, ProjectId};
 use tm_store::{Draft, Store};
 use uuid::Uuid;
 
-use crate::support::{Scratch, fixture, initialized, text, tm, tm_command};
+use crate::support::{Scratch, fixture, initialized, text, tm, tm_command, unpassed};
 
 fn change(store: &mut Store, project: ProjectId, issue: Uuid, change: Change) {
-    store
-        .append(Draft {
-            actor: Actor::human("jace"),
-            project,
-            subject: issue,
-            change,
-        })
-        .unwrap();
+    unpassed(
+        store
+            .append(Draft {
+                actor: Actor::human("jace"),
+                project,
+                subject: issue,
+                change,
+            })
+            .unwrap(),
+    );
 }
 
 fn show(scratch: &Scratch, repo: &Path, reference: &str) -> (bool, Value) {
@@ -344,16 +346,18 @@ fn show_names_links_from_this_end_and_gives_comments_in_order() {
             body: "first\nsecond line".into(),
         },
     );
-    store
-        .append(Draft {
-            actor: Actor::agent("claude", "jace"),
-            project,
-            subject: held,
-            change: Change::Comment {
-                body: "on it".into(),
-            },
-        })
-        .unwrap();
+    unpassed(
+        store
+            .append(Draft {
+                actor: Actor::agent("claude", "jace"),
+                project,
+                subject: held,
+                change: Change::Comment {
+                    body: "on it".into(),
+                },
+            })
+            .unwrap(),
+    );
 
     let (ok, doc) = show(&scratch, &repo, "TM-2");
     assert!(ok, "{doc}");

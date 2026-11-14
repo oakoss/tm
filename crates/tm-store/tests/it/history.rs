@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use crate::support::{
     ManualClock, TempDir, draft, insert_acked, jace, new_issue, open, remote_op, set_field,
+    unpassed,
 };
 
 #[test]
@@ -33,9 +34,11 @@ fn history_runs_in_replay_order_with_links_unapplied_ops_and_undo() {
     }
     store.rebuild().unwrap();
 
-    let local = store
-        .append(draft(issue, set_field("assignee", json!("jace"))))
-        .unwrap();
+    let local = unpassed(
+        store
+            .append(draft(issue, set_field("assignee", json!("jace"))))
+            .unwrap(),
+    );
     // A batch is named by its first operation.
     let batch = local.op_id;
     // Acknowledged after the local write arrived, but replay puts every
@@ -46,7 +49,7 @@ fn history_runs_in_replay_order_with_links_unapplied_ops_and_undo() {
     let late = remote_op(7, issue, &comment, Hlc::new(1_400, 0), 0);
     insert_acked(&store, &late, 5, 2_000);
     store.rebuild().unwrap();
-    let (_, undo) = store.undo(&jace(), batch).unwrap();
+    let undo = unpassed(store.undo(&jace(), batch).unwrap().1);
 
     let history = store.history(issue).unwrap();
     let kinds: Vec<&str> = history.iter().map(|entry| entry.change.kind()).collect();
@@ -178,26 +181,30 @@ fn an_undone_batch_names_the_undo_that_stands() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(10_000));
     let issue = new_issue(&mut store);
-    let batch = store
-        .append(draft(issue, set_field("assignee", json!("jace"))))
-        .unwrap()
-        .op_id;
-    let (_, first) = store.undo(&jace(), batch).unwrap();
-    store.undo(&jace(), first[0].op_id).unwrap();
-    let (_, again) = store.undo(&jace(), batch).unwrap();
+    let batch = unpassed(
+        store
+            .append(draft(issue, set_field("assignee", json!("jace"))))
+            .unwrap(),
+    )
+    .op_id;
+    let first = unpassed(store.undo(&jace(), batch).unwrap().1);
+    unpassed(store.undo(&jace(), first[0].op_id).unwrap().1);
+    let again = unpassed(store.undo(&jace(), batch).unwrap().1);
     let history = store.history(issue).unwrap();
     let entry = history.iter().find(|entry| entry.op_id == batch).unwrap();
     assert_eq!(entry.undone_by, Some(again[0].op_id));
 
     // Undoing the undo of an undo leaves the first undo standing, as tm undo
     // decides it.
-    let other = store
-        .append(draft(issue, set_field("assignee", json!("ana"))))
-        .unwrap()
-        .op_id;
-    let (_, u1) = store.undo(&jace(), other).unwrap();
-    let (_, u2) = store.undo(&jace(), u1[0].op_id).unwrap();
-    store.undo(&jace(), u2[0].op_id).unwrap();
+    let other = unpassed(
+        store
+            .append(draft(issue, set_field("assignee", json!("ana"))))
+            .unwrap(),
+    )
+    .op_id;
+    let u1 = unpassed(store.undo(&jace(), other).unwrap().1);
+    let u2 = unpassed(store.undo(&jace(), u1[0].op_id).unwrap().1);
+    unpassed(store.undo(&jace(), u2[0].op_id).unwrap().1);
     let history = store.history(issue).unwrap();
     let entry = history.iter().find(|entry| entry.op_id == other).unwrap();
     assert_eq!(entry.undone_by, Some(u1[0].op_id));

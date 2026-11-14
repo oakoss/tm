@@ -27,12 +27,12 @@ fn if_claim(
         claim: Some((issue, held.cloned())),
         ..WriteOptions::default()
     };
-    store.write(drafts, &options)
+    store.write(drafts, &options).map(unpassed)
 }
 
 use crate::support::{
     ManualClock, TempDir, claude, draft, held, insert_acked, jace, key, new_issue, open, remote_op,
-    run_children, set_field,
+    run_children, set_field, unpassed,
 };
 
 const HOUR_MS: u64 = 3_600_000;
@@ -513,9 +513,11 @@ fn a_take_needs_an_expiry_and_a_live_issue() {
         ..draft(issue, take("claude", Some(Uuid::now_v7())))
     });
     refused(named.unwrap_err(), "names a previous Claim");
-    store
-        .append(draft(issue, set_field("archived", json!(true))))
-        .unwrap();
+    unpassed(
+        store
+            .append(draft(issue, set_field("archived", json!(true))))
+            .unwrap(),
+    );
     refused(store.take(&claude(), issue, None).unwrap_err(), "archived");
     let missing = Uuid::now_v7();
     for err in [
@@ -753,7 +755,7 @@ fn a_lapsed_claim_stops_holding_and_another_agent_takes_it_over() {
 
     assert_eq!(store.rebuild().unwrap(), 0);
     assert_eq!(held(&store, issue), Some(over.clone()));
-    store.undo(&jace(), over.id).unwrap();
+    unpassed(store.undo(&jace(), over.id).unwrap().1);
     assert_eq!(held(&store, issue), None, "undo restores no lapsed Claim");
 }
 

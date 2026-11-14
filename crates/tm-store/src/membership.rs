@@ -173,7 +173,10 @@ impl Store {
             }
             Ok(drafts)
         })?;
-        Ok(Placed { ops, from })
+        Ok(Placed {
+            ops: ops.unpassed(),
+            from,
+        })
     }
 
     /// Moves `issue` to `at` on the list it is on.
@@ -195,7 +198,10 @@ impl Store {
             from.push((issue, list.id));
             placing(tx, &scheme, &writer, &list, &[issue], at, false)
         })?;
-        Ok(Placed { ops, from })
+        Ok(Placed {
+            ops: ops.unpassed(),
+            from,
+        })
     }
 
     /// Takes `issues` off their lists in one batch.
@@ -222,7 +228,10 @@ impl Store {
             }
             Ok(drafts)
         })?;
-        Ok(Placed { ops, from })
+        Ok(Placed {
+            ops: ops.unpassed(),
+            from,
+        })
     }
 }
 

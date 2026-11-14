@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::rebuild::{Action, ISSUES, action, change, member, new_list, play_list};
 use crate::support::{
     ManualClock, TempDir, claude, draft, dump, field, held, jace, new_issue, open, remote_op,
-    set_field,
+    set_field, unpassed,
 };
 
 const WORKSPACE: Uuid = Uuid::from_u128(0x0190_a000_0000_7000_8000_0000_0000_0001);
@@ -131,16 +131,18 @@ fn a_retracted_comment_keeps_its_words_through_a_restore() {
     let clock = ManualClock::at(1_000);
     let mut store = source(&dir, &clock);
     let issue = new_issue(&mut store);
-    let comment = store
-        .append(draft(
-            issue,
-            tm_core::Change::Comment {
-                body: "kept in the log".into(),
-            },
-        ))
-        .unwrap()
-        .op_id;
-    store.undo(&jace(), comment).unwrap();
+    let comment = unpassed(
+        store
+            .append(draft(
+                issue,
+                tm_core::Change::Comment {
+                    body: "kept in the log".into(),
+                },
+            ))
+            .unwrap(),
+    )
+    .op_id;
+    unpassed(store.undo(&jace(), comment).unwrap().1);
     let mut copy = empty(&other.db(), &clock, WORKSPACE);
     copy.restore(&mut export(&store).as_slice()).unwrap();
 
@@ -149,14 +151,16 @@ fn a_retracted_comment_keeps_its_words_through_a_restore() {
         retracted.is_empty(),
         "undo state stays behind: {retracted:?}"
     );
-    copy.append(draft(
-        issue,
-        tm_core::Change::Retract {
-            comment,
-            retracted: false,
-        },
-    ))
-    .unwrap();
+    unpassed(
+        copy.append(draft(
+            issue,
+            tm_core::Change::Retract {
+                comment,
+                retracted: false,
+            },
+        ))
+        .unwrap(),
+    );
     let shown = copy.comments(issue).unwrap();
     assert_eq!(
         (shown[0].body.as_str(), shown[0].retracted),
@@ -178,19 +182,21 @@ fn every_issue_is_exported_as_its_current_record() {
         elem_label: None,
     };
     let comment = |body: &str| tm_core::Change::Comment { body: body.into() };
-    store
-        .append_all(vec![
-            draft(child, set_field("priority", json!("high"))),
-            draft(child, set_field("parent", json!(parent.to_string()))),
-            draft(child, set_field("area", json!(3))),
-            draft(child, add("labels", "Backend")),
-            draft(child, add("tags", "x")),
-            draft(child, comment("shown")),
-        ])
-        .unwrap();
+    unpassed(
+        store
+            .append_all(vec![
+                draft(child, set_field("priority", json!("high"))),
+                draft(child, set_field("parent", json!(parent.to_string()))),
+                draft(child, set_field("area", json!(3))),
+                draft(child, add("labels", "Backend")),
+                draft(child, add("tags", "x")),
+                draft(child, comment("shown")),
+            ])
+            .unwrap(),
+    );
     store.link(&jace(), "blocks", child, parent).unwrap();
-    let hidden = store.append(draft(child, comment("hidden"))).unwrap().op_id;
-    store.undo(&jace(), hidden).unwrap();
+    let hidden = unpassed(store.append(draft(child, comment("hidden"))).unwrap()).op_id;
+    unpassed(store.undo(&jace(), hidden).unwrap().1);
     let shown = store.comments(child).unwrap()[0].id;
 
     let records: Vec<Value> = lines(&export(&store))
@@ -308,9 +314,11 @@ fn a_copy_of_a_store_in_use_holds_what_its_wal_holds() {
         .connection()
         .execute_batch("PRAGMA wal_autocheckpoint = 0")
         .unwrap();
-    store
-        .append(draft(issue, set_field("title", json!("in the wal"))))
-        .unwrap();
+    unpassed(
+        store
+            .append(draft(issue, set_field("title", json!("in the wal"))))
+            .unwrap(),
+    );
     let beside = || {
         let mut names: Vec<_> = std::fs::read_dir(dir.db().parent().unwrap())
             .unwrap()
@@ -503,9 +511,10 @@ fn the_clock_moves_past_a_restored_log_but_not_far_ahead() {
     let mut copy = empty(&other.db(), &behind, WORKSPACE);
     copy.restore(&mut file.as_slice()).unwrap();
     let issue = new_issue(&mut copy);
-    let written = copy
-        .append(draft(issue, set_field("title", json!("after"))))
-        .unwrap();
+    let written = unpassed(
+        copy.append(draft(issue, set_field("title", json!("after"))))
+            .unwrap(),
+    );
     assert!(
         written.hlc > Hlc::new(1_000 + 5 * 60 * 1000, u16::MAX),
         "capped at now plus the drift, then ticked: {:?}",

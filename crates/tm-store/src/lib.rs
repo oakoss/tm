@@ -549,9 +549,43 @@ pub struct Store {
     last_write: Option<LastWrite>,
     /// Operations this connection has committed since it opened.
     appended: usize,
-    /// Claims a human's or a forced write went past, for the caller to warn of.
-    passed: Vec<Claim>,
     place: Workplace,
+}
+
+/// What a write that can set a protected field wrote, and the live Claims a
+/// human's or a forced write went past, for the caller to warn of.
+#[derive(Debug)]
+#[must_use = "a passed Claim is lost unless the caller warns of it"]
+pub struct Written<T> {
+    inner: T,
+    passed: Vec<Claim>,
+}
+
+impl<T> Written<T> {
+    /// What was written, the Claims it went past added to `passed`: the one
+    /// way out, so a caller cannot take what was written and leave the
+    /// Claims behind.
+    pub fn into_inner(self, passed: &mut impl Extend<Claim>) -> T {
+        passed.extend(self.passed);
+        self.inner
+    }
+
+    /// What a write that cannot pass a Claim wrote.
+    fn unpassed(self) -> T {
+        debug_assert!(
+            self.passed.is_empty(),
+            "a write that cannot pass a Claim passed {:?}",
+            self.passed
+        );
+        self.inner
+    }
+
+    fn map<U>(self, f: impl FnOnce(T) -> U) -> Written<U> {
+        Written {
+            inner: f(self.inner),
+            passed: self.passed,
+        }
+    }
 }
 
 /// Where the writer works: the directory a session's resume command names.
@@ -792,7 +826,6 @@ impl Store {
             opened: false,
             last_write: None,
             appended: 0,
-            passed: Vec::new(),
             place: Workplace::default(),
         };
         store.init()?;
@@ -984,9 +1017,8 @@ impl Store {
     /// # Errors
     ///
     /// As [`Store::append_all`].
-    pub fn append(&mut self, draft: Draft) -> Result<Op, StoreError> {
-        let mut ops = self.append_all(vec![draft])?;
-        Ok(ops.remove(0))
+    pub fn append(&mut self, draft: Draft) -> Result<Written<Op>, StoreError> {
+        Ok(self.append_all(vec![draft])?.map(|mut ops| ops.remove(0)))
     }
 
     /// Creates a Project. Its key is accepted in any case and stored uppercase.
@@ -1011,7 +1043,7 @@ impl Store {
                 name: name.to_owned(),
             },
         })?;
-        Ok((project, op))
+        Ok((project, op.unpassed()))
     }
 
     /// Gives a Project a new key, name or both. Its old key keeps resolving to
@@ -1036,6 +1068,7 @@ impl Store {
                 name: name.map(str::to_owned),
             },
         })
+        .map(Written::unpassed)
     }
 
     /// The Project holding `key` now or in the past, matched without case.
@@ -1196,7 +1229,7 @@ impl Store {
                 change,
             })
             .collect();
-        Ok((issue_id, self.append_all(drafts)?))
+        Ok((issue_id, self.append_all(drafts)?.unpassed()))
     }
 
     /// Links `from` to `to`: "`from` blocks `to`" for `blocks`. The Link is
@@ -1216,7 +1249,7 @@ impl Store {
         to: Uuid,
     ) -> Result<Op, StoreError> {
         let draft = self.link_draft(actor.clone(), link_type, from, to, true)?;
-        self.append(draft)
+        self.append(draft).map(Written::unpassed)
     }
 
     /// Removes the Link [`Store::link`] would add.
@@ -1232,7 +1265,7 @@ impl Store {
         to: Uuid,
     ) -> Result<Op, StoreError> {
         let draft = self.link_draft(actor.clone(), link_type, from, to, false)?;
-        self.append(draft)
+        self.append(draft).map(Written::unpassed)
     }
 
     /// [`Store::unlink`], refused with [`StoreError::NotLinked`] and nothing
@@ -1263,7 +1296,7 @@ impl Store {
                 })
             }
         };
-        let mut ops = self.append_with(draft, guard)?;
+        let mut ops = self.append_with(draft, guard)?.unpassed();
         Ok(ops.remove(0))
     }
 
@@ -1307,7 +1340,7 @@ impl Store {
     /// [`StoreError::MissingFields`]), an Issue error, [`StoreError::Op`],
     /// [`StoreError::Clock`] or [`StoreError::Busy`]; nothing is written
     /// unless every draft succeeds.
-    pub fn append_all(&mut self, drafts: Vec<Draft>) -> Result<Vec<Op>, StoreError> {
+    pub fn append_all(&mut self, drafts: Vec<Draft>) -> Result<Written<Vec<Op>>, StoreError> {
         self.write(drafts, &WriteOptions::default())
     }
 
@@ -1322,7 +1355,7 @@ impl Store {
         &mut self,
         drafts: Vec<Draft>,
         options: &WriteOptions,
-    ) -> Result<Vec<Op>, StoreError> {
+    ) -> Result<Written<Vec<Op>>, StoreError> {
         let drafts = drafts.into_iter().map(|draft| (draft, None)).collect();
         self.write_with(drafts, options, |_, _| Ok(Vec::new()), true, None)
     }
@@ -1339,12 +1372,9 @@ impl Store {
         &mut self,
         drafts: Vec<(Draft, Provenance)>,
     ) -> Result<Vec<Op>, StoreError> {
+        // An imported draft is never judged against a Claim.
         self.append_with(imported(drafts)?, |_, _| Ok(Vec::new()))
-    }
-
-    /// The Claims writes went past since last asked.
-    pub fn passed_claims(&mut self) -> Vec<Claim> {
-        std::mem::take(&mut self.passed)
+            .map(Written::unpassed)
     }
 
     /// [`Store::write_with`] with the default options, committed.
@@ -1352,7 +1382,7 @@ impl Store {
         &mut self,
         drafts: Vec<(Draft, Option<Provenance>)>,
         guard: impl FnOnce(&Transaction<'_>, i64) -> Result<Vec<Draft>, StoreError>,
-    ) -> Result<Vec<Op>, StoreError> {
+    ) -> Result<Written<Vec<Op>>, StoreError> {
         self.write_with(drafts, &WriteOptions::default(), guard, true, None)
     }
 
@@ -1369,13 +1399,17 @@ impl Store {
         guard: impl FnOnce(&Transaction<'_>, i64) -> Result<Vec<Draft>, StoreError>,
         commit: bool,
         undid: Option<Uuid>,
-    ) -> Result<Vec<Op>, StoreError> {
+    ) -> Result<Written<Vec<Op>>, StoreError> {
         let _write = tracing::debug_span!("write", drafts = drafts.len(), commit).entered();
         let written = self
             .write_unnamed(drafts, options, guard, commit, undid)
             .map_err(|err| err.named(&self.conn));
         match &written {
-            Ok(ops) => tracing::debug!(ops = ops.len(), "written"),
+            Ok(written) => tracing::debug!(
+                ops = written.inner.len(),
+                passed = written.passed.len(),
+                "written"
+            ),
             Err(err) => tracing::debug!(error = %err, "refused"),
         }
         written
@@ -1388,7 +1422,7 @@ impl Store {
         guard: impl FnOnce(&Transaction<'_>, i64) -> Result<Vec<Draft>, StoreError>,
         commit: bool,
         undid: Option<Uuid>,
-    ) -> Result<Vec<Op>, StoreError> {
+    ) -> Result<Written<Vec<Op>>, StoreError> {
         for (draft, _) in &drafts {
             draft.change.validate()?;
         }
@@ -1467,9 +1501,10 @@ impl Store {
                 },
             );
         }
-        self.passed
-            .extend(passed.into_iter().map(|passing| passing.claim));
-        Ok(ops)
+        Ok(Written {
+            inner: ops,
+            passed: passed.into_iter().map(|passing| passing.claim).collect(),
+        })
     }
 
     /// What changes when anyone writes: another connection's commit moves

@@ -11,7 +11,7 @@ use tm_core::{Actor, Change, Op, paths};
 use uuid::Uuid;
 
 use crate::apply::{issue_project, uuid_from};
-use crate::{Draft, Lineage, Provenance, Store, StoreError, Taking, WriteOptions};
+use crate::{Draft, Lineage, Provenance, Store, StoreError, Taking, WriteOptions, Written};
 
 /// Begins the `unapplied` reason of a take or release that lost to another,
 /// telling lost Claims apart from operations that do not fit.
@@ -240,17 +240,19 @@ impl Store {
         };
         let draft = self.claim_draft(actor.clone(), issue, take(None, Vec::new()))?;
         // `prev` is read inside the write, so no other take slips in between.
-        let ops = self.append_with(Vec::new(), |tx, _| {
-            let held = current(tx, issue)?;
-            let paths = covering(held.as_ref(), actor, &paths);
-            let prev = held.map(|held| held.id);
-            Ok(vec![Draft {
-                change: Change::Claim {
-                    action: take(prev, paths),
-                },
-                ..draft
-            }])
-        })?;
+        let ops = self
+            .append_with(Vec::new(), |tx, _| {
+                let held = current(tx, issue)?;
+                let paths = covering(held.as_ref(), actor, &paths);
+                let prev = held.map(|held| held.id);
+                Ok(vec![Draft {
+                    change: Change::Claim {
+                        action: take(prev, paths),
+                    },
+                    ..draft
+                }])
+            })?
+            .unpassed();
         // From the operation, not the table: another writer may already have
         // released and retaken the Issue.
         made_by(&ops[0])
@@ -259,7 +261,8 @@ impl Store {
     /// [`Store::take`], with the drafts `extend` makes from `issue` and its
     /// ancestors, read inside the same write, in the take's batch after it;
     /// if the take is refused, none is written. A Claim `actor`'s session
-    /// holds on `issue` at the write is kept, not taken again.
+    /// holds on `issue` at the write is kept, not taken again. `extend`'s
+    /// drafts may be another writer's, so the take can pass a Claim.
     ///
     /// # Errors
     ///
@@ -270,7 +273,7 @@ impl Store {
         issue: Uuid,
         taking: impl Into<Taking>,
         extend: impl FnOnce(&Lineage) -> (Vec<Draft>, T),
-    ) -> Result<TakenWith<T>, StoreError> {
+    ) -> Result<Written<TakenWith<T>>, StoreError> {
         let Taking {
             ttl_ms,
             branch,
@@ -288,7 +291,7 @@ impl Store {
         let scheme = self.scheme.clone();
         let mut made = T::default();
         let mut kept = None;
-        let ops = self.append_with(Vec::new(), |tx, at_ms| {
+        let written = self.append_with(Vec::new(), |tx, at_ms| {
             let held = current(tx, issue)?;
             let (more, out) = extend(&crate::family::lineage(tx, &scheme, issue, at_ms)?);
             made = out;
@@ -312,33 +315,31 @@ impl Store {
             drafts.extend(more);
             Ok(drafts)
         })?;
-        if let Some(claim) = kept {
-            return Ok(TakenWith {
-                claim,
-                kept: true,
-                ops,
-                made,
-            });
-        }
-        let take = ops
-            .iter()
-            .find(|op| {
-                op.subject == issue
-                    && matches!(
-                        op.change(),
-                        Ok(Change::Claim {
-                            action: ClaimAction::Take { .. }
-                        })
-                    )
-            })
-            .ok_or_else(|| StoreError::Corrupt("a take's batch holds no take".into()))?;
-        let claim = made_by(take)?;
-        Ok(TakenWith {
+        let was_kept = kept.is_some();
+        let claim = if let Some(claim) = kept {
+            claim
+        } else {
+            let take = written
+                .inner
+                .iter()
+                .find(|op| {
+                    op.subject == issue
+                        && matches!(
+                            op.change(),
+                            Ok(Change::Claim {
+                                action: ClaimAction::Take { .. }
+                            })
+                        )
+                })
+                .ok_or_else(|| StoreError::Corrupt("a take's batch holds no take".into()))?;
+            made_by(take)?
+        };
+        Ok(written.map(|ops| TakenWith {
             claim,
-            kept: false,
+            kept: was_kept,
             ops,
             made,
-        })
+        }))
     }
 
     /// Releases the Claim `claim` holds on `issue`.
@@ -349,7 +350,7 @@ impl Store {
     /// Claim, [`StoreError::UnknownIssue`], or as [`Store::append_all`].
     pub fn release(&mut self, actor: &Actor, issue: Uuid, claim: Uuid) -> Result<Op, StoreError> {
         let draft = self.claim_draft(actor.clone(), issue, ClaimAction::Release { claim })?;
-        self.append(draft)
+        self.append(draft).map(Written::unpassed)
     }
 
     /// Refuses as the write would when `actor` sets one of `fields` on
@@ -418,7 +419,7 @@ impl Store {
             claim: Some((held.issue, Some(held.clone()))),
             ..WriteOptions::default()
         };
-        let ops = self.write(vec![hand, comment], &options)?;
+        let ops = self.write(vec![hand, comment], &options)?.unpassed();
         // From the operation, not the table: the receiver may take it at once.
         let handed = Claim {
             on_behalf_of: held.on_behalf_of.clone(),
@@ -644,6 +645,7 @@ impl Store {
                 Some(claim.issue) == issue || claim.due(at_ms)
             })
         })
+        .map(Written::unpassed)
     }
 
     /// The Claims that now hold an Issue `batch` wrote, or any Issue when

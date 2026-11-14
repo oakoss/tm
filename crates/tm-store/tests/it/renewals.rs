@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::support::{
     ManualClock, TempDir, claude, draft, held, insert_acked, jace, new_issue, open, remote_op,
-    set_field,
+    set_field, unpassed,
 };
 
 const HOUR_MS: u64 = 3_600_000;
@@ -23,12 +23,14 @@ fn in_session(session: &str) -> Actor {
 
 /// `writer` retitles `issue`, returning the batch's operations.
 fn edit(store: &mut Store, writer: &Actor, issue: Uuid) -> Vec<Op> {
-    store
-        .append_all(vec![Draft {
-            actor: writer.clone(),
-            ..draft(issue, set_field("title", json!(Uuid::now_v7().to_string())))
-        }])
-        .unwrap()
+    unpassed(
+        store
+            .append_all(vec![Draft {
+                actor: writer.clone(),
+                ..draft(issue, set_field("title", json!(Uuid::now_v7().to_string())))
+            }])
+            .unwrap(),
+    )
 }
 
 fn renews(ops: &[Op]) -> Vec<Uuid> {
@@ -118,15 +120,17 @@ fn a_batch_of_several_writers_renews_nothing() {
     let s1 = in_session("s1");
     store.take(&s1, held_one, Some(HOUR_MS)).unwrap();
     clock.advance(HOUR / 2);
-    let ops = store
-        .append_all(vec![
-            Draft {
-                actor: s1,
-                ..draft(written, set_field("title", json!("a")))
-            },
-            draft(written, set_field("title", json!("b"))),
-        ])
-        .unwrap();
+    let ops = unpassed(
+        store
+            .append_all(vec![
+                Draft {
+                    actor: s1,
+                    ..draft(written, set_field("title", json!("a")))
+                },
+                draft(written, set_field("title", json!("b"))),
+            ])
+            .unwrap(),
+    );
     assert_eq!(renews(&ops), NONE);
 }
 
@@ -374,9 +378,9 @@ fn a_take_with_keeps_the_sessions_held_claim_and_takes_a_lapsed_one_again() {
     let issue = new_issue(&mut store);
     let s1 = in_session("s1");
     let none = |_: &tm_store::Lineage| (Vec::new(), ());
-    let first = store.take_with(&s1, issue, Some(HOUR_MS), none).unwrap();
+    let first = unpassed(store.take_with(&s1, issue, Some(HOUR_MS), none).unwrap());
     assert!(!first.kept);
-    let again = store.take_with(&s1, issue, Some(HOUR_MS), none).unwrap();
+    let again = unpassed(store.take_with(&s1, issue, Some(HOUR_MS), none).unwrap());
     assert!(again.kept, "held by this session");
     assert_eq!(again.claim.id, first.claim.id);
     assert_eq!(again.ops, []);
@@ -385,7 +389,7 @@ fn a_take_with_keeps_the_sessions_held_claim_and_takes_a_lapsed_one_again() {
         Err(StoreError::AlreadyClaimed { .. })
     ));
     clock.advance(HOUR);
-    let lapsed = store.take_with(&s1, issue, Some(HOUR_MS), none).unwrap();
+    let lapsed = unpassed(store.take_with(&s1, issue, Some(HOUR_MS), none).unwrap());
     assert!(!lapsed.kept, "a lapsed one is taken again");
     assert_ne!(lapsed.claim.id, first.claim.id);
 }
@@ -407,14 +411,15 @@ fn a_take_with_judges_the_held_claim_at_the_instant_it_writes() {
         };
         (vec![again], ())
     };
-    let started = store.take_with(&s1, issue, Some(HOUR_MS), retitle).unwrap();
+    let started = unpassed(store.take_with(&s1, issue, Some(HOUR_MS), retitle).unwrap());
     assert!(started.kept);
-    let retitled = started.ops.iter().any(
+    let started_ops = started.ops;
+    let retitled = started_ops.iter().any(
         |op| matches!(op.change().unwrap(), Change::SetField { field, .. } if field == "title"),
     );
     assert!(retitled, "a Claim kept still writes extend's drafts");
     assert!(
-        started.ops.iter().all(|op| Some(op.utc_ms) < expires),
+        started_ops.iter().all(|op| Some(op.utc_ms) < expires),
         "a Claim kept is unlapsed when the batch is written"
     );
 }
@@ -431,7 +436,7 @@ fn undoing_a_write_leaves_its_renewal() {
     let ops = edit(&mut store, &s1, written);
     assert_eq!(renews(&ops), [held_one]);
     let renewed = held(&store, held_one).unwrap();
-    store.undo(&jace(), ops[0].op_id).unwrap();
+    unpassed(store.undo(&jace(), ops[0].op_id).unwrap().1);
     assert_eq!(held(&store, held_one), Some(renewed));
 }
 

@@ -27,7 +27,7 @@ use crate::import_list::{ListOutcome, place_of};
 use crate::import_memory::MemoryOutcome;
 use crate::read::{self, IssueView};
 use crate::record::{CommentRecord, IssueRecord, ListRecord, MemoryRecord, TM_SOURCE};
-use crate::{Draft, Provenance, Store, StoreError, WallTime};
+use crate::{Draft, Provenance, Store, StoreError, WallTime, Written};
 
 /// Fields a record holds one value of, read from the Issue's own columns.
 const SCALARS: [&str; 7] = [
@@ -412,7 +412,8 @@ impl Store {
                 Err(StoreError::ImportChanged(issue.into()))
             }
         };
-        self.append_with(drafts, guard)
+        // An imported draft is never judged against a Claim.
+        self.append_with(drafts, guard).map(Written::unpassed)
     }
 }
 

@@ -264,7 +264,8 @@ impl Store {
             };
             let ops = crate::imported(planned.drafts.clone())
                 .and_then(|drafts| self.append_with(drafts, guard))
-                .map_err(|cause| refused(line, &source, cause, (written, records)))?;
+                .map_err(|cause| refused(line, &source, cause, (written, records)))?
+                .unpassed();
             let batch = ops.first().map(|op| op.op_id);
             written.extend(batch);
             report(&planned, batch, list, (records, lists));

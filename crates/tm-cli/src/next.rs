@@ -162,10 +162,10 @@ fn take(here: &mut Here, actor: &Actor, lasts: &Lasts) -> Result<Output, CliErro
     let (taking, branch_warning) = lasts.taking(here);
     let scheme = here.store.scheme().clone();
     let begin = |lineage: &_| start::begin(&scheme, actor, lineage);
-    let Some(next) = here
+    let written = here
         .store
-        .take_next(actor, &from.candidates(), taking, begin)?
-    else {
+        .take_next(actor, &from.candidates(), taking, begin)?;
+    let Some(next) = here.passing(written) else {
         // Read again: what passed every candidate over may have changed.
         return nothing(here, actor, &source(here, actor)?);
     };

@@ -159,15 +159,17 @@ pub(crate) fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>
     };
     let drafts = || changes.iter().cloned().map(draft).collect::<Vec<_>>();
     let (ops, starts) = if category == Some(Category::Active) {
-        here.store
+        let (written, starts) = here
+            .store
             .append_with_lineage(drafts(), id, &options, |lineage| {
                 let parents = lineage.issues().get(1..).unwrap_or_default();
                 follow::starts(&scheme, parents, lineage, &identity.actor)
             })
-            .map_err(forced)?
+            .map_err(forced)?;
+        (here.passing(written), starts)
     } else if !finished {
-        let ops = here.store.write(drafts(), &options).map_err(forced)?;
-        (ops, Starts::default())
+        let written = here.store.write(drafts(), &options).map_err(forced)?;
+        (here.passing(written), Starts::default())
     } else {
         let issue = (view.project, id);
         let ops = finish(here, &identity.actor, issue, drafts, (!force, &options))
@@ -249,7 +251,7 @@ pub(crate) fn finish(
         };
         match here.store.write(drafts, &options) {
             Err(StoreError::ClaimChanged(_)) if tries < MOVE_TRIES => tries += 1,
-            written => break written,
+            written => break written.map(|written| here.passing(written)),
         }
     }
 }

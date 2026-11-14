@@ -100,7 +100,7 @@ fn write(here: &mut Here, mut create: Create) -> Result<(Output, Vec<String>), C
             .map(|ops| (ops, Starts::default())),
     };
     let (ops, starts) = match written {
-        Ok(written) => written,
+        Ok((written, starts)) => (here.passing(written), starts),
         Err(StoreError::MissingFields { fields, .. }) => {
             return Err(missing(&scheme, create, fields));
         }
