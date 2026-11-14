@@ -818,4 +818,18 @@ fn every_section_prints_as_pinned_in_text_and_json() {
     let doc = unrepo(doc.to_string());
     let doc: Value = serde_json::from_str(&doc).unwrap();
     insta::assert_json_snapshot!("prime_json", doc);
+
+    // The person the Agents write for reads its own headings and no Claims.
+    let out = tm_command()
+        .arg("prime")
+        .current_dir(&repo)
+        .env("TM_HOME", scratch.home())
+        .env("TM_ACTOR", "jace")
+        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("TZ", "UTC")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    insta::assert_snapshot!("prime_text_person", unrepo(text(&out.stdout)));
 }
