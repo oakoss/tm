@@ -4,7 +4,7 @@
 use serde_json::{Value, json};
 use tm_core::Actor;
 use tm_core::mention::{self, Mentioned};
-use tm_core::notification;
+use tm_core::notification::{self, Site};
 use tm_store::{Notification, Store};
 
 use crate::error::CliError;
@@ -188,22 +188,22 @@ fn by(store: &Store, notified: &Notification) -> Result<String, CliError> {
 /// What it tells the reader: the line that mentions them, shown by name, or
 /// the fields written past their Claim.
 fn said(notified: &Notification, reader: &Actor, names: &Names) -> String {
-    if notified.kind == "passed_claim" {
+    if notified.site == Site::Claim {
         return format!("wrote {} while you held it", notified.text);
     }
     names.shown(mentioned_line(&notified.text, reader))
 }
 
 /// Where the mention was written, or the Claim written past.
-fn place(kind: &str) -> &'static str {
-    match kind {
-        "passed_claim" => "your Claim",
-        "ask" => "a question",
-        "answer" => "an answer",
-        "withdraw" => "a withdrawn question",
-        "set_field" => "the description",
-        "edit_comment" => "an edited comment",
-        _ => "a comment",
+const fn place(site: Site) -> &'static str {
+    match site {
+        Site::Comment => "a comment",
+        Site::Question => "a question",
+        Site::Answer => "an answer",
+        Site::Withdrawal => "a withdrawn question",
+        Site::EditedComment => "an edited comment",
+        Site::Description => "the description",
+        Site::Claim => "your Claim",
     }
 }
 
@@ -215,7 +215,7 @@ fn line(notified: &Notification, (key, by): (&str, &str), said: &str, now_ms: i6
         short(notified.id),
         printable(key),
         printable(by),
-        place(&notified.kind),
+        place(notified.site),
         span(now_ms - notified.utc_ms),
         crate::list::cut(&printable(said), LINE_BYTES)
     )

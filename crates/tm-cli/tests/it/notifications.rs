@@ -180,3 +180,44 @@ fn a_write_past_an_agents_claim_tells_the_agent_and_shows_in_history() {
         "{history}"
     );
 }
+
+#[test]
+fn each_line_says_where_the_mention_was_written() {
+    let scratch = Scratch::new();
+    let repo = mentioned(&scratch);
+    for args in [
+        &["ask", "TM-1", "@kim@example.com which?", "--of", "kim"][..],
+        &["answer", "TM-1", "this, @kim@example.com"],
+        &["comment", "TM-1", "a note"],
+        &[
+            "comment",
+            "TM-1",
+            "--edit",
+            "last",
+            "a note for @kim@example.com",
+        ],
+        &[
+            "edit",
+            "TM-1",
+            "--set",
+            "description=over to @kim@example.com",
+        ],
+    ] {
+        let out = tm(&scratch, &repo, args);
+        assert!(out.status.success(), "{args:?}: {out:?}");
+    }
+    let shown = text(&kim(&scratch, &repo, &["notifications"]).stdout);
+    for (site, said) in [
+        ("jace in a comment", ", see this"),
+        ("jace in a question", " which?"),
+        ("jace in an answer", "this, @"),
+        ("jace in an edited comment", "a note for @"),
+        ("jace in the description", "over to @"),
+    ] {
+        let line = shown.lines().find(|line| line.contains(said));
+        assert!(
+            line.is_some_and(|line| line.contains(site)),
+            "{site}: {shown}"
+        );
+    }
+}
