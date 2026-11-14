@@ -2,12 +2,14 @@
 //! read marks a record of their own.
 
 use serde_json::json;
-use tm_core::{Actor, Change};
+use tm_core::notification::Site;
+use tm_core::{Actor, Change, Hlc};
 use tm_store::{Draft, Notification, Store, StoreError, WriteOptions};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, PROJECT, TempDir, claude, draft, dump, jace, new_issue, open, set_field,
+    ManualClock, PROJECT, TempDir, claude, draft, dump, insert_acked, jace, new_issue, open,
+    remote_op, set_field,
 };
 
 fn kim() -> Actor {
@@ -63,6 +65,19 @@ fn a_mention_notifies_each_actor_once_but_not_the_writer_or_code() {
     store.rebuild().unwrap();
     assert_eq!(dump(&store), before);
     assert_eq!(unread(&store, &kim()), listed);
+}
+
+#[test]
+fn only_the_description_among_fields_notifies() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let issue = new_issue(&mut store);
+    write(
+        &mut store,
+        issue,
+        set_field("title", json!("for <@kim@example.com>")),
+    );
+    assert_eq!(unread(&store, &kim()), []);
 }
 
 #[test]
@@ -172,6 +187,70 @@ fn an_edit_notifies_only_the_mentions_it_adds() {
     let before = dump(&store);
     store.rebuild().unwrap();
     assert_eq!(dump(&store), before);
+}
+
+#[test]
+fn an_edit_replayed_before_its_comment_is_judged_against_the_comment_as_written() {
+    let issue = Uuid::now_v7();
+    let at = |ms| Hlc::new(ms, 0);
+    let create = remote_op(7, issue, &Change::Create, at(1_000), 0);
+    let said = Change::Comment {
+        body: "ask <@kim@example.com>".into(),
+    };
+    let comment = remote_op(7, issue, &said, at(2_000), 1);
+    let edit = Change::EditComment {
+        comment: comment.op_id,
+        body: "ask <@kim@example.com> again".into(),
+    };
+    let edit = remote_op(8, issue, &edit, at(3_000), 2);
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    for (seq, op) in (1..).zip([&create, &edit, &comment]) {
+        insert_acked(&store, op, seq, 6_000);
+    }
+    store.rebuild().unwrap();
+    let heard = unread(&store, &kim());
+    assert_eq!(heard.len(), 1, "the comment, not its edit: {heard:?}");
+    assert_eq!(heard[0].site, Site::Comment);
+}
+
+#[test]
+fn each_comment_kind_notifies_from_its_own_site() {
+    let issue = Uuid::now_v7();
+    let at = |ms| Hlc::new(ms, 0);
+    let changes = [
+        (
+            Change::Ask {
+                body: "<@kim@example.com> which?".into(),
+                options: Vec::new(),
+            },
+            Site::Question,
+        ),
+        (
+            Change::Withdraw {
+                body: "settled, <@kim@example.com>".into(),
+            },
+            Site::Withdrawal,
+        ),
+        (
+            Change::Answer {
+                body: "this, <@kim@example.com>".into(),
+            },
+            Site::Answer,
+        ),
+    ];
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let create = remote_op(7, issue, &Change::Create, at(1_000), 0);
+    insert_acked(&store, &create, 1, 6_000);
+    for ((change, _), seq) in changes.iter().zip(2_u64..) {
+        let op = remote_op(7, issue, change, at(1_000 + seq * 1_000), seq - 1);
+        insert_acked(&store, &op, i64::try_from(seq).unwrap(), 6_000);
+    }
+    store.rebuild().unwrap();
+    let mut heard: Vec<Site> = unread(&store, &kim()).iter().map(|n| n.site).collect();
+    heard.reverse();
+    assert_eq!(heard, changes.map(|(_, site)| site));
 }
 
 #[test]

@@ -9,12 +9,12 @@
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value as Json;
+use tm_core::notification::Site;
 use tm_core::op::{COMMENT_BODY_FIELD, COMMENTS_FIELD, ClaimAction, OpError};
 use tm_core::scheme::priority_rank;
 use tm_core::{Change, Hlc, Op, ProjectId, Subject, link};
 use uuid::Uuid;
 
-use crate::notifications::Mentioning;
 use crate::read::CommentRole;
 use crate::{StoreError, project, shortlist};
 
@@ -123,6 +123,7 @@ pub(crate) fn apply(
         Subject::Issue => check_filed(tx, op, &change)?,
         other => return apply_record(tx, op, &change, other, &version).map(|()| None),
     }
+    let site = change.site();
     match change {
         Change::Create => return create(tx, op, assigned_key),
         Change::CreateProject { .. }
@@ -142,10 +143,8 @@ pub(crate) fn apply(
             // Checked before anything is written, so a value that does not fit
             // leaves the projection untouched.
             let target = target(&field, &value)?;
-            if field == "description"
-                && let Some(text) = value.as_str()
-            {
-                description_mentions(tx, op, text)?;
+            if let Some(text) = value.as_str() {
+                crate::notifications::description(tx, op, site, text)?;
             }
             if wins(tx, op.subject, &field, "", &version)? {
                 record(tx, op.subject, &field, "", true, &version)?;
@@ -192,18 +191,18 @@ pub(crate) fn apply(
             retract(tx, op.subject, comment, retracted, &version)?;
         }
         Change::EditComment { comment, body } => {
-            if let Some(reason) = edit_comment(tx, op, comment, &body, &version)? {
+            if let Some(reason) = edit_comment(tx, op, (comment, &body), site, &version)? {
                 return Ok(Some(reason));
             }
         }
         passed @ Change::PassedClaim { .. } => crate::notifications::passed(tx, op, &passed)?,
-        Change::Comment { body } => comment(tx, op, &body, None, &[])?,
+        Change::Comment { body } => comment(tx, op, (&body, site), None, &[])?,
         Change::Ask { body, options } => {
-            comment(tx, op, &body, Some(CommentRole::Question), &options)?;
+            comment(tx, op, (&body, site), Some(CommentRole::Question), &options)?;
         }
-        Change::Answer { body } => comment(tx, op, &body, Some(CommentRole::Answer), &[])?,
+        Change::Answer { body } => comment(tx, op, (&body, site), Some(CommentRole::Answer), &[])?,
         Change::Withdraw { body } => {
-            comment(tx, op, &body, Some(CommentRole::Withdrawn), &[])?;
+            comment(tx, op, (&body, site), Some(CommentRole::Withdrawn), &[])?;
         }
     }
     // Every operation counts as activity, comments included.
@@ -235,7 +234,7 @@ fn apply_record(
 fn comment(
     tx: &Transaction<'_>,
     op: &Op,
-    body: &str,
+    (body, site): (&str, Option<Site>),
     role: Option<CommentRole>,
     options: &[String],
 ) -> Result<(), StoreError> {
@@ -263,12 +262,7 @@ fn comment(
             options,
         ],
     )?;
-    let mentioning = Mentioning {
-        text: body,
-        before: None,
-        comment: Some(op.op_id),
-    };
-    crate::notifications::derive(tx, op, &mentioning)?;
+    crate::notifications::comment(tx, op, site, body)?;
     if role.is_none() {
         pending_edit(tx, op)?;
     }
@@ -352,19 +346,14 @@ fn retract(
 fn edit_comment(
     tx: &Transaction<'_>,
     op: &Op,
-    comment: Uuid,
-    body: &str,
+    (comment, body): (Uuid, &str),
+    site: Option<Site>,
     version: &Version,
 ) -> Result<Option<String>, StoreError> {
     if let Some(reason) = crate::validate::not_editable(tx, op.subject, comment)? {
         return Ok(Some(reason));
     }
-    let mentioning = Mentioning {
-        text: body,
-        before: replaced_text(tx, comment)?,
-        comment: Some(comment),
-    };
-    crate::notifications::derive(tx, op, &mentioning)?;
+    crate::notifications::edit(tx, op, site, (comment, body))?;
     let elem = comment.to_string();
     if !wins(tx, op.subject, COMMENT_BODY_FIELD, &elem, version)? {
         return Ok(None);
@@ -375,50 +364,6 @@ fn edit_comment(
         params![body, op.utc_ms, comment.as_bytes(), op.subject.as_bytes()],
     )?;
     Ok(None)
-}
-
-/// Notifies whom a description adds a mention of, against the text it
-/// replaces now.
-fn description_mentions(tx: &Transaction<'_>, op: &Op, text: &str) -> Result<(), StoreError> {
-    let before = tx.query_row(
-        "SELECT description FROM issues WHERE id = ?1",
-        [op.subject.as_bytes()],
-        |row| row.get(0),
-    )?;
-    let mentioning = Mentioning {
-        text,
-        before,
-        comment: None,
-    };
-    crate::notifications::derive(tx, op, &mentioning)
-}
-
-/// The text an edit of `comment` replaces: the comment's text now, or as
-/// written when the edit replays before it.
-fn replaced_text(tx: &Transaction<'_>, comment: Uuid) -> Result<Option<String>, StoreError> {
-    let shown: Option<String> = tx
-        .query_row(
-            "SELECT body FROM comments WHERE op_id = ?1",
-            [comment.as_bytes()],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if shown.is_some() {
-        return Ok(shown);
-    }
-    let payload: Option<String> = tx
-        .query_row(
-            "SELECT payload FROM ops WHERE op_id = ?1",
-            [comment.as_bytes()],
-            |row| row.get(0),
-        )
-        .optional()?;
-    Ok(
-        payload.and_then(|payload| match serde_json::from_str(&payload) {
-            Ok(Change::Comment { body }) => Some(body),
-            _ => None,
-        }),
-    )
 }
 
 /// Labels compare without case. Writes already store them lowercased; this

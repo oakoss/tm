@@ -1,7 +1,9 @@
-//! What each kind of operation is to the rest of tm: how undo treats it, and
-//! whether an import may carry it. Every answer matches every kind with no
-//! catch-all arm, so a new kind does not compile until it is placed here.
+//! What each kind of operation is to the rest of tm: how undo treats it,
+//! whether an import may carry it, and where a Notification it causes was
+//! written. Every answer matches every kind with no catch-all arm, so a new
+//! kind does not compile until it is placed here.
 
+use crate::notification::Site;
 use crate::op::{Change, ClaimAction};
 
 /// How undoing a batch treats one of its operations.
@@ -99,6 +101,38 @@ impl Change {
         }
     }
 
+    /// Where a Notification it causes was written; none for a kind that
+    /// never notifies.
+    #[must_use]
+    pub fn site(&self) -> Option<Site> {
+        match self {
+            Self::Comment { .. } => Some(Site::Comment),
+            Self::Ask { .. } => Some(Site::Question),
+            Self::Answer { .. } => Some(Site::Answer),
+            Self::Withdraw { .. } => Some(Site::Withdrawal),
+            Self::EditComment { .. } => Some(Site::EditedComment),
+            Self::SetField { field, .. } => (field == "description").then_some(Site::Description),
+            Self::PassedClaim { .. } => Some(Site::Claim),
+            Self::Create
+            | Self::Add { .. }
+            | Self::Remove { .. }
+            | Self::Retract { .. }
+            | Self::Link { .. }
+            | Self::Claim { .. }
+            | Self::CreateProject { .. }
+            | Self::RenameProject { .. }
+            | Self::CreateShortlist
+            | Self::SetShortlist { .. }
+            | Self::ShortlistActor { .. }
+            | Self::ShortlistSource
+            | Self::CreateMemory
+            | Self::SetMemory { .. }
+            | Self::MemorySource
+            | Self::SetName { .. }
+            | Self::SetRead { .. } => None,
+        }
+    }
+
     /// Whether only an import writes it: a source a later import finds a
     /// record by.
     #[must_use]
@@ -188,5 +222,24 @@ mod tests {
         assert!(Change::MemorySource.source_only());
         assert!(!comment.source_only());
         assert_eq!(Change::CreateMemory.undo(), Undo::Created);
+    }
+
+    #[test]
+    fn a_stored_kind_reads_back_as_the_site_its_change_gave() {
+        let description = Change::SetField {
+            field: "description".into(),
+            label: String::new(),
+            value: serde_json::Value::Null,
+            value_label: None,
+        };
+        assert_eq!(description.site(), Some(Site::Description));
+        for change in every_change().into_iter().chain([description]) {
+            match (&change, change.site()) {
+                (Change::SetField { field, .. }, site) => {
+                    assert_eq!(site.is_some(), field == "description", "{field}");
+                }
+                (_, site) => assert_eq!(Site::of_kind(change.kind()), site, "{}", change.kind()),
+            }
+        }
     }
 }

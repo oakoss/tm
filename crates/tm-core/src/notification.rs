@@ -12,6 +12,39 @@ use crate::person;
 /// The field a read mark is filed under.
 pub const READ_FIELD: &str = "read";
 
+/// Where the text a Notification carries was written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Site {
+    Comment,
+    Question,
+    Answer,
+    /// A question its asker withdrew.
+    Withdrawal,
+    EditedComment,
+    Description,
+    /// The recipient's Claim, which a write went past.
+    Claim,
+}
+
+impl Site {
+    /// The Site of a Notification recorded by an operation of `kind`, as
+    /// [`crate::Change::site`] places it; a `set_field` notifies only for the
+    /// description.
+    #[must_use]
+    pub fn of_kind(kind: &str) -> Option<Self> {
+        Some(match kind {
+            "comment" => Self::Comment,
+            "ask" => Self::Question,
+            "answer" => Self::Answer,
+            "withdraw" => Self::Withdrawal,
+            "edit_comment" => Self::EditedComment,
+            "set_field" => Self::Description,
+            "passed_claim" => Self::Claim,
+            _ => return None,
+        })
+    }
+}
+
 /// The Notification `op` gives `recipient`: one id per operation and Actor,
 /// so a rebuild finds the same one.
 #[must_use]

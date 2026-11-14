@@ -3,14 +3,17 @@
 
 use rusqlite::{OptionalExtension, Transaction, params};
 use tm_core::mention::Mentioned;
-use tm_core::{Actor, Change, Hlc, Op, notification};
+use tm_core::notification::{self, Site};
+use tm_core::{Actor, Change, Hlc, Op};
 use uuid::Uuid;
 
 use crate::apply::{Version, rust_int, sql_int, uuid_from};
 use crate::{Draft, Store, StoreError};
 
-/// One Notification as its recipient reads it.
+/// One Notification as its recipient reads it, built only by the store, so
+/// its `site` is always its `kind`'s.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Notification {
     pub id: Uuid,
     /// The operation that mentions the recipient.
@@ -18,6 +21,7 @@ pub struct Notification {
     pub issue_id: Uuid,
     /// The Change kind of that operation, such as `comment`.
     pub kind: String,
+    pub site: Site,
     /// The text that mentions the recipient, as written.
     pub text: String,
     pub actor: String,
@@ -26,37 +30,104 @@ pub struct Notification {
     pub read: bool,
 }
 
-/// What the operation `op` wrote that may mention someone, with the text it
-/// replaces and the comment it belongs to.
-pub(crate) struct Mentioning<'a> {
-    pub(crate) text: &'a str,
-    pub(crate) before: Option<String>,
-    pub(crate) comment: Option<Uuid>,
-}
-
-/// Records a Notification for each Actor `mentioning` adds a mention of,
-/// apart from the writer. An imported operation replays what was already
-/// said, so it notifies no one.
-pub(crate) fn derive(
+/// Notifies whom the comment, question, answer or withdrawal `op` writes as
+/// `body` mentions, when `site`, its Change's, says it notifies.
+pub(crate) fn comment(
     tx: &Transaction<'_>,
     op: &Op,
-    mentioning: &Mentioning<'_>,
+    site: Option<Site>,
+    body: &str,
 ) -> Result<(), StoreError> {
+    let Some(site) = site else { return Ok(()) };
+    derive(tx, op, site, (body, None), Some(op.op_id))
+}
+
+/// Notifies whom an edit of `comment` to `body` adds a mention of, against
+/// the text it replaces, when `site` says it notifies.
+pub(crate) fn edit(
+    tx: &Transaction<'_>,
+    op: &Op,
+    site: Option<Site>,
+    (comment, body): (Uuid, &str),
+) -> Result<(), StoreError> {
+    let Some(site) = site else { return Ok(()) };
+    let before = replaced_text(tx, comment)?;
+    derive(tx, op, site, (body, before.as_deref()), Some(comment))
+}
+
+/// Notifies whom a field's `text` adds a mention of, against the text it
+/// replaces, when `site` says the field notifies, as only the description
+/// does; run before the field is written.
+pub(crate) fn description(
+    tx: &Transaction<'_>,
+    op: &Op,
+    site: Option<Site>,
+    text: &str,
+) -> Result<(), StoreError> {
+    let Some(site) = site else { return Ok(()) };
+    let before: Option<String> = tx.query_row(
+        "SELECT description FROM issues WHERE id = ?1",
+        [op.subject.as_bytes()],
+        |row| row.get(0),
+    )?;
+    derive(tx, op, site, (text, before.as_deref()), None)
+}
+
+/// Records a Notification for each Actor `text` adds a mention of against
+/// `before`, apart from the writer. An imported operation replays what was
+/// already said, so it notifies no one.
+fn derive(
+    tx: &Transaction<'_>,
+    op: &Op,
+    site: Site,
+    (text, before): (&str, Option<&str>),
+    comment: Option<Uuid>,
+) -> Result<(), StoreError> {
+    debug_assert_eq!(Site::of_kind(&op.kind), Some(site), "{}", op.kind);
     if op.source.is_some() {
         return Ok(());
     }
     let writer = notification::writer(&op.actor, op.on_behalf_of.as_deref());
-    let recipients =
-        notification::recipients(mentioning.text, mentioning.before.as_deref(), &writer);
-    for recipient in recipients {
-        notify(tx, op, &recipient, mentioning.text, mentioning.comment)?;
+    for recipient in notification::recipients(text, before, &writer) {
+        notify(tx, op, &recipient, text, comment)?;
     }
     Ok(())
+}
+
+/// The text an edit of `comment` replaces: the comment's text now, or as
+/// written when the edit replays before it.
+fn replaced_text(tx: &Transaction<'_>, comment: Uuid) -> Result<Option<String>, StoreError> {
+    let shown: Option<String> = tx
+        .query_row(
+            "SELECT body FROM comments WHERE op_id = ?1",
+            [comment.as_bytes()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if shown.is_some() {
+        return Ok(shown);
+    }
+    let payload: Option<String> = tx
+        .query_row(
+            "SELECT payload FROM ops WHERE op_id = ?1",
+            [comment.as_bytes()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(
+        payload.and_then(|payload| match serde_json::from_str(&payload) {
+            Ok(Change::Comment { body }) => Some(body),
+            _ => None,
+        }),
+    )
 }
 
 /// Notifies a Claim's holder that `op`'s batch wrote past it; the text
 /// names the fields written.
 pub(crate) fn passed(tx: &Transaction<'_>, op: &Op, passed: &Change) -> Result<(), StoreError> {
+    if passed.site().is_none() {
+        return Ok(());
+    }
     let Change::PassedClaim {
         holder,
         held_for,
@@ -189,11 +260,15 @@ const COLUMNS: &str = "n.id, n.op_id, n.issue_id, n.kind, n.text, n.actor, n.on_
      n.utc_ms, coalesce(r.read, 0)";
 
 fn notification(row: &rusqlite::Row<'_>) -> Result<Notification, StoreError> {
+    let kind: String = row.get(3)?;
+    let site = Site::of_kind(&kind)
+        .ok_or_else(|| StoreError::Corrupt(format!("a Notification from a {kind:?} operation")))?;
     Ok(Notification {
         id: uuid_from(&row.get::<_, Vec<u8>>(0)?)?,
         op_id: uuid_from(&row.get::<_, Vec<u8>>(1)?)?,
         issue_id: uuid_from(&row.get::<_, Vec<u8>>(2)?)?,
-        kind: row.get(3)?,
+        kind,
+        site,
         text: row.get(4)?,
         actor: row.get(5)?,
         on_behalf_of: row.get(6)?,
