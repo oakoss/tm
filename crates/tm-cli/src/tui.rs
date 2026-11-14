@@ -50,8 +50,18 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
         .fix("tm list"));
     }
     prompt::hold();
-    let at = Place::process()?;
-    let here = here::read_at(&at)?;
+    screens_at(&Place::process()?)
+}
+
+/// The screens at `at`; a failure carries the warnings read before it.
+fn screens_at(at: &Place) -> Result<tm_tui::Ended, CliError> {
+    let mut here = here::read_at(at)?;
+    let warnings = std::mem::take(&mut here.warnings);
+    shown(at, here).map_err(|err| err.warned(warnings))
+}
+
+/// The screens over `here`, read at `at`, until the person quits.
+fn shown(at: &Place, here: here::Here) -> Result<tm_tui::Ended, CliError> {
     let (project, key) = here::mapped_project(&here.store, &here.found, &here.cwd)?;
     let mut place = key.to_owned();
     if here.snapshot.is_some() {
@@ -87,7 +97,7 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
         repo: Some((&here.found.path, key)),
         edits,
         snapshot: published.as_deref(),
-        at: &at,
+        at,
     };
     tm_tui::run(place, store, &actions, |store| {
         let (opened, seen) = refresh(watch.changed(), &mut pending, open, || {
@@ -226,11 +236,14 @@ impl tm_tui::Actions for Cli<'_> {
             .collect())
     }
 
-    fn unread(&self, store: &Store) -> usize {
-        self.writer
-            .ok()
-            .and_then(|actor| store.notifications(actor, false).ok())
-            .map_or(0, |unread| unread.len())
+    fn unread(&self, store: &Store) -> Result<usize, String> {
+        let Ok(actor) = self.writer else {
+            return Ok(0);
+        };
+        store
+            .notifications(actor, false)
+            .map(|unread| unread.len())
+            .map_err(|err| err.to_string())
     }
 
     fn notifications(&self, store: &Store) -> Result<Vec<tm_tui::Notice>, String> {
@@ -240,7 +253,7 @@ impl tm_tui::Actions for Cli<'_> {
         let listed = store
             .notifications(actor, true)
             .map_err(|err| err.to_string())?;
-        let shown = notifications::shown(store, actor, &listed).map_err(|err| err.message)?;
+        let shown = notifications::shown(store, actor, &listed).map_err(said)?;
         Ok(listed
             .iter()
             .zip(shown.lines)
@@ -281,7 +294,7 @@ impl tm_tui::Actions for Cli<'_> {
         let written = history::render(store, id, latest, false, &me);
         let (shown, written) = shown
             .and_then(|shown| Ok((shown, written?)))
-            .map_err(|err| err.message)?;
+            .map_err(said)?;
         tm_tui::Issue::read(shown.data, written.data)
     }
 
@@ -299,7 +312,7 @@ impl tm_tui::Actions for Cli<'_> {
             warnings.push(warning);
             Vec::new()
         });
-        let text = ready::render(store, self.project, &lists).map_err(|err| err.message)?;
+        let text = ready::render(store, self.project, &lists).map_err(said)?;
         let mut lead = String::new();
         for warning in warnings {
             lead.push_str("warning: ");
@@ -355,16 +368,21 @@ impl tm_tui::Actions for Cli<'_> {
     }
 }
 
-/// A refused write as the status line says it: the CLI's message, then the
-/// command that fixes it when the CLI gives one, with the CLI's warnings.
-fn refusal(err: CliError) -> tm_tui::Refused {
-    let why = match err.fix {
+/// A refused write as the status line says it, with the CLI's warnings.
+fn refusal(mut err: CliError) -> tm_tui::Refused {
+    let warnings = std::mem::take(&mut err.warnings);
+    tm_tui::Refused {
+        why: said(err),
+        warnings,
+    }
+}
+
+/// A CLI error as a screen says it: the message, then the command that fixes
+/// it when the CLI gives one.
+fn said(err: CliError) -> String {
+    match err.fix {
         Some(fix) => format!("{} — try: {fix}", err.message),
         None => err.message,
-    };
-    tm_tui::Refused {
-        why,
-        warnings: err.warnings,
     }
 }
 
@@ -947,6 +965,48 @@ mod tests {
     }
 
     #[test]
+    fn a_screen_that_cannot_be_read_says_the_command_that_fixes_it() {
+        let at = here::fixture();
+        let mut here = here::open_at(&at).unwrap();
+        let jace = Actor::human("jace");
+        let project = here.store.project_by_key("TM").unwrap().unwrap();
+        let (issue, _) = here
+            .store
+            .create_issue(&jace, project, "task", "alpha")
+            .unwrap();
+        // Out of WAL, so a lock another connection holds blocks a read.
+        here.store
+            .connection()
+            .execute_batch("PRAGMA journal_mode = DELETE")
+            .unwrap();
+        here.store
+            .connection()
+            .busy_timeout(std::time::Duration::ZERO)
+            .unwrap();
+        let held = rusqlite::Connection::open(here.workspace.store_path()).unwrap();
+        held.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let cli = |writer| Cli {
+            me: Err("unused"),
+            project,
+            writer,
+            reader: Err("unused"),
+            repo: None,
+            edits: Ok(()),
+            snapshot: None,
+            at: &NOWHERE,
+        };
+        let nobody = cli(Err("unused"));
+        for why in [
+            nobody.ready(&here.store).unwrap_err(),
+            nobody.issue(&here.store, issue).unwrap_err(),
+        ] {
+            assert!(why.ends_with(" — try: retry"), "{why}");
+        }
+        assert_eq!(nobody.unread(&here.store), Ok(0), "no one to count for");
+        assert!(cli(Ok(&jace)).unread(&here.store).is_err());
+    }
+
+    #[test]
     fn an_agent_with_no_email_reads_its_lists_as_tm_ready_does() {
         let var = |name: &str| (name == "TM_AGENT").then(|| Ok("claude".to_owned()));
         let (me, reader) = session(var, || Err("no user.email".into()));
@@ -980,6 +1040,30 @@ mod tests {
                 why: "TM-2 is claimed — try: tm take TM-2".into(),
                 warnings: vec!["the read-only Snapshot was not updated: full".into()],
             }
+        );
+    }
+
+    #[test]
+    fn a_tui_that_cannot_start_reports_the_warnings_read_before_it() {
+        let at = here::fixture();
+        let here = here::open_at(&at).unwrap();
+        here.store
+            .connection()
+            .execute(
+                "INSERT INTO unapplied (op_id, reason) VALUES (?1, ?2)",
+                (Uuid::now_v7().as_bytes().to_vec(), "unknown field"),
+            )
+            .unwrap();
+        let file = at.cwd.join(".config/tm.toml");
+        let mapped = std::fs::read_to_string(&file).unwrap();
+        std::fs::write(&file, mapped.replace("\"TM\"", "\"XX\"")).unwrap();
+        let Err(err) = screens_at(&at) else {
+            panic!("the screens opened on a Project the Workspace lacks");
+        };
+        assert_eq!(err.code, "not_found", "{err:?}");
+        assert_eq!(
+            err.warnings,
+            ["1 logged operation did not apply in full; tm doctor will list it"]
         );
     }
 
