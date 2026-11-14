@@ -78,7 +78,7 @@ pub(crate) fn run(args: &Move) -> Result<Output, CliError> {
     here::write(|here| write(here, args))
 }
 
-fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>), CliError> {
+pub(crate) fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>), CliError> {
     let (reference, target) = (args.issue.as_str(), args.status.as_str());
     let (fields, force) = (args.set.as_slice(), args.force);
     let id = here.issue(reference)?;

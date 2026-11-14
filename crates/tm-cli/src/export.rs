@@ -226,7 +226,7 @@ pub(crate) fn import_records(
         _ => read(file)?,
     };
     let (home, cwd, found) = here::find()?;
-    let identity = identity::required_in(&found.dir)?;
+    let identity = identity::required_in(identity::env, &found.dir)?;
     let cwd = here::canonical(&cwd)?;
     // Records name their own Project; an adapter's go where `tm create`'s do.
     let project = |store: &Store| match adapter {

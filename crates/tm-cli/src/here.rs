@@ -12,8 +12,45 @@ use uuid::Uuid;
 
 use crate::backup;
 use crate::error::CliError;
-use crate::identity::{self, Identity};
+use crate::identity::{self, Identity, Var};
 use crate::output::{Output, local_time};
+
+/// How a command reads an environment variable, as [`identity::env`] does.
+pub(crate) type Env = fn(&str) -> Option<Var>;
+
+/// Where a command looks for its Workspace and its writer.
+#[derive(Clone)]
+pub(crate) struct Place {
+    /// tm's home on this machine.
+    pub(crate) home: PathBuf,
+    pub(crate) cwd: PathBuf,
+    pub(crate) env: Env,
+}
+
+impl Place {
+    /// This process's: `TM_HOME` or the home directory, and its working
+    /// directory and environment.
+    pub(crate) fn process() -> Result<Self, CliError> {
+        let cwd = std::env::current_dir()
+            .map_err(|err| CliError::new("io", format!("working directory: {err}")))?;
+        let home = workspace::home(std::env::var_os("TM_HOME"), std::env::home_dir())?;
+        Ok(Self {
+            home,
+            cwd,
+            env: identity::env,
+        })
+    }
+
+    fn found(&self) -> Result<Found, CliError> {
+        workspace::discover(&self.cwd)?.ok_or_else(|| {
+            CliError::new(
+                "no_workspace",
+                "no .config/tm.toml maps this directory to a Workspace",
+            )
+            .fix("tm init")
+        })
+    }
+}
 
 pub(crate) struct Here {
     /// tm's home on this machine.
@@ -30,6 +67,7 @@ pub(crate) struct Here {
     pub(crate) snapshot: Option<String>,
     /// What every command reports, such as operations that did not apply.
     pub(crate) warnings: Vec<String>,
+    pub(crate) env: Env,
 }
 
 impl Here {
@@ -66,9 +104,14 @@ pub(crate) fn not_published(cause: &dyn std::fmt::Display) -> String {
 /// `no_workspace` with the fix `tm init` when no repo file maps the
 /// directory, or the Workspace and store errors opening it.
 pub(crate) fn open() -> Result<Here, CliError> {
-    let (home, cwd, found) = find()?;
-    match workspace::workspace_for(&home, &found) {
-        Ok((workspace, store)) => opened(home, found, &cwd, workspace, store),
+    open_at(&Place::process()?)
+}
+
+/// [`open`] at `place`.
+pub(crate) fn open_at(place: &Place) -> Result<Here, CliError> {
+    let found = place.found()?;
+    match workspace::workspace_for(&place.home, &found) {
+        Ok((workspace, store)) => opened(place, found, workspace, store),
         Err(err) => Err(match refused(&err) {
             Some(path) => CliError::new(
                 "read_only",
@@ -90,15 +133,20 @@ pub(crate) fn open() -> Result<Here, CliError> {
 ///
 /// As [`open`], or `read_only` when no Snapshot has been published.
 pub(crate) fn read() -> Result<Here, CliError> {
-    let (home, cwd, found) = find()?;
-    let store_path = match workspace::workspace_for(&home, &found) {
-        Ok((workspace, store)) => return opened(home, found, &cwd, workspace, store),
+    read_at(&Place::process()?)
+}
+
+/// [`read`] at `place`.
+pub(crate) fn read_at(place: &Place) -> Result<Here, CliError> {
+    let found = place.found()?;
+    let store_path = match workspace::workspace_for(&place.home, &found) {
+        Ok((workspace, store)) => return opened(place, found, workspace, store),
         Err(err) => match refused(&err) {
             Some(path) => path.to_path_buf(),
             None => return Err(err.into()),
         },
     };
-    let workspace = workspace::locate(&home, &found)?;
+    let workspace = workspace::locate(&place.home, &found)?;
     let path = workspace.snapshot_path();
     let Ok(published) = fs::metadata(&path).and_then(|metadata| metadata.modified()) else {
         return Err(CliError::new(
@@ -110,7 +158,7 @@ pub(crate) fn read() -> Result<Here, CliError> {
         ));
     };
     let store = Store::open_snapshot(&path, workspace.id)?;
-    let mut here = opened(home, found, &cwd, workspace, store)?;
+    let mut here = opened(place, found, workspace, store)?;
     let published = snapshot_read(published);
     here.warnings.insert(0, published.clone());
     here.snapshot = Some(published);
@@ -159,21 +207,20 @@ fn refused(err: &WorkspaceError) -> Option<&Path> {
 }
 
 fn opened(
-    home: PathBuf,
+    place: &Place,
     found: Found,
-    cwd: &Path,
     workspace: Workspace,
     store: Store,
 ) -> Result<Here, CliError> {
     let warnings = unapplied(&store)?.into_iter().collect();
-    let cwd = canonical(cwd)?;
+    let cwd = canonical(&place.cwd)?;
     let log_end = store.log_end()?;
     let store = store.working_in(Workplace {
         dir: Some(found.dir.display().to_string()),
-        harnesses: crate::identity::harness_sessions(crate::identity::env),
+        harnesses: identity::harness_sessions(place.env),
     });
     Ok(Here {
-        home,
+        home: place.home.clone(),
         found,
         cwd,
         store,
@@ -181,6 +228,7 @@ fn opened(
         log_end,
         snapshot: None,
         warnings,
+        env: place.env,
     })
 }
 
@@ -191,7 +239,15 @@ fn opened(
 pub(crate) fn write(
     write: impl FnOnce(&mut Here) -> Result<(Output, Vec<String>), CliError>,
 ) -> Result<Output, CliError> {
-    let (mut output, mut warnings, published) = write_with(write)?;
+    write_at(&Place::process()?, write)
+}
+
+/// [`write`] at `place`.
+pub(crate) fn write_at(
+    place: &Place,
+    write: impl FnOnce(&mut Here) -> Result<(Output, Vec<String>), CliError>,
+) -> Result<Output, CliError> {
+    let (mut output, mut warnings, published) = write_with_at(place, write)?;
     warnings.append(&mut output.warnings);
     warnings.extend(published);
     // A command may warn of a Claim the store also reports passing.
@@ -206,7 +262,14 @@ pub(crate) fn write(
 pub(crate) fn write_with<T>(
     write: impl FnOnce(&mut Here) -> Result<(T, Vec<String>), CliError>,
 ) -> Result<(T, Vec<String>, Vec<String>), CliError> {
-    let mut here = open()?;
+    write_with_at(&Place::process()?, write)
+}
+
+fn write_with_at<T>(
+    place: &Place,
+    write: impl FnOnce(&mut Here) -> Result<(T, Vec<String>), CliError>,
+) -> Result<(T, Vec<String>, Vec<String>), CliError> {
+    let mut here = open_at(place)?;
     let mut warnings = std::mem::take(&mut here.warnings);
     let written = write(&mut here);
     if written.is_ok() {
@@ -232,17 +295,9 @@ pub(crate) fn write_with<T>(
 ///
 /// As [`open`], before the store is opened.
 pub(crate) fn find() -> Result<(PathBuf, PathBuf, Found), CliError> {
-    let cwd = std::env::current_dir()
-        .map_err(|err| CliError::new("io", format!("working directory: {err}")))?;
-    let home = workspace::home(std::env::var_os("TM_HOME"), std::env::home_dir())?;
-    let found = workspace::discover(&cwd)?.ok_or_else(|| {
-        CliError::new(
-            "no_workspace",
-            "no .config/tm.toml maps this directory to a Workspace",
-        )
-        .fix("tm init")
-    })?;
-    Ok((home, cwd, found))
+    let place = Place::process()?;
+    let found = place.found()?;
+    Ok((place.home, place.cwd, found))
 }
 
 /// The Project, and its key, that the repo file maps `cwd` to.
@@ -359,15 +414,15 @@ impl Here {
     /// a refusal leaves the log as it was. Under `TM_ACTOR` or as an Agent
     /// git's name is not the writer's; a warning when recording fails.
     fn record_name(&mut self) -> Option<String> {
-        let env = crate::identity::env;
-        if env("TM_ACTOR").is_some() || crate::identity::agent_detected(env) {
+        let env = self.env;
+        if env("TM_ACTOR").is_some() || identity::agent_detected(env) {
             return None;
         }
         if self.store.appended() == 0 {
             return None;
         }
-        let email = crate::identity::git_email(&self.found.dir).ok()?;
-        let name = match crate::identity::git_name(&self.found.dir) {
+        let email = identity::git_email(&self.found.dir).ok()?;
+        let name = match identity::git_name(&self.found.dir) {
             Ok(name) => name?,
             Err(why) => return Some(format!("cannot record your name: {why}")),
         };
@@ -387,7 +442,7 @@ impl Here {
     ///
     /// `no_identity` when tm cannot tell.
     pub(crate) fn writer(&self) -> Result<Identity, CliError> {
-        identity::required_in(&self.found.dir)
+        identity::required_in(self.env, &self.found.dir)
     }
 
     /// Who reads from here, as [`identity::reader`] tells writers apart.
@@ -396,7 +451,7 @@ impl Here {
     ///
     /// Why tm cannot tell, for the caller to word.
     pub(crate) fn reader(&self) -> Result<Identity, String> {
-        identity::reader_in(&self.found.dir)
+        identity::reader_in(self.env, &self.found.dir)
     }
 
     /// The Issue a Key, matched without case and through retired Project
@@ -480,4 +535,29 @@ fn imported_twice(reference: &str, ids: impl Iterator<Item = Uuid>) -> CliError 
     )
     .with("field", "issue")
     .with("matches", ids.map(|id| id.to_string()).collect::<Vec<_>>())
+}
+
+/// A repo mapped to a new Workspace with Project `TM`, under a home of its
+/// own, for tests that run a command's core in this process.
+#[cfg(test)]
+pub(crate) fn fixture() -> Place {
+    let root = std::env::temp_dir().join(format!("tm-here-{}", Uuid::now_v7()));
+    let (home, repo) = (root.join("home"), root.join("repo"));
+    fs::create_dir_all(repo.join(".git")).unwrap();
+    fs::create_dir_all(repo.join(".config")).unwrap();
+    let id = Uuid::now_v7();
+    let (_, mut store) = Workspace::create(&home, id).unwrap();
+    store
+        .create_project(&Actor::human("jace"), "TM", "Core")
+        .unwrap();
+    let file = format!("workspace = \"{id}\"\nproject = \"TM\"\n");
+    fs::write(repo.join(".config/tm.toml"), file).unwrap();
+    // As `TM_ACTOR=jace` with no harness, so git and this process's own
+    // environment are never read.
+    let jace = |name: &str| (name == "TM_ACTOR").then(|| Ok("jace".to_owned()));
+    Place {
+        home,
+        cwd: repo,
+        env: jace,
+    }
 }

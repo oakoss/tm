@@ -69,10 +69,14 @@ impl Output {
     pub(crate) fn batched(mut self, batch: Uuid, hint: bool) -> Self {
         self.data["batch"] = json!(batch);
         if hint {
-            let _ = writeln!(self.text, "undo this with: tm undo {}", short(batch));
+            let _ = writeln!(self.text, "{}", undo_hint(batch));
         }
         self
     }
+}
+
+pub(crate) fn undo_hint(batch: Uuid) -> String {
+    format!("undo this with: tm undo {}", short(batch))
 }
 
 /// An id's last 12 hex digits: a `UUIDv7` begins with its time, so only the

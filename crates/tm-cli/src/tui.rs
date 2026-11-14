@@ -13,6 +13,7 @@ use tm_tui::{Proposal, ViewEdit};
 use uuid::Uuid;
 
 use crate::error::CliError;
+use crate::here::Place;
 use crate::identity::Identity;
 use crate::output;
 use crate::{
@@ -49,15 +50,16 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
         .fix("tm list"));
     }
     prompt::hold();
-    let here = here::read()?;
+    let at = Place::process()?;
+    let here = here::read_at(&at)?;
     let (project, key) = here::mapped_project(&here.store, &here.found, &here.cwd)?;
     let mut place = key.to_owned();
     if here.snapshot.is_some() {
         place.push_str(" (read-only Snapshot)");
     }
-    let (me, reader) = session(identity::env, || identity::git_email(&here.found.dir));
+    let (me, reader) = session(at.env, || identity::git_email(&here.found.dir));
     // Whom Notifications are listed for, as `tm notifications` marks them.
-    let writer = identity::writer_in(&here.found.dir).map(|identity| identity.actor);
+    let writer = identity::writer_in(at.env, &here.found.dir).map(|identity| identity.actor);
     // A Snapshot is opened immutable and a replaced store file is another
     // file, so the list's reader is opened again on each change, and first
     // after the watch starts, so no change between the two is missed.
@@ -74,7 +76,7 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
     let store = open()?;
     let me = me.as_deref().map_err(String::as_str);
     let mut pending = false;
-    let agent = identity::agent_detected(identity::env);
+    let agent = identity::agent_detected(at.env);
     let edits = views::editable(&here.found.path, snapshot, agent);
     let published = snapshot.then(|| workspace.snapshot_path());
     let actions = Cli {
@@ -85,6 +87,7 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
         repo: Some((&here.found.path, key)),
         edits,
         snapshot: published.as_deref(),
+        at: &at,
     };
     tm_tui::run(place, store, &actions, |store| {
         let (opened, seen) = refresh(watch.changed(), &mut pending, open, || {
@@ -134,6 +137,8 @@ struct Cli<'a> {
     edits: Result<(), String>,
     /// The Snapshot read in place of a store this process may not open.
     snapshot: Option<&'a Path>,
+    /// Where each write opens the store, as the CLI's command would.
+    at: &'a Place,
 }
 
 impl tm_tui::Actions for Cli<'_> {
@@ -305,37 +310,42 @@ impl tm_tui::Actions for Cli<'_> {
     }
 
     fn write(&self, write: &tm_tui::Write) -> Result<tm_tui::Written, String> {
-        let output = match write {
+        let output = here::write_at(self.at, |here| match write {
             tm_tui::Write::Move {
                 key,
                 status,
                 version,
-            } => moves::run(&moves::Move::to(key, status, if_version(*version))),
+            } => moves::write(here, &moves::Move::to(key, status, if_version(*version))),
             tm_tui::Write::Set {
                 key,
                 field,
                 value,
                 version,
-            } => edit::run(&edit::Edit::field(
+            } => edit::write(
+                here,
                 key,
-                field,
-                value.as_deref(),
-                if_version(*version),
-            )),
-            tm_tui::Write::Comment { key, body, picks } => comment::add_picked(key, body, picks),
-            tm_tui::Write::Read { id } => notifications::read(id),
-        };
+                &edit::Edit::field(key, field, value.as_deref(), if_version(*version)),
+            ),
+            tm_tui::Write::Comment { key, body, picks } => {
+                comment::add_picked(here, key, body, picks)
+            }
+            tm_tui::Write::Read { id } => notifications::mark_read(here, id),
+        });
         output.map(|output| written(&output)).map_err(refusal)
     }
 
     fn undo(&self, batch: Uuid) -> Result<tm_tui::Written, String> {
-        let output = undo::run(Some(&batch.to_string()), false, false).map_err(refusal)?;
-        // The first line names the batch; the ones after say what reverted.
-        let reverted: Vec<&str> = output.text.lines().skip(1).map(str::trim).collect();
-        let said = if reverted.is_empty() {
-            output.text.lines().next().unwrap_or_default().to_owned()
+        let mut lines = Vec::new();
+        let output = here::write_at(self.at, |here| {
+            let (undone, warnings) = undo::undo(here, Some(&batch.to_string()), false, false)?;
+            lines = undone.lines;
+            Ok((undone.output, warnings))
+        })
+        .map_err(refusal)?;
+        let said = if lines.is_empty() {
+            format!("undid {batch}:")
         } else {
-            format!("undid {}", reverted.join("; "))
+            format!("undid {}", lines.join("; "))
         };
         Ok(tm_tui::Written {
             said,
@@ -432,6 +442,131 @@ mod tests {
 
     use super::*;
 
+    /// For a test that writes nothing.
+    static NOWHERE: std::sync::LazyLock<Place> = std::sync::LazyLock::new(|| Place {
+        home: std::path::PathBuf::new(),
+        cwd: std::path::PathBuf::new(),
+        env: |_| None,
+    });
+
+    /// A `Cli` writing at `at` as jace.
+    fn writing(at: &Place, project: ProjectId) -> Cli<'_> {
+        Cli {
+            me: Ok("jace"),
+            project,
+            writer: Err("unused"),
+            reader: Err("unused"),
+            repo: None,
+            edits: Ok(()),
+            snapshot: None,
+            at,
+        }
+    }
+
+    #[test]
+    fn each_write_and_its_undo_run_the_clis_own_command_in_the_workspace_given() {
+        let at = here::fixture();
+        let jace = Actor::human("jace");
+        let mut here = here::open_at(&at).unwrap();
+        let project = here.project().unwrap();
+        let (id, _) = here
+            .store
+            .create_issue(&jace, project, "task", "alpha")
+            .unwrap();
+        let comment = Change::Comment {
+            body: "<@jace> have a look".into(),
+        };
+        let draft = Draft {
+            actor: Actor::human("kim"),
+            project,
+            subject: id,
+            change: comment,
+        };
+        here.store.append(draft).unwrap();
+        let version = || {
+            let here = here::read_at(&at).unwrap();
+            here.store.issue_with_version(id).unwrap().unwrap().1
+        };
+        let field = |name: &str| {
+            let here = here::read_at(&at).unwrap();
+            let view = here.store.issue(id).unwrap().unwrap();
+            view.fields.get(name).cloned()
+        };
+        let cli = writing(&at, project);
+
+        let moved = cli
+            .write(&tm_tui::Write::Move {
+                key: "TM-1".into(),
+                status: "in_progress".into(),
+                version: version(),
+            })
+            .unwrap();
+        assert!(moved.said.starts_with("TM-1"), "{moved:?}");
+        assert_eq!(field("status"), Some("in_progress".into()));
+
+        let stale = cli
+            .write(&tm_tui::Write::Move {
+                key: "TM-1".into(),
+                status: "done".into(),
+                version: 1,
+            })
+            .unwrap_err();
+        assert!(stale.contains("try: "), "{stale}");
+        assert_eq!(field("status"), Some("in_progress".into()));
+        let set = cli
+            .write(&tm_tui::Write::Set {
+                key: "TM-1".into(),
+                field: "priority".into(),
+                value: Some("high".into()),
+                version: version(),
+            })
+            .unwrap();
+        assert_eq!(field("priority"), Some("high".into()), "{set:?}");
+
+        let undone = cli.undo(set.batch.unwrap()).unwrap();
+        assert!(undone.said.starts_with("undid "), "{undone:?}");
+        assert!(undone.said.contains("priority"), "{undone:?}");
+        assert!(
+            undone.said.contains("; undo this with: tm undo "),
+            "{undone:?}"
+        );
+        assert_ne!(field("priority"), Some("high".into()));
+
+        let commented = cli
+            .write(&tm_tui::Write::Comment {
+                key: "TM-1".into(),
+                body: "on it".into(),
+                picks: Vec::new(),
+            })
+            .unwrap();
+        assert!(commented.batch.is_some(), "{commented:?}");
+
+        let read = cli
+            .write(&tm_tui::Write::Read { id: "all".into() })
+            .unwrap();
+        assert_eq!(read.said, "marked 1 Notification read", "{read:?}");
+        let mut here = here::read_at(&at).unwrap();
+        assert_eq!(here.store.notifications(&jace, false).unwrap(), []);
+
+        let claude = Actor::agent("claude", "jace");
+        here.store.take(&claude, id, Some(60_000)).unwrap();
+        let claimed: Vec<u8> = here
+            .store
+            .connection()
+            .query_row(
+                "SELECT batch FROM op_batches ORDER BY op_id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let claimed = Uuid::from_slice(&claimed).unwrap();
+        let released = cli.undo(claimed).unwrap();
+        assert!(
+            !released.said.contains("undo this with"),
+            "a Claim's undo is not undone again: {released:?}"
+        );
+    }
+
     #[test]
     fn the_issue_screen_reads_the_version_moves_and_lapsed_claim_tm_show_reports() {
         let dir = std::env::temp_dir().join(format!("tm-issue-{}", Uuid::now_v7()));
@@ -451,6 +586,7 @@ mod tests {
             repo: None,
             edits: Ok(()),
             snapshot: None,
+            at: &NOWHERE,
         };
         assert_eq!(cli.project(), Some(project));
         let shown = cli.issue(&store, id).unwrap().shown;
@@ -531,6 +667,7 @@ mod tests {
             repo: None,
             edits: Ok(()),
             snapshot: None,
+            at: &NOWHERE,
         };
         let issue = cli.issue(&store, id).unwrap();
         let shown = &issue.shown;
@@ -580,6 +717,7 @@ mod tests {
             repo: Some((&path, key)),
             edits: Ok(()),
             snapshot: None,
+            at: &NOWHERE,
         };
         let names = |key| -> Vec<String> {
             let views = cli(key).views().unwrap();
@@ -610,6 +748,7 @@ mod tests {
             repo: Some((&path, "TM")),
             edits: Ok(()),
             snapshot: None,
+            at: &NOWHERE,
         };
         let mine = cli.views().unwrap().remove(0);
         let ours = View {
@@ -703,6 +842,7 @@ mod tests {
             repo: None,
             edits: Ok(()),
             snapshot: None,
+            at: &NOWHERE,
         };
         let text = cli.ready(&store).unwrap();
         assert!(text.starts_with("warning: found two harnesses\n"), "{text}");
@@ -719,6 +859,7 @@ mod tests {
             repo: None,
             edits: Ok(()),
             snapshot: None,
+            at: &NOWHERE,
         };
         let text = nobody.ready(&store).unwrap();
         assert!(
@@ -816,6 +957,7 @@ mod tests {
             repo: None,
             edits: Ok(()),
             snapshot,
+            at: &NOWHERE,
         };
         assert_eq!(cli(None).warnings(&store), Vec::<String>::new());
         store
