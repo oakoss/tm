@@ -216,14 +216,21 @@ pub trait Actions {
     /// # Errors
     ///
     /// Why it was refused, such as a field changed since `version`.
-    fn write(&self, write: &Write) -> Result<Written, String>;
+    fn write(&self, write: &Write) -> Result<Written, Refused>;
 
     /// `tm undo` of `batch`: what it reverted, and the CLI's warnings.
     ///
     /// # Errors
     ///
     /// Why it cannot be undone.
-    fn undo(&self, batch: Uuid) -> Result<Written, String>;
+    fn undo(&self, batch: Uuid) -> Result<Written, Refused>;
+}
+
+/// Why a write was refused, and the warnings the CLI gives with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refused {
+    pub why: String,
+    pub warnings: Vec<String>,
 }
 
 /// A write a screen asks for, refused if a field it sets changed after
@@ -751,7 +758,13 @@ impl Shell {
                     }
                     warnings.extend(written.warnings);
                 }
-                Err(why) => refused.push(format!("{}: {why}", write.key())),
+                Err(Refused {
+                    why,
+                    warnings: also,
+                }) => {
+                    refused.push(format!("{}: {why}", write.key()));
+                    warnings.extend(also);
+                }
             }
         }
         let attempted: Vec<String> = writes.iter().map(|write| write.key().to_owned()).collect();
@@ -805,9 +818,13 @@ impl Shell {
                     undone.push(written.said);
                     warnings.extend(written.warnings);
                 }
-                Err(why) => {
+                Err(Refused {
+                    why,
+                    warnings: also,
+                }) => {
                     kept.push(*batch);
                     refused.get_or_insert(why);
+                    warnings.extend(also);
                 }
             }
         }
@@ -821,7 +838,7 @@ impl Shell {
         kept.reverse();
         self.written.push(kept);
         match undone.len() {
-            0 => format!("✗ {earlier}not undone: {why}"),
+            0 => format!("✗ {earlier}not undone: {why}{warned}"),
             n => {
                 format!("✗ {earlier}{why} ({n} of {total} undone; u tries the rest again){warned}")
             }

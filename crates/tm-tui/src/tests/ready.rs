@@ -6,12 +6,12 @@ use super::*;
 struct Wide;
 
 impl Actions for Wide {
-    fn write(&self, write: &Write) -> Result<Written, String> {
-        Err(format!("{} not written", write.key()))
+    fn write(&self, write: &Write) -> Result<Written, Refused> {
+        Err(refused(&format!("{} not written", write.key())))
     }
 
-    fn undo(&self, _: Uuid) -> Result<Written, String> {
-        Err("nothing undone".into())
+    fn undo(&self, _: Uuid) -> Result<Written, Refused> {
+        Err(refused("nothing undone"))
     }
 
     fn me(&self) -> Result<&str, &str> {

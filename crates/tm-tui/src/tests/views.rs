@@ -8,11 +8,11 @@ use super::*;
 struct Saved(Result<Vec<View>, String>);
 
 impl Actions for Saved {
-    fn write(&self, write: &Write) -> Result<Written, String> {
+    fn write(&self, write: &Write) -> Result<Written, Refused> {
         Fake.write(write)
     }
 
-    fn undo(&self, batch: Uuid) -> Result<Written, String> {
+    fn undo(&self, batch: Uuid) -> Result<Written, Refused> {
         Fake.undo(batch)
     }
 
@@ -509,11 +509,11 @@ impl Editing {
 }
 
 impl Actions for Editing {
-    fn write(&self, write: &Write) -> Result<Written, String> {
+    fn write(&self, write: &Write) -> Result<Written, Refused> {
         Fake.write(write)
     }
 
-    fn undo(&self, batch: Uuid) -> Result<Written, String> {
+    fn undo(&self, batch: Uuid) -> Result<Written, Refused> {
         Fake.undo(batch)
     }
 
