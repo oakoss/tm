@@ -1,0 +1,397 @@
+---
+source: crates/tm-cli/tests/it/prime.rs
+expression: doc
+---
+{
+  "data": {
+    "actor": {
+      "agent": true,
+      "name": "claude",
+      "on_behalf_of": "jace",
+      "session": "s1"
+    },
+    "claims": [
+      {
+        "category": "todo",
+        "claim": {
+          "agent": "claude",
+          "branch": null,
+          "expires_in_ms": null,
+          "expires_ms": null,
+          "handed": false,
+          "id": "[id]",
+          "on_behalf_of": "jace",
+          "paths": [],
+          "session": "s1"
+        },
+        "fields": {
+          "archived": false,
+          "created": "[ms]",
+          "priority": "none",
+          "reporter": "jace",
+          "status": "todo",
+          "title": "mine",
+          "type": "task",
+          "updated": "[ms]"
+        },
+        "id": "[id]",
+        "key": "TM-3",
+        "project": "TM",
+        "sets": {}
+      }
+    ],
+    "habits": [
+      "tm start KEY when work starts",
+      "after a merge: git fetch, then tm git scan moves what it closed to done",
+      "your writes renew your Claims; a person's tm setup claude or codex adds hooks that heartbeat between them",
+      "the description holds the current plan; tm edit changes it",
+      "tm comment KEY for progress, what was learned and changes of plan"
+    ],
+    "handed_claims": [
+      {
+        "answer": null,
+        "category": "todo",
+        "claim": {
+          "agent": "claude",
+          "branch": null,
+          "expires_in_ms": null,
+          "expires_ms": null,
+          "handed": true,
+          "id": "[id]",
+          "on_behalf_of": "jace",
+          "paths": [],
+          "session": null
+        },
+        "fields": {
+          "archived": false,
+          "created": "[ms]",
+          "priority": "none",
+          "reporter": "jace",
+          "status": "todo",
+          "title": "handed",
+          "type": "task",
+          "updated": "[ms]"
+        },
+        "from": "codex",
+        "id": "[id]",
+        "key": "TM-2",
+        "note": "Pick this up; the tests pass",
+        "project": "TM",
+        "sets": {}
+      }
+    ],
+    "in_progress": {
+      "issues": [
+        {
+          "category": "active",
+          "fields": {
+            "archived": false,
+            "created": "[ms]",
+            "priority": "none",
+            "reporter": "jace",
+            "status": "in_progress",
+            "title": "started",
+            "type": "task",
+            "updated": "[ms]"
+          },
+          "id": "[id]",
+          "key": "TM-7",
+          "project": "TM",
+          "sets": {}
+        }
+      ],
+      "total": 1
+    },
+    "lapsed_claims": [
+      {
+        "category": "todo",
+        "claim": {
+          "agent": "claude",
+          "branch": null,
+          "expires_in_ms": "[ms]",
+          "expires_ms": "[ms]",
+          "handed": false,
+          "id": "[id]",
+          "on_behalf_of": "jace",
+          "paths": [],
+          "session": "s1"
+        },
+        "fields": {
+          "archived": false,
+          "created": "[ms]",
+          "priority": "none",
+          "reporter": "jace",
+          "status": "todo",
+          "title": "lapsed",
+          "type": "task",
+          "updated": "[ms]"
+        },
+        "id": "[id]",
+        "key": "TM-5",
+        "project": "TM",
+        "sets": {}
+      }
+    ],
+    "memories": {
+      "memories": [
+        {
+          "body": "Run mise run check before a commit",
+          "id": "[id]",
+          "key": "check",
+          "written_by": "jace",
+          "written_for": null,
+          "written_ms": "[ms]"
+        }
+      ],
+      "total": 1
+    },
+    "notifications": {
+      "notifications": [
+        {
+          "actor": "jace",
+          "at_ms": "[ms]",
+          "by": "jace",
+          "id": "[id]",
+          "issue": "TM-8",
+          "kind": "comment",
+          "mentions": [
+            {
+              "agent": "claude",
+              "on_behalf_of": "jace",
+              "shown": "@claude",
+              "token": "<@claude for jace>"
+            }
+          ],
+          "on_behalf_of": null,
+          "op_id": "[id]",
+          "read": false,
+          "text": "<@claude for jace> a long mention a long mention a long mention a long mention a long mention a long mention a long mention a long mention a long mention a long mention a long mention a long mention a long mention a long mention a long mention a long mention a long mention a long mention a long mention a long mention "
+        }
+      ],
+      "total": 1
+    },
+    "other_session_claims": [
+      {
+        "category": "todo",
+        "claim": {
+          "agent": "claude",
+          "branch": null,
+          "expires_in_ms": null,
+          "expires_ms": null,
+          "handed": false,
+          "id": "[id]",
+          "on_behalf_of": "jace",
+          "paths": [],
+          "session": "s2"
+        },
+        "fields": {
+          "archived": false,
+          "created": "[ms]",
+          "priority": "none",
+          "reporter": "jace",
+          "status": "todo",
+          "title": "other",
+          "type": "task",
+          "updated": "[ms]"
+        },
+        "id": "[id]",
+        "key": "TM-4",
+        "project": "TM",
+        "sets": {}
+      }
+    ],
+    "path_claims": [
+      {
+        "claim": {
+          "agent": "codex",
+          "branch": null,
+          "expires_in_ms": null,
+          "expires_ms": null,
+          "handed": false,
+          "id": "[id]",
+          "on_behalf_of": "jace",
+          "paths": [
+            "notes.txt"
+          ],
+          "session": null
+        },
+        "files": [
+          {
+            "file": "notes.txt",
+            "path": "notes.txt"
+          }
+        ],
+        "issue": {
+          "id": "[id]",
+          "key": "TM-6"
+        }
+      }
+    ],
+    "project": "TM",
+    "ready": {
+      "issues": [
+        {
+          "category": "todo",
+          "fields": {
+            "archived": false,
+            "created": "[ms]",
+            "priority": "none",
+            "reporter": "jace",
+            "status": "todo",
+            "title": "lapsed",
+            "type": "task",
+            "updated": "[ms]"
+          },
+          "id": "[id]",
+          "key": "TM-5",
+          "project": "TM",
+          "sets": {}
+        },
+        {
+          "category": "todo",
+          "fields": {
+            "archived": false,
+            "created": "[ms]",
+            "priority": "none",
+            "reporter": "jace",
+            "status": "todo",
+            "title": "mentioned",
+            "type": "task",
+            "updated": "[ms]"
+          },
+          "id": "[id]",
+          "key": "TM-8",
+          "project": "TM",
+          "sets": {}
+        },
+        {
+          "category": "todo",
+          "fields": {
+            "archived": false,
+            "created": "[ms]",
+            "priority": "none",
+            "reporter": "jace",
+            "status": "todo",
+            "title": "ready 3",
+            "type": "task",
+            "updated": "[ms]"
+          },
+          "id": "[id]",
+          "key": "TM-11",
+          "project": "TM",
+          "sets": {}
+        }
+      ],
+      "on_shortlists": 2,
+      "total": 8
+    },
+    "scheme": {
+      "name": "default",
+      "required": [
+        "type",
+        "title",
+        "status"
+      ],
+      "types": [
+        "epic",
+        "story",
+        "task",
+        "bug",
+        "sub_task",
+        "spike",
+        "design"
+      ],
+      "workflows": [
+        {
+          "name": "default",
+          "statuses": [
+            {
+              "category": "triage",
+              "id": "triage"
+            },
+            {
+              "category": "todo",
+              "id": "todo"
+            },
+            {
+              "category": "active",
+              "id": "in_progress"
+            },
+            {
+              "category": "active",
+              "id": "in_review"
+            },
+            {
+              "category": "done",
+              "id": "done"
+            },
+            {
+              "category": "cancelled",
+              "id": "cancelled"
+            }
+          ]
+        }
+      ]
+    },
+    "shortlists": [
+      {
+        "count": 2,
+        "first": {
+          "id": "[id]",
+          "key": "TM-9"
+        },
+        "id": "[id]",
+        "members": [
+          {
+            "id": "[id]",
+            "key": "TM-9",
+            "passed_over": []
+          },
+          {
+            "id": "[id]",
+            "key": "TM-10",
+            "passed_over": []
+          }
+        ],
+        "name": "next-up",
+        "next": true
+      }
+    ],
+    "waiting": {
+      "issues": [
+        {
+          "category": "todo",
+          "fields": {
+            "archived": false,
+            "created": "[ms]",
+            "priority": "none",
+            "reporter": "jace",
+            "status": "todo",
+            "title": "asked",
+            "type": "task",
+            "updated": "[ms]",
+            "waiting_on": "jace"
+          },
+          "id": "[id]",
+          "key": "TM-1",
+          "project": "TM",
+          "question": {
+            "actor": "claude",
+            "body": "Which way?",
+            "id": "[id]",
+            "options": [
+              "left",
+              "right"
+            ],
+            "resume": "cd [repo] && claude -r s0",
+            "utc_ms": "[ms]"
+          },
+          "sets": {}
+        }
+      ],
+      "on": "jace"
+    }
+  },
+  "schema_version": 1,
+  "warnings": []
+}

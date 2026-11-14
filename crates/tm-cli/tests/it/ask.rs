@@ -80,6 +80,10 @@ fn an_agent_parks_its_work_on_a_question_and_resumes_it_once_answered() {
     assert_eq!(answered["kept_for"], "claude");
     let prime = text(&claude(&scratch, &repo, "s2", &["prime"]).stdout);
     assert!(prime.contains("    jace answered: SQLite\n"), "{prime}");
+    let primed = data(&claude(&scratch, &repo, "s2", &["--json", "prime"]));
+    let answer = &primed["handed_claims"][0]["answer"];
+    assert_eq!(answer["reply"], "SQLite", "{primed}");
+    assert_eq!(answer["by"], "jace", "{primed}");
     let resumed = data(&claude(&scratch, &repo, "s2", &["--json", "start", "TM-1"]));
     assert_eq!(resumed["claim"]["session"], "s2", "{resumed}");
     let history = text(&tm(&scratch, &repo, &["history", "TM-1"]).stdout);
