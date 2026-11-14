@@ -6,7 +6,7 @@ use tm_core::scheme::{Field, FieldType, Scheme};
 use tm_core::{Actor, Change};
 use tm_store::{Draft, Store};
 
-use crate::support::{Scratch, initialized, jace, text, tm, tm_piped};
+use crate::support::{Scratch, initialized, jace, text, tm, tm_piped, unpassed};
 
 fn run(scratch: &Scratch, repo: &Path, args: &[&str]) -> (Option<i32>, Value) {
     let out = tm(scratch, repo, &[&["--json", "edit"], args].concat());
@@ -535,19 +535,21 @@ fn unset_clears_a_field_the_scheme_no_longer_has() {
         .push(Field::custom("area", "Area", FieldType::Number, Vec::new()));
     let mut store = store.with_scheme(scheme);
     let issue = store.issue_by_key("TM-2").unwrap().unwrap();
-    let _ = store
-        .append(Draft {
-            actor: Actor::human("jace"),
-            project: store.issue(issue).unwrap().unwrap().project,
-            subject: issue,
-            change: Change::SetField {
-                field: "area".into(),
-                label: String::new(),
-                value: json!(4),
-                value_label: None,
-            },
-        })
-        .unwrap();
+    unpassed(
+        store
+            .append(Draft {
+                actor: Actor::human("jace"),
+                project: store.issue(issue).unwrap().unwrap().project,
+                subject: issue,
+                change: Change::SetField {
+                    field: "area".into(),
+                    label: String::new(),
+                    value: json!(4),
+                    value_label: None,
+                },
+            })
+            .unwrap(),
+    );
 
     let (code, doc) = run(&scratch, &repo, &["TM-2", "--unset", "area"]);
     assert_eq!(code, Some(0), "{doc}");

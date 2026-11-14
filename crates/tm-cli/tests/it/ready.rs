@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 use tm_core::{Actor, Change};
 use tm_store::Draft;
 
-use crate::support::{Scratch, initialized, text, tm};
+use crate::support::{Scratch, initialized, text, tm, unpassed};
 
 #[test]
 fn ready_lists_startable_work_with_what_each_unblocks() {
@@ -16,19 +16,21 @@ fn ready_lists_startable_work_with_what_each_unblocks() {
     let first = new("first");
     let urgent = new("urgent");
     let held = new("held");
-    let _ = store
-        .append(Draft {
-            actor: jace.clone(),
-            project,
-            subject: urgent,
-            change: Change::SetField {
-                field: "priority".into(),
-                label: String::new(),
-                value: json!("urgent"),
-                value_label: None,
-            },
-        })
-        .unwrap();
+    unpassed(
+        store
+            .append(Draft {
+                actor: jace.clone(),
+                project,
+                subject: urgent,
+                change: Change::SetField {
+                    field: "priority".into(),
+                    label: String::new(),
+                    value: json!("urgent"),
+                    value_label: None,
+                },
+            })
+            .unwrap(),
+    );
     store.link(&jace, "blocks", first, held).unwrap();
 
     let out = tm(&scratch, &repo, &["ready", "--json"]);

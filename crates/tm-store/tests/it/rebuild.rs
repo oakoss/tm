@@ -426,6 +426,8 @@ proptest! {
         let issues: Vec<Uuid> = (0..ISSUES).map(|_| new_issue(&mut store)).collect();
         let list = new_list(&mut store);
         let mut expected = Model::new();
+        // A person writes past the generated Claims; the model does not track that.
+        let mut passed = Vec::new();
         for action in &actions {
             if let Action::Tick(ms) = action {
                 clock.advance(i64::from(*ms));
@@ -444,7 +446,7 @@ proptest! {
                     let err = result.unwrap_err();
                     prop_assert!(matches!(&err, StoreError::Invalid { field, .. } if field == "shortlist"), "{}", err);
                 } else {
-                    let _ = result.unwrap();
+                    result.unwrap().into_inner(&mut passed);
                     expected.record(action);
                 }
             } else if let Action::Link { from, to, link_type, present } = action {
@@ -489,7 +491,10 @@ proptest! {
                     }
                 }
             } else if let Some((issue, change)) = change(action) {
-                let _ = store.append(draft(issues[issue], change)).unwrap();
+                store
+                    .append(draft(issues[issue], change))
+                    .unwrap()
+                    .into_inner(&mut passed);
                 expected.record(action);
             }
         }

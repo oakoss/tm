@@ -7,8 +7,8 @@ use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, TempDir, draft, field, insert_acked, jace, key, new_issue, open, ops, remote_op,
-    scheme, set_field,
+    ManualClock, TempDir, draft, field, insert_acked, jace, key, new_issue, open, remote_op,
+    scheme, set_field, unpassed,
 };
 use crate::support::{OTHER, PROJECT};
 
@@ -77,8 +77,8 @@ fn issues_read_together_keep_their_order_and_their_own_values() {
     let c = new_issue(&mut store);
     set(&mut store, a, "area", json!(3)).unwrap();
     set(&mut store, a, "flag", json!(true)).unwrap();
-    let _ = store.append(draft(a, add("labels", "x"))).unwrap();
-    let _ = store.append(draft(b, add("labels", "y"))).unwrap();
+    unpassed(store.append(draft(a, add("labels", "x"))).unwrap());
+    unpassed(store.append(draft(b, add("labels", "y"))).unwrap());
     store
         .connection()
         .execute(
@@ -144,7 +144,7 @@ fn multi_select_elements_must_be_options_and_carry_their_label() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    let op = ops(store.append(draft(issue, add("tags", "x"))).unwrap());
+    let op = unpassed(store.append(draft(issue, add("tags", "x"))).unwrap());
     let Change::Add { elem_label, .. } = op.change().unwrap() else {
         panic!("not an add");
     };
@@ -160,12 +160,12 @@ fn labels_show_the_spelling_they_were_added_with() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    let _ = store.append(draft(issue, add("labels", "Bug"))).unwrap();
-    let _ = store.append(draft(issue, add("labels", "ui"))).unwrap();
+    unpassed(store.append(draft(issue, add("labels", "Bug"))).unwrap());
+    unpassed(store.append(draft(issue, add("labels", "ui"))).unwrap());
     let sets = store.issue(issue).unwrap().unwrap().sets;
     assert_eq!(sets["labels"]["bug"], "Bug");
     assert_eq!(sets["labels"]["ui"], "ui");
-    let _ = store.append(draft(issue, remove("labels", "BUG"))).unwrap();
+    unpassed(store.append(draft(issue, remove("labels", "BUG"))).unwrap());
     let sets = store.issue(issue).unwrap().unwrap().sets;
     assert!(!sets["labels"].contains_key("bug"));
 }
@@ -276,10 +276,10 @@ fn adding_a_held_label_or_removing_a_missing_one_is_logged() {
         elem: elem.into(),
         elem_label: None,
     };
-    let _ = store.append(draft(issue, add("labels", "x"))).unwrap();
-    let _ = store.append(draft(issue, add("labels", "x"))).unwrap();
-    let _ = store.append(draft(issue, remove("x"))).unwrap();
-    let _ = store.append(draft(issue, remove("x"))).unwrap();
+    unpassed(store.append(draft(issue, add("labels", "x"))).unwrap());
+    unpassed(store.append(draft(issue, add("labels", "x"))).unwrap());
+    unpassed(store.append(draft(issue, remove("x"))).unwrap());
+    unpassed(store.append(draft(issue, remove("x"))).unwrap());
     let logged: i64 = store
         .connection()
         .query_row(
@@ -384,7 +384,7 @@ fn labels_logged_with_capitals_replay_lowercased() {
     assert_eq!(store.rebuild().unwrap(), 0);
     let sets = store.issue(issue).unwrap().unwrap().sets;
     assert_eq!(sets["labels"]["bug"], "Bug");
-    let _ = store.append(draft(issue, remove("labels", "bug"))).unwrap();
+    unpassed(store.append(draft(issue, remove("labels", "bug"))).unwrap());
     assert!(
         !store
             .issue(issue)
@@ -403,7 +403,7 @@ fn values_the_scheme_stopped_defining_can_still_be_cleared() {
         let mut store = open(&dir.db(), &clock);
         let issue = new_issue(&mut store);
         set(&mut store, issue, "area", json!(3)).unwrap();
-        let _ = store.append(draft(issue, add("tags", "x"))).unwrap();
+        unpassed(store.append(draft(issue, add("tags", "x"))).unwrap());
         issue
     };
     let mut narrowed = scheme();
@@ -413,7 +413,7 @@ fn values_the_scheme_stopped_defining_can_still_be_cleared() {
     }
     let mut store = open(&dir.db(), &clock).with_scheme(narrowed);
     set(&mut store, issue, "area", Value::Null).unwrap();
-    let _ = store.append(draft(issue, remove("tags", "x"))).unwrap();
+    unpassed(store.append(draft(issue, remove("tags", "x"))).unwrap());
     let view = store.issue(issue).unwrap().unwrap();
     assert!(!view.fields.contains_key("area"));
     assert!(!view.sets.contains_key("tags"));

@@ -442,12 +442,12 @@ mod tests {
 
     use super::*;
 
-    /// What `written` wrote, for a test whose write passes no Claim.
-    fn ops<T>(written: tm_store::Written<T>) -> T {
+    /// What a write wrote, asserting it passed no Claim.
+    fn unpassed<T>(written: tm_store::Written<T>) -> T {
         let mut passed = Vec::new();
-        let ops = written.ops_into(&mut passed);
+        let inner = written.into_inner(&mut passed);
         assert_eq!(passed, [], "a test that passes a Claim checks it");
-        ops
+        inner
     }
 
     /// For a test that writes nothing.
@@ -488,7 +488,7 @@ mod tests {
                 subject: id,
                 change: Change::Comment { body: body.into() },
             };
-            let _ = here.store.append(draft).unwrap();
+            unpassed(here.store.append(draft).unwrap());
         }
         let version = || {
             let here = here::read_at(&at).unwrap();
@@ -680,7 +680,7 @@ mod tests {
                 subject,
                 change,
             };
-            let _ = store.append(draft).unwrap();
+            unpassed(store.append(draft).unwrap());
         }
         store.link(&jace, "blocks", id, other).unwrap();
         let said = |change| Draft {
@@ -689,16 +689,18 @@ mod tests {
             subject: id,
             change,
         };
-        let oops = ops(store
-            .append(said(Change::Comment {
-                body: "oops".into(),
-            }))
-            .unwrap());
+        let oops = unpassed(
+            store
+                .append(said(Change::Comment {
+                    body: "oops".into(),
+                }))
+                .unwrap(),
+        );
         let retract = Change::Retract {
             comment: oops.op_id,
             retracted: true,
         };
-        let _ = store.append(said(retract)).unwrap();
+        unpassed(store.append(said(retract)).unwrap());
         let cli = Cli {
             me: Ok("jace"),
             project,

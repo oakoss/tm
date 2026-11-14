@@ -68,13 +68,14 @@ fn write(
     let (claim, held, ops, begun) = if actor.is_agent() {
         let taking;
         (taking, branch_warning) = lasts.taking(here);
-        let started = here.store.take_with(&actor, id, taking, drafts)?;
+        let written = here.store.take_with(&actor, id, taking, drafts)?;
+        let started = here.passing(written);
         let (taken, kept) = if started.kept {
             (None, Some(started.claim))
         } else {
             (Some(started.claim), None)
         };
-        (taken, kept, here.passing(started.written), started.made)
+        (taken, kept, started.ops, started.made)
     } else {
         let options = WriteOptions::default();
         let (written, begun) = here

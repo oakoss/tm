@@ -7,7 +7,9 @@ use tm_core::actor::SessionId;
 use tm_store::{Store, StoreError, WriteOptions};
 use uuid::Uuid;
 
-use crate::support::{ManualClock, TempDir, claude, draft, field, new_issue, open, set_field};
+use crate::support::{
+    ManualClock, TempDir, claude, draft, field, new_issue, open, set_field, unpassed,
+};
 
 fn set(store: &mut Store, issue: Uuid, name: &str, value: &str) -> Result<(), StoreError> {
     set_based(store, issue, name, value, None)
@@ -71,7 +73,7 @@ fn a_comment_or_a_claim_moves_no_version() {
     let comment = Change::Comment {
         body: "a note".into(),
     };
-    let _ = store.append(draft(issue, comment)).unwrap();
+    unpassed(store.append(draft(issue, comment)).unwrap());
     assert_eq!(store.issue_version(issue).unwrap(), read);
 }
 

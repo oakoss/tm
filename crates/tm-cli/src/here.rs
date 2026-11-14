@@ -368,7 +368,7 @@ impl Here {
 
     /// Keeps the Claims `written` went past for [`Here::passed`].
     pub(crate) fn passing<T>(&mut self, written: Written<T>) -> T {
-        written.ops_into(&mut self.passed)
+        written.into_inner(&mut self.passed)
     }
 
     /// A warning for each Issue whose protected field a human's or a forced

@@ -12,12 +12,12 @@ use tm_store::Store;
 use tm_store::workspace::Workspace;
 use uuid::Uuid;
 
-/// What `written` wrote, for a test whose write passes no Claim.
-pub(crate) fn ops<T>(written: tm_store::Written<T>) -> T {
+/// What a write wrote, asserting it passed no Claim.
+pub(crate) fn unpassed<T>(written: tm_store::Written<T>) -> T {
     let mut passed = Vec::new();
-    let ops = written.ops_into(&mut passed);
+    let inner = written.into_inner(&mut passed);
     assert_eq!(passed, [], "a test that passes a Claim checks it");
-    ops
+    inner
 }
 
 /// A scratch directory outside any other repo's reach. Not under the target

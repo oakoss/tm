@@ -16,8 +16,7 @@ pub struct Next<T> {
     pub issue: Uuid,
     /// The Claim an Agent took; a human begins work without one.
     pub claim: Option<Claim>,
-    /// A human begins the Issue and its ancestors, so can pass a Claim.
-    pub written: Written<Vec<Op>>,
+    pub ops: Vec<Op>,
     pub made: T,
 }
 
@@ -27,8 +26,8 @@ impl Store {
     /// write, so two sessions never take the same Issue and none takes one
     /// a human started meanwhile. An Agent claims it, for `ttl_ms`; a human
     /// begins it without a Claim. `extend` makes the drafts that begin it
-    /// from it and its ancestors, as [`Store::take_with`] does. `Ok(None)`,
-    /// writing nothing, when none may be taken.
+    /// from it and its ancestors, as [`Store::take_with`] does, so a human's
+    /// can pass a Claim. Holds `None`, writing nothing, when none may be taken.
     ///
     /// # Errors
     ///
@@ -40,7 +39,7 @@ impl Store {
         candidates: &[Uuid],
         taking: impl Into<Taking>,
         extend: impl FnOnce(&Lineage) -> (Vec<Draft>, T),
-    ) -> Result<Option<Next<T>>, StoreError> {
+    ) -> Result<Written<Option<Next<T>>>, StoreError> {
         let scheme = self.scheme.clone();
         let writer = actor.clone();
         let Taking {
@@ -81,10 +80,10 @@ impl Store {
             Ok(Vec::new())
         })?;
         let Some(issue) = chosen else {
-            return Ok(None);
+            return Ok(written.map(|_| None));
         };
         let claim = written
-            .ops
+            .inner
             .iter()
             .find(|op| {
                 op.subject == issue
@@ -97,11 +96,13 @@ impl Store {
             })
             .map(made_by)
             .transpose()?;
-        Ok(Some(Next {
-            issue,
-            claim,
-            written,
-            made,
+        Ok(written.map(|ops| {
+            Some(Next {
+                issue,
+                claim,
+                ops,
+                made,
+            })
         }))
     }
 }

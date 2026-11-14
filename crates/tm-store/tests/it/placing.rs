@@ -5,7 +5,9 @@ use tm_core::Change;
 use tm_store::{Place, Store, StoreError};
 use uuid::Uuid;
 
-use crate::support::{ManualClock, PROJECT, TempDir, draft, jace, new_issue, open, set_field};
+use crate::support::{
+    ManualClock, PROJECT, TempDir, draft, jace, new_issue, open, set_field, unpassed,
+};
 
 fn list(store: &mut Store, name: &str, size: Option<u64>) -> Uuid {
     store
@@ -64,13 +66,13 @@ fn a_command_is_one_batch_and_one_undo() {
     let ids = issues(&mut store, 3);
     let ops = add(&mut store, docs, &ids, Place::End).unwrap();
     assert!(ops.len() >= 6);
-    let _ = store.undo(&jace(), ops[0].op_id).unwrap();
+    unpassed(store.undo(&jace(), ops[0].op_id).unwrap().1);
     assert_eq!(members(&store, docs), Vec::<Uuid>::new());
     add(&mut store, docs, &ids, Place::End).unwrap();
     let removed = store.shortlist_remove(&jace(), &ids[..2]).unwrap();
     assert_eq!(removed.from, [(ids[0], docs), (ids[1], docs)]);
     assert_eq!(members(&store, docs), [ids[2]]);
-    let _ = store.undo(&jace(), removed.ops[0].op_id).unwrap();
+    unpassed(store.undo(&jace(), removed.ops[0].op_id).unwrap().1);
     assert_eq!(members(&store, docs), ids);
 }
 
@@ -112,7 +114,7 @@ fn an_add_refuses_epics_triage_archived_and_finished_issues() {
             None => epic,
             Some(change) => {
                 let issue = new_issue(&mut store);
-                let _ = store.append(draft(issue, change)).unwrap();
+                unpassed(store.append(draft(issue, change)).unwrap());
                 issue
             }
         };
@@ -207,9 +209,11 @@ fn an_open_blocker_stays_ahead_of_an_archived_member_it_blocks() {
     };
     store.link(&jace(), "blocks", first, waiting).unwrap();
     add(&mut store, docs, &[first, waiting], Place::End).unwrap();
-    let _ = store
-        .append(draft(waiting, set_field("archived", json!(true))))
-        .unwrap();
+    unpassed(
+        store
+            .append(draft(waiting, set_field("archived", json!(true))))
+            .unwrap(),
+    );
     let err = store
         .shortlist_move(&jace(), first, Place::End)
         .unwrap_err();
@@ -231,8 +235,8 @@ fn a_place_between_tied_ranks_respaces_the_list() {
             draft(issue, set_field("shortlist_rank", json!("V"))),
         ]
     };
-    let _ = store.append_all(join(a)).unwrap();
-    let _ = store.append_all(join(b)).unwrap();
+    unpassed(store.append_all(join(a)).unwrap());
+    unpassed(store.append_all(join(b)).unwrap());
     let tied = members(&store, docs);
     let ops = add(&mut store, docs, &[c], Place::Before(tied[1])).unwrap();
     assert_eq!(members(&store, docs), [tied[0], c, tied[1]]);

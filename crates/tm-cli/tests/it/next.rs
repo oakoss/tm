@@ -7,7 +7,7 @@ use std::process::Output;
 use serde_json::{Value, json};
 use tm_core::Actor;
 
-use crate::support::{Scratch, initialized, text, tm, tm_command};
+use crate::support::{Scratch, initialized, text, tm, tm_command, unpassed};
 
 /// `tm` as the Agent `claude` writing for `jace`, with `env` set.
 fn claude(scratch: &Scratch, repo: &Path, env: &[(&str, &str)], words: &str) -> Output {
@@ -52,14 +52,16 @@ fn repo(scratch: &Scratch) -> PathBuf {
             value_label: None,
         };
         let actor = jace.clone();
-        let _ = store
-            .append(tm_store::Draft {
-                actor,
-                project,
-                subject: issue,
-                change,
-            })
-            .unwrap();
+        unpassed(
+            store
+                .append(tm_store::Draft {
+                    actor,
+                    project,
+                    subject: issue,
+                    change,
+                })
+                .unwrap(),
+        );
     }
     repo
 }

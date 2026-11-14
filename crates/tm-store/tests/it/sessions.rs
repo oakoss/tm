@@ -7,7 +7,7 @@ use tm_core::{Actor, Change};
 use tm_store::{Draft, Store, Taking, Workplace, WriteOptions};
 use uuid::Uuid;
 
-use crate::support::{ManualClock, PROJECT, TempDir, jace, new_issue, open, set_field};
+use crate::support::{ManualClock, PROJECT, TempDir, jace, new_issue, open, set_field, unpassed};
 
 const HOUR_MS: u64 = 3_600_000;
 
@@ -16,14 +16,16 @@ fn agent(name: &str, session: &str) -> Actor {
 }
 
 fn write(store: &mut Store, actor: &Actor, issue: Uuid, change: Change) {
-    let _ = store
-        .append(Draft {
-            actor: actor.clone(),
-            project: PROJECT,
-            subject: issue,
-            change,
-        })
-        .unwrap();
+    unpassed(
+        store
+            .append(Draft {
+                actor: actor.clone(),
+                project: PROJECT,
+                subject: issue,
+                change,
+            })
+            .unwrap(),
+    );
 }
 
 fn comment(body: &str) -> Change {
@@ -278,7 +280,12 @@ fn a_write_past_a_claim_counts_once_not_as_its_record_too() {
         force: true,
         ..WriteOptions::default()
     };
-    let _ = store.write(vec![forced], &force).unwrap();
+    let mut passed = Vec::new();
+    store
+        .write(vec![forced], &force)
+        .unwrap()
+        .into_inner(&mut passed);
+    assert_eq!(passed.len(), 1);
     let sessions = store.sessions(issue).unwrap();
     let c1 = sessions.iter().find(|work| work.session == "c1").unwrap();
     assert_eq!(c1.moved_to, ["in_review"]);

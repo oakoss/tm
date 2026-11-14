@@ -10,6 +10,7 @@ use tm_core::Hlc;
 
 use crate::support::{
     ManualClock, TempDir, draft, field, insert_acked, jace, new_issue, open, remote_op, set_field,
+    unpassed,
 };
 
 const WORKSPACE: Uuid = Uuid::from_u128(0x0190_a000_0000_7000_8000_0000_0000_0002);
@@ -177,12 +178,14 @@ fn reimport(between: impl FnOnce(Store, &TempDir) -> Store) -> (Store, RecordsIm
     let mut store = store(&dir, &clock);
     let first = import(&mut store, &records()).unwrap();
     let child = issue(&first, "beads:a.1");
-    let _ = store
-        .append_all(vec![
-            draft(child, set_field("priority", json!("low"))),
-            draft(child, set_field("status", json!("in_review"))),
-        ])
-        .unwrap();
+    unpassed(
+        store
+            .append_all(vec![
+                draft(child, set_field("priority", json!("low"))),
+                draft(child, set_field("status", json!("in_review"))),
+            ])
+            .unwrap(),
+    );
     let mut changed = records();
     let source = changed[0].as_object_mut().unwrap();
     source.insert("title".into(), json!("child, renamed"));
@@ -271,27 +274,31 @@ fn an_older_export_of_this_workspace_overwrites_nothing() {
     let mut store = store(&dir, &clock);
     let (issue, parent) = (new_issue(&mut store), new_issue(&mut store));
     let comment = |body: &str| Change::Comment { body: body.into() };
-    let _ = store
-        .append_all(vec![
-            draft(issue, set_field("assignee", json!("ana"))),
-            draft(issue, set_field("parent", json!(parent.to_string()))),
-            draft(issue, label("x", true)),
-            draft(issue, comment("kept")),
-        ])
-        .unwrap();
+    unpassed(
+        store
+            .append_all(vec![
+                draft(issue, set_field("assignee", json!("ana"))),
+                draft(issue, set_field("parent", json!(parent.to_string()))),
+                draft(issue, label("x", true)),
+                draft(issue, comment("kept")),
+            ])
+            .unwrap(),
+    );
     store.link(&jace(), "blocks", issue, parent).unwrap();
     let mut out = Vec::new();
     store.export(&mut out, 1).unwrap();
     clock.advance(1_000);
-    let _ = store
-        .append_all(vec![
-            draft(issue, set_field("title", json!("new"))),
-            draft(issue, set_field("assignee", Value::Null)),
-            draft(issue, set_field("parent", Value::Null)),
-            draft(issue, label("x", false)),
-            draft(issue, comment("later")),
-        ])
-        .unwrap();
+    unpassed(
+        store
+            .append_all(vec![
+                draft(issue, set_field("title", json!("new"))),
+                draft(issue, set_field("assignee", Value::Null)),
+                draft(issue, set_field("parent", Value::Null)),
+                draft(issue, label("x", false)),
+                draft(issue, comment("later")),
+            ])
+            .unwrap(),
+    );
     store.unlink(&jace(), "blocks", issue, parent).unwrap();
     let before = ops(&store);
 
@@ -447,7 +454,7 @@ fn what_tm_added_since_an_older_export_is_a_conflict() {
     let (issue, other) = (new_issue(&mut store), new_issue(&mut store));
     let mut out = Vec::new();
     store.export(&mut out, 1).unwrap();
-    let _ = store.append(draft(issue, label("new", true))).unwrap();
+    unpassed(store.append(draft(issue, label("new", true))).unwrap());
     store.link(&jace(), "blocks", issue, other).unwrap();
     let before = ops(&store);
 
@@ -552,18 +559,20 @@ fn a_comment_back_at_the_source_is_shown_again_unless_tm_hid_it() {
     import(&mut store, &records()).unwrap();
     assert!(!store.comments(child).unwrap()[0].retracted);
 
-    let _ = store
-        .append(tm_store::Draft {
-            actor: tm_core::Actor::agent("claude", "ana"),
-            ..draft(
-                child,
-                Change::Retract {
-                    comment: comment.id,
-                    retracted: true,
-                },
-            )
-        })
-        .unwrap();
+    unpassed(
+        store
+            .append(tm_store::Draft {
+                actor: tm_core::Actor::agent("claude", "ana"),
+                ..draft(
+                    child,
+                    Change::Retract {
+                        comment: comment.id,
+                        retracted: true,
+                    },
+                )
+            })
+            .unwrap(),
+    );
     let again = import(&mut store, &records()).unwrap();
     assert_eq!(again.records[0].written, Vec::<String>::new());
     assert_eq!(
@@ -659,18 +668,20 @@ fn a_comment_gone_from_the_source_is_retracted_once() {
         )
         .unwrap();
     store.undo(&jace(), retraction).unwrap_err();
-    let _ = store
-        .append(tm_store::Draft {
-            actor: tm_core::Actor::agent("claude", "ana"),
-            ..draft(
-                child,
-                Change::Retract {
-                    comment: first,
-                    retracted: false,
-                },
-            )
-        })
-        .unwrap();
+    unpassed(
+        store
+            .append(tm_store::Draft {
+                actor: tm_core::Actor::agent("claude", "ana"),
+                ..draft(
+                    child,
+                    Change::Retract {
+                        comment: first,
+                        retracted: false,
+                    },
+                )
+            })
+            .unwrap(),
+    );
     changed[0]["comments"][0]["body"] = json!("second, edited");
     let third = import(&mut store, &changed).unwrap();
     assert!(

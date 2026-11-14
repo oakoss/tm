@@ -37,7 +37,7 @@ fn write(
 
 fn passed<T>(written: Written<T>) -> Vec<Claim> {
     let mut passed = Vec::new();
-    written.ops_into(&mut passed);
+    written.into_inner(&mut passed);
     passed
 }
 
@@ -191,8 +191,9 @@ fn an_undo_returns_the_claims_its_write_goes_past_rolled_back_or_not() {
     let batch = store
         .append(draft(issue, set_field("description", json!("first"))))
         .unwrap()
-        .ops_into(&mut first)
+        .into_inner(&mut first)
         .op_id;
+    assert_eq!(first.len(), 1);
     let options = WriteOptions::default();
     for commit in [false, true] {
         let (_, written) = store.undo_with(&jace(), batch, &options, commit).unwrap();
@@ -205,18 +206,25 @@ fn a_take_or_next_returns_the_claims_its_begun_drafts_go_past() {
     let dir = TempDir::new();
     let (mut store, held) = held_by_s1(&dir, &ManualClock::at(1_000));
     let taken = new_issue(&mut store);
-    let taking = store
-        .take_with(&in_session("s2"), taken, Some(HOUR_MS), and_held(held))
-        .unwrap();
-    assert_eq!(passed(taking.written).len(), 1, "take_with");
+    for kept in [false, true] {
+        let mut went_past = Vec::new();
+        let taking = store
+            .take_with(&in_session("s2"), taken, Some(HOUR_MS), and_held(held))
+            .unwrap()
+            .into_inner(&mut went_past);
+        assert_eq!(taking.kept, kept);
+        assert_eq!(went_past.len(), 1, "take_with, kept {kept}");
+    }
 
     let next = new_issue(&mut store);
+    let mut went_past = Vec::new();
     let started = store
         .take_next(&jace(), &[next], None, and_held(held))
         .unwrap()
+        .into_inner(&mut went_past)
         .unwrap();
     assert_eq!(started.issue, next);
-    assert_eq!(passed(started.written).len(), 1, "take_next");
+    assert_eq!(went_past.len(), 1, "take_next");
 }
 
 #[test]

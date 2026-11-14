@@ -7,22 +7,24 @@ use tm_core::{Actor, Change, ProjectId};
 use tm_store::{Draft, Store};
 use uuid::Uuid;
 
-use crate::support::{Scratch, initialized, text, tm, tm_command};
+use crate::support::{Scratch, initialized, text, tm, tm_command, unpassed};
 
 fn set(store: &mut Store, project: ProjectId, issue: Uuid, field: &str, value: &str) {
-    let _ = store
-        .append(Draft {
-            actor: Actor::human("jace"),
-            project,
-            subject: issue,
-            change: Change::SetField {
-                field: field.into(),
-                label: String::new(),
-                value: json!(value),
-                value_label: None,
-            },
-        })
-        .unwrap();
+    unpassed(
+        store
+            .append(Draft {
+                actor: Actor::human("jace"),
+                project,
+                subject: issue,
+                change: Change::SetField {
+                    field: field.into(),
+                    label: String::new(),
+                    value: json!(value),
+                    value_label: None,
+                },
+            })
+            .unwrap(),
+    );
 }
 
 fn new(store: &mut Store, project: ProjectId, title: &str) -> Uuid {
@@ -92,19 +94,21 @@ fn with_no_filter_list_shows_the_open_work() {
     }
     let archived = new(&mut store, project, "archived");
     set(&mut store, project, archived, "status", "done");
-    let _ = store
-        .append(Draft {
-            actor: Actor::human("jace"),
-            project,
-            subject: archived,
-            change: Change::SetField {
-                field: "archived".into(),
-                label: String::new(),
-                value: json!(true),
-                value_label: None,
-            },
-        })
-        .unwrap();
+    unpassed(
+        store
+            .append(Draft {
+                actor: Actor::human("jace"),
+                project,
+                subject: archived,
+                change: Change::SetField {
+                    field: "archived".into(),
+                    label: String::new(),
+                    value: json!(true),
+                    value_label: None,
+                },
+            })
+            .unwrap(),
+    );
 
     let (ok, doc) = list(&scratch, &repo, &[]);
     assert!(ok, "{doc}");

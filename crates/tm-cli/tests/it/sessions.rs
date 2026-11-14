@@ -9,7 +9,7 @@ use tm_core::Actor;
 use tm_core::actor::SessionId;
 use tm_store::Draft;
 
-use crate::support::{Scratch, initialized, jace, text, tm};
+use crate::support::{Scratch, initialized, jace, text, tm, unpassed};
 
 const CLAUDE: &str = "50efc9d7-c49a-4377-bb73-793dd6ad2f9e";
 const CODEX: &str = "01a190a7-6cab-7f33-ac3c-161870da743b";
@@ -51,16 +51,18 @@ fn show_lists_each_session_with_what_it_did_and_how_to_resume_it() {
     // A session this machine never ran, as a merge would bring one.
     let elsewhere =
         Actor::agent("claude", "jace").in_session(SessionId::parse("far-away").unwrap());
-    let _ = store
-        .append(Draft {
-            actor: elsewhere,
-            project,
-            subject: issue,
-            change: tm_core::Change::Comment {
-                body: "seen elsewhere".into(),
-            },
-        })
-        .unwrap();
+    unpassed(
+        store
+            .append(Draft {
+                actor: elsewhere,
+                project,
+                subject: issue,
+                change: tm_core::Change::Comment {
+                    body: "seen elsewhere".into(),
+                },
+            })
+            .unwrap(),
+    );
     drop(store);
 
     ok(&claude(&scratch, &repo, &["start", "TM-1"]));

@@ -8,18 +8,18 @@ use uuid::Uuid;
 
 use crate::support::{
     ManualClock, PROJECT, TempDir, claude, draft, field, held, insert_acked, jace, new_issue, open,
-    remote_op, set_field,
+    remote_op, set_field, unpassed,
 };
 
 /// Writes `change` on `issue` as jace, returning its batch.
 fn write(store: &mut Store, issue: Uuid, change: Change) -> Uuid {
-    crate::support::ops(store.append(draft(issue, change)).unwrap()).op_id
+    crate::support::unpassed(store.append(draft(issue, change)).unwrap()).op_id
 }
 
 fn undo(store: &mut Store, batch: Uuid) -> Result<Uuid, StoreError> {
     store
         .undo(&jace(), batch)
-        .map(|(_, written)| crate::support::ops(written)[0].op_id)
+        .map(|(_, written)| crate::support::unpassed(written)[0].op_id)
 }
 
 fn ops(store: &Store) -> i64 {
@@ -233,7 +233,7 @@ fn undo_restores_blank_text_and_text_under_a_retraction_it_undoes() {
     undo(&mut store, filled).unwrap();
     assert_eq!(text(&store).body, " ", "as an import may have written it");
 
-    let both = crate::support::ops(
+    let both = crate::support::unpassed(
         store
             .append_all(vec![
                 draft(
@@ -502,7 +502,7 @@ fn undo_writes_as_the_actor_undoing() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    let raise = crate::support::ops(
+    let raise = crate::support::unpassed(
         store
             .append(Draft {
                 actor: Actor::agent("claude", "jace"),
@@ -512,7 +512,7 @@ fn undo_writes_as_the_actor_undoing() {
     )
     .op_id;
     let (_, written) = store.undo(&jace(), raise).unwrap();
-    let ops = crate::support::ops(written);
+    let ops = crate::support::unpassed(written);
     assert_eq!(ops[0].actor, "jace");
 }
 
@@ -588,7 +588,7 @@ fn a_batch_with_an_agents_write_is_not_the_humans() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    let mixed = crate::support::ops(
+    let mixed = crate::support::unpassed(
         store
             .append_all(vec![
                 draft(issue, set_field("priority", json!("high"))),
@@ -609,12 +609,14 @@ fn a_bare_undo_steps_back_through_the_humans_own_batches() {
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
     let low = write(&mut store, issue, set_field("priority", json!("low")));
-    let _ = store
-        .append(Draft {
-            actor: claude(),
-            ..draft(issue, set_field("title", json!("by claude")))
-        })
-        .unwrap();
+    unpassed(
+        store
+            .append(Draft {
+                actor: claude(),
+                ..draft(issue, set_field("title", json!("by claude")))
+            })
+            .unwrap(),
+    );
     let high = write(&mut store, issue, set_field("priority", json!("high")));
     store.create_project(&jace(), "NEW", "New").unwrap();
 
@@ -720,7 +722,7 @@ fn a_batch_of_several_writers_is_judged_by_its_plan() {
     let issue = new_issue(&mut store);
     // claude may not retract codex's comment, but jace, for whom both write,
     // may undo the whole batch.
-    let mixed = crate::support::ops(
+    let mixed = crate::support::unpassed(
         store
             .append_all(vec![
                 Draft {
@@ -777,7 +779,7 @@ fn an_imported_batch_keeps_its_source_and_time_and_only_a_named_undo_reverts_it(
     assert!(!candidates.contains(&imported.op_id), "{candidates:?}");
     assert_eq!(candidates.len(), 1, "only the create");
 
-    let inverse = crate::support::ops(store.undo(&jace(), imported.op_id).unwrap().1);
+    let inverse = crate::support::unpassed(store.undo(&jace(), imported.op_id).unwrap().1);
     assert!(inverse.iter().all(|op| op.source.is_none()), "{inverse:?}");
     assert_eq!(field(&store, issue, "priority"), Some(json!("none")));
 }

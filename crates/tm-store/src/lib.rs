@@ -557,26 +557,34 @@ pub struct Store {
 #[derive(Debug)]
 #[must_use = "a passed Claim is lost unless the caller warns of it"]
 pub struct Written<T> {
-    ops: T,
+    inner: T,
     passed: Vec<Claim>,
 }
 
 impl<T> Written<T> {
     /// What was written, the Claims it went past added to `passed`: the one
-    /// way out, so a caller cannot take the ops and leave the Claims behind.
-    pub fn ops_into(self, passed: &mut impl Extend<Claim>) -> T {
+    /// way out, so a caller cannot take what was written and leave the
+    /// Claims behind.
+    pub fn into_inner(self, passed: &mut impl Extend<Claim>) -> T {
         passed.extend(self.passed);
-        self.ops
+        self.inner
     }
 
-    /// The ops of a write that cannot pass a Claim.
+    /// What a write that cannot pass a Claim wrote.
     fn unpassed(self) -> T {
         debug_assert!(
             self.passed.is_empty(),
             "a write that cannot pass a Claim passed {:?}",
             self.passed
         );
-        self.ops
+        self.inner
+    }
+
+    fn map<U>(self, f: impl FnOnce(T) -> U) -> Written<U> {
+        Written {
+            inner: f(self.inner),
+            passed: self.passed,
+        }
     }
 }
 
@@ -1010,11 +1018,7 @@ impl Store {
     ///
     /// As [`Store::append_all`].
     pub fn append(&mut self, draft: Draft) -> Result<Written<Op>, StoreError> {
-        let Written { mut ops, passed } = self.append_all(vec![draft])?;
-        Ok(Written {
-            ops: ops.remove(0),
-            passed,
-        })
+        Ok(self.append_all(vec![draft])?.map(|mut ops| ops.remove(0)))
     }
 
     /// Creates a Project. Its key is accepted in any case and stored uppercase.
@@ -1402,7 +1406,7 @@ impl Store {
             .map_err(|err| err.named(&self.conn));
         match &written {
             Ok(written) => tracing::debug!(
-                ops = written.ops.len(),
+                ops = written.inner.len(),
                 passed = written.passed.len(),
                 "written"
             ),
@@ -1498,7 +1502,7 @@ impl Store {
             );
         }
         Ok(Written {
-            ops,
+            inner: ops,
             passed: passed.into_iter().map(|passing| passing.claim).collect(),
         })
     }

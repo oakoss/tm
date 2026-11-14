@@ -161,8 +161,7 @@ impl ClaimState {
 pub struct TakenWith<T> {
     pub claim: Claim,
     pub kept: bool,
-    /// `extend`'s drafts may be another writer's, so the take can pass a Claim.
-    pub written: Written<Vec<Op>>,
+    pub ops: Vec<Op>,
     pub made: T,
 }
 
@@ -262,7 +261,8 @@ impl Store {
     /// [`Store::take`], with the drafts `extend` makes from `issue` and its
     /// ancestors, read inside the same write, in the take's batch after it;
     /// if the take is refused, none is written. A Claim `actor`'s session
-    /// holds on `issue` at the write is kept, not taken again.
+    /// holds on `issue` at the write is kept, not taken again. `extend`'s
+    /// drafts may be another writer's, so the take can pass a Claim.
     ///
     /// # Errors
     ///
@@ -273,7 +273,7 @@ impl Store {
         issue: Uuid,
         taking: impl Into<Taking>,
         extend: impl FnOnce(&Lineage) -> (Vec<Draft>, T),
-    ) -> Result<TakenWith<T>, StoreError> {
+    ) -> Result<Written<TakenWith<T>>, StoreError> {
         let Taking {
             ttl_ms,
             branch,
@@ -315,34 +315,31 @@ impl Store {
             drafts.extend(more);
             Ok(drafts)
         })?;
-        if let Some(claim) = kept {
-            return Ok(TakenWith {
-                claim,
-                kept: true,
-                written,
-                made,
-            });
-        }
-        let take = written
-            .ops
-            .iter()
-            .find(|op| {
-                op.subject == issue
-                    && matches!(
-                        op.change(),
-                        Ok(Change::Claim {
-                            action: ClaimAction::Take { .. }
-                        })
-                    )
-            })
-            .ok_or_else(|| StoreError::Corrupt("a take's batch holds no take".into()))?;
-        let claim = made_by(take)?;
-        Ok(TakenWith {
+        let was_kept = kept.is_some();
+        let claim = if let Some(claim) = kept {
+            claim
+        } else {
+            let take = written
+                .inner
+                .iter()
+                .find(|op| {
+                    op.subject == issue
+                        && matches!(
+                            op.change(),
+                            Ok(Change::Claim {
+                                action: ClaimAction::Take { .. }
+                            })
+                        )
+                })
+                .ok_or_else(|| StoreError::Corrupt("a take's batch holds no take".into()))?;
+            made_by(take)?
+        };
+        Ok(written.map(|ops| TakenWith {
             claim,
-            kept: false,
-            written,
+            kept: was_kept,
+            ops,
             made,
-        })
+        }))
     }
 
     /// Releases the Claim `claim` holds on `issue`.

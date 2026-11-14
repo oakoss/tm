@@ -6,11 +6,11 @@ use tm_store::{Ready, Store};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, PROJECT, TempDir, claude, draft, jace, new_issue, open, set_field,
+    ManualClock, PROJECT, TempDir, claude, draft, jace, new_issue, open, set_field, unpassed,
 };
 
 fn set(store: &mut Store, issue: Uuid, field: &str, value: serde_json::Value) {
-    let _ = store.append(draft(issue, set_field(field, value))).unwrap();
+    unpassed(store.append(draft(issue, set_field(field, value))).unwrap());
 }
 
 fn blocks(store: &mut Store, from: Uuid, to: Uuid) {

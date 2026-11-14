@@ -8,7 +8,9 @@ use tm_core::{Change, Hlc, OpError, ProjectId};
 use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
-use crate::support::{ManualClock, PROJECT, TempDir, insert_acked, jace, open, remote_op};
+use crate::support::{
+    ManualClock, PROJECT, TempDir, insert_acked, jace, open, remote_op, unpassed,
+};
 
 fn key(store: &Store, issue: Uuid) -> String {
     store.issue(issue).unwrap().unwrap().key.unwrap()
@@ -239,12 +241,14 @@ fn an_issue_whose_key_collides_keeps_everything_but_the_key() {
     let (local, _) = store
         .create_issue(&jace(), PROJECT, "task", "mine")
         .unwrap();
-    let _ = store
-        .append(crate::support::draft(
-            local,
-            Change::Comment { body: "hi".into() },
-        ))
-        .unwrap();
+    unpassed(
+        store
+            .append(crate::support::draft(
+                local,
+                Change::Comment { body: "hi".into() },
+            ))
+            .unwrap(),
+    );
     let remote = remote_create(&store, 1, "CPL-1");
     assert_eq!(
         store.rebuild().unwrap(),

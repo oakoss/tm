@@ -9,7 +9,7 @@ use tm_core::actor::SessionId;
 use tm_store::{Claim, Store, StoreError};
 use uuid::Uuid;
 
-use crate::support::{ManualClock, TempDir, held, jace, new_issue, open, run_children};
+use crate::support::{ManualClock, TempDir, held, jace, new_issue, open, run_children, unpassed};
 
 const HOUR_MS: u64 = 3_600_000;
 
@@ -109,9 +109,11 @@ fn a_receiver_in_no_session_takes_it_rather_than_keeping_it() {
     let (mut store, issue) = handed(&dir, &ManualClock::at(1_000));
     let unnamed = Actor::agent("codex", "jace");
     assert!(!held(&store, issue).unwrap().taken_by(&unnamed));
-    let started = store
-        .take_with(&unnamed, issue, Some(HOUR_MS), |_| (Vec::new(), ()))
-        .unwrap();
+    let started = unpassed(
+        store
+            .take_with(&unnamed, issue, Some(HOUR_MS), |_| (Vec::new(), ()))
+            .unwrap(),
+    );
     assert!(!started.kept, "a take is written");
     assert!(!held(&store, issue).unwrap().handed);
     let err = store
@@ -156,7 +158,7 @@ fn undoing_a_handoff_releases_it_and_a_rebuild_keeps_it() {
     store.rebuild().unwrap();
     assert_eq!(held(&store, issue), Some(before.clone()));
 
-    let _ = store.undo(&agent("claude", "s1"), before.id).unwrap();
+    unpassed(store.undo(&agent("claude", "s1"), before.id).unwrap().1);
     assert_eq!(held(&store, issue), None);
     assert!(store.comments(issue).unwrap()[0].retracted);
 }
