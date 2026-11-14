@@ -12,7 +12,7 @@ use tm_store::workspace::{PathProject, RepoFile};
 use tm_store::{Draft, Store, Taking};
 use uuid::Uuid;
 
-use crate::support::{Scratch, initialized, text, tm, tm_command, unpassed};
+use crate::support::{Scratch, initialized, jace, text, tm, tm_command, unpassed};
 
 /// Prime for a 200-Issue Workspace, every title at its cut, fits in 4.5 KB,
 /// about 1.1k tokens: TM-10's 4 KB, plus room for the habit lines.
@@ -820,13 +820,7 @@ fn every_section_prints_as_pinned_in_text_and_json() {
     insta::assert_json_snapshot!("prime_json", doc);
 
     // The person the Agents write for reads its own headings and no Claims.
-    let out = tm_command()
-        .arg("prime")
-        .current_dir(&repo)
-        .env("TM_HOME", scratch.home())
-        .env("TM_ACTOR", "jace")
-        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
+    let out = jace(&scratch, &repo, &["prime"])
         .env("TZ", "UTC")
         .output()
         .unwrap();
