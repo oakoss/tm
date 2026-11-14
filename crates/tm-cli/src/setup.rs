@@ -334,6 +334,7 @@ fn also_held(setup: &Setup, root: &Path, file: &str) -> Result<Option<String>, C
 /// Whether git ignores `file` in the repo at `root`, or `None` where git
 /// cannot say.
 fn ignored(root: &Path, file: &str) -> Option<bool> {
+    let _git = tracing::debug_span!("git", read = "check-ignore", file).entered();
     let status = std::process::Command::new("git")
         .args(["check-ignore", "--quiet", "--", file])
         .current_dir(root)

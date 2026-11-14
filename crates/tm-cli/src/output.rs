@@ -6,6 +6,7 @@ use std::fs::File;
 use std::io::{self, Write as _};
 use std::os::fd::AsFd as _;
 use std::process::ExitCode;
+use std::sync::Mutex;
 
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -13,6 +14,25 @@ use uuid::Uuid;
 use crate::error::CliError;
 
 pub(crate) const SCHEMA_VERSION: u32 = 1;
+
+/// Warnings found before the command ran, such as `TM_LOG`'s, which the
+/// first JSON document carries; text mode prints them when they are found.
+static STARTUP_WARNINGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Keeps `warnings` for the first JSON document this run prints.
+pub(crate) fn warn_in_json(warnings: Vec<String>) {
+    if let Ok(mut held) = STARTUP_WARNINGS.lock() {
+        held.extend(warnings);
+    }
+}
+
+/// The startup warnings, once: a stream's later documents carry none.
+fn startup_warnings() -> Vec<String> {
+    STARTUP_WARNINGS
+        .lock()
+        .map(|mut held| std::mem::take(&mut *held))
+        .unwrap_or_default()
+}
 
 /// A command's result, in both forms.
 pub(crate) struct Output {
@@ -186,7 +206,7 @@ pub(crate) fn install_panic_hook() {
         let err = CliError::new("internal", message)
             .with("cause", "panic")
             .with("location", info.location().map(ToString::to_string));
-        let _ = write(&format!("{}\n", err.document(&[])));
+        let _ = write(&format!("{}\n", err.document(&startup_warnings())));
         std::process::exit(1);
     }));
 }
@@ -244,6 +264,13 @@ fn rendered(
     result: Result<Output, CliError>,
     warnings: &[String],
 ) -> Result<(String, ExitCode), ExitCode> {
+    let mut joined = if json { startup_warnings() } else { Vec::new() };
+    let warnings = if joined.is_empty() {
+        warnings
+    } else {
+        joined.extend_from_slice(warnings);
+        &joined[..]
+    };
     Ok(match (json, result) {
         // The keys in the order a JSON value sorts them, so the bytes match.
         (

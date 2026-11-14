@@ -1370,8 +1370,15 @@ impl Store {
         commit: bool,
         undid: Option<Uuid>,
     ) -> Result<Vec<Op>, StoreError> {
-        self.write_unnamed(drafts, options, guard, commit, undid)
-            .map_err(|err| err.named(&self.conn))
+        let _write = tracing::debug_span!("write", drafts = drafts.len(), commit).entered();
+        let written = self
+            .write_unnamed(drafts, options, guard, commit, undid)
+            .map_err(|err| err.named(&self.conn));
+        match &written {
+            Ok(ops) => tracing::debug!(ops = ops.len(), "written"),
+            Err(err) => tracing::debug!(error = %err, "refused"),
+        }
+        written
     }
 
     fn write_unnamed(
@@ -1386,9 +1393,11 @@ impl Store {
             draft.change.validate()?;
         }
         let now = self.now()?;
+        let waited = std::time::Instant::now();
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tracing::debug!(wait_us = waited.elapsed().as_micros(), "lock taken");
         if let Some((issue, held)) = &options.claim
             && claim::current(&tx, *issue)?.as_ref() != held.as_ref()
         {
@@ -1852,6 +1861,7 @@ fn written_in(draft: &Draft, source: Option<&str>) -> Result<Option<String>, Sto
 
 /// [`Store::rebuild`] inside a transaction the caller commits.
 fn rebuild_in(tx: &Transaction<'_>) -> Result<usize, StoreError> {
+    let _rebuild = tracing::info_span!("rebuild").entered();
     tx.execute_batch(schema::DROP_PROJECTIONS)?;
     tx.execute_batch(schema::PROJECTIONS)?;
     let rows = log::in_replay_order(tx)?;
@@ -1862,6 +1872,7 @@ fn rebuild_in(tx: &Transaction<'_>) -> Result<usize, StoreError> {
         }
     }
     unapplied += record_dangling_links(tx)?;
+    tracing::info!(ops = rows.len(), unapplied, "replayed");
     tx.execute_batch(schema::TEXT_INDEX)?;
     tx.execute_batch(&format!(
         "PRAGMA user_version = {}",
@@ -2134,6 +2145,7 @@ fn replay(tx: &Transaction<'_>, row: &log::StoredOp) -> Result<bool, StoreError>
             true
         }
         Ok(Some(reason)) => {
+            tracing::debug!(seq = row.seq, %reason, "set aside");
             sql(tx.execute("RELEASE replay_op", []))?;
             sql(tx.execute(
                 "INSERT INTO unapplied (seq, op_id, reason) VALUES (?1, ?2, ?3)",
@@ -2157,6 +2169,7 @@ fn replay(tx: &Transaction<'_>, row: &log::StoredOp) -> Result<bool, StoreError>
             | StoreError::MemoryMismatch { .. }
             | StoreError::Invalid { .. }),
         ) => {
+            tracing::debug!(seq = row.seq, reason = %err, "set aside");
             sql(tx.execute("ROLLBACK TO replay_op", []))?;
             sql(tx.execute("RELEASE replay_op", []))?;
             sql(tx.execute(

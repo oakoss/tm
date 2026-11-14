@@ -43,6 +43,13 @@ thiserror = "2.0.21"
 toml = "1.1.8"
 # Edits a repo file's Views in place, keeping the rest of it as written.
 toml_edit = "0.25.17"
+# Off unless TM_LOG asks, and then only to a file (ADR 0020).
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = [
+  "env-filter",
+  "fmt",
+  "std",
+] }
 # The version ratatui already builds.
 unicode-width = "0.2.3"
 uuid = { version = "1.28.0", features = ["serde", "v7"] }
