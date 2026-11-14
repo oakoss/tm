@@ -53,15 +53,17 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
     screens_at(&Place::process()?)
 }
 
-/// The screens at `at`; a failure carries the warnings read before it.
+/// The screens at `at`. A failure that may come before a screen is drawn
+/// carries the warnings read before it; a drawn screen shows them afresh.
 fn screens_at(at: &Place) -> Result<tm_tui::Ended, CliError> {
     let mut here = here::read_at(at)?;
     let warnings = std::mem::take(&mut here.warnings);
-    shown(at, here).map_err(|err| err.warned(warnings))
+    shown(at, here).unwrap_or_else(|err| Err(err.warned(warnings)))
 }
 
-/// The screens over `here`, read at `at`, until the person quits.
-fn shown(at: &Place, here: here::Here) -> Result<tm_tui::Ended, CliError> {
+/// The screens over `here`, read at `at`: why they could not start or the
+/// terminal failed, or how they ended, a store error only after a draw.
+fn shown(at: &Place, here: here::Here) -> Result<Result<tm_tui::Ended, CliError>, CliError> {
     let (project, key) = here::mapped_project(&here.store, &here.found, &here.cwd)?;
     let mut place = key.to_owned();
     if here.snapshot.is_some() {
@@ -99,7 +101,7 @@ fn shown(at: &Place, here: here::Here) -> Result<tm_tui::Ended, CliError> {
         snapshot: published.as_deref(),
         at,
     };
-    tm_tui::run(place, store, &actions, |store| {
+    let ended = tm_tui::run(place, store, &actions, |store| {
         let (opened, seen) = refresh(watch.changed(), &mut pending, open, || {
             jiff::Zoned::now().strftime("%H:%M:%S").to_string()
         })?;
@@ -107,11 +109,20 @@ fn shown(at: &Place, here: here::Here) -> Result<tm_tui::Ended, CliError> {
             *store = opened;
         }
         Ok(seen)
-    })
-    .map_err(|ended| match ended {
-        Ended::Terminal(err) => CliError::new("io", format!("the terminal: {err}")),
-        Ended::Store(err) => err,
-    })
+    });
+    sorted(ended)
+}
+
+/// How the screens ended, as [`shown`] returns it: a terminal failure, which
+/// may come before any draw, apart from a store error, which comes after one.
+fn sorted(
+    ended: Result<tm_tui::Ended, Ended>,
+) -> Result<Result<tm_tui::Ended, CliError>, CliError> {
+    match ended {
+        Ok(ended) => Ok(Ok(ended)),
+        Err(Ended::Terminal(err)) => Err(CliError::new("io", format!("the terminal: {err}"))),
+        Err(Ended::Store(err)) => Ok(Err(err)),
+    }
 }
 
 /// Who `@me` is, as `tm list` reads it, and the session as `tm ready` reads
@@ -243,7 +254,7 @@ impl tm_tui::Actions for Cli<'_> {
         store
             .notifications(actor, false)
             .map(|unread| unread.len())
-            .map_err(|err| err.to_string())
+            .map_err(|err| said(err.into()))
     }
 
     fn notifications(&self, store: &Store) -> Result<Vec<tm_tui::Notice>, String> {
@@ -252,7 +263,7 @@ impl tm_tui::Actions for Cli<'_> {
             .map_err(|why| format!("no identity, so no Notifications: {why}"))?;
         let listed = store
             .notifications(actor, true)
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| said(err.into()))?;
         let shown = notifications::shown(store, actor, &listed).map_err(said)?;
         Ok(listed
             .iter()
@@ -737,7 +748,7 @@ mod tests {
             unpassed(store.append(draft).unwrap());
         }
         store.link(&jace, "blocks", id, other).unwrap();
-        let said = |change| Draft {
+        let by_jace = |change| Draft {
             actor: jace.clone(),
             project,
             subject: id,
@@ -745,7 +756,7 @@ mod tests {
         };
         let oops = unpassed(
             store
-                .append(said(Change::Comment {
+                .append(by_jace(Change::Comment {
                     body: "oops".into(),
                 }))
                 .unwrap(),
@@ -754,7 +765,7 @@ mod tests {
             comment: oops.op_id,
             retracted: true,
         };
-        unpassed(store.append(said(retract)).unwrap());
+        unpassed(store.append(by_jace(retract)).unwrap());
         let cli = Cli {
             me: Ok("jace"),
             project,
@@ -996,14 +1007,16 @@ mod tests {
             at: &NOWHERE,
         };
         let nobody = cli(Err("unused"));
+        let jaces = cli(Ok(&jace));
         for why in [
             nobody.ready(&here.store).unwrap_err(),
             nobody.issue(&here.store, issue).unwrap_err(),
+            jaces.unread(&here.store).unwrap_err(),
+            jaces.notifications(&here.store).unwrap_err(),
         ] {
             assert!(why.ends_with(" — try: retry"), "{why}");
         }
         assert_eq!(nobody.unread(&here.store), Ok(0), "no one to count for");
-        assert!(cli(Ok(&jace)).unread(&here.store).is_err());
     }
 
     #[test]
@@ -1065,6 +1078,21 @@ mod tests {
             err.warnings,
             ["1 logged operation did not apply in full; tm doctor will list it"]
         );
+    }
+
+    #[test]
+    fn a_terminal_failure_counts_as_not_started_and_a_store_error_as_ended() {
+        let broken = io::Error::from(io::ErrorKind::BrokenPipe);
+        let Err(not_started) = sorted(Err(Ended::Terminal(broken))) else {
+            panic!("a terminal failure may come before any draw");
+        };
+        assert_eq!(not_started.code, "io");
+        let gone = CliError::new("io", "store gone");
+        assert!(matches!(sorted(Err(Ended::Store(gone))), Ok(Err(_))));
+        assert!(matches!(
+            sorted(Ok(tm_tui::Ended::Quit)),
+            Ok(Ok(tm_tui::Ended::Quit))
+        ));
     }
 
     #[test]
