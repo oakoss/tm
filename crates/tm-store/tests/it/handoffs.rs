@@ -156,7 +156,7 @@ fn undoing_a_handoff_releases_it_and_a_rebuild_keeps_it() {
     store.rebuild().unwrap();
     assert_eq!(held(&store, issue), Some(before.clone()));
 
-    store.undo(&agent("claude", "s1"), before.id).unwrap();
+    let _ = store.undo(&agent("claude", "s1"), before.id).unwrap();
     assert_eq!(held(&store, issue), None);
     assert!(store.comments(issue).unwrap()[0].retracted);
 }

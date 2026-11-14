@@ -9,7 +9,7 @@ use tm_store::{Draft, Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, TempDir, claude, draft, held, insert_acked, jace, new_issue, open, remote_op,
+    ManualClock, TempDir, claude, draft, held, insert_acked, jace, new_issue, open, ops, remote_op,
     set_field,
 };
 
@@ -23,12 +23,12 @@ fn in_session(session: &str) -> Actor {
 
 /// `writer` retitles `issue`, returning the batch's operations.
 fn edit(store: &mut Store, writer: &Actor, issue: Uuid) -> Vec<Op> {
-    store
+    ops(store
         .append_all(vec![Draft {
             actor: writer.clone(),
             ..draft(issue, set_field("title", json!(Uuid::now_v7().to_string())))
         }])
-        .unwrap()
+        .unwrap())
 }
 
 fn renews(ops: &[Op]) -> Vec<Uuid> {
@@ -118,7 +118,7 @@ fn a_batch_of_several_writers_renews_nothing() {
     let s1 = in_session("s1");
     store.take(&s1, held_one, Some(HOUR_MS)).unwrap();
     clock.advance(HOUR / 2);
-    let ops = store
+    let ops = ops(store
         .append_all(vec![
             Draft {
                 actor: s1,
@@ -126,7 +126,7 @@ fn a_batch_of_several_writers_renews_nothing() {
             },
             draft(written, set_field("title", json!("b"))),
         ])
-        .unwrap();
+        .unwrap());
     assert_eq!(renews(&ops), NONE);
 }
 
@@ -379,7 +379,7 @@ fn a_take_with_keeps_the_sessions_held_claim_and_takes_a_lapsed_one_again() {
     let again = store.take_with(&s1, issue, Some(HOUR_MS), none).unwrap();
     assert!(again.kept, "held by this session");
     assert_eq!(again.claim.id, first.claim.id);
-    assert_eq!(again.ops, []);
+    assert_eq!(ops(again.written), []);
     assert!(matches!(
         store.take_with(&in_session("s2"), issue, Some(HOUR_MS), none),
         Err(StoreError::AlreadyClaimed { .. })
@@ -409,12 +409,13 @@ fn a_take_with_judges_the_held_claim_at_the_instant_it_writes() {
     };
     let started = store.take_with(&s1, issue, Some(HOUR_MS), retitle).unwrap();
     assert!(started.kept);
-    let retitled = started.ops.iter().any(
+    let started_ops = ops(started.written);
+    let retitled = started_ops.iter().any(
         |op| matches!(op.change().unwrap(), Change::SetField { field, .. } if field == "title"),
     );
     assert!(retitled, "a Claim kept still writes extend's drafts");
     assert!(
-        started.ops.iter().all(|op| Some(op.utc_ms) < expires),
+        started_ops.iter().all(|op| Some(op.utc_ms) < expires),
         "a Claim kept is unlapsed when the batch is written"
     );
 }
@@ -431,7 +432,7 @@ fn undoing_a_write_leaves_its_renewal() {
     let ops = edit(&mut store, &s1, written);
     assert_eq!(renews(&ops), [held_one]);
     let renewed = held(&store, held_one).unwrap();
-    store.undo(&jace(), ops[0].op_id).unwrap();
+    let _ = store.undo(&jace(), ops[0].op_id).unwrap();
     assert_eq!(held(&store, held_one), Some(renewed));
 }
 

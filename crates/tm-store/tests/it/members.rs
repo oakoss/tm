@@ -8,7 +8,7 @@ use tm_store::{Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, OTHER, PROJECT, TempDir, draft, field, insert_acked, jace, new_issue, open,
+    ManualClock, OTHER, PROJECT, TempDir, draft, field, insert_acked, jace, new_issue, open, ops,
     remote_op, set_field,
 };
 
@@ -21,12 +21,12 @@ fn list(store: &mut Store, name: &str) -> Uuid {
 
 /// Puts `issue` on `list` at `rank` in one batch, returning the batch.
 fn join(store: &mut Store, issue: Uuid, list: Uuid, rank: &str) -> Uuid {
-    store
+    ops(store
         .append_all(vec![
             draft(issue, set_field("shortlist", json!(list.to_string()))),
             draft(issue, set_field("shortlist_rank", json!(rank))),
         ])
-        .unwrap()[0]
+        .unwrap())[0]
         .op_id
 }
 
@@ -114,10 +114,10 @@ fn finishing_an_issue_takes_it_off_its_list_and_undo_puts_it_back() {
         join(&mut store, issue, docs, "V");
         let ops = store
             .append(draft(issue, set_field("status", json!(status))))
-            .map(|op| op.op_id)
+            .map(|written| ops(written).op_id)
             .unwrap();
         assert_eq!(on(&store, issue), (None, None), "{status}");
-        store.undo(&jace(), ops).unwrap();
+        let _ = store.undo(&jace(), ops).unwrap();
         assert_eq!(
             on(&store, issue),
             (Some(json!(docs.to_string())), Some(json!("V")))
@@ -125,7 +125,7 @@ fn finishing_an_issue_takes_it_off_its_list_and_undo_puts_it_back() {
     }
     let issue = new_issue(&mut store);
     join(&mut store, issue, docs, "k");
-    store
+    let _ = store
         .append(draft(issue, set_field("status", json!("in_progress"))))
         .unwrap();
     assert_eq!(on(&store, issue).0, Some(json!(docs.to_string())));
@@ -150,7 +150,7 @@ fn deleting_a_list_takes_its_members_off_and_undo_restores_both() {
         )
         .unwrap();
     assert_eq!(stored, 0);
-    store.undo(&jace(), deleted).unwrap();
+    let _ = store.undo(&jace(), deleted).unwrap();
     assert_eq!(store.shortlist_members(docs).unwrap(), [a, b]);
 }
 
@@ -250,7 +250,7 @@ fn a_finished_issue_cannot_join_a_list() {
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let docs = list(&mut store, "docs");
     let issue = new_issue(&mut store);
-    store
+    let _ = store
         .append(draft(issue, set_field("status", json!("done"))))
         .unwrap();
     let err = store
@@ -274,16 +274,16 @@ fn a_finish_undone_after_its_list_was_deleted_restores_a_hidden_membership() {
     let docs = list(&mut store, "docs");
     let issue = new_issue(&mut store);
     join(&mut store, issue, docs, "V");
-    let finished = store
+    let finished = ops(store
         .append(draft(issue, set_field("status", json!("done"))))
-        .unwrap()
-        .op_id;
+        .unwrap())
+    .op_id;
     let deleted = store.delete_shortlist(&jace(), docs).unwrap()[0].op_id;
-    store.undo(&jace(), finished).unwrap();
+    let _ = store.undo(&jace(), finished).unwrap();
     assert_eq!(field(&store, issue, "status"), Some(json!("todo")));
     assert_eq!(on(&store, issue), (None, None));
     assert_eq!(filtered(&store, "no:shortlist"), [issue]);
-    store.undo(&jace(), deleted).unwrap();
+    let _ = store.undo(&jace(), deleted).unwrap();
     assert_eq!(store.shortlist_members(docs).unwrap(), [issue]);
     assert_eq!(filtered(&store, "shortlist:docs"), [issue]);
 }
@@ -312,7 +312,7 @@ fn an_issue_a_merge_left_half_on_a_list_stays_editable() {
     assert_eq!(on(&store, issue), (None, None));
     assert_eq!(store.shortlist_members(docs).unwrap(), Vec::<Uuid>::new());
     assert_eq!(filtered(&store, "no:shortlist"), [issue]);
-    store
+    let _ = store
         .append(draft(issue, set_field("title", json!("edited"))))
         .unwrap();
 
@@ -347,7 +347,7 @@ fn a_membership_cleared_by_finishing_is_written_by_whoever_finished() {
         } else {
             vec![edit, finish]
         };
-        store.append_all(batch).unwrap();
+        let _ = store.append_all(batch).unwrap();
         let writers: Vec<(String, Option<String>)> = store
             .connection()
             .prepare("SELECT actor, on_behalf_of FROM ops WHERE field LIKE 'shortlist%' ORDER BY seq DESC LIMIT 2")
@@ -386,7 +386,7 @@ fn a_write_to_an_already_finished_member_leaves_its_membership() {
     let comment = Change::Comment {
         body: "noted".into(),
     };
-    store.append(draft(issue, comment)).unwrap();
+    let _ = store.append(draft(issue, comment)).unwrap();
     assert_eq!(store.shortlist_members(docs).unwrap(), [issue]);
 }
 
@@ -398,18 +398,18 @@ fn an_undo_restoring_a_hidden_membership_can_be_undone() {
     let docs = list(&mut store, "docs");
     let issue = new_issue(&mut store);
     join(&mut store, issue, docs, "V");
-    let left = store
+    let left = ops(store
         .append_all(vec![
             draft(issue, set_field("shortlist", Value::Null)),
             draft(issue, set_field("shortlist_rank", Value::Null)),
         ])
-        .unwrap()[0]
+        .unwrap())[0]
         .op_id;
     store.delete_shortlist(&jace(), docs).unwrap();
-    let (_, restored) = store.undo(&jace(), left).unwrap();
+    let restored = ops(store.undo(&jace(), left).unwrap().1);
     let back = restored[0].op_id;
     assert!(store.can_undo(back).unwrap());
-    store.undo(&jace(), back).unwrap();
+    let _ = store.undo(&jace(), back).unwrap();
     let stored: Option<Vec<u8>> = store
         .connection()
         .query_row(

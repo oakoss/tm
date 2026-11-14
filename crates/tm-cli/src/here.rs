@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tm_core::{Actor, ProjectId};
 use tm_store::workspace::{self, Found, Workspace, WorkspaceError};
-use tm_store::{Store, StoreError, Workplace};
+use tm_store::{Claim, Store, StoreError, Workplace, Written};
 use uuid::Uuid;
 
 use crate::backup;
@@ -69,6 +69,7 @@ pub(crate) struct Here {
     pub(crate) warnings: Vec<String>,
     /// Private, as the store recorded its harness sessions from it at open.
     env: Env,
+    passed: Vec<Claim>,
 }
 
 impl Here {
@@ -235,6 +236,7 @@ fn opened(
         snapshot: None,
         warnings,
         env: place.env,
+        passed: Vec::new(),
     })
 }
 
@@ -364,13 +366,18 @@ impl Here {
         Ok(output.batched(batch, self.store.can_undo(batch)?))
     }
 
+    /// Keeps the Claims `written` went past for [`Here::passed`].
+    pub(crate) fn passing<T>(&mut self, written: Written<T>) -> T {
+        written.ops_into(&mut self.passed)
+    }
+
     /// A warning for each Issue whose protected field a human's or a forced
     /// write set while another session's Claim held it. The write has
     /// landed, so a Key that cannot be read falls back to the id.
     fn passed(&mut self) -> Vec<String> {
         let mut seen = HashSet::new();
         let mut warnings = Vec::new();
-        for held in self.store.passed_claims() {
+        for held in std::mem::take(&mut self.passed) {
             if !seen.insert(held.issue) {
                 continue;
             }

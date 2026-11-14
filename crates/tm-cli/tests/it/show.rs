@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::support::{Scratch, fixture, initialized, text, tm, tm_command};
 
 fn change(store: &mut Store, project: ProjectId, issue: Uuid, change: Change) {
-    store
+    let _ = store
         .append(Draft {
             actor: Actor::human("jace"),
             project,
@@ -344,7 +344,7 @@ fn show_names_links_from_this_end_and_gives_comments_in_order() {
             body: "first\nsecond line".into(),
         },
     );
-    store
+    let _ = store
         .append(Draft {
             actor: Actor::agent("claude", "jace"),
             project,

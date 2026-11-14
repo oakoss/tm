@@ -444,7 +444,7 @@ proptest! {
                     let err = result.unwrap_err();
                     prop_assert!(matches!(&err, StoreError::Invalid { field, .. } if field == "shortlist"), "{}", err);
                 } else {
-                    result.unwrap();
+                    let _ = result.unwrap();
                     expected.record(action);
                 }
             } else if let Action::Link { from, to, link_type, present } = action {
@@ -489,7 +489,7 @@ proptest! {
                     }
                 }
             } else if let Some((issue, change)) = change(action) {
-                store.append(draft(issues[issue], change)).unwrap();
+                let _ = store.append(draft(issues[issue], change)).unwrap();
                 expected.record(action);
             }
         }

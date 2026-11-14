@@ -535,7 +535,7 @@ fn unset_clears_a_field_the_scheme_no_longer_has() {
         .push(Field::custom("area", "Area", FieldType::Number, Vec::new()));
     let mut store = store.with_scheme(scheme);
     let issue = store.issue_by_key("TM-2").unwrap().unwrap();
-    store
+    let _ = store
         .append(Draft {
             actor: Actor::human("jace"),
             project: store.issue(issue).unwrap().unwrap().project,

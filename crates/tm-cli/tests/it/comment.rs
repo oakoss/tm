@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use tm_core::{Actor, Change};
 use tm_store::{Draft, Store};
 
-use crate::support::{Scratch, initialized, jace, text, tm, tm_command, tm_piped};
+use crate::support::{Scratch, initialized, jace, ops, text, tm, tm_command, tm_piped};
 
 #[test]
 fn a_comment_is_corrected_by_its_id_or_as_your_last_and_undone() {
@@ -33,7 +33,7 @@ fn a_comment_is_corrected_by_its_id_or_as_your_last_and_undone() {
             subject: issue,
             change,
         };
-        store.append(draft).unwrap();
+        let _ = store.append(draft).unwrap();
     }
     let bodies = || -> Vec<Value> {
         let doc = json(&["show", "TM-1"]);
@@ -121,7 +121,7 @@ fn last_passes_over_retracted_comments_and_questions_and_reads_names_in_any_case
             subject: issue,
             change,
         };
-        store.append(draft).unwrap()
+        ops(store.append(draft).unwrap())
     };
     say(
         &mut store,

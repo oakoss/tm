@@ -81,7 +81,7 @@ fn store() -> Store {
             value: value.into(),
             value_label: None,
         };
-        store
+        let _ = store
             .append(Draft {
                 actor: jace.clone(),
                 project,
@@ -114,7 +114,7 @@ fn triage_store() -> Store {
             value: value.into(),
             value_label: None,
         };
-        store
+        let _ = store
             .append(Draft {
                 actor: jace.clone(),
                 project,
@@ -136,7 +136,7 @@ fn set(store: &mut Store, key: &str, field: &str, value: &str) {
         value: value.into(),
         value_label: None,
     };
-    store
+    let _ = store
         .append(Draft {
             actor: Actor::human("jace"),
             project,

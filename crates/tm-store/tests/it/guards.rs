@@ -7,7 +7,7 @@ use tm_store::{Clock, Store, StoreError, WallTime};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, TempDir, draft, field, insert_acked, jace, key, new_issue, open, remote_op,
+    ManualClock, TempDir, draft, field, insert_acked, jace, key, new_issue, open, ops, remote_op,
     set_field,
 };
 use crate::support::{OTHER, PROJECT};
@@ -19,7 +19,7 @@ const EDIT_SEQ: i64 = 7;
 fn store_with_an_edit(dir: &TempDir) -> (Store, Uuid) {
     let mut store = open(&dir.db(), &ManualClock::at(50_000));
     let issue = new_issue(&mut store);
-    store
+    let _ = store
         .append(draft(issue, set_field("title", json!("a"))))
         .unwrap();
     (store, issue)
@@ -258,9 +258,9 @@ fn a_lost_or_stale_clock_state_is_recovered_from_the_log() {
         };
         clock.set(10_000);
         let mut store = open(&dir.db(), &clock);
-        let op = store
+        let op = ops(store
             .append(draft(issue, set_field("title", json!("b"))))
-            .unwrap();
+            .unwrap());
         assert!(
             op.hlc.ms() >= 50_000,
             "{damage}: clock moved back to {}",
@@ -287,9 +287,9 @@ fn a_clock_state_ahead_of_the_log_is_kept() {
         issue
     };
     let mut store = open(&dir.db(), &clock);
-    let op = store
+    let op = ops(store
         .append(draft(issue, set_field("title", json!("b"))))
-        .unwrap();
+        .unwrap());
     assert!(op.hlc > ahead, "the clock moved back to {:?}", op.hlc);
 }
 
@@ -315,9 +315,9 @@ fn clock_recovery_does_not_adopt_another_replicas_clock() {
     };
     let mut store = open(&dir.db(), &clock);
     store.rebuild().unwrap();
-    let op = store
+    let op = ops(store
         .append(draft(issue, set_field("title", json!("x"))))
-        .unwrap();
+        .unwrap());
     assert_eq!(op.hlc, Hlc::new(1_000, 0));
 }
 

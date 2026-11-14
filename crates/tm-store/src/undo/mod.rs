@@ -12,7 +12,7 @@ use tm_core::{Actor, Change, Hlc, Op, ProjectId, Scheme, Subject, link, memory, 
 use uuid::Uuid;
 
 use crate::apply::{Version, issue_project, uuid_from};
-use crate::{Draft, Provenance, Store, StoreError, WallTime, WriteOptions};
+use crate::{Draft, Provenance, Store, StoreError, WallTime, WriteOptions, Written};
 
 mod record;
 
@@ -89,7 +89,11 @@ impl Store {
     /// # Errors
     ///
     /// As [`Store::undo_plan`].
-    pub fn undo(&mut self, actor: &Actor, batch: Uuid) -> Result<(UndoPlan, Vec<Op>), StoreError> {
+    pub fn undo(
+        &mut self,
+        actor: &Actor,
+        batch: Uuid,
+    ) -> Result<(UndoPlan, Written<Vec<Op>>), StoreError> {
         self.undo_with(actor, batch, &WriteOptions::default(), true)
     }
 
@@ -151,7 +155,7 @@ impl Store {
         batch: Uuid,
         options: &WriteOptions,
         commit: bool,
-    ) -> Result<(UndoPlan, Vec<Op>), StoreError> {
+    ) -> Result<(UndoPlan, Written<Vec<Op>>), StoreError> {
         let planned = self.read(|store| plan(&store.conn, &store.scheme, batch))?;
         let drafts = planned.drafts(actor);
         let scheme = self.scheme.clone();

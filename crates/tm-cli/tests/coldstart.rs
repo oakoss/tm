@@ -198,7 +198,7 @@ impl Bench {
             previous = Some(issue);
         }
         let started = Instant::now();
-        store.append_all(drafts).unwrap();
+        let _ = store.append_all(drafts).unwrap();
         let elapsed = started.elapsed();
         let workspace = Workspace::at(&self.root.join("tm-home"), workspace);
         store.publish_snapshot(&workspace.snapshot_path()).unwrap();

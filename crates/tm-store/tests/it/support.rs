@@ -320,6 +320,14 @@ pub(crate) fn set_field(field: &str, value: serde_json::Value) -> Change {
     }
 }
 
+/// What `written` wrote, for a test whose write passes no Claim.
+pub(crate) fn ops<T>(written: tm_store::Written<T>) -> T {
+    let mut passed = Vec::new();
+    let ops = written.ops_into(&mut passed);
+    assert_eq!(passed, [], "a test that passes a Claim checks it");
+    ops
+}
+
 /// The present Links, as `(type, source, target)`, sorted.
 pub(crate) fn links(store: &Store) -> Vec<(String, Uuid, Uuid)> {
     let mut stmt = store

@@ -5,8 +5,8 @@ use tm_store::{Draft, Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, TempDir, claude, draft, field, insert_acked, jace, new_issue, open, remote_op,
-    set_field,
+    ManualClock, TempDir, claude, draft, field, insert_acked, jace, new_issue, open, ops,
+    remote_op, set_field,
 };
 use crate::support::{OTHER, PROJECT};
 
@@ -77,9 +77,9 @@ fn each_write_is_one_batch_named_by_its_first_operation() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let (issue, created) = store.create_issue(&jace(), PROJECT, "task", "t").unwrap();
-    let edited = store
+    let edited = ops(store
         .append(draft(issue, set_field("title", json!("u"))))
-        .unwrap();
+        .unwrap());
     let mut expected: Vec<(Uuid, Uuid)> = created
         .iter()
         .map(|op| (op.op_id, created[0].op_id))
@@ -156,9 +156,9 @@ fn enumerated_values_record_their_display_label() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    let op = store
+    let op = ops(store
         .append(draft(issue, set_field("status", json!("in_review"))))
-        .unwrap();
+        .unwrap());
     let Change::SetField {
         label, value_label, ..
     } = op.change().unwrap()
@@ -304,15 +304,15 @@ fn scheme_fields_are_stored_and_cleared() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    store
+    let _ = store
         .append(draft(issue, set_field("area", json!(3))))
         .unwrap();
-    store
+    let _ = store
         .append(draft(issue, set_field("tier", json!("gold"))))
         .unwrap();
     assert_eq!(field(&store, issue, "area"), Some(json!(3)));
     assert_eq!(field(&store, issue, "tier"), Some(json!("gold")));
-    store
+    let _ = store
         .append(draft(issue, set_field("area", serde_json::Value::Null)))
         .unwrap();
     assert_eq!(field(&store, issue, "area"), None);
@@ -329,8 +329,8 @@ fn labels_ignore_case_and_keep_their_written_form() {
         elem: elem.into(),
         elem_label: None,
     };
-    store.append(draft(issue, add("Bug"))).unwrap();
-    let op = store.append(draft(issue, add("bug"))).unwrap();
+    let _ = store.append(draft(issue, add("Bug"))).unwrap();
+    let op = ops(store.append(draft(issue, add("bug"))).unwrap());
     assert_eq!(
         op.change().unwrap().elem().as_deref(),
         Some("bug"),
@@ -375,17 +375,17 @@ fn a_type_change_that_would_invalidate_the_status_is_refused() {
     }
     let mut store = open(&dir.db(), &ManualClock::at(1_000)).with_scheme(two_workflows);
     let issue = new_issue(&mut store);
-    store
+    let _ = store
         .append(draft(issue, set_field("status", json!("in_review"))))
         .unwrap();
     let err = store
         .append(draft(issue, set_field("type", json!("bug"))))
         .unwrap_err();
     assert!(matches!(err, StoreError::Invalid { .. }), "{err}");
-    store
+    let _ = store
         .append(draft(issue, set_field("status", json!("todo"))))
         .unwrap();
-    store
+    let _ = store
         .append(draft(issue, set_field("type", json!("bug"))))
         .unwrap();
 }
@@ -395,7 +395,7 @@ fn a_status_the_scheme_no_longer_defines_reads_as_triage() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    store
+    let _ = store
         .append(draft(issue, set_field("status", json!("done"))))
         .unwrap();
     assert_eq!(
@@ -419,16 +419,16 @@ fn comments_read_back_in_log_order_with_who_wrote_them() {
     let mut store = open(&dir.db(), &clock);
     let issue = new_issue(&mut store);
     let other = new_issue(&mut store);
-    let first = store
+    let first = ops(store
         .append(draft(
             issue,
             Change::Comment {
                 body: "first".into(),
             },
         ))
-        .unwrap();
+        .unwrap());
     clock.set(2_000);
-    store
+    let _ = store
         .append(Draft {
             actor: claude(),
             ..draft(
@@ -439,7 +439,7 @@ fn comments_read_back_in_log_order_with_who_wrote_them() {
             )
         })
         .unwrap();
-    store
+    let _ = store
         .append(draft(
             other,
             Change::Comment {
@@ -479,7 +479,7 @@ fn a_comment_is_retracted_by_its_author_or_their_human_and_can_come_back() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    let comment = store
+    let comment = ops(store
         .append(Draft {
             actor: claude(),
             ..draft(
@@ -489,8 +489,8 @@ fn a_comment_is_retracted_by_its_author_or_their_human_and_can_come_back() {
                 },
             )
         })
-        .unwrap()
-        .op_id;
+        .unwrap())
+    .op_id;
     let retract = |retracted| Change::Retract { comment, retracted };
     let retracted = |store: &Store| store.comments(issue).unwrap()[0].retracted;
 
@@ -513,19 +513,19 @@ fn a_comment_is_retracted_by_its_author_or_their_human_and_can_come_back() {
     }
     assert!(!retracted(&store));
 
-    store.append(draft(issue, retract(true))).unwrap();
+    let _ = store.append(draft(issue, retract(true))).unwrap();
     assert!(
         retracted(&store),
         "jace, the human claude wrote it for, may retract it"
     );
-    store
+    let _ = store
         .append(Draft {
             actor: claude(),
             ..draft(issue, retract(false))
         })
         .unwrap();
     assert!(!retracted(&store), "and its author may bring it back");
-    store.append(draft(issue, retract(true))).unwrap();
+    let _ = store.append(draft(issue, retract(true))).unwrap();
     store.rebuild().unwrap();
     assert!(retracted(&store), "a retraction replays");
     assert_eq!(
@@ -559,13 +559,13 @@ fn only_a_comments_author_edits_it_and_only_to_new_text() {
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
     let said = |store: &mut Store, change| {
-        store
+        ops(store
             .append(Draft {
                 actor: claude(),
                 ..draft(issue, change)
             })
-            .unwrap()
-            .op_id
+            .unwrap())
+        .op_id
     };
     let comment = said(
         &mut store,
@@ -595,7 +595,7 @@ fn only_a_comments_author_edits_it_and_only_to_new_text() {
     refused(&mut store, Actor::agent("claude", "kim"), edit("x"));
     assert!(refused(&mut store, claude(), edit("oops")).contains("already reads"));
 
-    store.append(draft(issue, edit("fixed"))).unwrap();
+    let _ = store.append(draft(issue, edit("fixed"))).unwrap();
     let shown = &store.comments(issue).unwrap()[0];
     assert_eq!(
         (shown.body.as_str(), shown.edited_ms.is_some()),
@@ -833,7 +833,7 @@ fn every_change_advances_updated() {
     let mut store = open(&dir.db(), &clock);
     let issue = new_issue(&mut store);
     clock.set(5_000);
-    store
+    let _ = store
         .append(draft(issue, Change::Comment { body: "hi".into() }))
         .unwrap();
     assert_eq!(field(&store, issue, "created"), Some(json!(1_000)));
@@ -855,9 +855,9 @@ fn the_clock_never_moves_backwards_across_reopens() {
     };
     clock.set(10_000);
     let mut store = open(&dir.db(), &clock);
-    let second = store
+    let second = ops(store
         .append(draft(issue, set_field("title", json!("a"))))
-        .unwrap();
+        .unwrap());
     assert!(second.hlc > first);
     assert_eq!(second.hlc, Hlc::new(50_000, 4));
 }
@@ -914,7 +914,7 @@ fn a_stale_projection_version_is_rebuilt_on_open() {
     let issue = {
         let mut store = open(&dir.db(), &clock);
         let issue = new_issue(&mut store);
-        store
+        let _ = store
             .append(draft(issue, set_field("status", json!("done"))))
             .unwrap();
         store
@@ -940,6 +940,6 @@ fn a_draft_may_name_any_project_for_a_new_issue() {
         subject: issue,
         change: set_field("title", json!("u")),
     };
-    store.append(draft).unwrap();
+    let _ = store.append(draft).unwrap();
     assert_eq!(store.issue(issue).unwrap().unwrap().project, OTHER);
 }

@@ -57,7 +57,6 @@ impl Store {
             opened: false,
             last_write: None,
             appended: 0,
-            passed: Vec::new(),
             place: crate::Workplace::default(),
         };
         // A Snapshot is read-only, so an older log is refused, not upgraded;

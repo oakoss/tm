@@ -453,7 +453,7 @@ fn the_screens_read_the_mapped_project_unless_a_filter_names_another() {
     let jace = Actor::human("jace");
     let (web, _) = store.create_project(&jace, "WEB", "Web").unwrap();
     let (elsewhere, _) = store.create_issue(&jace, web, "task", "elsewhere").unwrap();
-    store
+    let _ = store
         .append(Draft {
             actor: jace,
             project: web,

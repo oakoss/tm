@@ -136,7 +136,7 @@ impl Store {
             restored,
             alike,
             warnings,
-            ops,
+            ops: ops.unpassed(),
         })
     }
 
@@ -169,7 +169,7 @@ impl Store {
             ))
         })?;
         let memory = forgotten.ok_or_else(|| StoreError::MemoryNotFound(key.into()))?;
-        Ok((memory, ops))
+        Ok((memory, ops.unpassed()))
     }
 
     /// The live memories in `project`, the most recently written first.

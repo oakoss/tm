@@ -8,7 +8,7 @@ use tm_core::{Actor, Change, Hlc, Op};
 use uuid::Uuid;
 
 use crate::apply::{Version, rust_int, sql_int, uuid_from};
-use crate::{Draft, Store, StoreError};
+use crate::{Draft, Store, StoreError, Written};
 
 /// One Notification as its recipient reads it, built only by the store, so
 /// its `site` is always its `kind`'s.
@@ -350,6 +350,6 @@ impl Store {
         if drafts.is_empty() {
             return Ok(Vec::new());
         }
-        self.append_all(drafts)
+        self.append_all(drafts).map(Written::unpassed)
     }
 }

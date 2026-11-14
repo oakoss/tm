@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::support::{Scratch, initialized, text, tm, tm_command};
 
 fn set(store: &mut Store, project: ProjectId, issue: Uuid, field: &str, value: &str) {
-    store
+    let _ = store
         .append(Draft {
             actor: Actor::human("jace"),
             project,
@@ -92,7 +92,7 @@ fn with_no_filter_list_shows_the_open_work() {
     }
     let archived = new(&mut store, project, "archived");
     set(&mut store, project, archived, "status", "done");
-    store
+    let _ = store
         .append(Draft {
             actor: Actor::human("jace"),
             project,

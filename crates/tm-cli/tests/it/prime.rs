@@ -46,7 +46,7 @@ fn as_agent(
 }
 
 fn set(store: &mut Store, project: ProjectId, issue: Uuid, field: &str, value: Value) {
-    store
+    let _ = store
         .append(Draft {
             actor: Actor::human("jace"),
             project,
@@ -117,7 +117,7 @@ fn mention_claude(store: &mut Store, project: ProjectId, issue: Uuid) {
         subject: issue,
         change: Change::Comment { body },
     };
-    store.append(said).unwrap();
+    let _ = store.append(said).unwrap();
 }
 
 #[test]

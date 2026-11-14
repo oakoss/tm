@@ -140,7 +140,7 @@ impl Store {
                 })
             }
         };
-        let ops = self.append_with(drafts, guard)?;
+        let ops = self.append_with(drafts, guard)?.unpassed();
         Ok(ops.first().map(|op| op.op_id).into_iter().collect())
     }
 }

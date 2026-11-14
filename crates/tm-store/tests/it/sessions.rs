@@ -16,7 +16,7 @@ fn agent(name: &str, session: &str) -> Actor {
 }
 
 fn write(store: &mut Store, actor: &Actor, issue: Uuid, change: Change) {
-    store
+    let _ = store
         .append(Draft {
             actor: actor.clone(),
             project: PROJECT,
@@ -278,7 +278,7 @@ fn a_write_past_a_claim_counts_once_not_as_its_record_too() {
         force: true,
         ..WriteOptions::default()
     };
-    store.write(vec![forced], &force).unwrap();
+    let _ = store.write(vec![forced], &force).unwrap();
     let sessions = store.sessions(issue).unwrap();
     let c1 = sessions.iter().find(|work| work.session == "c1").unwrap();
     assert_eq!(c1.moved_to, ["in_review"]);

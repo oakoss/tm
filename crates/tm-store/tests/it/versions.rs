@@ -71,7 +71,7 @@ fn a_comment_or_a_claim_moves_no_version() {
     let comment = Change::Comment {
         body: "a note".into(),
     };
-    store.append(draft(issue, comment)).unwrap();
+    let _ = store.append(draft(issue, comment)).unwrap();
     assert_eq!(store.issue_version(issue).unwrap(), read);
 }
 

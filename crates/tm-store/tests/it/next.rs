@@ -37,19 +37,19 @@ fn the_first_eligible_issue_is_taken_and_the_rest_passed_over() {
     let [done, started, claimed, epic, archived, blocked, free] = ids[..] else {
         unreachable!()
     };
-    store
+    let _ = store
         .append(draft(done, set_field("status", json!("done"))))
         .unwrap();
-    store
+    let _ = store
         .append(draft(started, set_field("status", json!("in_progress"))))
         .unwrap();
     store
         .take(&Actor::agent("codex", "jace"), claimed, None)
         .unwrap();
-    store
+    let _ = store
         .append(draft(epic, set_field("type", json!("epic"))))
         .unwrap();
-    store
+    let _ = store
         .append(draft(archived, set_field("archived", json!(true))))
         .unwrap();
     store.link(&jace(), "blocks", free, blocked).unwrap();

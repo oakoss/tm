@@ -5,7 +5,7 @@ use serde_json::json;
 use tm_store::{IssueView, Store, WriteOptions};
 use uuid::Uuid;
 
-use crate::support::{ManualClock, TempDir, draft, field, new_issue, open, set_field};
+use crate::support::{ManualClock, TempDir, draft, field, new_issue, open, ops, set_field};
 
 fn ids(views: &[IssueView]) -> Vec<Uuid> {
     views.iter().map(|view| view.id).collect()
@@ -40,7 +40,7 @@ fn the_lineage_runs_from_the_issue_up_and_children_include_archived_ones() {
     let [epic, feature, task, archived] = [(); 4].map(|()| new_issue(&mut store));
     let under =
         |issue: Uuid, above: Uuid| draft(issue, set_field("parent", json!(above.to_string())));
-    store
+    let _ = store
         .append_all(vec![
             under(feature, epic),
             under(task, feature),
@@ -74,14 +74,14 @@ fn the_drafts_made_from_the_lineage_share_the_batch() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let [parent, child] = [(); 2].map(|()| new_issue(&mut store));
-    store
+    let _ = store
         .append_all(vec![draft(
             child,
             set_field("parent", json!(parent.to_string())),
         )])
         .unwrap();
 
-    let (ops, ()) = store
+    let (written, ()) = store
         .append_with_lineage(
             vec![draft(child, set_field("status", json!("in_progress")))],
             child,
@@ -97,6 +97,7 @@ fn the_drafts_made_from_the_lineage_share_the_batch() {
             },
         )
         .unwrap();
+    let ops = ops(written);
     assert_eq!(ops.len(), 2);
     assert!(store.can_undo(ops[0].op_id).unwrap());
     assert_eq!(field(&store, parent, "status"), Some(json!("in_progress")));

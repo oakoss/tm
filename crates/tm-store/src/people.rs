@@ -153,6 +153,6 @@ impl Store {
                 name: name.to_owned(),
             },
         })
-        .map(Some)
+        .map(|written| Some(written.unpassed()))
     }
 }

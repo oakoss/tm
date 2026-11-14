@@ -13,7 +13,7 @@ fn writers_those_agents_write_for_assignees_and_list_actors_may_be_named() {
     let jace = Actor::human("Jace@Example.com");
     store.record_name(&jace, PROJECT, "Jace Babin").unwrap();
     let (issue, _) = store.create_issue(&claude(), PROJECT, "task", "t").unwrap();
-    store
+    let _ = store
         .append(draft(
             issue,
             set_field("assignee", json!("ana@example.com")),

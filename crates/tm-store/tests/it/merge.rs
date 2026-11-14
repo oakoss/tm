@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::support::OTHER;
 use crate::support::{
-    ManualClock, TempDir, draft, field, insert_acked, new_issue, open, remote_op, set_field,
+    ManualClock, TempDir, draft, field, insert_acked, new_issue, open, ops, remote_op, set_field,
 };
 
 const MINUTE: u64 = 60_000;
@@ -128,7 +128,7 @@ fn a_pending_local_edit_shows_over_an_acknowledged_one() {
     let dir = TempDir::new();
     let clock = ManualClock::at(1_000);
     let (mut store, issue) = store_with_acked_issue(&dir, &clock);
-    store
+    let _ = store
         .append(draft(issue, set_field("title", json!("mine"))))
         .unwrap();
     let theirs = remote_op(
@@ -173,7 +173,7 @@ fn set_elements_follow_their_last_add_or_remove() {
                 elem_label: None,
             }
         };
-        store.append(draft(issue, change)).unwrap();
+        let _ = store.append(draft(issue, change)).unwrap();
     }
     let mut stmt = store
         .connection()
@@ -195,8 +195,8 @@ fn base_seq_comes_from_the_drafts_own_project() {
     other.project = OTHER;
     insert_acked(&store, &other, 100, 2_000);
     store.rebuild().unwrap();
-    let op = store
+    let op = ops(store
         .append(draft(issue, set_field("title", json!("x"))))
-        .unwrap();
+        .unwrap());
     assert_eq!(op.base_seq, 1);
 }

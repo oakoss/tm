@@ -16,7 +16,7 @@ fn ready_lists_startable_work_with_what_each_unblocks() {
     let first = new("first");
     let urgent = new("urgent");
     let held = new("held");
-    store
+    let _ = store
         .append(Draft {
             actor: jace.clone(),
             project,

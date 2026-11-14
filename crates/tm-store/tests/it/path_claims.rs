@@ -260,7 +260,7 @@ fn undoing_a_change_of_paths_is_refused_but_a_lapsed_claim_taken_back_is_release
         store.take(&agent("s1"), issue, covering(&["src"])).unwrap();
         clock.advance(i64::try_from(HOUR_MS).unwrap() + 1);
         let took = store.take(&agent("s1"), issue, covering(again)).unwrap();
-        store.undo(&agent("s1"), took.id).unwrap();
+        let _ = store.undo(&agent("s1"), took.id).unwrap();
         assert_eq!(held(&store, issue), None, "taken back covering {again:?}");
     }
 }
@@ -299,6 +299,6 @@ fn undoing_a_live_handed_claim_taken_up_releases_it() {
     let receiver = Actor::agent("codex", "jace").in_session(SessionId::parse("c1").unwrap());
     let up = store.take(&receiver, issue, covering(&["lib"])).unwrap();
     assert_eq!(store.rebuild().unwrap(), 0);
-    store.undo(&receiver, up.id).unwrap();
+    let _ = store.undo(&receiver, up.id).unwrap();
     assert_eq!(held(&store, issue), None);
 }

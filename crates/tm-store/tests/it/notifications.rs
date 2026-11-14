@@ -8,7 +8,7 @@ use tm_store::{Draft, Notification, Store, StoreError, WriteOptions};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, PROJECT, TempDir, claude, draft, dump, insert_acked, jace, new_issue, open,
+    ManualClock, PROJECT, TempDir, claude, draft, dump, insert_acked, jace, new_issue, open, ops,
     remote_op, set_field,
 };
 
@@ -21,7 +21,7 @@ fn lee() -> Actor {
 }
 
 fn write(store: &mut Store, issue: Uuid, change: Change) -> Uuid {
-    store.append(draft(issue, change)).unwrap().op_id
+    ops(store.append(draft(issue, change)).unwrap()).op_id
 }
 
 fn comment(store: &mut Store, issue: Uuid, body: &str) -> Uuid {
@@ -104,7 +104,7 @@ fn marking_read_and_undoing_it_never_touch_the_issue() {
         0,
         "a read one is not marked again"
     );
-    store.undo(&kim(), marked[0].op_id).unwrap();
+    let _ = store.undo(&kim(), marked[0].op_id).unwrap();
     assert_eq!(unread(&store, &kim()).len(), 1, "undo leaves it unread");
     assert_eq!(store.issue_version(issue).unwrap(), version);
     assert_eq!(
@@ -335,12 +335,15 @@ fn a_write_past_a_claim_is_recorded_and_notifies_its_holder() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = claimed(&mut store);
+    let mut passed = Vec::new();
     let batch = store
         .append_all(vec![
             draft(issue, set_field("status", json!("in_review"))),
             draft(issue, set_field("description", json!("redone"))),
         ])
-        .unwrap();
+        .unwrap()
+        .ops_into(&mut passed);
+    assert_eq!(passed.len(), 1, "the write returns the Claim it recorded");
     assert_eq!(passed_records(&store), 1, "one record per Claim and batch");
     let heard = unread(&store, &claude());
     assert_eq!(heard.len(), 1, "{heard:?}");
@@ -351,7 +354,9 @@ fn a_write_past_a_claim_is_recorded_and_notifies_its_holder() {
     let before = dump(&store);
     store.rebuild().unwrap();
     assert_eq!(dump(&store), before);
-    store.undo(&jace(), batch[0].op_id).unwrap();
+    let (_, undone) = store.undo(&jace(), batch[0].op_id).unwrap();
+    undone.ops_into(&mut passed);
+    assert_eq!(passed.len(), 2, "the undo returns the Claim too");
     assert_eq!(
         unread(&store, &claude()).len(),
         2,
@@ -373,17 +378,17 @@ fn a_forced_agent_write_notifies_and_the_holder_or_a_finishing_move_does_not() {
         force: true,
         ..WriteOptions::default()
     };
-    store.write(vec![forced], &force).unwrap();
+    let _ = store.write(vec![forced], &force).unwrap();
     assert_eq!(unread(&store, &claude()).len(), 1);
     let session = tm_core::actor::SessionId::parse("s1").unwrap();
-    store
+    let _ = store
         .append(Draft {
             actor: claude().in_session(session),
             ..draft(issue, set_field("status", json!("in_review")))
         })
         .unwrap();
     let claim = store.claim_state(issue).unwrap().unwrap().claim().id;
-    store
+    let _ = store
         .append_all(vec![
             draft(issue, set_field("status", json!("done"))),
             draft(

@@ -64,13 +64,13 @@ fn a_command_is_one_batch_and_one_undo() {
     let ids = issues(&mut store, 3);
     let ops = add(&mut store, docs, &ids, Place::End).unwrap();
     assert!(ops.len() >= 6);
-    store.undo(&jace(), ops[0].op_id).unwrap();
+    let _ = store.undo(&jace(), ops[0].op_id).unwrap();
     assert_eq!(members(&store, docs), Vec::<Uuid>::new());
     add(&mut store, docs, &ids, Place::End).unwrap();
     let removed = store.shortlist_remove(&jace(), &ids[..2]).unwrap();
     assert_eq!(removed.from, [(ids[0], docs), (ids[1], docs)]);
     assert_eq!(members(&store, docs), [ids[2]]);
-    store.undo(&jace(), removed.ops[0].op_id).unwrap();
+    let _ = store.undo(&jace(), removed.ops[0].op_id).unwrap();
     assert_eq!(members(&store, docs), ids);
 }
 
@@ -112,7 +112,7 @@ fn an_add_refuses_epics_triage_archived_and_finished_issues() {
             None => epic,
             Some(change) => {
                 let issue = new_issue(&mut store);
-                store.append(draft(issue, change)).unwrap();
+                let _ = store.append(draft(issue, change)).unwrap();
                 issue
             }
         };
@@ -207,7 +207,7 @@ fn an_open_blocker_stays_ahead_of_an_archived_member_it_blocks() {
     };
     store.link(&jace(), "blocks", first, waiting).unwrap();
     add(&mut store, docs, &[first, waiting], Place::End).unwrap();
-    store
+    let _ = store
         .append(draft(waiting, set_field("archived", json!(true))))
         .unwrap();
     let err = store
@@ -231,8 +231,8 @@ fn a_place_between_tied_ranks_respaces_the_list() {
             draft(issue, set_field("shortlist_rank", json!("V"))),
         ]
     };
-    store.append_all(join(a)).unwrap();
-    store.append_all(join(b)).unwrap();
+    let _ = store.append_all(join(a)).unwrap();
+    let _ = store.append_all(join(b)).unwrap();
     let tied = members(&store, docs);
     let ops = add(&mut store, docs, &[c], Place::Before(tied[1])).unwrap();
     assert_eq!(members(&store, docs), [tied[0], c, tied[1]]);

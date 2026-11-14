@@ -177,7 +177,7 @@ fn reimport(between: impl FnOnce(Store, &TempDir) -> Store) -> (Store, RecordsIm
     let mut store = store(&dir, &clock);
     let first = import(&mut store, &records()).unwrap();
     let child = issue(&first, "beads:a.1");
-    store
+    let _ = store
         .append_all(vec![
             draft(child, set_field("priority", json!("low"))),
             draft(child, set_field("status", json!("in_review"))),
@@ -271,7 +271,7 @@ fn an_older_export_of_this_workspace_overwrites_nothing() {
     let mut store = store(&dir, &clock);
     let (issue, parent) = (new_issue(&mut store), new_issue(&mut store));
     let comment = |body: &str| Change::Comment { body: body.into() };
-    store
+    let _ = store
         .append_all(vec![
             draft(issue, set_field("assignee", json!("ana"))),
             draft(issue, set_field("parent", json!(parent.to_string()))),
@@ -283,7 +283,7 @@ fn an_older_export_of_this_workspace_overwrites_nothing() {
     let mut out = Vec::new();
     store.export(&mut out, 1).unwrap();
     clock.advance(1_000);
-    store
+    let _ = store
         .append_all(vec![
             draft(issue, set_field("title", json!("new"))),
             draft(issue, set_field("assignee", Value::Null)),
@@ -447,7 +447,7 @@ fn what_tm_added_since_an_older_export_is_a_conflict() {
     let (issue, other) = (new_issue(&mut store), new_issue(&mut store));
     let mut out = Vec::new();
     store.export(&mut out, 1).unwrap();
-    store.append(draft(issue, label("new", true))).unwrap();
+    let _ = store.append(draft(issue, label("new", true))).unwrap();
     store.link(&jace(), "blocks", issue, other).unwrap();
     let before = ops(&store);
 
@@ -552,7 +552,7 @@ fn a_comment_back_at_the_source_is_shown_again_unless_tm_hid_it() {
     import(&mut store, &records()).unwrap();
     assert!(!store.comments(child).unwrap()[0].retracted);
 
-    store
+    let _ = store
         .append(tm_store::Draft {
             actor: tm_core::Actor::agent("claude", "ana"),
             ..draft(
@@ -659,7 +659,7 @@ fn a_comment_gone_from_the_source_is_retracted_once() {
         )
         .unwrap();
     store.undo(&jace(), retraction).unwrap_err();
-    store
+    let _ = store
         .append(tm_store::Draft {
             actor: tm_core::Actor::agent("claude", "ana"),
             ..draft(

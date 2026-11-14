@@ -7,7 +7,9 @@ use tm_store::{Place, Store, StoreError};
 use uuid::Uuid;
 
 use crate::support::PROJECT;
-use crate::support::{ManualClock, TempDir, draft, insert_acked, jace, open, remote_op, set_field};
+use crate::support::{
+    ManualClock, TempDir, draft, insert_acked, jace, open, ops, remote_op, set_field,
+};
 
 const ME: Context<'static> = Context { me: Some("jace") };
 
@@ -22,7 +24,7 @@ fn issue(
     clock.advance(1_000);
     let (issue, _) = store.create_issue(&jace(), PROJECT, "task", "t").unwrap();
     for (name, value) in fields {
-        store
+        let _ = store
             .append(draft(issue, set_field(name, value.clone())))
             .unwrap();
     }
@@ -33,7 +35,7 @@ fn issue(
             elem: (*label).into(),
             elem_label: None,
         };
-        store.append(draft(issue, add)).unwrap();
+        let _ = store.append(draft(issue, add)).unwrap();
     }
     issue
 }
@@ -117,7 +119,7 @@ fn scheme_values_match_by_type() {
         elem: "x".into(),
         elem_label: None,
     };
-    store.append(draft(half, add)).unwrap();
+    let _ = store.append(draft(half, add)).unwrap();
     assert_eq!(find(&store, "area:3"), [three]);
     assert_eq!(find(&store, "area:2.5"), [half]);
     assert_eq!(find(&store, "flag:true"), [three]);
@@ -138,7 +140,7 @@ fn has_and_no_on_a_set_follow_its_current_members() {
         elem: "bug".into(),
         elem_label: None,
     };
-    store.append(draft(emptied, remove)).unwrap();
+    let _ = store.append(draft(emptied, remove)).unwrap();
     let tagged = issue(&mut store, &clock, &[], &[]);
     let add = Change::Add {
         field: "tags".into(),
@@ -146,7 +148,7 @@ fn has_and_no_on_a_set_follow_its_current_members() {
         elem: "y".into(),
         elem_label: None,
     };
-    store.append(draft(tagged, add)).unwrap();
+    let _ = store.append(draft(tagged, add)).unwrap();
     assert_eq!(find(&store, "has:labels"), [labeled]);
     assert_eq!(
         sorted(find(&store, "no:labels")),
@@ -161,7 +163,7 @@ fn has_and_no_on_a_set_follow_its_current_members() {
 
 fn comment(store: &mut Store, issue: Uuid, body: &str) -> Uuid {
     let change = Change::Comment { body: body.into() };
-    store.append(draft(issue, change)).unwrap().op_id
+    ops(store.append(draft(issue, change)).unwrap()).op_id
 }
 
 #[test]
@@ -211,7 +213,7 @@ fn a_text_field_searches_only_its_own_words() {
     );
     assert_eq!(find(&store, "has:notes"), [described]);
 
-    store
+    let _ = store
         .append(draft(described, set_field("notes", json!("replaced"))))
         .unwrap();
     assert_eq!(find(&store, "notes:timeout"), Vec::<Uuid>::new());
@@ -222,7 +224,7 @@ fn a_text_field_searches_only_its_own_words() {
         [described],
         "a rebuild fills it"
     );
-    store
+    let _ = store
         .append(draft(described, set_field("notes", Value::Null)))
         .unwrap();
     assert_eq!(
@@ -241,7 +243,7 @@ fn an_edit_after_a_vacuum_replaces_the_issues_own_words() {
     let first = issue(&mut store, &clock, &[("title", json!("apple"))], &[]);
     let second = issue(&mut store, &clock, &[("title", json!("banana"))], &[]);
     store.connection().execute_batch("VACUUM").unwrap();
-    store
+    let _ = store
         .append(draft(first, set_field("title", json!("cherry"))))
         .unwrap();
     assert_eq!(find(&store, "cherry"), [first]);
@@ -274,7 +276,7 @@ fn words_search_titles_descriptions_and_comments_not_retracted() {
         comment: said,
         retracted: true,
     };
-    store.append(draft(retracted, undo)).unwrap();
+    let _ = store.append(draft(retracted, undo)).unwrap();
     let split = issue(&mut store, &clock, &[("title", json!("alpha"))], &[]);
     comment(&mut store, split, "beta");
 
@@ -309,7 +311,7 @@ fn words_search_titles_descriptions_and_comments_not_retracted() {
     assert!(store.find("---", ME).is_err());
     assert!(store.find("has:text", ME).is_err());
 
-    store
+    let _ = store
         .append(draft(titled, set_field("title", json!("Renamed"))))
         .unwrap();
     assert_eq!(
@@ -326,7 +328,7 @@ fn words_search_titles_descriptions_and_comments_not_retracted() {
         "a rebuild fills the index"
     );
     assert_eq!(find(&store, "timeout"), Vec::<Uuid>::new());
-    store
+    let _ = store
         .append(draft(described, set_field("description", json!("gone"))))
         .unwrap();
     assert_eq!(
@@ -359,7 +361,7 @@ fn an_edited_comment_is_found_by_its_new_words_only() {
             comment: said,
             body: body.into(),
         };
-        store.append(draft(issue, edit)).unwrap();
+        let _ = store.append(draft(issue, edit)).unwrap();
     }
     assert_eq!(
         find(&store, "cafe"),
@@ -495,7 +497,7 @@ fn people_match_and_sort_without_case_beyond_ascii() {
     assert_eq!(find(&store, "assignee:élodie"), [accented]);
     let sharp = issue(&mut store, &clock, &[("assignee", json!("Straße"))], &[]);
     assert_eq!(find(&store, "assignee:STRASSE"), [sharp]);
-    store
+    let _ = store
         .append(draft(sharp, set_field("assignee", serde_json::Value::Null)))
         .unwrap();
     assert_eq!(
@@ -545,7 +547,7 @@ fn booleans_types_and_priority_presence_filter_as_written() {
         &[],
     );
     let off = issue(&mut store, &clock, &[("flag", json!(false))], &[]);
-    store
+    let _ = store
         .append(draft(off, set_field("type", json!("bug"))))
         .unwrap();
     assert_eq!(find(&store, "flag:false"), [off]);

@@ -127,7 +127,7 @@ fn a_question_is_guarded_inside_the_write() {
     assert!(unheld.is_err(), "another holds a live Claim: {unheld:?}");
 
     let done = new_issue(&mut store);
-    store
+    let _ = store
         .append(draft(done, set_field("status", json!("done"))))
         .unwrap();
     let finished = store.ask(&jace(), done, "Which?", &[], "kim", None);
@@ -280,7 +280,7 @@ fn undoing_a_question_clears_the_wait_and_releases_the_handed_claim() {
     let ops = store
         .ask(&claude("s1"), issue, "Which?", &[], "jace", Some(&taken))
         .unwrap();
-    store.undo(&claude("s1"), ops[0].op_id).unwrap();
+    let _ = store.undo(&claude("s1"), ops[0].op_id).unwrap();
     assert_eq!(field(&store, issue, "waiting_on"), None);
     let comments = store.comments(issue).unwrap();
     assert!(comments[0].retracted, "{comments:?}");

@@ -44,7 +44,10 @@ pub(crate) fn undo(
     let undone = here
         .store
         .undo_with(&identity.actor, batch, &options, !dry_run)
-        .map(|(plan, ops)| (plan, ops.first().filter(|_| !dry_run).map(|op| op.op_id)));
+        .map(|(plan, written)| {
+            let ops = here.passing(written);
+            (plan, ops.first().filter(|_| !dry_run).map(|op| op.op_id))
+        });
     let (plan, written) = undone.map_err(|err| {
         let err = CliError::past_claim(err, "tm undo --force");
         match next {

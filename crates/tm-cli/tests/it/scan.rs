@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::support::{self, Scratch, git, git_with, initialized, text, tm, tm_command};
 
 fn set(store: &mut Store, project: ProjectId, issue: Uuid, field: &str, value: Value) {
-    store
+    let _ = store
         .append(Draft {
             actor: Actor::human("jace"),
             project,

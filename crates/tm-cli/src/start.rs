@@ -74,13 +74,13 @@ fn write(
         } else {
             (Some(started.claim), None)
         };
-        (taken, kept, started.ops, started.made)
+        (taken, kept, here.passing(started.written), started.made)
     } else {
         let options = WriteOptions::default();
-        let (ops, begun) = here
+        let (written, begun) = here
             .store
             .append_with_lineage(Vec::new(), id, &options, drafts)?;
-        (None, None, ops, begun)
+        (None, None, here.passing(written), begun)
     };
     let started = Started {
         id,

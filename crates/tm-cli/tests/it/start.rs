@@ -43,7 +43,7 @@ fn an_agent_claims_moves_and_assigns_in_one_undo() {
     let (task, _) = store
         .create_issue(&jace, project, "task", "Claim and start work, in one step")
         .unwrap();
-    store
+    let _ = store
         .append(tm_store::Draft {
             actor: jace.clone(),
             project,

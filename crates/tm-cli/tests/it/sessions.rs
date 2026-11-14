@@ -51,7 +51,7 @@ fn show_lists_each_session_with_what_it_did_and_how_to_resume_it() {
     // A session this machine never ran, as a merge would bring one.
     let elsewhere =
         Actor::agent("claude", "jace").in_session(SessionId::parse("far-away").unwrap());
-    store
+    let _ = store
         .append(Draft {
             actor: elsewhere,
             project,

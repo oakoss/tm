@@ -212,7 +212,8 @@ pub(crate) fn write(
             change,
         })
         .collect();
-    let ops = here.store.write(drafts, &options).map_err(forced)?;
+    let written = here.store.write(drafts, &options).map_err(forced)?;
+    let ops = here.passing(written);
     let mut text = String::new();
     for change in &report {
         let _ = writeln!(text, "{name}  {}", summary(change));

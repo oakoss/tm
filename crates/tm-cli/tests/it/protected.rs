@@ -146,9 +146,27 @@ fn an_undo_is_refused_a_protected_field_until_forced() {
     let batch = doc(&out)["data"]["batch"].as_str().unwrap().to_owned();
     let out = as_agent(&scratch, &repo, "s2", &format!("--json undo {batch}"));
     assert_eq!(doc(&out)["error"], "already_claimed", "{out:?}");
-    let words = format!("--json undo {batch} --force");
-    let out = ok(as_agent(&scratch, &repo, "s2", &words));
-    assert_eq!(doc(&out)["warnings"], json!([HELD]));
+    for words in [
+        format!("--json undo {batch} --force --dry-run"),
+        format!("--json undo {batch} --force"),
+    ] {
+        let out = ok(as_agent(&scratch, &repo, "s2", &words));
+        assert_eq!(doc(&out)["warnings"], json!([HELD]), "{words}");
+    }
+}
+
+#[test]
+fn a_person_starting_a_held_parent_by_next_or_create_is_warned() {
+    let parent_held = "TM-1 is claimed by claude (session s1) for jace, who may be working on it";
+    for words in [
+        "--json next",
+        "--json create --type task --title n --parent TM-1 --set status=in_progress",
+    ] {
+        let scratch = Scratch::new();
+        let repo = workspace(&scratch);
+        let out = ok(as_human(&scratch, &repo, words));
+        assert_eq!(doc(&out)["warnings"], json!([parent_held]), "{words}");
+    }
 }
 
 #[test]

@@ -7,7 +7,7 @@ use tm_store::{Draft, Shortlist, ShortlistEdit, Store, StoreError, Target};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, OTHER, PROJECT, TempDir, dump, insert_acked, jace, open, remote_op,
+    ManualClock, OTHER, PROJECT, TempDir, dump, insert_acked, jace, open, ops, remote_op,
 };
 
 fn names(list: &[&str]) -> Vec<String> {
@@ -168,7 +168,7 @@ fn undoing_a_create_deletes_the_list() {
     let (id, ops) = store
         .create_shortlist(&jace(), PROJECT, "docs", &names(&["codex"]), None)
         .unwrap();
-    store.undo(&jace(), batch(&ops)).unwrap();
+    let _ = store.undo(&jace(), batch(&ops)).unwrap();
     assert!(read(&store, id).deleted);
 }
 
@@ -188,7 +188,7 @@ fn undoing_an_edit_restores_name_size_and_actors() {
     let after = read(&store, id);
     assert_eq!((after.name.as_deref(), after.size), (Some("guides"), 3));
     assert_eq!(after.actors, ["claude"]);
-    store.undo(&jace(), batch(&ops)).unwrap();
+    let _ = store.undo(&jace(), batch(&ops)).unwrap();
     let back = read(&store, id);
     assert_eq!((back.name.as_deref(), back.size), (Some("docs"), 10));
     assert_eq!(back.actors, ["codex"]);
@@ -263,7 +263,7 @@ fn list_writes_replay_to_the_same_tables() {
     };
     store.edit_shortlist(&jace(), id, &edit).unwrap();
     let deleted = store.delete_shortlist(&jace(), id).unwrap();
-    store.undo(&jace(), batch(&deleted)).unwrap();
+    let _ = store.undo(&jace(), batch(&deleted)).unwrap();
     let incremental = dump(&store);
     assert_eq!(store.rebuild().unwrap(), 0);
     assert_eq!(dump(&store), incremental);
@@ -392,7 +392,7 @@ fn a_list_merged_without_name_or_size_can_still_be_edited() {
         ..ShortlistEdit::default()
     };
     let resized = store.edit_shortlist(&jace(), id, &resize).unwrap();
-    store.undo(&jace(), batch(&resized)).unwrap();
+    let _ = store.undo(&jace(), batch(&resized)).unwrap();
     // A size never set restores to the default.
     assert_eq!(read(&store, id).size, 10);
 
@@ -434,13 +434,13 @@ fn undoing_a_batch_that_removed_an_actor_and_deleted_the_list_restores_both() {
         actor: "codex".into(),
         present: false,
     };
-    let ops = store
+    let ops = ops(store
         .append_all(vec![
             list_draft(id, remove),
             list_draft(id, set(Field::Deleted, json!(true))),
         ])
-        .unwrap();
-    store.undo(&jace(), batch(&ops)).unwrap();
+        .unwrap());
+    let _ = store.undo(&jace(), batch(&ops)).unwrap();
     let list = read(&store, id);
     assert!(!list.deleted);
     assert_eq!(list.actors, ["claude", "codex"]);
@@ -451,15 +451,15 @@ fn an_undo_of_a_rename_and_delete_can_itself_be_undone() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let id = create(&mut store, "docs", &["codex"]);
-    let ops = store
+    let ops = ops(store
         .append_all(vec![
             list_draft(id, set(Field::Name, json!("guides"))),
             list_draft(id, set(Field::Deleted, json!(true))),
         ])
-        .unwrap();
-    let (_, undone) = store.undo(&jace(), batch(&ops)).unwrap();
+        .unwrap());
+    let undone = crate::support::ops(store.undo(&jace(), batch(&ops)).unwrap().1);
     assert!(store.can_undo(batch(&undone)).unwrap());
-    store.undo(&jace(), batch(&undone)).unwrap();
+    let _ = store.undo(&jace(), batch(&undone)).unwrap();
     let list = read(&store, id);
     assert_eq!((list.name.as_deref(), list.deleted), (Some("guides"), true));
 }
@@ -479,15 +479,15 @@ fn names_moved_between_lists_undo_in_either_direction() {
             (older, newer)
         };
         let moved = read(&store, giver).name.unwrap();
-        let ops = store
+        let ops = ops(store
             .append_all(vec![
                 list_draft(giver, set(Field::Name, json!("z"))),
                 list_draft(taker, set(Field::Name, json!(moved))),
             ])
-            .unwrap();
-        let (_, undone) = store.undo(&jace(), batch(&ops)).unwrap();
+            .unwrap());
+        let undone = crate::support::ops(store.undo(&jace(), batch(&ops)).unwrap().1);
         assert_eq!(read(&store, giver).name, Some(moved.clone()));
-        store.undo(&jace(), batch(&undone)).unwrap();
+        let _ = store.undo(&jace(), batch(&undone)).unwrap();
         assert_eq!(read(&store, taker).name, Some(moved));
         assert_eq!(read(&store, giver).name.as_deref(), Some("z"));
     }
@@ -499,7 +499,7 @@ fn undo_may_hand_a_name_back_to_a_list_a_batch_created_it_for() {
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let a = create(&mut store, "docs", &["codex"]);
     let b = Uuid::now_v7();
-    let ops = store
+    let ops = ops(store
         .append_all(vec![
             list_draft(a, set(Field::Name, json!("guides"))),
             list_draft(b, Change::CreateShortlist),
@@ -512,8 +512,8 @@ fn undo_may_hand_a_name_back_to_a_list_a_batch_created_it_for() {
                 },
             ),
         ])
-        .unwrap();
-    store.undo(&jace(), batch(&ops)).unwrap();
+        .unwrap());
+    let _ = store.undo(&jace(), batch(&ops)).unwrap();
     assert_eq!(read(&store, a).name.as_deref(), Some("docs"));
     assert!(read(&store, b).deleted);
 }
@@ -523,15 +523,15 @@ fn restoring_a_list_checks_the_name_it_ends_with() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let a = create(&mut store, "docs", &["codex"]);
-    let ops = store
+    let ops = ops(store
         .append_all(vec![
             list_draft(a, set(Field::Name, json!("guides"))),
             list_draft(a, set(Field::Deleted, json!(true))),
         ])
-        .unwrap();
+        .unwrap());
     create(&mut store, "guides", &["claude"]);
     assert!(store.can_undo(batch(&ops)).unwrap());
-    store.undo(&jace(), batch(&ops)).unwrap();
+    let _ = store.undo(&jace(), batch(&ops)).unwrap();
     let list = read(&store, a);
     assert_eq!((list.name.as_deref(), list.deleted), (Some("docs"), false));
 }

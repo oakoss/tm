@@ -283,7 +283,7 @@ fn an_agent_claims_with_a_token_and_releases_with_it() {
 }
 
 fn archive(store: &mut Store, project: ProjectId, issue: Uuid) {
-    store
+    let _ = store
         .append(Draft {
             actor: Actor::human("jace"),
             project,

@@ -10,7 +10,7 @@ use crate::support::{
 };
 
 fn set(store: &mut Store, issue: Uuid, field: &str, value: serde_json::Value) {
-    store.append(draft(issue, set_field(field, value))).unwrap();
+    let _ = store.append(draft(issue, set_field(field, value))).unwrap();
 }
 
 fn blocks(store: &mut Store, from: Uuid, to: Uuid) {

@@ -365,7 +365,7 @@ fn a_finished_issue_is_not_placed_and_says_so() {
     let placed = import(&mut store, &lines).unwrap();
     let two = issue(&placed, 2);
     let finish = draft(two, set_field("status", json!("done")));
-    store.append(finish).unwrap();
+    let _ = store.append(finish).unwrap();
     let again = import(&mut store, &lines).unwrap();
     let shortlist = |c: &&tm_store::Conflict| c.field == "shortlist";
     let conflict = again.records[0].conflicts.iter().find(shortlist).unwrap();
@@ -515,7 +515,7 @@ fn a_hidden_place_the_source_drops_is_cleared_whole() {
     let removed = store.shortlist_remove(&jace(), &[one]).unwrap();
     let docs = store.shortlist_named(PROJECT, "docs").unwrap().id;
     store.delete_shortlist(&jace(), docs).unwrap();
-    store.undo(&jace(), removed.ops[0].op_id).unwrap();
+    let _ = store.undo(&jace(), removed.ops[0].op_id).unwrap();
     let rank = |store: &Store| -> Option<String> {
         let query = "SELECT shortlist_rank FROM issues WHERE id = ?1";
         let held = store

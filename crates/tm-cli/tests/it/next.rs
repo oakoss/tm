@@ -52,7 +52,7 @@ fn repo(scratch: &Scratch) -> PathBuf {
             value_label: None,
         };
         let actor = jace.clone();
-        store
+        let _ = store
             .append(tm_store::Draft {
                 actor,
                 project,

@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::claim::{Claim, current, made_by};
 use crate::membership::{open_blocks, passed_over};
-use crate::{Draft, Lineage, Store, StoreError, Taking};
+use crate::{Draft, Lineage, Store, StoreError, Taking, Written};
 
 /// The Issue [`Store::take_next`] took, with what its `extend` made.
 #[derive(Debug)]
@@ -16,7 +16,8 @@ pub struct Next<T> {
     pub issue: Uuid,
     /// The Claim an Agent took; a human begins work without one.
     pub claim: Option<Claim>,
-    pub ops: Vec<Op>,
+    /// A human begins the Issue and its ancestors, so can pass a Claim.
+    pub written: Written<Vec<Op>>,
     pub made: T,
 }
 
@@ -50,7 +51,7 @@ impl Store {
         let mut extend = Some(extend);
         let mut chosen = None;
         let mut made = T::default();
-        let ops = self.append_with(Vec::new(), |tx, at_ms| {
+        let written = self.append_with(Vec::new(), |tx, at_ms| {
             let blocks = open_blocks(tx, &scheme)?;
             for view in crate::read::issues(tx, &scheme, candidates)? {
                 let todo = view.category == Some(Category::Todo);
@@ -82,7 +83,8 @@ impl Store {
         let Some(issue) = chosen else {
             return Ok(None);
         };
-        let claim = ops
+        let claim = written
+            .ops
             .iter()
             .find(|op| {
                 op.subject == issue
@@ -98,7 +100,7 @@ impl Store {
         Ok(Some(Next {
             issue,
             claim,
-            ops,
+            written,
             made,
         }))
     }

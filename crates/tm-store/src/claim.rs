@@ -11,7 +11,7 @@ use tm_core::{Actor, Change, Op, paths};
 use uuid::Uuid;
 
 use crate::apply::{issue_project, uuid_from};
-use crate::{Draft, Lineage, Provenance, Store, StoreError, Taking, WriteOptions};
+use crate::{Draft, Lineage, Provenance, Store, StoreError, Taking, WriteOptions, Written};
 
 /// Begins the `unapplied` reason of a take or release that lost to another,
 /// telling lost Claims apart from operations that do not fit.
@@ -161,7 +161,8 @@ impl ClaimState {
 pub struct TakenWith<T> {
     pub claim: Claim,
     pub kept: bool,
-    pub ops: Vec<Op>,
+    /// `extend`'s drafts may be another writer's, so the take can pass a Claim.
+    pub written: Written<Vec<Op>>,
     pub made: T,
 }
 
@@ -240,17 +241,19 @@ impl Store {
         };
         let draft = self.claim_draft(actor.clone(), issue, take(None, Vec::new()))?;
         // `prev` is read inside the write, so no other take slips in between.
-        let ops = self.append_with(Vec::new(), |tx, _| {
-            let held = current(tx, issue)?;
-            let paths = covering(held.as_ref(), actor, &paths);
-            let prev = held.map(|held| held.id);
-            Ok(vec![Draft {
-                change: Change::Claim {
-                    action: take(prev, paths),
-                },
-                ..draft
-            }])
-        })?;
+        let ops = self
+            .append_with(Vec::new(), |tx, _| {
+                let held = current(tx, issue)?;
+                let paths = covering(held.as_ref(), actor, &paths);
+                let prev = held.map(|held| held.id);
+                Ok(vec![Draft {
+                    change: Change::Claim {
+                        action: take(prev, paths),
+                    },
+                    ..draft
+                }])
+            })?
+            .unpassed();
         // From the operation, not the table: another writer may already have
         // released and retaken the Issue.
         made_by(&ops[0])
@@ -288,7 +291,7 @@ impl Store {
         let scheme = self.scheme.clone();
         let mut made = T::default();
         let mut kept = None;
-        let ops = self.append_with(Vec::new(), |tx, at_ms| {
+        let written = self.append_with(Vec::new(), |tx, at_ms| {
             let held = current(tx, issue)?;
             let (more, out) = extend(&crate::family::lineage(tx, &scheme, issue, at_ms)?);
             made = out;
@@ -316,11 +319,12 @@ impl Store {
             return Ok(TakenWith {
                 claim,
                 kept: true,
-                ops,
+                written,
                 made,
             });
         }
-        let take = ops
+        let take = written
+            .ops
             .iter()
             .find(|op| {
                 op.subject == issue
@@ -336,7 +340,7 @@ impl Store {
         Ok(TakenWith {
             claim,
             kept: false,
-            ops,
+            written,
             made,
         })
     }
@@ -349,7 +353,7 @@ impl Store {
     /// Claim, [`StoreError::UnknownIssue`], or as [`Store::append_all`].
     pub fn release(&mut self, actor: &Actor, issue: Uuid, claim: Uuid) -> Result<Op, StoreError> {
         let draft = self.claim_draft(actor.clone(), issue, ClaimAction::Release { claim })?;
-        self.append(draft)
+        self.append(draft).map(Written::unpassed)
     }
 
     /// Refuses as the write would when `actor` sets one of `fields` on
@@ -418,7 +422,7 @@ impl Store {
             claim: Some((held.issue, Some(held.clone()))),
             ..WriteOptions::default()
         };
-        let ops = self.write(vec![hand, comment], &options)?;
+        let ops = self.write(vec![hand, comment], &options)?.unpassed();
         // From the operation, not the table: the receiver may take it at once.
         let handed = Claim {
             on_behalf_of: held.on_behalf_of.clone(),
@@ -644,6 +648,7 @@ impl Store {
                 Some(claim.issue) == issue || claim.due(at_ms)
             })
         })
+        .map(Written::unpassed)
     }
 
     /// The Claims that now hold an Issue `batch` wrote, or any Issue when

@@ -239,7 +239,7 @@ fn an_issue_whose_key_collides_keeps_everything_but_the_key() {
     let (local, _) = store
         .create_issue(&jace(), PROJECT, "task", "mine")
         .unwrap();
-    store
+    let _ = store
         .append(crate::support::draft(
             local,
             Change::Comment { body: "hi".into() },

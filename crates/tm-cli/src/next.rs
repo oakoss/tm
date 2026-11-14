@@ -170,11 +170,12 @@ fn take(here: &mut Here, actor: &Actor, lasts: &Lasts) -> Result<Output, CliErro
         return nothing(here, actor, &source(here, actor)?);
     };
     let place = from.place(next.issue);
+    let ops = here.passing(next.written);
     let started = Started {
         id: next.issue,
         claim: next.claim,
         held: None,
-        ops: next.ops,
+        ops,
         begun: next.made,
     };
     let mut output = start::report(here, actor, &next.issue.to_string(), started)?;

@@ -13,11 +13,13 @@ use crate::support::{
 
 /// Writes `change` on `issue` as jace, returning its batch.
 fn write(store: &mut Store, issue: Uuid, change: Change) -> Uuid {
-    store.append(draft(issue, change)).unwrap().op_id
+    crate::support::ops(store.append(draft(issue, change)).unwrap()).op_id
 }
 
 fn undo(store: &mut Store, batch: Uuid) -> Result<Uuid, StoreError> {
-    store.undo(&jace(), batch).map(|(_, ops)| ops[0].op_id)
+    store
+        .undo(&jace(), batch)
+        .map(|(_, written)| crate::support::ops(written)[0].op_id)
 }
 
 fn ops(store: &Store) -> i64 {
@@ -231,25 +233,27 @@ fn undo_restores_blank_text_and_text_under_a_retraction_it_undoes() {
     undo(&mut store, filled).unwrap();
     assert_eq!(text(&store).body, " ", "as an import may have written it");
 
-    let both = store
-        .append_all(vec![
-            draft(
-                issue,
-                Change::EditComment {
-                    comment,
-                    body: "again".into(),
-                },
-            ),
-            draft(
-                issue,
-                Change::Retract {
-                    comment,
-                    retracted: true,
-                },
-            ),
-        ])
-        .unwrap()[0]
-        .op_id;
+    let both = crate::support::ops(
+        store
+            .append_all(vec![
+                draft(
+                    issue,
+                    Change::EditComment {
+                        comment,
+                        body: "again".into(),
+                    },
+                ),
+                draft(
+                    issue,
+                    Change::Retract {
+                        comment,
+                        retracted: true,
+                    },
+                ),
+            ])
+            .unwrap(),
+    )[0]
+    .op_id;
     undo(&mut store, both).unwrap();
     let shown = text(&store);
     assert_eq!((shown.body.as_str(), shown.retracted), (" ", false));
@@ -498,14 +502,17 @@ fn undo_writes_as_the_actor_undoing() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    let raise = store
-        .append(Draft {
-            actor: Actor::agent("claude", "jace"),
-            ..draft(issue, set_field("priority", json!("high")))
-        })
-        .unwrap()
-        .op_id;
-    let (_, ops) = store.undo(&jace(), raise).unwrap();
+    let raise = crate::support::ops(
+        store
+            .append(Draft {
+                actor: Actor::agent("claude", "jace"),
+                ..draft(issue, set_field("priority", json!("high")))
+            })
+            .unwrap(),
+    )
+    .op_id;
+    let (_, written) = store.undo(&jace(), raise).unwrap();
+    let ops = crate::support::ops(written);
     assert_eq!(ops[0].actor, "jace");
 }
 
@@ -581,16 +588,18 @@ fn a_batch_with_an_agents_write_is_not_the_humans() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
-    let mixed = store
-        .append_all(vec![
-            draft(issue, set_field("priority", json!("high"))),
-            Draft {
-                actor: claude(),
-                ..draft(issue, set_field("title", json!("by claude")))
-            },
-        ])
-        .unwrap()[0]
-        .op_id;
+    let mixed = crate::support::ops(
+        store
+            .append_all(vec![
+                draft(issue, set_field("priority", json!("high"))),
+                Draft {
+                    actor: claude(),
+                    ..draft(issue, set_field("title", json!("by claude")))
+                },
+            ])
+            .unwrap(),
+    )[0]
+    .op_id;
     assert!(!store.undo_candidates("jace", 10).unwrap().contains(&mixed));
 }
 
@@ -600,7 +609,7 @@ fn a_bare_undo_steps_back_through_the_humans_own_batches() {
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
     let issue = new_issue(&mut store);
     let low = write(&mut store, issue, set_field("priority", json!("low")));
-    store
+    let _ = store
         .append(Draft {
             actor: claude(),
             ..draft(issue, set_field("title", json!("by claude")))
@@ -711,24 +720,26 @@ fn a_batch_of_several_writers_is_judged_by_its_plan() {
     let issue = new_issue(&mut store);
     // claude may not retract codex's comment, but jace, for whom both write,
     // may undo the whole batch.
-    let mixed = store
-        .append_all(vec![
-            Draft {
-                actor: claude(),
-                ..draft(issue, set_field("priority", json!("high")))
-            },
-            Draft {
-                actor: Actor::agent("codex", "jace"),
-                ..draft(
-                    issue,
-                    Change::Comment {
-                        body: "by codex".into(),
-                    },
-                )
-            },
-        ])
-        .unwrap()[0]
-        .op_id;
+    let mixed = crate::support::ops(
+        store
+            .append_all(vec![
+                Draft {
+                    actor: claude(),
+                    ..draft(issue, set_field("priority", json!("high")))
+                },
+                Draft {
+                    actor: Actor::agent("codex", "jace"),
+                    ..draft(
+                        issue,
+                        Change::Comment {
+                            body: "by codex".into(),
+                        },
+                    )
+                },
+            ])
+            .unwrap(),
+    )[0]
+    .op_id;
     assert!(store.can_undo(mixed).unwrap());
     undo(&mut store, mixed).unwrap();
 }
@@ -766,7 +777,7 @@ fn an_imported_batch_keeps_its_source_and_time_and_only_a_named_undo_reverts_it(
     assert!(!candidates.contains(&imported.op_id), "{candidates:?}");
     assert_eq!(candidates.len(), 1, "only the create");
 
-    let (_, inverse) = store.undo(&jace(), imported.op_id).unwrap();
+    let inverse = crate::support::ops(store.undo(&jace(), imported.op_id).unwrap().1);
     assert!(inverse.iter().all(|op| op.source.is_none()), "{inverse:?}");
     assert_eq!(field(&store, issue, "priority"), Some(json!("none")));
 }
