@@ -6,7 +6,8 @@ use tm_store::{PassedOver, Place, RecordsImported, ShortlistEdit, Store, StoreEr
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, OTHER, PROJECT, TempDir, draft, field, jace, new_issue, open, set_field, unpassed,
+    IMPORT_START, ManualClock, OTHER, PROJECT, TempDir, draft, field, jace, meanwhile, new_issue,
+    open, set_field, unpassed,
 };
 
 fn store(dir: &TempDir) -> Store {
@@ -90,6 +91,40 @@ fn a_file_makes_its_lists_and_places_its_issues_in_order() {
     assert!(again.shortlists.iter().all(quiet), "{again:?}");
     assert!(again.records.iter().all(|record| record.batches.is_empty()));
     assert_eq!(store.history(one).unwrap().len(), before);
+}
+
+#[test]
+fn a_reimported_order_is_refused_when_the_list_changes_before_the_write() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_900_000_000_000);
+    let mut store = open(&dir.db(), &clock);
+    store.set_workspace_id(Uuid::now_v7()).unwrap();
+    let docs = json!([{"source": "x:docs", "name": "docs", "actors": ["jace"], "size": 4}]);
+    let first = [
+        project(&docs),
+        record(1, Some(("docs", 1))),
+        record(2, None),
+    ];
+    let two = issue(&import(&mut store, &first).unwrap(), 2);
+    let placed = [
+        project(&docs),
+        record(1, Some(("docs", 1))),
+        record(2, Some(("docs", 2))),
+    ];
+    let list = store.shortlist_named(PROJECT, "docs").unwrap().id;
+    meanwhile((&dir.db(), &clock), IMPORT_START, move |other| {
+        other
+            .shortlist_add(&jace(), list, &[two], Place::End)
+            .unwrap();
+    });
+    let err = import(&mut store, &placed).unwrap_err();
+    let StoreError::RecordRefused { cause, .. } = &err else {
+        panic!("{err:?}");
+    };
+    assert!(
+        matches!(&**cause, StoreError::ImportChanged(named) if named.id == two),
+        "{err:?}"
+    );
 }
 
 #[test]
