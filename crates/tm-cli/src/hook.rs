@@ -226,7 +226,8 @@ fn edit_notes(input: &Value) -> Result<Notes, CliError> {
         return Ok(Notes::default());
     };
     enter(Harness::Claude, Some(input))?;
-    let me = identity::reader(identity::env, || identity::git_email(&here.found.dir))
+    let me = here
+        .reader()
         .map_err(|why| failed(format!("cannot tell who is editing: {why}")))?;
     let others = covering::others(&here.store.claims()?, Some(&me.actor));
     if others.is_empty() {

@@ -13,7 +13,6 @@ use crate::error::CliError;
 use crate::fields;
 use crate::follow;
 use crate::here::{self, Here};
-use crate::identity;
 use crate::mention;
 use crate::output::{Output, printable, short};
 use crate::prompt;
@@ -114,8 +113,7 @@ fn write_ask(here: &mut Here, args: &Ask) -> Result<(Output, Vec<String>), CliEr
             format!("{reference} is finished, so it waits on no one"),
         ));
     }
-    let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map_err(|message| CliError::new("no_identity", message))?;
+    let identity = here.writer()?;
     let actor = &identity.actor;
     let of = match (&args.of, actor.on_behalf_of()) {
         (None, Some(human)) => human.to_owned(),
@@ -206,8 +204,7 @@ fn write_answer(
     }
     let (id, key, waiting) = issue(here, reference)?;
     let waiting = waiting.ok_or_else(|| not_waiting(reference))?;
-    let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map_err(|message| CliError::new("no_identity", message))?;
+    let identity = here.writer()?;
     let actor = &identity.actor;
     // Read before the reply, so a question asked anew meanwhile is refused.
     let question = open_question(here, id, reference)?;
@@ -261,8 +258,7 @@ fn answered(
 /// Each question waiting on the person at the terminal in turn, oldest
 /// first; a blank reply passes one over and end of input stops.
 fn walk(here: &mut Here) -> Result<(Output, Vec<String>), CliError> {
-    let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map_err(|message| CliError::new("no_identity", message))?;
+    let identity = here.writer()?;
     let actor = identity.actor.clone();
     let mut warnings = identity.warnings;
     let waiting = crate::prime::waiting(&here.store, Some(&actor), &mut warnings)?;
@@ -387,8 +383,7 @@ fn write_withdraw(here: &mut Here, args: &Withdraw) -> Result<(Output, Vec<Strin
     refuse_blank("reason", &args.reason)?;
     let (id, key, waiting) = issue(here, reference)?;
     let waiting = waiting.ok_or_else(|| not_waiting(reference))?;
-    let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map_err(|message| CliError::new("no_identity", message))?;
+    let identity = here.writer()?;
     let actor = &identity.actor;
     let question = open_question(here, id, reference)?;
     if question.actor != actor.name() || question.on_behalf_of.as_deref() != actor.on_behalf_of() {

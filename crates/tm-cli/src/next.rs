@@ -14,7 +14,6 @@ use crate::claim::Lasts;
 use crate::error::CliError;
 use crate::fields::quoted;
 use crate::here::{self, Here};
-use crate::identity::{self, Identity};
 use crate::output::{Output, printable};
 use crate::shortlist::reason;
 use crate::show;
@@ -110,7 +109,7 @@ pub(crate) fn run(peek: bool, lasts: &Lasts) -> Result<Output, CliError> {
         return look();
     }
     here::write(|here| {
-        let identity = identity(here)?;
+        let identity = here.writer()?;
         match take(here, &identity.actor, lasts) {
             Ok(output) => Ok((output, identity.warnings)),
             Err(err) => Err(err.warned(identity.warnings)),
@@ -118,17 +117,12 @@ pub(crate) fn run(peek: bool, lasts: &Lasts) -> Result<Output, CliError> {
     })
 }
 
-fn identity(here: &Here) -> Result<Identity, CliError> {
-    identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map_err(|message| CliError::new("no_identity", message))
-}
-
 /// `--peek`: what a take would choose, without writing, so it works from a
 /// sandbox's Snapshot.
 fn look() -> Result<Output, CliError> {
     let mut here = here::read()?;
     let warnings = std::mem::take(&mut here.warnings);
-    let looked = identity(&here).and_then(|identity| {
+    let looked = here.writer().and_then(|identity| {
         let peeked = peek(&here, &identity.actor);
         match peeked {
             Ok(mut output) => {

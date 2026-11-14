@@ -15,7 +15,6 @@ use crate::error::CliError;
 use crate::fields::{set, split_pair, typed};
 use crate::follow::{self, Starts};
 use crate::here::{self, Here};
-use crate::identity;
 use crate::output::Output;
 use crate::show;
 
@@ -117,8 +116,7 @@ fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>), CliError
         )
     })?;
     let status = status(workflow, &issue_type, target)?;
-    let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map_err(|message| CliError::new("no_identity", message))?;
+    let identity = here.writer()?;
     crate::fields::known(&scheme, fields.iter().map(|(field, _)| field))?;
     // A move into done or cancelled releases the Claim; a review status keeps
     // it (ADR 0009).

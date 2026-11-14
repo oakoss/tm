@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 use tm_core::Actor;
 use tm_core::actor::SessionId;
 
+use crate::error::CliError;
 use crate::harness::Harness;
 
 /// Each harness's variables, in the order they are checked, and the name its
@@ -61,6 +62,34 @@ pub(crate) fn reader(
     resolve_with(var, |agent| {
         agent.map_or_else(email, |agent| Ok(agent.to_owned()))
     })
+}
+
+/// [`resolve`] from this process's environment, asking git in the repo at
+/// `dir` for the human's email.
+///
+/// # Errors
+///
+/// As [`resolve`].
+pub(crate) fn writer_in(dir: &Path) -> Result<Identity, String> {
+    resolve(env, || git_email(dir))
+}
+
+/// [`writer_in`] for a command that cannot go on without a writer.
+///
+/// # Errors
+///
+/// `no_identity` with [`resolve`]'s message.
+pub(crate) fn required_in(dir: &Path) -> Result<Identity, CliError> {
+    writer_in(dir).map_err(|message| CliError::new("no_identity", message))
+}
+
+/// [`reader`] from this process's environment and the repo at `dir`.
+///
+/// # Errors
+///
+/// As [`resolve`].
+pub(crate) fn reader_in(dir: &Path) -> Result<Identity, String> {
+    reader(env, || git_email(dir))
 }
 
 /// `human` is asked, with the Agent's name, only when `TM_ACTOR` is unset.

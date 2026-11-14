@@ -9,7 +9,6 @@ use crate::claim::{claim_json, expiry};
 use crate::error::CliError;
 use crate::fields;
 use crate::here::{self, Here};
-use crate::identity;
 use crate::mention;
 use crate::output::Output;
 
@@ -65,8 +64,7 @@ fn write(here: &mut Here, args: &Handoff) -> Result<(Output, Vec<String>), CliEr
         key: key.clone(),
         ..id.into()
     };
-    let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map_err(|message| CliError::new("no_identity", message))?;
+    let identity = here.writer()?;
     let actor = &identity.actor;
     let Some(state) = here.store.claim_state(id)? else {
         return Err(CliError::new(

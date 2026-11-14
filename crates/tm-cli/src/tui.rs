@@ -57,8 +57,7 @@ fn open(json: bool) -> Result<tm_tui::Ended, CliError> {
     }
     let (me, reader) = session(identity::env, || identity::git_email(&here.found.dir));
     // Whom Notifications are listed for, as `tm notifications` marks them.
-    let writer = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map(|identity| identity.actor);
+    let writer = identity::writer_in(&here.found.dir).map(|identity| identity.actor);
     // A Snapshot is opened immutable and a replaced store file is another
     // file, so the list's reader is opened again on each change, and first
     // after the watch starts, so no change between the two is missed.

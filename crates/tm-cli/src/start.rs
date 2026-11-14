@@ -15,7 +15,6 @@ use crate::error::CliError;
 use crate::fields::set;
 use crate::follow::{self, Starts};
 use crate::here::{self, Here};
-use crate::identity;
 use crate::output::{Output, printable};
 use crate::show;
 
@@ -60,8 +59,7 @@ fn write(
         )
         .with("waiting_on", waiting));
     }
-    let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map_err(|message| CliError::new("no_identity", message))?;
+    let identity = here.writer()?;
     let actor = identity.actor.clone();
     let scheme = here.store.scheme().clone();
     let drafts = |lineage: &Lineage| begin(&scheme, &actor, lineage);

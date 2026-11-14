@@ -8,8 +8,7 @@ use tm_core::notification::{self, Site};
 use tm_store::{Notification, Store};
 
 use crate::error::CliError;
-use crate::here::{self, Here};
-use crate::identity::{self, Identity};
+use crate::here;
 use crate::memory::now_ms;
 use crate::mention::Names;
 use crate::output::{Output, id_by_part, id_has_part, printable, short, span};
@@ -50,15 +49,10 @@ pub(crate) fn run(args: &Notifications) -> Result<Output, CliError> {
     }
 }
 
-fn identity(here: &Here) -> Result<Identity, CliError> {
-    identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map_err(|message| CliError::new("no_identity", message))
-}
-
 fn list(all: bool) -> Result<Output, CliError> {
     let mut here = here::read()?;
     let mut warnings = std::mem::take(&mut here.warnings);
-    let identity = identity(&here).map_err(|err| err.warned(warnings.clone()))?;
+    let identity = here.writer().map_err(|err| err.warned(warnings.clone()))?;
     warnings.extend(identity.warnings);
     let listed = here.store.notifications(&identity.actor, all)?;
     let Shown { lines, entries, .. } = shown(&here.store, &identity.actor, &listed)?;
@@ -78,7 +72,7 @@ fn list(all: bool) -> Result<Output, CliError> {
 
 pub(crate) fn read(reference: &str) -> Result<Output, CliError> {
     here::write(|here| {
-        let identity = identity(here)?;
+        let identity = here.writer()?;
         let actor = &identity.actor;
         let chosen = if reference == "all" {
             here.store.notifications(actor, false)?

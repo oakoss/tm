@@ -10,7 +10,6 @@ use crate::error::CliError;
 use crate::fields::{self, quoted, set, split_pair, typed};
 use crate::follow::{self, Starts};
 use crate::here::{self, Here};
-use crate::identity;
 use crate::mention;
 use crate::output::Output;
 use crate::show;
@@ -41,8 +40,7 @@ pub(crate) fn run(create: Create) -> Result<Output, CliError> {
 }
 
 fn write(here: &mut Here, mut create: Create) -> Result<(Output, Vec<String>), CliError> {
-    let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map_err(|message| CliError::new("no_identity", message))?;
+    let identity = here.writer()?;
     let project = here.project()?;
     fields::given_once(create.set.iter().map(|(field, _)| field))?;
     let parent = match &create.parent {

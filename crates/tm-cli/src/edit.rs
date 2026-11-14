@@ -12,7 +12,6 @@ use uuid::Uuid;
 use crate::error::CliError;
 use crate::fields::{self, quoted, set, split_pair, typed};
 use crate::here::{self, Here};
-use crate::identity;
 use crate::mention;
 use crate::output::{Output, printable};
 
@@ -143,8 +142,7 @@ fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<S
     if let Some(parent) = parent.filter(|_| reparents) {
         here.store.check_parent(id, parent)?;
     }
-    let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map_err(|message| CliError::new("no_identity", message))?;
+    let identity = here.writer()?;
     check_flags(here.store.scheme(), &view, edit)?;
     let options = WriteOptions {
         force: edit.force,

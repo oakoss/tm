@@ -10,7 +10,6 @@ use uuid::Uuid;
 use crate::error::CliError;
 use crate::fields;
 use crate::here::{self, Here};
-use crate::identity;
 use crate::mention;
 use crate::output::{Output, id_by_part, id_has_part, printable, short};
 use crate::show::imported_id;
@@ -50,8 +49,7 @@ fn write(
         .issue(id)?
         .map(|view| view.project)
         .ok_or_else(|| CliError::new("not_found", format!("no Issue is {reference}")))?;
-    let identity = identity::resolve(identity::env, || identity::git_email(&here.found.dir))
-        .map_err(|message| CliError::new("no_identity", message))?;
+    let identity = here.writer()?;
     // The comment, and the id `tm show` gives it.
     let edited = match edit {
         Some(which) => {
