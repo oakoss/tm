@@ -414,11 +414,11 @@ impl Actions for Rich {
         Fake.ready(store)
     }
 
-    fn write(&self, write: &Write) -> Result<Written, String> {
+    fn write(&self, write: &Write) -> Result<Written, Refused> {
         Fake.write(write)
     }
 
-    fn undo(&self, batch: Uuid) -> Result<Written, String> {
+    fn undo(&self, batch: Uuid) -> Result<Written, Refused> {
         Fake.undo(batch)
     }
 }

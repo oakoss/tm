@@ -156,7 +156,7 @@ fn version(store: &Store, key: &str) -> i64 {
 struct Fake;
 
 impl Actions for Fake {
-    fn write(&self, write: &Write) -> Result<Written, String> {
+    fn write(&self, write: &Write) -> Result<Written, Refused> {
         Ok(Written {
             said: format!("{} written", write.key()),
             batch: Some(Uuid::nil()),
@@ -164,7 +164,7 @@ impl Actions for Fake {
         })
     }
 
-    fn undo(&self, _: Uuid) -> Result<Written, String> {
+    fn undo(&self, _: Uuid) -> Result<Written, Refused> {
         Ok(Written {
             said: "undone".into(),
             batch: None,
@@ -254,11 +254,11 @@ fn reported(store: &Store, id: Uuid) -> Result<serde_json::Value, String> {
 struct Jace;
 
 impl Actions for Jace {
-    fn write(&self, write: &Write) -> Result<Written, String> {
+    fn write(&self, write: &Write) -> Result<Written, Refused> {
         Fake.write(write)
     }
 
-    fn undo(&self, batch: Uuid) -> Result<Written, String> {
+    fn undo(&self, batch: Uuid) -> Result<Written, Refused> {
         Fake.undo(batch)
     }
 
@@ -277,13 +277,21 @@ impl Actions for Jace {
 
 struct Gone;
 
+/// A refusal with no warnings.
+fn refused(why: &str) -> Refused {
+    Refused {
+        why: why.to_owned(),
+        warnings: Vec::new(),
+    }
+}
+
 impl Actions for Gone {
-    fn write(&self, write: &Write) -> Result<Written, String> {
-        Err(format!("{} not written", write.key()))
+    fn write(&self, write: &Write) -> Result<Written, Refused> {
+        Err(refused(&format!("{} not written", write.key())))
     }
 
-    fn undo(&self, _: Uuid) -> Result<Written, String> {
-        Err("nothing undone".into())
+    fn undo(&self, _: Uuid) -> Result<Written, Refused> {
+        Err(refused("nothing undone"))
     }
 
     fn me(&self) -> Result<&str, &str> {
@@ -309,6 +317,8 @@ struct Record {
     unchanged_key: Option<String>,
     /// Refuse the next undo.
     refuse_undo: std::cell::Cell<bool>,
+    /// The warning a refused write or undo carries.
+    refused_warning: Option<&'static str>,
     writes: std::cell::RefCell<Vec<Write>>,
     issued: std::cell::RefCell<Vec<Uuid>>,
     undone: std::cell::RefCell<Vec<Uuid>>,
@@ -322,9 +332,21 @@ impl Record {
             refuse_key: None,
             unchanged_key: None,
             refuse_undo: std::cell::Cell::new(false),
+            refused_warning: None,
             writes: std::cell::RefCell::default(),
             issued: std::cell::RefCell::default(),
             undone: std::cell::RefCell::default(),
+        }
+    }
+
+    fn refused(&self, why: &str) -> Refused {
+        Refused {
+            why: why.to_owned(),
+            warnings: self
+                .refused_warning
+                .iter()
+                .map(|w| (*w).to_owned())
+                .collect(),
         }
     }
 }
@@ -342,9 +364,9 @@ impl Actions for Record {
         Fake.ready(store)
     }
 
-    fn write(&self, write: &Write) -> Result<Written, String> {
+    fn write(&self, write: &Write) -> Result<Written, Refused> {
         if self.refuse || self.refuse_key.as_deref() == Some(write.key()) {
-            return Err("TM-2 changed since you read it".into());
+            return Err(self.refused("TM-2 changed since you read it"));
         }
         self.writes.borrow_mut().push(write.clone());
         if self.unchanged_key.as_deref() == Some(write.key()) {
@@ -363,9 +385,9 @@ impl Actions for Record {
         })
     }
 
-    fn undo(&self, batch: Uuid) -> Result<Written, String> {
+    fn undo(&self, batch: Uuid) -> Result<Written, Refused> {
         if self.refuse_undo.replace(false) {
-            return Err("changed since".into());
+            return Err(self.refused("changed since"));
         }
         self.undone.borrow_mut().push(batch);
         Ok(Written {

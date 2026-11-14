@@ -225,11 +225,11 @@ fn a_detail_that_cannot_be_read_says_so_beside_the_queue() {
             Fake.ready(store)
         }
 
-        fn write(&self, write: &Write) -> Result<Written, String> {
+        fn write(&self, write: &Write) -> Result<Written, Refused> {
             Fake.write(write)
         }
 
-        fn undo(&self, batch: Uuid) -> Result<Written, String> {
+        fn undo(&self, batch: Uuid) -> Result<Written, Refused> {
             Fake.undo(batch)
         }
     }
