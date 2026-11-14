@@ -151,7 +151,7 @@ fn find(here: &Here, filter: &str) -> Result<Vec<Uuid>, CliError> {
         Err(StoreError::Filter(FilterError::NoIdentity { .. })) => {}
         other => return Ok(other?),
     }
-    match identity::writer_in(here.env, &here.found.dir) {
+    match identity::writer_in(here.env(), &here.found.dir) {
         Ok(identity) => {
             let me = identity
                 .actor

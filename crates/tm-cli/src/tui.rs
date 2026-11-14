@@ -473,16 +473,15 @@ mod tests {
             .store
             .create_issue(&jace, project, "task", "alpha")
             .unwrap();
-        let comment = Change::Comment {
-            body: "<@jace> have a look".into(),
-        };
-        let draft = Draft {
-            actor: Actor::human("kim"),
-            project,
-            subject: id,
-            change: comment,
-        };
-        here.store.append(draft).unwrap();
+        for body in ["<@jace> have a look", "<@jace> and this"] {
+            let draft = Draft {
+                actor: Actor::human("kim"),
+                project,
+                subject: id,
+                change: Change::Comment { body: body.into() },
+            };
+            here.store.append(draft).unwrap();
+        }
         let version = || {
             let here = here::read_at(&at).unwrap();
             here.store.issue_with_version(id).unwrap().unwrap().1
@@ -511,7 +510,10 @@ mod tests {
                 version: 1,
             })
             .unwrap_err();
-        assert!(stale.contains("try: "), "{stale}");
+        assert!(
+            stale.contains("status changed after version 1, so nothing was written"),
+            "{stale}"
+        );
         assert_eq!(field("status"), Some("in_progress".into()));
         let set = cli
             .write(&tm_tui::Write::Set {
@@ -544,9 +546,25 @@ mod tests {
         let read = cli
             .write(&tm_tui::Write::Read { id: "all".into() })
             .unwrap();
-        assert_eq!(read.said, "marked 1 Notification read", "{read:?}");
-        let mut here = here::read_at(&at).unwrap();
+        assert_eq!(read.said, "marked 2 Notifications read", "{read:?}");
+        let here = here::read_at(&at).unwrap();
         assert_eq!(here.store.notifications(&jace, false).unwrap(), []);
+    }
+
+    #[test]
+    fn undoing_a_claim_offers_no_undo_and_undoing_a_finish_says_the_claim_stays_released() {
+        let at = here::fixture();
+        let mut here = here::open_at(&at).unwrap();
+        let project = here.project().unwrap();
+        let (id, _) = here
+            .store
+            .create_issue(&Actor::human("jace"), project, "task", "alpha")
+            .unwrap();
+        let version = || {
+            let here = here::read_at(&at).unwrap();
+            here.store.issue_with_version(id).unwrap().unwrap().1
+        };
+        let cli = writing(&at, project);
 
         let claude = Actor::agent("claude", "jace");
         here.store.take(&claude, id, Some(60_000)).unwrap();
@@ -564,6 +582,20 @@ mod tests {
         assert!(
             !released.said.contains("undo this with"),
             "a Claim's undo is not undone again: {released:?}"
+        );
+
+        here.store.take(&claude, id, Some(60_000)).unwrap();
+        let finished = cli
+            .write(&tm_tui::Write::Move {
+                key: "TM-1".into(),
+                status: "done".into(),
+                version: version(),
+            })
+            .unwrap();
+        let reopened = cli.undo(finished.batch.unwrap()).unwrap();
+        assert!(
+            reopened.said.contains("TM-1's Claim stays released"),
+            "{reopened:?}"
         );
     }
 

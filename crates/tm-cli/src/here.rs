@@ -67,10 +67,16 @@ pub(crate) struct Here {
     pub(crate) snapshot: Option<String>,
     /// What every command reports, such as operations that did not apply.
     pub(crate) warnings: Vec<String>,
-    pub(crate) env: Env,
+    /// Private, as the store recorded its harness sessions from it at open.
+    env: Env,
 }
 
 impl Here {
+    /// The environment this Here reads its writer and reader from.
+    pub(crate) fn env(&self) -> Env {
+        self.env
+    }
+
     /// When this command committed a write, publishes the Snapshot and takes
     /// the day's backup; the warnings of what failed.
     pub(crate) fn after_write(&self) -> Vec<String> {
@@ -541,6 +547,14 @@ fn imported_twice(reference: &str, ids: impl Iterator<Item = Uuid>) -> CliError 
 /// own, for tests that run a command's core in this process.
 #[cfg(test)]
 pub(crate) fn fixture() -> Place {
+    // As `TM_ACTOR=jace` with no harness, so git and this process's own
+    // environment are never read.
+    fixture_as(|name| (name == "TM_ACTOR").then(|| Ok("jace".to_owned())))
+}
+
+/// [`fixture`] reading `env`.
+#[cfg(test)]
+pub(crate) fn fixture_as(env: Env) -> Place {
     let root = std::env::temp_dir().join(format!("tm-here-{}", Uuid::now_v7()));
     let (home, repo) = (root.join("home"), root.join("repo"));
     fs::create_dir_all(repo.join(".git")).unwrap();
@@ -552,12 +566,43 @@ pub(crate) fn fixture() -> Place {
         .unwrap();
     let file = format!("workspace = \"{id}\"\nproject = \"TM\"\n");
     fs::write(repo.join(".config/tm.toml"), file).unwrap();
-    // As `TM_ACTOR=jace` with no harness, so git and this process's own
-    // environment are never read.
-    let jace = |name: &str| (name == "TM_ACTOR").then(|| Ok("jace".to_owned()));
     Place {
         home,
         cwd: repo,
-        env: jace,
+        env,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// As Claude Code's session `sess-1`, writing for jace.
+    fn claude(name: &str) -> Option<Var> {
+        match name {
+            "TM_ACTOR" => Some(Ok("jace".to_owned())),
+            "CLAUDE_CODE_SESSION_ID" => Some(Ok("sess-1".to_owned())),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_here_reads_its_writer_reader_and_session_from_the_place_it_opened_at() {
+        let mut here = open_at(&fixture_as(claude)).unwrap();
+        let writer = here.writer().unwrap().actor;
+        let reader = here.reader().unwrap().actor;
+        for actor in [&writer, &reader] {
+            assert_eq!(
+                (actor.name(), actor.is_agent(), actor.session()),
+                ("claude", true, Some("sess-1")),
+                "{actor:?}"
+            );
+        }
+        let project = here.project().unwrap();
+        here.store
+            .create_issue(&writer, project, "task", "alpha")
+            .unwrap();
+        let place = here.store.session_place("sess-1").unwrap().unwrap();
+        assert_eq!(place.harness.as_deref(), Some("claude"), "{place:?}");
     }
 }
