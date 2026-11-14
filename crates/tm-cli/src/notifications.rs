@@ -8,7 +8,7 @@ use tm_core::notification::{self, Site};
 use tm_store::{Notification, Store};
 
 use crate::error::CliError;
-use crate::here;
+use crate::here::{self, Here};
 use crate::memory::now_ms;
 use crate::mention::Names;
 use crate::output::{Output, id_by_part, id_has_part, printable, short, span};
@@ -70,34 +70,40 @@ fn list(all: bool) -> Result<Output, CliError> {
     Ok(output)
 }
 
-pub(crate) fn read(reference: &str) -> Result<Output, CliError> {
-    here::write(|here| {
-        let identity = here.writer()?;
-        let actor = &identity.actor;
-        let chosen = if reference == "all" {
-            here.store.notifications(actor, false)?
-        } else {
-            vec![one(&here.store, actor, reference)?]
-        };
-        let ops = here.store.mark_read(actor, &chosen)?;
-        let text = match (ops.len(), reference) {
-            (0, "all") => "no unread Notifications\n".to_owned(),
-            (0, _) => format!("{reference} was read already\n"),
-            (1, _) => "marked 1 Notification read\n".to_owned(),
-            (n, _) => format!("marked {n} Notifications read\n"),
-        };
-        let marked: Vec<String> = chosen
-            .iter()
-            .filter(|notified| !notified.read)
-            .map(|notified| notified.id.to_string())
-            .collect();
-        let output = Output::new(text, json!({ "marked": marked }));
-        let output = match ops.first() {
-            Some(first) => here.undoable(output, first.op_id, actor)?,
-            None => output,
-        };
-        Ok((output, identity.warnings))
-    })
+fn read(reference: &str) -> Result<Output, CliError> {
+    here::write(|here| mark_read(here, reference))
+}
+
+/// `tm notifications read`: the Notification `reference` names, or all.
+pub(crate) fn mark_read(
+    here: &mut Here,
+    reference: &str,
+) -> Result<(Output, Vec<String>), CliError> {
+    let identity = here.writer()?;
+    let actor = &identity.actor;
+    let chosen = if reference == "all" {
+        here.store.notifications(actor, false)?
+    } else {
+        vec![one(&here.store, actor, reference)?]
+    };
+    let ops = here.store.mark_read(actor, &chosen)?;
+    let text = match (ops.len(), reference) {
+        (0, "all") => "no unread Notifications\n".to_owned(),
+        (0, _) => format!("{reference} was read already\n"),
+        (1, _) => "marked 1 Notification read\n".to_owned(),
+        (n, _) => format!("marked {n} Notifications read\n"),
+    };
+    let marked: Vec<String> = chosen
+        .iter()
+        .filter(|notified| !notified.read)
+        .map(|notified| notified.id.to_string())
+        .collect();
+    let output = Output::new(text, json!({ "marked": marked }));
+    let output = match ops.first() {
+        Some(first) => here.undoable(output, first.op_id, actor)?,
+        None => output,
+    };
+    Ok((output, identity.warnings))
 }
 
 /// Notifications as `actor` reads them, one of each per Notification.

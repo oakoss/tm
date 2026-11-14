@@ -64,14 +64,14 @@ pub(crate) fn reader(
     })
 }
 
-/// [`resolve`] from this process's environment, asking git in the repo at
+/// [`resolve`] from the environment `var` reads, asking git in the repo at
 /// `dir` for the human's email.
 ///
 /// # Errors
 ///
 /// As [`resolve`].
-pub(crate) fn writer_in(dir: &Path) -> Result<Identity, String> {
-    resolve(env, || git_email(dir))
+pub(crate) fn writer_in(var: impl Fn(&str) -> Option<Var>, dir: &Path) -> Result<Identity, String> {
+    resolve(var, || git_email(dir))
 }
 
 /// [`writer_in`] for a command that cannot go on without a writer.
@@ -79,17 +79,20 @@ pub(crate) fn writer_in(dir: &Path) -> Result<Identity, String> {
 /// # Errors
 ///
 /// `no_identity` with [`resolve`]'s message.
-pub(crate) fn required_in(dir: &Path) -> Result<Identity, CliError> {
-    writer_in(dir).map_err(|message| CliError::new("no_identity", message))
+pub(crate) fn required_in(
+    var: impl Fn(&str) -> Option<Var>,
+    dir: &Path,
+) -> Result<Identity, CliError> {
+    writer_in(var, dir).map_err(|message| CliError::new("no_identity", message))
 }
 
-/// [`reader`] from this process's environment and the repo at `dir`.
+/// [`reader`] from the environment `var` reads and the repo at `dir`.
 ///
 /// # Errors
 ///
 /// As [`resolve`].
-pub(crate) fn reader_in(dir: &Path) -> Result<Identity, String> {
-    reader(env, || git_email(dir))
+pub(crate) fn reader_in(var: impl Fn(&str) -> Option<Var>, dir: &Path) -> Result<Identity, String> {
+    reader(var, || git_email(dir))
 }
 
 /// `human` is asked, with the Agent's name, only when `TM_ACTOR` is unset.

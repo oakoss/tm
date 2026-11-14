@@ -117,7 +117,11 @@ pub(crate) fn run(edit: &Edit) -> Result<Output, CliError> {
     here::write(|here| write(here, &edit.issue, edit))
 }
 
-fn write(here: &mut Here, reference: &str, edit: &Edit) -> Result<(Output, Vec<String>), CliError> {
+pub(crate) fn write(
+    here: &mut Here,
+    reference: &str,
+    edit: &Edit,
+) -> Result<(Output, Vec<String>), CliError> {
     let given: Vec<(String, String)> = edit.set.iter().chain(&edit.append).cloned().collect();
     fields::given_once(given.iter().map(|(field, _)| field).chain(&edit.unset))?;
     refuse_status(reference, edit)?;

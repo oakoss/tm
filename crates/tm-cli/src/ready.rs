@@ -163,13 +163,14 @@ pub(crate) fn unmapped(err: &CliError) -> Vec<String> {
 /// names one; a session that cannot say, a binding that names no list, or a
 /// list it cannot read is a warning, so the queue still prints.
 fn session_lists(here: &mut Here, project: ProjectId) -> Vec<(Shortlist, Vec<Member>)> {
+    let env = here.env();
     let Here {
         store,
         found,
         warnings,
         ..
     } = here;
-    let actor = || match identity::reader_in(&found.dir) {
+    let actor = || match identity::reader_in(env, &found.dir) {
         Ok(identity) => {
             warnings.extend(identity.warnings);
             Ok(identity.actor)

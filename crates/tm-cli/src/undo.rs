@@ -11,19 +11,27 @@ use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::here::{self, Here};
-use crate::output::{Output, id_by_part, printable, short};
+use crate::output::{Output, id_by_part, printable, short, undo_hint};
 use crate::show;
 
 pub(crate) fn run(reference: Option<&str>, dry_run: bool, force: bool) -> Result<Output, CliError> {
-    here::write(|here| undo(here, reference, dry_run, force))
+    here::write(|here| {
+        undo(here, reference, dry_run, force).map(|(undone, warnings)| (undone.output, warnings))
+    })
 }
 
-fn undo(
+/// What `tm undo` printed, and each line it printed after the batch it names.
+pub(crate) struct Undone {
+    pub(crate) output: Output,
+    pub(crate) lines: Vec<String>,
+}
+
+pub(crate) fn undo(
     here: &mut Here,
     reference: Option<&str>,
     dry_run: bool,
     force: bool,
-) -> Result<(Output, Vec<String>), CliError> {
+) -> Result<(Undone, Vec<String>), CliError> {
     let identity = here.writer()?;
     let (batch, next) = match reference {
         Some(reference) => (batch(here, reference)?, None),
@@ -85,15 +93,18 @@ fn undo(
             "undid"
         }
     );
-    for restore in &visible {
-        let _ = writeln!(text, "  {}", describe(restore, &name, &lists));
-    }
-    for issue in &plan.released {
-        let _ = writeln!(
-            text,
-            "  {}'s Claim stays released; its Agent takes it again with tm claim",
-            name(*issue)
-        );
+    let reverted: Vec<String> = visible
+        .iter()
+        .map(|restore| describe(restore, &name, &lists))
+        .chain(plan.released.iter().map(|issue| {
+            format!(
+                "{}'s Claim stays released; its Agent takes it again with tm claim",
+                name(*issue)
+            )
+        }))
+        .collect();
+    for line in &reverted {
+        let _ = writeln!(text, "  {line}");
     }
     let released: Vec<Value> = plan
         .released
@@ -109,11 +120,17 @@ fn undo(
         "batch": null,
     });
     let output = Output::new(text, data);
+    let mut lines = reverted;
     let output = match written {
-        Some(written) => here.undoable(output, written, &identity.actor)?,
+        Some(written) => {
+            if here.store.can_undo(written)? {
+                lines.push(undo_hint(written));
+            }
+            here.undoable(output, written, &identity.actor)?
+        }
         None => output,
     };
-    Ok((output, identity.warnings))
+    Ok((Undone { output, lines }, identity.warnings))
 }
 
 /// The newest batch a bare undo reverts, and the one before it, which a

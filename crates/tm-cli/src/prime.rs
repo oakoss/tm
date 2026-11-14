@@ -413,7 +413,7 @@ fn ready_queue(
 /// rather than an error.
 fn context(here: &here::Here) -> (Option<Actor>, Option<(ProjectId, String)>, Vec<String>) {
     let mut warnings = here.warnings.clone();
-    let actor = match identity::writer_in(&here.found.dir) {
+    let actor = match identity::writer_in(here.env(), &here.found.dir) {
         Ok(identity) => {
             warnings.extend(identity.warnings);
             Some(identity.actor)

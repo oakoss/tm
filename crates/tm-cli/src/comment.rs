@@ -22,11 +22,12 @@ pub(crate) fn run(reference: &str, body: &str, edit: Option<&str>) -> Result<Out
 /// each mention in it that names several Actors, as
 /// [`mention::resolve_picked`] takes them.
 pub(crate) fn add_picked(
+    here: &mut Here,
     reference: &str,
     body: &str,
     picks: &[Option<Mentioned>],
-) -> Result<Output, CliError> {
-    here::write(|here| write(here, reference, (body, picks), false, None))
+) -> Result<(Output, Vec<String>), CliError> {
+    write(here, reference, (body, picks), false, None)
 }
 
 fn write(
