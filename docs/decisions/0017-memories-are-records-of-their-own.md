@@ -34,7 +34,7 @@ Chosen options: **a record of its own in one Project, named by a key**, because 
 
 ### The commands
 
-- `tm remember "insight" [--key KEY]`, `tm memories [WORDS | KEY]` (one in full by its key, or those holding every word) and `tm forget KEY`.
+- `tm remember "fact" [--key KEY]`, `tm memories [WORDS | KEY]` (one in full by its key, or those holding every word) and `tm forget KEY`.
 - **`tm prime`** shows the 10 most recently written, each as its key, its first line, who wrote it and how long ago, and counts the rest.
 - **Export** carries each live memory on its Project's line, and record import finds it as it finds a Short-list: by source, on the memory's own id or an earlier import's create or source operation, then by a key one memory holds on each side, recording the source on a memory it matched by key so a later import finds it even forgotten or rekeyed. A memory forgotten here is not made again, an import may bring one sharing a key as a merge does, and a key change to a memory already here must still leave its key unshared; a body tm and the source both changed keeps tm's and is reported.
 

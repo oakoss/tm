@@ -8,7 +8,7 @@ use tm_store::{IssueView, SessionPlace, SessionWork, short_session};
 use crate::error::CliError;
 use crate::harness::Harness;
 use crate::here;
-use crate::list::Item;
+use crate::list::IssueJson;
 use crate::output::{Output, printable, span};
 
 /// The harness that named `place`'s session, when tm knows how to resume it.
@@ -144,7 +144,7 @@ pub(crate) fn list(limit: Option<usize>, json: bool) -> Result<Output, CliError>
                     "dir": session.place.as_ref().map(|place| &place.dir),
                     "harness": session.place.as_ref().and_then(|place| place.harness.as_ref()),
                     "resume": session.place.as_ref().and_then(|place| resume_command(&session.session, place)),
-                    "issues": views.iter().map(|view| Item::of(view, &projects)).collect::<Vec<_>>(),
+                    "issues": views.iter().map(|view| IssueJson::of(view, &projects)).collect::<Vec<_>>(),
                 })
             })
             .collect();

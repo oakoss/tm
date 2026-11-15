@@ -20,7 +20,7 @@ use crate::error::CliError;
 use crate::guide::HABITS;
 use crate::here;
 use crate::identity;
-use crate::list::{item, line_within, project_keys};
+use crate::list::{issue_json, line_within, project_keys};
 use crate::mention;
 use crate::next;
 use crate::output::{Output, printable};
@@ -113,9 +113,9 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
     let now_ms = claims.at_ms;
     let memories = memories_section(&mut text, &memories, crate::memory::now_ms());
     let asked = (actor.as_ref(), &resumes);
-    let waiting_items = waiting_section(&mut text, asked, (&waiting, &names), &projects, now_ms);
+    let waiting_entries = waiting_section(&mut text, asked, (&waiting, &names), &projects, now_ms);
     let sessions = by_session(claims, session);
-    let claim_items = claims_sections(
+    let claim_sections = claims_sections(
         &mut text,
         (&sessions, &notes, &names),
         &claimed,
@@ -136,19 +136,19 @@ pub(crate) fn run(json: bool) -> Result<Output, CliError> {
         "scheme": scheme,
         "actor": actor.as_ref().map(actor_json),
         "memories": memories,
-        "waiting": waiting_items,
-        "handed_claims": claim_items.handed,
-        "claims": claim_items.held,
-        "other_session_claims": claim_items.others,
-        "lapsed_claims": claim_items.lapsed,
+        "waiting": waiting_entries,
+        "handed_claims": claim_sections.handed,
+        "claims": claim_sections.held,
+        "other_session_claims": claim_sections.others,
+        "lapsed_claims": claim_sections.lapsed,
         "path_claims": path_claims,
         "shortlists": shortlists,
         "in_progress": {
-            "issues": active.iter().map(|view| item(view, &projects)).collect::<Vec<_>>(),
+            "issues": active.iter().map(|view| issue_json(view, &projects)).collect::<Vec<_>>(),
             "total": active_total,
         },
         "ready": {
-            "issues": ready.iter().map(|view| item(view, &projects)).collect::<Vec<_>>(),
+            "issues": ready.iter().map(|view| issue_json(view, &projects)).collect::<Vec<_>>(),
             "total": total,
             "on_shortlists": passed,
         },
@@ -364,7 +364,7 @@ fn waiting_section(
                 }
             }
         }
-        let mut entry = item(view, projects);
+        let mut entry = issue_json(view, projects);
         entry["question"] = question.as_ref().map_or(Value::Null, |question| {
             json!({
                 "id": question.id,
@@ -533,7 +533,7 @@ fn path_claims_section(
         return json!([]);
     }
     let _ = writeln!(text, "Path Claims on your changes ({}):", by_claim.len());
-    let mut items = Vec::with_capacity(by_claim.len());
+    let mut entries = Vec::with_capacity(by_claim.len());
     for (claim, files) in by_claim {
         let key = here
             .store
@@ -565,13 +565,13 @@ fn path_claims_section(
                 }
             })
             .collect();
-        items.push(json!({
+        entries.push(json!({
             "issue": { "id": claim.issue, "key": key },
             "claim": claim::claim_json(claim, now_ms),
             "files": files,
         }));
     }
-    Value::Array(items)
+    Value::Array(entries)
 }
 
 /// `claims` sorted by whether `session` took them; one handed to the Agent
@@ -607,11 +607,11 @@ fn handed_section(
         return Vec::new();
     }
     let _ = writeln!(text, "Handed to you (tm start KEY takes one):");
-    let mut items = Vec::with_capacity(shown.len());
+    let mut entries = Vec::with_capacity(shown.len());
     for &(handed, view) in shown {
         let found = notes.get(&handed.id);
         let (by, note) = found.map_or(("", ""), |(by, note, _)| (by.as_str(), note.as_str()));
-        if items.len() < CLAIMS_SHOWN {
+        if entries.len() < CLAIMS_SHOWN {
             let from = if by.is_empty() {
                 String::new()
             } else {
@@ -628,22 +628,22 @@ fn handed_section(
                 let _ = writeln!(text, "    {}", printable(&clip(first, TITLE_BYTES)));
             }
         }
-        let mut entry = item(view, projects);
+        let mut entry = issue_json(view, projects);
         entry["claim"] = claim::claim_json(handed, now_ms);
         // Null, not blank, when the note could not be read: a note is never blank.
         entry["from"] = json!(found.map(|(by, _, _)| by));
         entry["note"] = json!(found.map(|(_, note, _)| note));
         entry["answer"] = found.map_or(Value::Null, |(_, _, answer)| answer.clone());
-        items.push(entry);
+        entries.push(entry);
     }
-    if items.len() > CLAIMS_SHOWN {
+    if entries.len() > CLAIMS_SHOWN {
         let _ = writeln!(
             text,
             "  and {} more: tm --json prime lists them all",
-            items.len() - CLAIMS_SHOWN
+            entries.len() - CLAIMS_SHOWN
         );
     }
-    items
+    entries
 }
 
 /// A handed Claim's handoff: who handed it on, their note, and how the
@@ -713,13 +713,13 @@ fn claims_sections(
     claimed: &[IssueView],
     projects: &HashMap<ProjectId, Option<String>>,
     now_ms: i64,
-) -> ClaimItems {
+) -> ClaimSections {
     let handed = with_issues(&claims.handed, claimed, |_| true);
     let handed = handed_section(text, &handed, (notes, names), projects, now_ms);
     let mine = with_issues(&claims.mine, claimed, |_| true);
     let others = with_issues(&claims.others, claimed, |_| true);
     let lapsed = with_issues(&claims.lapsed, claimed, claim::takeable);
-    ClaimItems {
+    ClaimSections {
         handed,
         held: claims_section(text, "Your Claims:", token, &mine, projects, now_ms),
         others: if others.is_empty() {
@@ -750,7 +750,7 @@ fn claims_sections(
 }
 
 /// The caller's Claims as `--json` gives them, by section.
-struct ClaimItems {
+struct ClaimSections {
     handed: Vec<Value>,
     held: Vec<Value>,
     others: Vec<Value>,
@@ -796,9 +796,9 @@ fn claims_section(
     now_ms: i64,
 ) -> Vec<Value> {
     let _ = writeln!(text, "{heading}");
-    let mut claim_items = Vec::with_capacity(shown.len());
+    let mut entries = Vec::with_capacity(shown.len());
     for &(claim, view) in shown {
-        if claim_items.len() < CLAIMS_SHOWN {
+        if entries.len() < CLAIMS_SHOWN {
             let _ = writeln!(
                 text,
                 "  {}  ({}, {})",
@@ -807,20 +807,20 @@ fn claims_section(
                 claim::expiry(claim, now_ms)
             );
         }
-        let mut entry = item(view, projects);
+        let mut entry = issue_json(view, projects);
         entry["claim"] = claim::claim_json(claim, now_ms);
-        claim_items.push(entry);
+        entries.push(entry);
     }
-    if claim_items.is_empty() {
+    if entries.is_empty() {
         let _ = writeln!(text, "  none");
-    } else if claim_items.len() > CLAIMS_SHOWN {
+    } else if entries.len() > CLAIMS_SHOWN {
         let _ = writeln!(
             text,
             "  and {} more: tm --json prime lists them all",
-            claim_items.len() - CLAIMS_SHOWN
+            entries.len() - CLAIMS_SHOWN
         );
     }
-    claim_items
+    entries
 }
 
 /// A heading with the count of `total`, the first of them, and the command

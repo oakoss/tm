@@ -57,9 +57,9 @@ fn list(
         let issues = views
             .iter()
             .map(|view| {
-                let mut item = Item::of(view, &projects);
-                item.blocked_by = blockers.get(&view.id).map(Vec::as_slice);
-                item
+                let mut issue = IssueJson::of(view, &projects);
+                issue.blocked_by = blockers.get(&view.id).map(Vec::as_slice);
+                issue
             })
             .collect();
         let shortlists = None;
@@ -253,7 +253,7 @@ pub(crate) fn shortlists_of(
 }
 
 /// An Issue as a list gives it: `show`'s shape without parent and Claim.
-pub(crate) fn item(view: &IssueView, projects: &HashMap<ProjectId, Option<String>>) -> Value {
+pub(crate) fn issue_json(view: &IssueView, projects: &HashMap<ProjectId, Option<String>>) -> Value {
     let mut fields = view.fields.clone();
     fields.remove(RANK);
     json!({
@@ -268,10 +268,11 @@ pub(crate) fn item(view: &IssueView, projects: &HashMap<ProjectId, Option<String
 
 const RANK: &str = "shortlist_rank";
 
-/// [`item`] serialized as it is written, for lists of thousands: its fields
-/// are in the order a JSON value sorts its keys, so the bytes are the same.
+/// [`issue_json`] serialized as it is written, for lists of thousands: its
+/// fields are in the order a JSON value sorts its keys, so the bytes are the
+/// same.
 #[derive(Serialize)]
-pub(crate) struct Item<'a> {
+pub(crate) struct IssueJson<'a> {
     /// Only `tm list` gives the open Issues blocking each.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) blocked_by: Option<&'a [Named]>,
@@ -287,7 +288,7 @@ pub(crate) struct Item<'a> {
     pub(crate) unblocks: Option<&'a [Named]>,
 }
 
-impl<'a> Item<'a> {
+impl<'a> IssueJson<'a> {
     pub(crate) fn of(
         view: &'a IssueView,
         projects: &'a HashMap<ProjectId, Option<String>>,
@@ -315,10 +316,10 @@ fn without_rank<S: Serializer>(
     serializer.collect_map(fields.iter().filter(|(name, _)| *name != RANK))
 }
 
-/// A list's JSON data, its keys in sorted order as for [`Item`].
+/// A list's JSON data, its keys in sorted order as for [`IssueJson`].
 #[derive(Serialize)]
 pub(crate) struct Listed<'a> {
-    pub(crate) issues: Vec<Item<'a>>,
+    pub(crate) issues: Vec<IssueJson<'a>>,
     /// Only `tm ready` leads with the session's Short-lists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) shortlists: Option<Vec<Value>>,
@@ -372,7 +373,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_item_serializes_as_the_value_item_builds() {
+    fn issue_json_serializes_as_the_value_it_builds() {
         let project = ProjectId::new();
         let view = IssueView {
             id: Uuid::now_v7(),
@@ -390,8 +391,8 @@ mod tests {
             )]),
         };
         let projects = HashMap::from([(project, Some("TM".to_owned()))]);
-        let written = serde_json::to_string(&Item::of(&view, &projects)).unwrap();
-        assert_eq!(written, item(&view, &projects).to_string());
+        let written = serde_json::to_string(&IssueJson::of(&view, &projects)).unwrap();
+        assert_eq!(written, issue_json(&view, &projects).to_string());
         assert!(!written.contains("shortlist_rank"), "{written}");
     }
 
