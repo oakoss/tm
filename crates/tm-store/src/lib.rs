@@ -615,10 +615,13 @@ pub struct Workplace {
 pub struct WriteOptions {
     /// Lets an Agent write past another session's Claim, as `--force` asks.
     pub force: bool,
-    /// The Issue and the version the write was judged from.
-    pub based_on: Option<(Uuid, i64)>,
-    /// The Issue and the Claim, expiry included, the write was judged from.
-    pub claim: Option<(Uuid, Option<Claim>)>,
+    /// The version the write was judged from, of the one Issue its drafts
+    /// write; a write that sets this or `claim` writes exactly one Issue. It
+    /// refuses the write when a field the drafts set changed since.
+    pub based_on: Option<i64>,
+    /// The Claim, expiry included, the write was judged from, of that Issue;
+    /// `Some(None)` means it was read unclaimed.
+    pub claim: Option<Option<Claim>>,
 }
 
 /// How a Claim is taken.
@@ -1440,16 +1443,21 @@ impl Store {
         for (draft, _) in &drafts {
             draft.change.validate()?;
         }
+        let judged = if options.based_on.is_some() || options.claim.is_some() {
+            Some(judged(&drafts)?)
+        } else {
+            None
+        };
         let now = self.now()?;
         let waited = std::time::Instant::now();
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tracing::debug!(wait_us = waited.elapsed().as_micros(), "lock taken");
-        if let Some((issue, held)) = &options.claim
-            && claim::current(&tx, *issue)?.as_ref() != held.as_ref()
+        if let (Some(issue), Some(held)) = (judged, &options.claim)
+            && claim::current(&tx, issue)?.as_ref() != held.as_ref()
         {
-            return Err(StoreError::ClaimChanged((*issue).into()));
+            return Err(StoreError::ClaimChanged(issue.into()));
         }
         for draft in guard(&tx, now.0.utc_ms)? {
             draft.change.validate()?;
@@ -1459,7 +1467,7 @@ impl Store {
         for passing in &passed {
             drafts.push((passing.record(&tx)?, None));
         }
-        if let Some((issue, based_on)) = options.based_on {
+        if let (Some(issue), Some(based_on)) = (judged, options.based_on) {
             let fields = version::written(&drafts, issue);
             version::check(&tx, &self.scheme, (issue, based_on), fields)?;
         }
@@ -1946,6 +1954,20 @@ pub(crate) fn imported(
         .into_iter()
         .map(|(draft, provenance)| (draft, Some(provenance)))
         .collect())
+}
+
+/// The one Issue a write judged from a version or a Claim writes, which
+/// those checks are made against.
+fn judged(drafts: &[(Draft, Option<Provenance>)]) -> Result<Uuid, StoreError> {
+    let subjects: BTreeSet<Uuid> = drafts.iter().map(|(draft, _)| draft.subject).collect();
+    match Vec::from_iter(subjects)[..] {
+        [issue] => Ok(issue),
+        ref subjects => Err(StoreError::Invalid {
+            field: "a write judged from a version or a Claim".into(),
+            reason: format!("must write one Issue, not {}", subjects.len()),
+            valid: Vec::new(),
+        }),
+    }
 }
 
 /// A wall time's milliseconds, if an operation can hold it.

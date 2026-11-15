@@ -184,7 +184,7 @@ fn a_batch_releasing_the_claim_is_judged_by_the_release() {
 }
 
 #[test]
-fn an_undo_returns_the_claims_its_write_goes_past_rolled_back_or_not() {
+fn an_undo_or_its_plan_returns_the_claims_it_goes_past() {
     let dir = TempDir::new();
     let (mut store, issue) = held_by_s1(&dir, &ManualClock::at(1_000));
     let mut first = Vec::new();
@@ -195,10 +195,10 @@ fn an_undo_returns_the_claims_its_write_goes_past_rolled_back_or_not() {
         .op_id;
     assert_eq!(first.len(), 1);
     let options = WriteOptions::default();
-    for commit in [false, true] {
-        let (_, written) = store.undo_with(&jace(), batch, &options, commit).unwrap();
-        assert_eq!(passed(written).len(), 1, "commit {commit}");
-    }
+    let plan = store.undo_plan_with(&jace(), batch, &options).unwrap();
+    assert_eq!(passed(plan).len(), 1);
+    let (_, written) = store.undo_with(&jace(), batch, &options).unwrap();
+    assert_eq!(passed(written).len(), 1);
 }
 
 #[test]

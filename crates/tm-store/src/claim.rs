@@ -416,7 +416,7 @@ impl Store {
         // The Claim must be as judged, expiry included: one renewed since was
         // judged lapsed but holds again.
         let options = WriteOptions {
-            claim: Some((held.issue, Some(held.clone()))),
+            claim: Some(Some(held.clone())),
             ..WriteOptions::default()
         };
         let ops = self.write(vec![hand, comment], &options)?.unpassed();

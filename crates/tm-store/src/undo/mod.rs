@@ -79,8 +79,24 @@ impl Store {
     /// [`Store::append_all`].
     pub fn undo_plan(&mut self, actor: &Actor, batch: Uuid) -> Result<UndoPlan, StoreError> {
         let options = WriteOptions::default();
-        self.undo_with(actor, batch, &options, false)
-            .map(|(plan, _)| plan)
+        let plan = self.undo_plan_with(actor, batch, &options)?;
+        Ok(plan.into_inner(&mut Vec::new()))
+    }
+
+    /// [`Store::undo_plan`] as `options` asks, with the Claims the undo
+    /// would pass.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::undo_plan`].
+    pub fn undo_plan_with(
+        &mut self,
+        actor: &Actor,
+        batch: Uuid,
+        options: &WriteOptions,
+    ) -> Result<Written<UndoPlan>, StoreError> {
+        let (plan, tried) = self.undoing(actor, batch, options, false)?;
+        Ok(tried.map(|_| plan))
     }
 
     /// Undoes `batch` as `actor`, all or nothing: the plan is made again
@@ -94,7 +110,21 @@ impl Store {
         actor: &Actor,
         batch: Uuid,
     ) -> Result<(UndoPlan, Written<Vec<Op>>), StoreError> {
-        self.undo_with(actor, batch, &WriteOptions::default(), true)
+        self.undo_with(actor, batch, &WriteOptions::default())
+    }
+
+    /// [`Store::undo`] as `options` asks.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::undo_plan`].
+    pub fn undo_with(
+        &mut self,
+        actor: &Actor,
+        batch: Uuid,
+        options: &WriteOptions,
+    ) -> Result<(UndoPlan, Written<Vec<Op>>), StoreError> {
+        self.undoing(actor, batch, options, true)
     }
 
     /// Whether undoing `batch` would succeed. For the batch this Store just
@@ -143,13 +173,8 @@ impl Store {
         rows.map(|batch| uuid_from(&batch?)).collect()
     }
 
-    /// [`Store::undo`] as `options` asks, or [`Store::undo_plan`] when
-    /// `commit` is false.
-    ///
-    /// # Errors
-    ///
-    /// As [`Store::undo_plan`].
-    pub fn undo_with(
+    /// The undo of `batch` as `options` asks, kept only when `commit`.
+    fn undoing(
         &mut self,
         actor: &Actor,
         batch: Uuid,

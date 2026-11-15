@@ -150,7 +150,7 @@ pub(crate) fn write(
     check_flags(here.store.scheme(), &view, edit)?;
     let options = WriteOptions {
         force: edit.force,
-        based_on: Some((id, based_on)),
+        based_on: Some(based_on),
         ..WriteOptions::default()
     };
     let forced = |err| CliError::past_claim(err, "tm edit --force");
