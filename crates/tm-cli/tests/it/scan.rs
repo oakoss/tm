@@ -5,29 +5,9 @@ use std::path::Path;
 use std::process::Stdio;
 
 use serde_json::{Value, json};
-use tm_core::{Actor, Change, ProjectId};
-use tm_store::{Draft, Store};
-use uuid::Uuid;
+use tm_core::Actor;
 
-use crate::support::{self, Scratch, git, git_with, initialized, text, tm, tm_command, unpassed};
-
-fn set(store: &mut Store, project: ProjectId, issue: Uuid, field: &str, value: Value) {
-    unpassed(
-        store
-            .append(Draft {
-                actor: Actor::human("jace"),
-                project,
-                subject: issue,
-                change: Change::SetField {
-                    field: field.into(),
-                    label: String::new(),
-                    value,
-                    value_label: None,
-                },
-            })
-            .unwrap(),
-    );
-}
+use crate::support::{self, Scratch, git, git_with, initialized, set, text, tm, tm_command};
 
 /// An empty commit on the current branch, returning its id.
 fn commit(scratch: &Scratch, repo: &Path, subject: &str, body: &str) -> String {

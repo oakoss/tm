@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use tm_core::Actor;
 use tm_store::workspace::{PathProject, RepoFile};
 
-use crate::support::{Scratch, initialized, text, tm, tm_command};
+use crate::support::{Scratch, doc, initialized, text, tm, tm_command};
 
 /// `tm` on another machine: the same repo, another `TM_HOME`.
 fn elsewhere(scratch: &Scratch, home: &Path, dir: &Path, args: &[&str]) -> Output {
@@ -20,10 +20,6 @@ fn elsewhere(scratch: &Scratch, home: &Path, dir: &Path, args: &[&str]) -> Outpu
         .stdin(Stdio::null())
         .output()
         .unwrap()
-}
-
-fn doc(out: &Output) -> Value {
-    serde_json::from_slice(&out.stdout).unwrap_or_else(|err| panic!("{err}: {out:?}"))
 }
 
 #[test]

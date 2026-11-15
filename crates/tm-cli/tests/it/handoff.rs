@@ -6,7 +6,7 @@ use std::process::Output;
 
 use serde_json::Value;
 
-use crate::support::{Scratch, initialized, text, tm, tm_command};
+use crate::support::{self, Scratch, doc, initialized, ok, text, tm, tm_command};
 
 /// `words` run in `repo` as `agent` in `session`, or as the human with no
 /// Agent.
@@ -15,26 +15,10 @@ fn run(scratch: &Scratch, repo: &Path, who: Option<(&str, &str)>, words: &str) -
     let Some((agent, session)) = who else {
         return tm(scratch, repo, &words);
     };
-    tm_command()
-        .args(words)
-        .current_dir(repo)
-        .env("TM_HOME", scratch.home())
-        .env("TM_ACTOR", "jace")
-        .env("TM_AGENT", agent)
+    support::agent(scratch, repo, agent, &words)
         .env("TM_SESSION", session)
-        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
         .output()
         .unwrap()
-}
-
-fn doc(out: &Output) -> Value {
-    serde_json::from_slice(&out.stdout).unwrap()
-}
-
-fn ok(out: Output) -> Output {
-    assert!(out.status.success(), "{out:?}");
-    out
 }
 
 const S1: Option<(&str, &str)> = Some(("claude", "s1"));

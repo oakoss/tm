@@ -7,25 +7,7 @@ use tm_core::{Actor, Change, ProjectId};
 use tm_store::{Draft, Store};
 use uuid::Uuid;
 
-use crate::support::{Scratch, initialized, text, tm, tm_command, unpassed};
-
-fn set(store: &mut Store, project: ProjectId, issue: Uuid, field: &str, value: &str) {
-    unpassed(
-        store
-            .append(Draft {
-                actor: Actor::human("jace"),
-                project,
-                subject: issue,
-                change: Change::SetField {
-                    field: field.into(),
-                    label: String::new(),
-                    value: json!(value),
-                    value_label: None,
-                },
-            })
-            .unwrap(),
-    );
-}
+use crate::support::{Scratch, initialized, set, text, tm, tm_command, unpassed};
 
 fn new(store: &mut Store, project: ProjectId, title: &str) -> Uuid {
     store
@@ -90,10 +72,10 @@ fn with_no_filter_list_shows_the_open_work() {
         ("cancelled", "cancelled"),
     ] {
         let issue = new(&mut store, project, title);
-        set(&mut store, project, issue, "status", status);
+        set(&mut store, project, issue, "status", json!(status));
     }
     let archived = new(&mut store, project, "archived");
-    set(&mut store, project, archived, "status", "done");
+    set(&mut store, project, archived, "status", json!("done"));
     unpassed(
         store
             .append(Draft {
@@ -166,7 +148,7 @@ fn filter_words_join_into_one_filter_and_limit_cuts_the_list() {
     let (repo, mut store, project) = initialized(&scratch);
     for title in ["a", "b", "c"] {
         let issue = new(&mut store, project, title);
-        set(&mut store, project, issue, "priority", "high");
+        set(&mut store, project, issue, "priority", json!("high"));
     }
     new(&mut store, project, "low");
 
@@ -202,9 +184,9 @@ fn at_me_is_the_human_an_agent_works_for() {
     let scratch = Scratch::new();
     let (repo, mut store, project) = initialized(&scratch);
     let mine = new(&mut store, project, "mine");
-    set(&mut store, project, mine, "assignee", "jace");
+    set(&mut store, project, mine, "assignee", json!("jace"));
     let theirs = new(&mut store, project, "theirs");
-    set(&mut store, project, theirs, "assignee", "sam");
+    set(&mut store, project, theirs, "assignee", json!("sam"));
 
     let run = |vars: &[(&str, &str)]| {
         let mut command = tm_command();
@@ -242,11 +224,11 @@ fn list_keeps_the_filters_order_negation_and_one_line_per_issue() {
     let (repo, mut store, project) = initialized(&scratch);
     for (title, priority) in [("low", "low"), ("urgent", "urgent"), ("high", "high")] {
         let issue = new(&mut store, project, title);
-        set(&mut store, project, issue, "priority", priority);
+        set(&mut store, project, issue, "priority", json!(priority));
     }
     let done = new(&mut store, project, "done");
-    set(&mut store, project, done, "status", "done");
-    set(&mut store, project, done, "priority", "urgent");
+    set(&mut store, project, done, "status", json!("done"));
+    set(&mut store, project, done, "priority", json!("urgent"));
     new(&mut store, project, "two\nlines");
 
     let ordered = |doc: &Value| -> Vec<String> {
@@ -344,7 +326,7 @@ fn each_listed_issue_names_its_open_blockers() {
     let held = new(&mut store, project, "held");
     let finished = new(&mut store, project, "finished");
     let free = new(&mut store, project, "free");
-    set(&mut store, project, finished, "status", "done");
+    set(&mut store, project, finished, "status", json!("done"));
     let jace = Actor::human("jace");
     for (from, to) in [(first, held), (second, held), (finished, free)] {
         store.link(&jace, "blocks", from, to).unwrap();

@@ -7,35 +7,24 @@ use std::process::Output;
 
 use serde_json::{Value, json};
 
-use crate::support::{Scratch, initialized, text, tm, tm_command};
+use crate::support::{Scratch, agent, doc, initialized, ok, text, tm};
 
 const HELD: &str = "TM-3 is claimed by claude (session s1) for jace, who may be working on it";
 
 fn as_agent(scratch: &Scratch, repo: &Path, session: &str, words: &str) -> Output {
-    tm_command()
-        .args(words.split(' '))
-        .current_dir(repo)
-        .env("TM_HOME", scratch.home())
-        .env("TM_ACTOR", "jace")
-        .env("TM_AGENT", "claude")
-        .env("TM_SESSION", session)
-        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()
-        .unwrap()
+    agent(
+        scratch,
+        repo,
+        "claude",
+        &words.split(' ').collect::<Vec<_>>(),
+    )
+    .env("TM_SESSION", session)
+    .output()
+    .unwrap()
 }
 
 fn as_human(scratch: &Scratch, repo: &Path, words: &str) -> Output {
     tm(scratch, repo, &words.split(' ').collect::<Vec<_>>())
-}
-
-fn doc(out: &Output) -> Value {
-    serde_json::from_slice(&out.stdout).unwrap()
-}
-
-fn ok(out: Output) -> Output {
-    assert!(out.status.success(), "{out:?}");
-    out
 }
 
 /// TM-1 an epic session s1 holds, TM-2 its todo child, and TM-3 a task s1

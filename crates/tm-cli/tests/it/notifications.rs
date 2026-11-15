@@ -6,7 +6,7 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 
-use crate::support::{Scratch, initialized, jace, text, tm};
+use crate::support::{Scratch, doc, initialized, jace, text, tm};
 
 /// `tm` writing as `actor`, an Agent for jace when `agent` is given.
 fn as_actor(
@@ -26,10 +26,6 @@ fn as_actor(
 
 fn kim(scratch: &Scratch, repo: &Path, args: &[&str]) -> Output {
     as_actor(scratch, repo, "kim@example.com", None, args)
-}
-
-fn doc(out: &Output) -> Value {
-    serde_json::from_slice(&out.stdout).unwrap_or_else(|err| panic!("{err}: {out:?}"))
 }
 
 /// TM-1, written by kim so a mention can name her, then mentioning her in a

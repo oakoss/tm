@@ -1,19 +1,8 @@
-use std::path::Path;
-
-use serde_json::{Value, json};
+use serde_json::json;
 use tm_core::Actor;
 use tm_store::Store;
 
-use crate::support::{Scratch, initialized, text, tm};
-
-fn run(scratch: &Scratch, repo: &Path, args: &[&str]) -> (Option<i32>, Value) {
-    let out = tm(scratch, repo, &[&["--json"], args].concat());
-    assert_eq!(text(&out.stderr), "", "nothing reaches stderr in JSON mode");
-    (
-        out.status.code(),
-        serde_json::from_slice(&out.stdout).unwrap(),
-    )
-}
+use crate::support::{Scratch, initialized, text, tm, tm_json as run};
 
 fn count(store: &Store, sql: &str) -> i64 {
     store

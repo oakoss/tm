@@ -6,16 +6,10 @@ use std::process::{Output, Stdio};
 
 use serde_json::Value;
 
-use crate::support::{Scratch, initialized, jace, text, tm};
-
-fn data(out: &Output) -> Value {
-    assert!(out.status.success(), "{out:?}");
-    serde_json::from_slice::<Value>(&out.stdout).unwrap()["data"].clone()
-}
+use crate::support::{Scratch, agent, data, initialized, text, tm};
 
 fn claude(scratch: &Scratch, repo: &Path, args: &[&str]) -> Output {
-    jace(scratch, repo, args)
-        .env("TM_AGENT", "claude")
+    agent(scratch, repo, "claude", args)
         .env("TM_SESSION", "s1")
         .stdin(Stdio::null())
         .output()

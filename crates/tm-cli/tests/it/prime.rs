@@ -12,7 +12,7 @@ use tm_store::workspace::{PathProject, RepoFile};
 use tm_store::{Draft, Store, Taking};
 use uuid::Uuid;
 
-use crate::support::{Scratch, initialized, jace, text, tm, tm_command, unpassed};
+use crate::support::{self, Scratch, initialized, jace, set, text, tm, tm_command, unpassed};
 
 /// Prime for a 200-Issue Workspace, every title at its cut, fits in 4.5 KB,
 /// about 1.1k tokens: TM-10's 4 KB, plus room for the habit lines.
@@ -31,37 +31,10 @@ fn as_agent(
     env: &[(&str, &str)],
     args: &[&str],
 ) -> Output {
-    let mut command = tm_command();
-    command
-        .args(args)
-        .current_dir(repo)
-        .env("TM_HOME", scratch.home())
-        .env("TM_ACTOR", "jace")
-        .env("TM_AGENT", agent)
-        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
-        .env("GIT_CONFIG_NOSYSTEM", "1");
-    for (key, value) in env {
-        command.env(key, value);
-    }
-    command.output().unwrap()
-}
-
-fn set(store: &mut Store, project: ProjectId, issue: Uuid, field: &str, value: Value) {
-    unpassed(
-        store
-            .append(Draft {
-                actor: Actor::human("jace"),
-                project,
-                subject: issue,
-                change: Change::SetField {
-                    field: field.into(),
-                    label: String::new(),
-                    value,
-                    value_label: None,
-                },
-            })
-            .unwrap(),
-    );
+    support::agent(scratch, repo, agent, args)
+        .envs(env.iter().copied())
+        .output()
+        .unwrap()
 }
 
 /// The indented lines under `heading` in prime's text.
