@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::error::CliError;
 use crate::here::{self, Here};
 use crate::identity;
-use crate::list::{Item, Listed, Named, joined, line, named, project_keys, shortlists_of};
+use crate::list::{IssueJson, Listed, Named, joined, line, named, project_keys, shortlists_of};
 use crate::next;
 use crate::output::Output;
 
@@ -33,9 +33,9 @@ pub(crate) fn run(limit: Option<usize>, json: bool) -> Result<Output, CliError> 
             .views
             .iter()
             .map(|view| {
-                let mut item = Item::of(view, &queue.projects);
-                item.unblocks = Some(queue.unblocks.get(&view.id).map_or(&[], Vec::as_slice));
-                item
+                let mut issue = IssueJson::of(view, &queue.projects);
+                issue.unblocks = Some(queue.unblocks.get(&view.id).map_or(&[], Vec::as_slice));
+                issue
             })
             .collect();
         let listed = Listed {

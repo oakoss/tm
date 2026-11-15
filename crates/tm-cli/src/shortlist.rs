@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::here::{self, Here};
-use crate::list::{Item, line, project_keys};
+use crate::list::{IssueJson, line, project_keys};
 use crate::output::{Output, printable};
 
 #[derive(Args)]
@@ -212,13 +212,13 @@ fn list_json(here: &Here, list: &Shortlist, members: &[Member]) -> Result<Value,
     let members: Vec<Value> = (1..)
         .zip(members)
         .map(|(position, member)| {
-            let mut item = json!(Item::of(&member.issue, &projects));
-            if let Some(fields) = item["fields"].as_object_mut() {
+            let mut issue = json!(IssueJson::of(&member.issue, &projects));
+            if let Some(fields) = issue["fields"].as_object_mut() {
                 fields.remove("shortlist");
             }
-            item["position"] = json!(position);
-            item["passed_over"] = json!(member.passed_over);
-            item
+            issue["position"] = json!(position);
+            issue["passed_over"] = json!(member.passed_over);
+            issue
         })
         .collect();
     Ok(json!({

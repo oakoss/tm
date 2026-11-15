@@ -21,7 +21,7 @@ const LINE_BYTES: usize = 100;
 #[derive(clap::Args)]
 pub(crate) struct Remember {
     /// The fact, in a line or two; - reads it from stdin.
-    insight: String,
+    fact: String,
     /// Name it, or replace what this key holds; made from its first words
     /// when not given.
     #[arg(long)]
@@ -75,17 +75,17 @@ pub(crate) fn memories(args: &Memories) -> Result<Output, CliError> {
 }
 
 fn write_remember(here: &mut Here, args: &Remember, actor: &Actor) -> Result<Output, CliError> {
-    if args.insight.trim().is_empty() {
-        return Err(CliError::new("invalid_value", "the insight is blank")
+    if args.fact.trim().is_empty() {
+        return Err(CliError::new("invalid_value", "the fact is blank")
             .with("field", "body")
             .with("reason", "is blank"));
     }
     let project = here.project()?;
     // Read once all else is checked, so a mistake keeps the piped text.
-    let body = if args.insight == "-" {
-        crate::fields::read_stdin_text("insight")?
+    let body = if args.fact == "-" {
+        crate::fields::read_stdin_text("body")?
     } else {
-        args.insight.clone()
+        args.fact.clone()
     };
     let body = body.trim().to_owned();
     let remembered = here
