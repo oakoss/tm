@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 use tm_core::op::{COMMENT_BODY_FIELD, COMMENTS_FIELD};
 use tm_core::{Actor, link};
-use tm_store::{Restore, Target, WriteOptions};
+use tm_store::{Restore, StoreError, Target, UndoPlan, WriteOptions};
 use uuid::Uuid;
 
 use crate::error::CliError;
@@ -26,6 +26,27 @@ pub(crate) struct Undone {
     pub(crate) lines: Vec<String>,
 }
 
+/// The undo of `batch` and the batch it wrote, or for a dry run its plan
+/// and no batch; either way the Claims it passes go to `here`.
+fn undone(
+    here: &mut Here,
+    actor: &Actor,
+    batch: Uuid,
+    (dry_run, force): (bool, bool),
+) -> Result<(UndoPlan, Option<Uuid>), StoreError> {
+    let options = WriteOptions {
+        force,
+        ..WriteOptions::default()
+    };
+    if dry_run {
+        let plan = here.store.undo_plan_with(actor, batch, &options)?;
+        return Ok((here.passing(plan), None));
+    }
+    let (plan, written) = here.store.undo_with(actor, batch, &options)?;
+    let ops = here.passing(written);
+    Ok((plan, ops.first().map(|op| op.op_id)))
+}
+
 pub(crate) fn undo(
     here: &mut Here,
     reference: Option<&str>,
@@ -37,17 +58,7 @@ pub(crate) fn undo(
         Some(reference) => (batch(here, reference)?, None),
         None => last(here, &identity.actor)?,
     };
-    let options = WriteOptions {
-        force,
-        ..WriteOptions::default()
-    };
-    let undone = here
-        .store
-        .undo_with(&identity.actor, batch, &options, !dry_run)
-        .map(|(plan, written)| {
-            let ops = here.passing(written);
-            (plan, ops.first().filter(|_| !dry_run).map(|op| op.op_id))
-        });
+    let undone = undone(here, &identity.actor, batch, (dry_run, force));
     let (plan, written) = undone.map_err(|err| {
         let err = CliError::past_claim(err, "tm undo --force");
         match next {

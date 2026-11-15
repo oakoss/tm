@@ -91,7 +91,7 @@ pub(crate) fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>
     let based_on = based_on(args.if_version, read);
     let options = WriteOptions {
         force,
-        based_on: Some((id, based_on)),
+        based_on: Some(based_on),
         ..WriteOptions::default()
     };
     let issue_type = view
@@ -245,8 +245,16 @@ pub(crate) fn finish(
                 },
             });
         }
+        // Another session released the Claim this move came to release; a
+        // write of nothing has no Issue to judge, so the version is read here.
+        if drafts.is_empty() {
+            if let Some(based_on) = options.based_on {
+                here.store.check_version(issue, based_on, &[])?;
+            }
+            break Ok(Vec::new());
+        }
         let options = WriteOptions {
-            claim: Some((issue, held)),
+            claim: Some(held),
             ..options.clone()
         };
         match here.store.write(drafts, &options) {
@@ -381,9 +389,54 @@ fn status(workflow: &Workflow, issue_type: &str, target: &str) -> Result<String,
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use tm_core::Scheme;
+    use tm_store::Store;
 
     use super::*;
+
+    #[test]
+    fn a_finish_whose_claim_another_session_releases_writes_nothing() {
+        let at = here::fixture();
+        let mut here = here::open_at(&at).unwrap();
+        let claude = Actor::agent("claude", "jace");
+        let project = here.project().unwrap();
+        let (issue, _) = here
+            .store
+            .create_issue(&claude, project, "task", "alpha")
+            .unwrap();
+        let held = here.store.take(&claude, issue, None::<u64>).unwrap();
+        let other = Store::open_existing(&here.workspace.store_path(), here.workspace.id);
+        let other = RefCell::new(Some(other.unwrap()));
+        let drafts = || {
+            if let Some(mut store) = other.borrow_mut().take() {
+                store.release(&claude, issue, held.id).unwrap();
+            }
+            Vec::new()
+        };
+        let read = here.store.issue_version(issue).unwrap();
+        let options = WriteOptions {
+            based_on: Some(read),
+            ..WriteOptions::default()
+        };
+        let ops = finish(
+            &mut here,
+            &claude,
+            (project, issue),
+            drafts,
+            (true, &options),
+        );
+        assert_eq!(ops.unwrap(), []);
+
+        let ahead = WriteOptions {
+            based_on: Some(read + 100),
+            ..WriteOptions::default()
+        };
+        let none = || Vec::new();
+        let err = finish(&mut here, &claude, (project, issue), none, (true, &ahead));
+        assert!(matches!(err, Err(StoreError::Invalid { .. })), "{err:?}");
+    }
 
     #[test]
     fn a_target_is_a_status_by_id_or_label_and_a_category_is_never_guessed() {

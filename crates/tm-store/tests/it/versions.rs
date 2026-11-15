@@ -20,7 +20,7 @@ fn set_based(
     issue: Uuid,
     name: &str,
     value: &str,
-    based_on: Option<(Uuid, i64)>,
+    based_on: Option<i64>,
 ) -> Result<(), StoreError> {
     let options = WriteOptions {
         based_on,
@@ -40,8 +40,7 @@ fn a_field_changed_after_the_version_refuses_the_write_with_its_value() {
     set(&mut store, issue, "description", "theirs").unwrap();
     assert!(store.issue_version(issue).unwrap() > read);
 
-    let based_on = Some((issue, read));
-    let err = set_based(&mut store, issue, "description", "mine", based_on).unwrap_err();
+    let err = set_based(&mut store, issue, "description", "mine", Some(read)).unwrap_err();
     let StoreError::Stale {
         based_on, current, ..
     } = &err
@@ -58,7 +57,7 @@ fn a_field_changed_after_the_version_refuses_the_write_with_its_value() {
 
     set(&mut store, issue, "title", "another field").unwrap();
     let now = store.issue_version(issue).unwrap();
-    set_based(&mut store, issue, "description", "mine", Some((issue, now))).unwrap();
+    set_based(&mut store, issue, "description", "mine", Some(now)).unwrap();
 }
 
 #[test]
@@ -78,14 +77,32 @@ fn a_comment_or_a_claim_moves_no_version() {
 }
 
 #[test]
-fn the_base_covers_only_its_own_issue() {
+fn a_write_judged_from_a_version_or_a_claim_writes_one_issue() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
-    let issue = new_issue(&mut store);
-    let other = new_issue(&mut store);
+    let (issue, other) = (new_issue(&mut store), new_issue(&mut store));
     let read = store.issue_version(issue).unwrap();
-    set(&mut store, issue, "description", "theirs").unwrap();
-    set(&mut store, other, "description", "x").unwrap();
-
-    set_based(&mut store, other, "description", "y", Some((issue, read))).unwrap();
+    let both = || {
+        vec![
+            draft(issue, set_field("description", json!("a"))),
+            draft(other, set_field("description", json!("b"))),
+        ]
+    };
+    let judged = [
+        WriteOptions {
+            based_on: Some(read),
+            ..WriteOptions::default()
+        },
+        WriteOptions {
+            claim: Some(None),
+            ..WriteOptions::default()
+        },
+    ];
+    for options in &judged {
+        for drafts in [both(), Vec::new()] {
+            let err = store.write(drafts, options).unwrap_err();
+            assert!(matches!(err, StoreError::Invalid { .. }), "{err}");
+        }
+    }
+    assert_eq!(field(&store, issue, "description"), None);
 }
