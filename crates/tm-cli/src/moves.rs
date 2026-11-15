@@ -228,8 +228,8 @@ pub(crate) fn finish(
 ) -> Result<Vec<Op>, StoreError> {
     let mut tries = 0;
     loop {
-        let mut drafts = drafts();
         let state = refuse_finish(here, actor, issue, guarded)?;
+        let mut drafts = drafts();
         // The release names the Claim read here, so the write refuses one
         // that was taken, renewed or released since, and the move reads it
         // and judges it again. A lapsed Claim is released too, so finished
@@ -436,6 +436,39 @@ mod tests {
         let none = || Vec::new();
         let err = finish(&mut here, &claude, (project, issue), none, (true, &ahead));
         assert!(matches!(err, Err(StoreError::Invalid { .. })), "{err:?}");
+    }
+
+    #[test]
+    fn a_finish_releases_the_claim_held_at_its_write_not_the_one_it_read() {
+        let at = here::fixture();
+        let mut here = here::open_at(&at).unwrap();
+        let jace = Actor::human("jace");
+        let claude = Actor::agent("claude", "jace");
+        let project = here.project().unwrap();
+        let (issue, _) = here
+            .store
+            .create_issue(&jace, project, "task", "alpha")
+            .unwrap();
+        let read = here.store.take(&claude, issue, None::<u64>).unwrap();
+        let other = Store::open_existing(&here.workspace.store_path(), here.workspace.id);
+        let other = RefCell::new(Some(other.unwrap()));
+        // Called after the move reads the Claim and before it writes.
+        let drafts = || {
+            if let Some(mut store) = other.borrow_mut().take() {
+                store.release(&claude, issue, read.id).unwrap();
+                let codex = Actor::agent("codex", "jace");
+                store.take(&codex, issue, None::<u64>).unwrap();
+            }
+            vec![Draft {
+                actor: jace.clone(),
+                project,
+                subject: issue,
+                change: set("status", json!("done")),
+            }]
+        };
+        let unguarded = (false, &WriteOptions::default());
+        finish(&mut here, &jace, (project, issue), drafts, unguarded).unwrap();
+        assert!(here.store.claim_state(issue).unwrap().is_none());
     }
 
     #[test]

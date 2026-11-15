@@ -27,6 +27,32 @@ fn doc(out: &Output) -> Value {
 }
 
 #[test]
+fn a_missing_table_names_the_rebuild_that_makes_it_again() {
+    let create = ["--json", "create", "--type", "task", "--title", "t"];
+    // issue_text is reached only through a trigger, which names it main.issue_text.
+    for (table, words) in [
+        ("issues", &["--json", "list"][..]),
+        ("unapplied", &["--json", "list"]),
+        ("issue_text", &create),
+    ] {
+        let scratch = Scratch::new();
+        let (repo, store, _) = initialized(&scratch);
+        store
+            .connection()
+            .execute_batch(&format!("DROP TABLE {table}"))
+            .unwrap();
+        drop(store);
+        let refused = doc(&tm(&scratch, &repo, words));
+        assert_eq!(refused["error"], "missing_table", "{refused}");
+        assert_eq!(refused["table"], table);
+        assert_eq!(refused["fix"], "tm rebuild");
+        let rebuilt = tm(&scratch, &repo, &["--json", "rebuild"]);
+        assert!(rebuilt.status.success(), "{table}: {rebuilt:?}");
+        assert!(tm(&scratch, &repo, &["list"]).status.success(), "{table}");
+    }
+}
+
+#[test]
 fn a_dated_export_lands_in_tms_home_once_per_change() {
     let scratch = Scratch::new();
     let (repo, _store, _) = initialized(&scratch);

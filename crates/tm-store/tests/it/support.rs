@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tm_core::Change;
 use tm_core::op::CURRENT_VERSION;
@@ -47,14 +47,25 @@ impl Drop for TempDir {
 pub(crate) struct ManualClock {
     ms: Arc<AtomicI64>,
     step: Arc<AtomicI64>,
+    next_read: Arc<Mutex<Option<(usize, Meanwhile)>>>,
 }
+
+type Meanwhile = Box<dyn FnOnce() + Send>;
 
 impl ManualClock {
     pub(crate) fn at(ms: i64) -> Self {
         Self {
             ms: Arc::new(AtomicI64::new(ms)),
             step: Arc::new(AtomicI64::new(0)),
+            next_read: Arc::default(),
         }
+    }
+
+    /// Runs `meanwhile` at the clock's read after the next `skip`. A write
+    /// reads the clock after its own reads and before its transaction, so
+    /// `meanwhile` can land between the two, as another process's write could.
+    pub(crate) fn before_read(&self, skip: usize, meanwhile: impl FnOnce() + Send + 'static) {
+        *self.next_read.lock().unwrap() = Some((skip, Box::new(meanwhile)));
     }
 
     pub(crate) fn advance(&self, ms: i64) {
@@ -74,6 +85,20 @@ impl ManualClock {
 
 impl Clock for ManualClock {
     fn now(&self) -> Result<WallTime, String> {
+        let due = {
+            let mut next = self.next_read.lock().unwrap();
+            match next.as_mut() {
+                Some((0, _)) => next.take().map(|(_, meanwhile)| meanwhile),
+                Some((skip, _)) => {
+                    *skip -= 1;
+                    None
+                }
+                None => None,
+            }
+        };
+        if let Some(meanwhile) = due {
+            meanwhile();
+        }
         Ok(WallTime {
             utc_ms: self
                 .ms
@@ -394,4 +419,24 @@ pub(crate) fn dump(store: &Store) -> Vec<String> {
         out.extend(rows);
     }
     out
+}
+
+/// The clock reads to skip so [`meanwhile`] lands in an import's first
+/// write: the import reads the clock once before it plans.
+pub(crate) const IMPORT_START: usize = 1;
+
+/// Has another Store at `path` make `change` at `clock`'s read after the
+/// next `skip`, which for a write is between its reads and its transaction.
+pub(crate) fn meanwhile(
+    (path, clock): (&Path, &ManualClock),
+    skip: usize,
+    change: impl FnOnce(&mut Store) + Send + 'static,
+) {
+    let (path, other) = (path.to_path_buf(), clock.clone());
+    clock.before_read(skip, move || {
+        let mut store = Store::open_with_clock(&path, Box::new(other))
+            .unwrap()
+            .with_scheme(scheme());
+        change(&mut store);
+    });
 }

@@ -315,6 +315,20 @@ impl std::fmt::Display for Named {
 }
 
 impl StoreError {
+    /// The table this failure found missing, when [`Store::rebuild`] makes
+    /// it again from the log; never the log's own tables.
+    #[must_use]
+    pub fn missing_table(&self) -> Option<&str> {
+        let Self::Sqlite(rusqlite::Error::SqliteFailure(_, Some(message))) = self else {
+            return None;
+        };
+        let table = message.strip_prefix("no such table: ")?;
+        // A trigger names the table it reaches with its schema.
+        let table = table.strip_prefix("main.").unwrap_or(table);
+        let dropped = format!("DROP TABLE IF EXISTS {table};");
+        schema::DROP_PROJECTIONS.contains(&dropped).then_some(table)
+    }
+
     /// This error with `name` applied to each Issue it names.
     fn map_named(self, mut name: impl FnMut(Named) -> Named) -> Self {
         match self {

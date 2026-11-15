@@ -9,8 +9,8 @@ use uuid::Uuid;
 use tm_core::Hlc;
 
 use crate::support::{
-    ManualClock, TempDir, draft, field, insert_acked, jace, new_issue, open, remote_op, set_field,
-    unpassed,
+    IMPORT_START, ManualClock, TempDir, draft, field, insert_acked, jace, meanwhile, new_issue,
+    open, remote_op, set_field, unpassed,
 };
 
 const WORKSPACE: Uuid = Uuid::from_u128(0x0190_a000_0000_7000_8000_0000_0000_0002);
@@ -147,6 +147,50 @@ fn importing_a_file_twice_writes_nothing_the_second_time() {
         assert!(record.written.is_empty(), "{record:?}");
         assert!(record.conflicts.is_empty(), "{record:?}");
     }
+}
+
+#[test]
+fn a_reimport_is_refused_when_its_issue_changes_before_the_write() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_900_000_000_000);
+    let mut store = store(&dir, &clock);
+    let child = issue(&import(&mut store, &records()).unwrap(), "beads:a.1");
+    let mut renamed = records();
+    renamed[0]["title"] = json!("renamed");
+    meanwhile((&dir.db(), &clock), IMPORT_START, move |other| {
+        let edit = draft(child, set_field("title", json!("edited in tm")));
+        unpassed(other.append(edit).unwrap());
+    });
+    let err = import(&mut store, &renamed).unwrap_err();
+    assert_changed(&err, child);
+}
+
+#[test]
+fn a_reimported_parent_is_refused_when_it_changes_before_the_write() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_900_000_000_000);
+    let mut store = store(&dir, &clock);
+    let child = issue(&import(&mut store, &records()).unwrap(), "beads:a.1");
+    let elsewhere = new_issue(&mut store);
+    let mut orphaned = records();
+    orphaned[0].as_object_mut().unwrap().remove("parent");
+    meanwhile((&dir.db(), &clock), IMPORT_START, move |other| {
+        let moved = draft(child, set_field("parent", json!(elsewhere.to_string())));
+        unpassed(other.append(moved).unwrap());
+    });
+    let err = import(&mut store, &orphaned).unwrap_err();
+    assert_changed(&err, child);
+}
+
+/// `err` refuses a record because `issue` changed while it was imported.
+fn assert_changed(err: &StoreError, issue: Uuid) {
+    let StoreError::RecordRefused { cause, .. } = err else {
+        panic!("{err:?}");
+    };
+    assert!(
+        matches!(&**cause, StoreError::ImportChanged(named) if named.id == issue),
+        "{err:?}"
+    );
 }
 
 #[test]
