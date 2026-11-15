@@ -153,10 +153,7 @@ fn find(here: &Here, filter: &str) -> Result<Vec<Uuid>, CliError> {
     }
     match identity::writer_in(here.env(), &here.found.dir) {
         Ok(identity) => {
-            let me = identity
-                .actor
-                .on_behalf_of()
-                .unwrap_or_else(|| identity.actor.name());
+            let me = identity.actor.for_whom();
             Ok(here.store.find(filter, Context { me: Some(me) })?)
         }
         Err(reason) => Err(CliError::new(
@@ -208,7 +205,7 @@ pub(crate) fn named(
 pub(crate) fn joined(named: &[Named]) -> String {
     named
         .iter()
-        .map(|named| named.key.clone().unwrap_or_else(|| named.id.to_string()))
+        .map(|named| tm_store::shown_key(named.key.as_deref(), named.id))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -364,7 +361,7 @@ pub(crate) fn line_within(view: &IssueView, title_bytes: usize) -> String {
     let title = cut(&printable(field("title")), title_bytes);
     format!(
         "{}  {}  {}  {title}",
-        view.key.clone().unwrap_or_else(|| view.id.to_string()),
+        view.shown_key(),
         field("status"),
         field("priority"),
     )

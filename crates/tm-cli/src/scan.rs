@@ -262,7 +262,7 @@ fn close(
         return Ok(());
     }
     let shipped = first.shipped();
-    let name = view.key.clone().unwrap_or_else(|| id.to_string());
+    let name = view.shown_key();
     match view.category {
         Some(Category::Done) => return Ok(()),
         Some(Category::Cancelled) => {

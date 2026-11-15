@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List as Rows, ListState, Paragraph, Wrap};
 use serde_json::Value;
 use tm_core::text::printable;
-use tm_store::{Store, StoreError};
+use tm_store::{Store, StoreError, shown_key};
 use uuid::Uuid;
 
 pub use data::{
@@ -232,7 +232,7 @@ impl IssueScreen {
             Act::Comment => {
                 return self.read.as_ref().map_or(Outcome::Stay, |issue| {
                     let shown = &issue.shown;
-                    Outcome::Compose(shown.key.clone().unwrap_or_else(|| shown.id.to_string()))
+                    Outcome::Compose(shown_key(shown.key.as_deref(), shown.id))
                 });
             }
             Act::Open => {
@@ -269,7 +269,7 @@ impl IssueScreen {
             Field::Priority => priorities(),
             Field::Assignee => assignees(self.me.as_deref(), &self.people),
         };
-        let key = shown.key.clone().unwrap_or_else(|| shown.id.to_string());
+        let key = shown_key(shown.key.as_deref(), shown.id);
         Outcome::Pick(Picker::new(field, choices, vec![(key, shown.version)]))
     }
 
@@ -375,7 +375,7 @@ fn related(store: &Store, shown: &Shown) -> Result<Vec<Row>, StoreError> {
         let rows = wanted.into_iter().map(|(how, id, key)| {
             let how = printable(&how);
             let Some(view) = views.iter().find(|view| view.id == id) else {
-                let key = printable(&key.unwrap_or_else(|| id.to_string()));
+                let key = printable(&shown_key(key.as_deref(), id));
                 return Row {
                     id,
                     key,
@@ -390,7 +390,7 @@ fn related(store: &Store, shown: &Shown) -> Result<Vec<Row>, StoreError> {
             }
             Row {
                 id,
-                key: read::key(view),
+                key: view.shown_key(),
                 how,
                 status,
                 title: read::field(view, "title"),

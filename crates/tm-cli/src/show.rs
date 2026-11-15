@@ -152,7 +152,7 @@ pub(crate) fn render_with(
         "sessions": sessions.iter().map(crate::session::json).collect::<Vec<_>>(),
     });
 
-    let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
+    let name = view.shown_key();
     let title = view
         .fields
         .get("title")
@@ -350,9 +350,7 @@ fn write_claim(text: &mut String, state: Option<&ClaimState>, view: &IssueView, 
 /// A Link by the other Issue's Key, marked when the ready queue no longer
 /// counts the other Issue, so it does not read as open.
 fn link_line(link: &LinkView, other: Option<&IssueView>) -> String {
-    let name = other
-        .and_then(|other| other.key.clone())
-        .unwrap_or_else(|| link.other.to_string());
+    let name = tm_store::shown_key(other.and_then(|other| other.key.as_deref()), link.other);
     let mut marks = Vec::new();
     if let Some(status) = other
         .filter(|other| follow::finished(other))

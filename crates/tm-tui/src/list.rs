@@ -162,7 +162,7 @@ impl Shown {
     fn of(view: &IssueView) -> Self {
         Self {
             id: view.id,
-            key: read::key(view),
+            key: view.shown_key(),
             status: read::field(view, "status"),
             priority: read::field(view, "priority"),
             title: read::field(view, "title"),

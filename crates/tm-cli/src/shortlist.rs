@@ -266,7 +266,7 @@ fn write(here: &mut Here, action: &Action, me: &Actor) -> Result<Output, CliErro
             for (issue, list) in &placed.from {
                 let key = here.store.issue(*issue)?.and_then(|view| view.key);
                 let name = here.store.shortlist(*list)?.and_then(|list| list.name);
-                let key = key.unwrap_or_else(|| issue.to_string());
+                let key = tm_store::shown_key(key.as_deref(), *issue);
                 let name = printable(name.as_deref().unwrap_or("(unnamed)"));
                 let _ = writeln!(said, "took {key} off {name}");
             }

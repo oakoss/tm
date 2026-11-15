@@ -241,11 +241,9 @@ fn edit_notes(input: &Value) -> Result<Notes, CliError> {
         checked: check.branches.then(|| unchecked.collect()),
     };
     for overlap in check.found {
-        let shown = here
-            .store
-            .issue(overlap.claim.issue)?
-            .and_then(|view| view.key)
-            .unwrap_or_else(|| overlap.claim.issue.to_string());
+        let view = here.store.issue(overlap.claim.issue)?;
+        let key = view.as_ref().and_then(|view| view.key.as_deref());
+        let shown = tm_store::shown_key(key, overlap.claim.issue);
         let text = format!(
             "{}; ask its holder or tm show {shown} before editing it",
             covering::told(&overlap, &shown)

@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 use tm_core::Actor;
 use tm_core::op::{is_number, question_options, same_reply};
-use tm_store::{Claim, CommentView, IssueView};
+use tm_store::{Claim, CommentView, IssueView, shown_key};
 use uuid::Uuid;
 
 use crate::error::CliError;
@@ -154,7 +154,7 @@ fn write_ask(here: &mut Here, args: &Ask) -> Result<(Output, Vec<String>), CliEr
     let ops = here
         .store
         .ask(actor, id, &question, &options, &of, held.as_ref())?;
-    let shown = key.clone().unwrap_or_else(|| id.to_string());
+    let shown = shown_key(key.as_deref(), id);
     let mut text = format!("{shown} waits on {of}: {question}\n");
     if !options.is_empty() {
         let _ = writeln!(text, "  options: {}", numbered(&options));
@@ -211,7 +211,7 @@ fn write_answer(
     let (reply, choice) = match reply {
         Given(given) => resolve(&read("reply", given)?, &question.options)?,
         Typed => {
-            let shown = key.clone().unwrap_or_else(|| id.to_string());
+            let shown = shown_key(key.as_deref(), id);
             match ask_reply(here, &shown, None, &question)? {
                 Some(typed) => typed,
                 None => return Err(CliError::new("stopped", prompt::stopped())),
@@ -242,7 +242,7 @@ fn answered(
     let reply = &mention::resolve(here, reply)?;
     let ops = here.store.answer(actor, id, question.id, reply)?;
     let kept_for = kept_for(here, id)?;
-    let shown = key.cloned().unwrap_or_else(|| id.to_string());
+    let shown = shown_key(key.map(String::as_str), id);
     let mut text = format!("{shown} answered: {}\n", printable(reply));
     if let Some(agent) = &kept_for {
         let _ = writeln!(text, "{agent} resumes it with tm start {shown}");
@@ -268,7 +268,7 @@ fn walk(here: &mut Here) -> Result<(Output, Vec<String>), CliError> {
     }
     let mut asked = Vec::with_capacity(waiting.len());
     for (view, question) in &waiting {
-        let shown = view.key.clone().unwrap_or_else(|| view.id.to_string());
+        let shown = view.shown_key();
         match question {
             Some(question) => asked.push((view, shown, question)),
             None => warnings.push(format!(
@@ -402,7 +402,7 @@ fn write_withdraw(here: &mut Here, args: &Withdraw) -> Result<(Output, Vec<Strin
     let reason = mention::resolve(here, &read("reason", &args.reason)?)?;
     let ops = here.store.withdraw(actor, id, question.id, &reason)?;
     let kept_for = kept_for(here, id)?;
-    let shown = key.clone().unwrap_or_else(|| id.to_string());
+    let shown = shown_key(key.as_deref(), id);
     let mut text = format!("{shown} no longer waits on {waiting}: {reason}\n");
     if let Some(agent) = &kept_for {
         let _ = writeln!(text, "{agent} resumes it with tm start {shown}");

@@ -95,7 +95,7 @@ fn write(
     })?;
     let op = here.passing(written);
     let key = here.store.issue(id)?.and_then(|view| view.key);
-    let shown = key.clone().unwrap_or_else(|| id.to_string());
+    let shown = tm_store::shown_key(key.as_deref(), id);
     let (text, comment) = match edited {
         Some((comment, named)) => (
             format!("edited comment {} on {shown}\n", printable(&named)),

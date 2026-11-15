@@ -132,13 +132,7 @@ fn session(
     var: impl Fn(&str) -> Option<identity::Var> + Copy,
     email: impl Fn() -> Result<String, String>,
 ) -> (Result<String, String>, Result<Identity, String>) {
-    let me = identity::resolve(var, &email).map(|identity| {
-        let actor = identity.actor;
-        actor
-            .on_behalf_of()
-            .unwrap_or_else(|| actor.name())
-            .to_owned()
-    });
+    let me = identity::resolve(var, &email).map(|identity| identity.actor.for_whom().to_owned());
     (me, identity::reader(var, email))
 }
 

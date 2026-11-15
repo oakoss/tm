@@ -81,7 +81,7 @@ impl CliError {
             StoreError::Protected { issue, holder, .. } if holder.handed => Some(format!(
                 "; {} takes it with tm start {}",
                 holder.agent,
-                issue.key.clone().unwrap_or_else(|| issue.id.to_string())
+                tm_store::shown_key(issue.key.as_deref(), issue.id)
             )),
             _ => None,
         };
@@ -160,7 +160,7 @@ impl CliError {
                 version,
                 current,
             } => {
-                let shown = issue.key.clone().unwrap_or_else(|| issue.id.to_string());
+                let shown = tm_store::shown_key(issue.key.as_deref(), issue.id);
                 return Self::new("stale_value", message)
                     .issue(issue)
                     .with("based_on", based_on)

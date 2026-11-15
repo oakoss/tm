@@ -38,7 +38,7 @@ pub(crate) fn starts(
         if !matches!(parent.category, Some(Category::Triage | Category::Todo)) {
             continue;
         }
-        let name = name(parent);
+        let name = parent.shown_key();
         if archived(parent) {
             starts
                 .warnings
@@ -138,7 +138,7 @@ pub(crate) fn next(
     if !(reopen || close) {
         return Ok(None);
     }
-    let key = name(&parent);
+    let key = parent.shown_key();
     let (category, verb) = if reopen {
         (Category::Active, "reopening")
     } else {
@@ -156,7 +156,7 @@ pub(crate) fn next(
         format!(
             "{key} is {} but {} is open; reopen it with: {command}",
             printable(text(&parent, "status")),
-            name(&child)
+            child.shown_key()
         )
     } else {
         format!("{key} has no open children left; close it with: {command}")
@@ -175,7 +175,7 @@ pub(crate) fn first(scheme: &Scheme, issue_type: &str, category: Category) -> Op
 }
 
 pub(crate) fn finished(issue: &IssueView) -> bool {
-    matches!(issue.category, Some(Category::Done | Category::Cancelled))
+    issue.category.is_some_and(Category::is_closed)
 }
 
 /// Open as the ready queue counts it: not finished and not archived.
@@ -193,8 +193,4 @@ fn text<'a>(issue: &'a IssueView, field: &str) -> &'a str {
         .get(field)
         .and_then(Value::as_str)
         .unwrap_or_default()
-}
-
-fn name(issue: &IssueView) -> String {
-    issue.key.clone().unwrap_or_else(|| issue.id.to_string())
 }

@@ -81,6 +81,12 @@ impl Actor {
         self.on_behalf_of.as_deref()
     }
 
+    /// The person this Actor writes for: an Agent's human, else its own name.
+    #[must_use]
+    pub fn for_whom(&self) -> &str {
+        self.on_behalf_of().unwrap_or(&self.name)
+    }
+
     #[must_use]
     pub fn session(&self) -> Option<&str> {
         self.session.as_ref().map(SessionId::as_str)
