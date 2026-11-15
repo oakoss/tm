@@ -42,6 +42,7 @@ pub mod workspace;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rusqlite::{
@@ -558,7 +559,8 @@ pub struct Provenance {
 pub struct Store {
     conn: Connection,
     clock: Box<dyn Clock + Send>,
-    scheme: Scheme,
+    /// Shared, so a write's closure holds the Scheme while borrowing the Store.
+    scheme: Arc<Scheme>,
     opened: bool,
     last_write: Option<LastWrite>,
     /// Operations this connection has committed since it opened.
@@ -839,7 +841,7 @@ impl Store {
         let mut store = Self {
             conn,
             clock,
-            scheme: Scheme::built_in(),
+            scheme: Arc::new(Scheme::built_in()),
             opened: false,
             last_write: None,
             appended: 0,
@@ -865,13 +867,13 @@ impl Store {
     /// with. The projection does not depend on it, so no rebuild follows.
     #[must_use]
     pub fn with_scheme(mut self, scheme: Scheme) -> Self {
-        self.scheme = scheme;
+        self.scheme = Arc::new(scheme);
         self.last_write = None;
         self
     }
 
     #[must_use]
-    pub const fn scheme(&self) -> &Scheme {
+    pub const fn scheme(&self) -> &Arc<Scheme> {
         &self.scheme
     }
 

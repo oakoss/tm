@@ -53,7 +53,7 @@ impl Store {
         let store = Self {
             conn,
             clock: Box::new(SystemClock),
-            scheme: Scheme::built_in(),
+            scheme: Scheme::built_in().into(),
             opened: false,
             last_write: None,
             appended: 0,
