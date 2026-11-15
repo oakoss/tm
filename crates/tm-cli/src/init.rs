@@ -4,7 +4,6 @@ use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde_json::json;
 use tm_store::workspace::{self, RepoFile, Workspace, WorkspaceError};
@@ -625,13 +624,7 @@ fn check_git_sees(root: &Path, relative: &str) -> Result<(), String> {
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<std::process::Output, String> {
-    let _git = tracing::debug_span!("git", ?args).entered();
-    Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()
-        .map_err(|err| format!("cannot run git {}: {err}", args[0]))
+    crate::git::output(root, args).map_err(|err| format!("cannot run git {}: {err}", args[0]))
 }
 
 fn git_failed(command: &str, output: &std::process::Output) -> String {

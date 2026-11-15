@@ -2,7 +2,6 @@
 
 use std::ffi::OsString;
 use std::path::Path;
-use std::process::Command;
 use std::sync::OnceLock;
 
 use tm_core::Actor;
@@ -286,12 +285,7 @@ pub(crate) fn env(name: &str) -> Option<Var> {
 ///
 /// A message when git cannot run or cannot read `HEAD`.
 pub(crate) fn git_branch(root: &Path) -> Result<Option<String>, String> {
-    let _git = tracing::debug_span!("git", read = "branch").entered();
-    let output = Command::new("git")
-        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
-        .current_dir(root)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()
+    let output = crate::git::output(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
         .map_err(|err| format!("cannot run git to read the branch: {err}"))?;
     let branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     // `git symbolic-ref --quiet` exits 1, silently, on a detached head.
@@ -314,13 +308,7 @@ pub(crate) fn git_branch(root: &Path) -> Result<Option<String>, String> {
 ///
 /// A message when the name is not UTF-8.
 pub(crate) fn git_name(root: &Path) -> Result<Option<String>, String> {
-    let _git = tracing::debug_span!("git", read = "user.name").entered();
-    let Ok(output) = Command::new("git")
-        .args(["config", "--get", "user.name"])
-        .current_dir(root)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()
-    else {
+    let Ok(output) = crate::git::output(root, &["config", "--get", "user.name"]) else {
         return Ok(None);
     };
     if !output.status.success() {
@@ -338,12 +326,7 @@ pub(crate) fn git_name(root: &Path) -> Result<Option<String>, String> {
 ///
 /// A message when git cannot run, or when no email is set.
 pub(crate) fn git_email(root: &Path) -> Result<String, String> {
-    let _git = tracing::debug_span!("git", read = "user.email").entered();
-    let output = Command::new("git")
-        .args(["config", "--get", "user.email"])
-        .current_dir(root)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()
+    let output = crate::git::output(root, &["config", "--get", "user.email"])
         .map_err(|err| format!("cannot run git to read user.email: {err}"))?;
     let email = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     // `git config --get` exits 1 when the key is unset.

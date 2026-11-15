@@ -226,12 +226,14 @@ fn at_me_is_the_human_an_agent_works_for() {
     let doc = run(&[("TM_ACTOR", "jace"), ("CLAUDE_CODE_SESSION_ID", "s")]);
     assert_eq!(keys(&doc), ["TM-1"], "{doc}");
 
-    let doc = run(&[]);
+    let doc = run(&[("GIT_TRACE", "1")]);
     assert_eq!(doc["error"], "no_identity", "{doc}");
+    let message = doc["message"].as_str().unwrap();
     assert!(
-        doc["message"].as_str().unwrap().contains("TM_ACTOR"),
+        message.contains("TM_ACTOR"),
         "the reason no one was found: {doc}"
     );
+    assert!(!message.contains("trace:"), "git's trace stays out: {doc}");
 }
 
 #[test]

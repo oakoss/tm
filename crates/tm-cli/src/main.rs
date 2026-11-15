@@ -14,6 +14,7 @@ mod export;
 mod field_flag;
 mod fields;
 mod follow;
+mod git;
 mod guide;
 mod handoff;
 mod harness;
