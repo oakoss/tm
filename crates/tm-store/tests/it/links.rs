@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::support::{
     ManualClock, OTHER, TempDir, draft, insert_acked, insert_acked_raw, jace, key, links,
-    new_issue, open, remote_op,
+    meanwhile, new_issue, open, remote_op,
 };
 
 fn link_versions(store: &Store) -> i64 {
@@ -82,6 +82,20 @@ fn each_end_reads_a_link_by_the_name_it_sees() {
         store.links(Uuid::now_v7()),
         Err(StoreError::UnknownIssue(_))
     ));
+}
+
+#[test]
+fn a_held_unlink_is_refused_when_the_link_goes_before_its_write() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let [a, b] = [(); 2].map(|()| new_issue(&mut store));
+    store.link(&jace(), "blocks", a, b).unwrap();
+    meanwhile((&dir.db(), &clock), 0, move |other| {
+        other.unlink(&jace(), "blocks", a, b).unwrap();
+    });
+    let err = store.unlink_held(&jace(), "blocks", a, b).unwrap_err();
+    assert!(matches!(err, StoreError::NotLinked { .. }), "{err}");
 }
 
 #[test]
