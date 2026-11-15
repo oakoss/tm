@@ -93,8 +93,8 @@ fn store() -> Store {
     store
 }
 
-/// Four Issues in triage, TM-1 to TM-4, newest first in the queue; bob
-/// holds open work.
+/// Four Issues in triage, TM-5 to TM-8, whose queue order turns on which was
+/// written last, so tests read Keys with `queue_key`; bob holds open work.
 fn triage_store() -> Store {
     let mut store = store();
     let jace = Actor::human("jace");
