@@ -94,26 +94,14 @@ pub(crate) fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>
         based_on: Some(based_on),
         ..WriteOptions::default()
     };
-    let issue_type = view
-        .fields
-        .get("type")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default()
-        .to_owned();
+    let issue_type = view.issue_type().unwrap_or_default().to_owned();
     let workflow = scheme.workflow(&issue_type).ok_or_else(|| {
         CliError::new(
             "invalid_value",
             format!("{reference} has no type the Scheme knows, so it has no Workflow to move in"),
         )
         .with("field", "type")
-        .with(
-            "allowed",
-            scheme
-                .types
-                .iter()
-                .map(|t| t.id.clone())
-                .collect::<Vec<_>>(),
-        )
+        .with("allowed", scheme.type_ids())
     })?;
     let status = status(workflow, &issue_type, target)?;
     let identity = here.writer()?;
@@ -358,20 +346,23 @@ fn lines(view: &IssueView, changes: &[Change], ops: &[Op]) -> String {
 /// The Status `target` names in `workflow`, by id or label without case. A
 /// category name is refused with that category's Statuses, never guessed.
 fn status(workflow: &Workflow, issue_type: &str, target: &str) -> Result<String, CliError> {
-    if let Some(status) = workflow.statuses.iter().find(|status| {
-        status.id.eq_ignore_ascii_case(target) || status.label.eq_ignore_ascii_case(target)
-    }) {
+    if let Some(status) = workflow.named(target) {
         return Ok(status.id.clone());
     }
     let category = Category::ALL
         .into_iter()
         .find(|category| category.id().eq_ignore_ascii_case(target));
-    let allowed: Vec<String> = workflow
-        .statuses
-        .iter()
-        .filter(|status| category.is_none_or(|category| status.category == category))
-        .map(|status| status.id.clone())
-        .collect();
+    let allowed: Vec<String> = match category {
+        Some(category) => workflow
+            .of_category(category)
+            .map(|status| status.id.clone())
+            .collect(),
+        None => workflow
+            .statuses
+            .iter()
+            .map(|status| status.id.clone())
+            .collect(),
+    };
     let message = match category {
         Some(_) => format!(
             "{target} is a Status category; for Issue type {issue_type} it is one of: {}",

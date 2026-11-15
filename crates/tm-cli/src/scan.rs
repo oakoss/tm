@@ -272,11 +272,7 @@ fn close(
         }
         _ => {}
     }
-    let issue_type = view
-        .fields
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let issue_type = view.issue_type().unwrap_or_default();
     let Some(done) = follow::first(here.store.scheme(), issue_type, Category::Done) else {
         let message = format!("Issue type {} has no done Status", printable(issue_type));
         return Err(CliError::new("no_done_status", message));

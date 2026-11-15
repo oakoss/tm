@@ -402,19 +402,9 @@ fn write_field(
 /// The Statuses `view` can move to, as its Workflow allows; none when its
 /// type has no Workflow or its Status is one the Workflow does not define.
 fn moves_to<'a>(scheme: &'a Scheme, view: &IssueView) -> Vec<&'a Status> {
-    let field = |name: &str| view.fields.get(name).and_then(Value::as_str);
-    let Some(workflow) = field("type").and_then(|issue_type| scheme.workflow(issue_type)) else {
-        return Vec::new();
-    };
-    let from = field("status");
-    if from.is_some_and(|from| workflow.status(from).is_none()) {
-        return Vec::new();
-    }
-    workflow
-        .statuses
-        .iter()
-        .filter(|status| Some(status.id.as_str()) != from && workflow.allows(from, &status.id))
-        .collect()
+    let from = view.fields.get("status").and_then(Value::as_str);
+    view.workflow(scheme)
+        .map_or_else(Vec::new, |workflow| workflow.moves_from(from))
 }
 
 fn status_json(status: &Status) -> Value {
@@ -579,10 +569,7 @@ fn count_children(scheme: &Scheme, children: &[IssueView]) -> Children {
             Some(Category::Cancelled) => 4,
         };
         let place = child
-            .fields
-            .get("type")
-            .and_then(Value::as_str)
-            .and_then(|issue_type| scheme.workflow(issue_type))
+            .workflow(scheme)
             .and_then(|workflow| {
                 workflow
                     .statuses

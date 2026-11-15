@@ -693,13 +693,9 @@ fn check_value(
         | (FieldType::Boolean, Value::Bool(_))
         | (FieldType::Rank, Value::String(_)) => Ok(None),
         (FieldType::IssueType, Value::String(id)) => {
-            let issue_type = scheme.issue_type(id).ok_or_else(|| {
-                invalid(
-                    def,
-                    "is not a type",
-                    scheme.types.iter().map(|t| t.id.clone()),
-                )
-            })?;
+            let issue_type = scheme
+                .issue_type(id)
+                .ok_or_else(|| invalid(def, "is not a type", scheme.type_ids()))?;
             let workflow = scheme
                 .workflow(id)
                 .ok_or_else(|| invalid(def, "has no Workflow in the Scheme", []))?;

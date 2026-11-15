@@ -175,11 +175,7 @@ pub(crate) fn begin(scheme: &Scheme, actor: &Actor, lineage: &Lineage) -> (Vec<D
     let name = issue.shown_key();
     let mut moved = false;
     if matches!(issue.category, Some(Category::Triage | Category::Todo)) {
-        let issue_type = issue
-            .fields
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
+        let issue_type = issue.issue_type().unwrap_or_default();
         match follow::first(scheme, issue_type, Category::Active) {
             Some(to) => {
                 begun.changes.push(set("status", json!(to)));
@@ -241,7 +237,7 @@ fn branch(issue: &IssueView, prefixed: bool) -> Option<String> {
     if !prefixed {
         return Some(name);
     }
-    let kind = match issue.fields.get("type").and_then(Value::as_str) {
+    let kind = match issue.issue_type() {
         Some("bug") => "fix",
         _ => "feat",
     };

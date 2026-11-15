@@ -422,7 +422,7 @@ pub(crate) fn passed_over(
     if view.fields.get("archived") == Some(&json!(true)) {
         passed_over.push(PassedOver::Archived);
     }
-    if view.fields.get("type").and_then(Value::as_str) == Some("epic") {
+    if view.issue_type() == Some("epic") {
         passed_over.push(PassedOver::Epic);
     }
     if view.fields.contains_key(WAITING_ON) {
@@ -471,7 +471,7 @@ fn ranks(
 /// An add's refusals (ADR 0016): an epic's work is its children, and the
 /// rest are not work to do next.
 fn eligible(view: &IssueView) -> Result<(), StoreError> {
-    let reason = if view.fields.get("type").and_then(Value::as_str) == Some("epic") {
+    let reason = if view.issue_type() == Some("epic") {
         "it is an epic; add its children instead"
     } else if view.fields.get("archived") == Some(&json!(true)) {
         "it is archived"
