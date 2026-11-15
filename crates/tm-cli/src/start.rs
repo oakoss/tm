@@ -253,18 +253,24 @@ fn branch(issue: &IssueView, prefixed: bool) -> Option<String> {
 /// other than `main`, `master` and `HEAD`, are named `word/…`; false when git
 /// cannot say.
 fn prefixed(dir: &std::path::Path) -> bool {
-    let Ok(refs) = crate::scan::git(
-        dir,
-        &[
-            "for-each-ref",
-            "--format=%(refname)",
-            "refs/heads",
-            "refs/remotes",
-        ],
-    ) else {
-        return false;
-    };
-    let Ok(remotes) = crate::scan::git(dir, &["remote"]) else {
+    // One for-each-ref cannot name the remotes, and a remote's name may hold a slash.
+    let (refs, remotes) = std::thread::scope(|scope| {
+        let remotes = scope.spawn(|| crate::scan::git(dir, &["remote"]));
+        let refs = crate::scan::git(
+            dir,
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads",
+                "refs/remotes",
+            ],
+        );
+        let remotes = remotes
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        (refs, remotes)
+    });
+    let (Ok(refs), Ok(remotes)) = (refs, remotes) else {
         return false;
     };
     let names: Vec<&str> = refs
