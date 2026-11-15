@@ -406,9 +406,24 @@ impl CliError {
     }
 }
 
+impl CliError {
+    /// A table the store makes again from its log, missing.
+    fn missing_table(table: &str, cause: String) -> Self {
+        let message =
+            format!("the store's {table} table is missing; a rebuild makes it again from the log");
+        Self::new("missing_table", message)
+            .with("table", table)
+            .with("cause", cause)
+            .fix("tm rebuild")
+    }
+}
+
 impl From<StoreError> for CliError {
     fn from(err: StoreError) -> Self {
         let message = err.to_string();
+        if let Some(table) = err.missing_table() {
+            return Self::missing_table(table, message);
+        }
         match err {
             StoreError::Busy(_) => Self::new("busy", message).fix("retry"),
             StoreError::UnknownIssue(id) => Self::not_found("issue", &id, message),

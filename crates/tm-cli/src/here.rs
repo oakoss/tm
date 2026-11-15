@@ -116,9 +116,27 @@ pub(crate) fn open() -> Result<Here, CliError> {
 
 /// [`open`] at `place`.
 pub(crate) fn open_at(place: &Place) -> Result<Here, CliError> {
+    open_warning(place, unapplied_warning)
+}
+
+/// [`open`] for `tm rebuild`, which makes the table of operations that did
+/// not apply again, so a missing one is not read first.
+pub(crate) fn open_to_rebuild() -> Result<Here, CliError> {
+    open_warning(&Place::process()?, |_| Ok(Vec::new()))
+}
+
+/// What every command warns of: logged operations that did not apply.
+fn unapplied_warning(store: &Store) -> Result<Vec<String>, CliError> {
+    Ok(unapplied(store)?.into_iter().collect())
+}
+
+fn open_warning(
+    place: &Place,
+    warnings: fn(&Store) -> Result<Vec<String>, CliError>,
+) -> Result<Here, CliError> {
     let found = place.found()?;
     match workspace::workspace_for(&place.home, &found) {
-        Ok((workspace, store)) => opened(place, found, workspace, store),
+        Ok((workspace, store)) => opened(place, found, workspace, store, warnings),
         Err(err) => Err(match refused(&err) {
             Some(path) => CliError::new(
                 "read_only",
@@ -147,7 +165,9 @@ pub(crate) fn read() -> Result<Here, CliError> {
 pub(crate) fn read_at(place: &Place) -> Result<Here, CliError> {
     let found = place.found()?;
     let store_path = match workspace::workspace_for(&place.home, &found) {
-        Ok((workspace, store)) => return opened(place, found, workspace, store),
+        Ok((workspace, store)) => {
+            return opened(place, found, workspace, store, unapplied_warning);
+        }
         Err(err) => match refused(&err) {
             Some(path) => path.to_path_buf(),
             None => return Err(err.into()),
@@ -165,7 +185,7 @@ pub(crate) fn read_at(place: &Place) -> Result<Here, CliError> {
         ));
     };
     let store = Store::open_snapshot(&path, workspace.id)?;
-    let mut here = opened(place, found, workspace, store)?;
+    let mut here = opened(place, found, workspace, store, unapplied_warning)?;
     let published = snapshot_read(published);
     here.warnings.insert(0, published.clone());
     here.snapshot = Some(published);
@@ -218,10 +238,11 @@ fn opened(
     found: Found,
     workspace: Workspace,
     store: Store,
+    warnings: fn(&Store) -> Result<Vec<String>, CliError>,
 ) -> Result<Here, CliError> {
     let cwd = canonical(&place.cwd)?;
     let log_end = store.log_end()?;
-    let warnings = unapplied(&store)?.into_iter().collect();
+    let warnings = warnings(&store)?;
     let store = store.working_in(Workplace {
         dir: Some(found.dir.display().to_string()),
         harnesses: identity::harness_sessions(place.env),

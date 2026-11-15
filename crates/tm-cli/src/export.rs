@@ -697,7 +697,7 @@ impl Drop for Staged {
 
 /// Rebuilds the projections from the log.
 pub(crate) fn rebuild() -> Result<Output, CliError> {
-    let mut here = here::open()?;
+    let mut here = here::open_to_rebuild()?;
     let ops: i64 = here
         .store
         .connection()

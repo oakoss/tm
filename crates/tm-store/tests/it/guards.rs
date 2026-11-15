@@ -34,6 +34,21 @@ fn reopen_err(dir: &TempDir) -> StoreError {
 }
 
 #[test]
+fn only_a_table_a_rebuild_makes_counts_as_missing() {
+    let missing = |table: &str| {
+        let failure = rusqlite::ffi::Error::new(1);
+        let message = Some(format!("no such table: {table}"));
+        StoreError::Sqlite(rusqlite::Error::SqliteFailure(failure, message))
+    };
+    assert_eq!(missing("issues").missing_table(), Some("issues"));
+    let by_a_trigger = missing("main.issue_text");
+    assert_eq!(by_a_trigger.missing_table(), Some("issue_text"));
+    for table in ["ops", "meta", "issue", "main.ops"] {
+        assert_eq!(missing(table).missing_table(), None, "{table}");
+    }
+}
+
+#[test]
 fn stored_operations_cannot_be_edited_or_deleted() {
     let dir = TempDir::new();
     let (store, _) = store_with_an_edit(&dir);
