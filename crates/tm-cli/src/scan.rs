@@ -5,7 +5,6 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::Path;
-use std::process::Command;
 
 use serde_json::{Value, json};
 use tm_core::scheme::Category;
@@ -445,22 +444,9 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, CliError> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// What `git args` printed in `dir`, however it exited. Trace variables are
-/// left out, so what git writes on stderr is only what it has to say.
+/// [`crate::git::output`], as a `git_failed` error when git cannot run.
 pub(crate) fn git_output(dir: &Path, args: &[&str]) -> Result<std::process::Output, CliError> {
-    let _git = tracing::debug_span!("git", ?args).entered();
-    let mut command = Command::new("git");
-    command
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_OPTIONAL_LOCKS", "0");
-    for (name, _) in std::env::vars_os() {
-        if name.to_string_lossy().starts_with("GIT_TRACE") {
-            command.env_remove(name);
-        }
-    }
-    command
-        .output()
+    crate::git::output(dir, args)
         .map_err(|err| CliError::new("git_failed", format!("cannot run git: {err}")))
 }
 
