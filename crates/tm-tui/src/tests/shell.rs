@@ -282,16 +282,17 @@ fn a_refusal_with_a_warning_keeps_its_start_on_a_narrow_terminal() {
     let store = triage_store();
     let mut record = Record::new();
     let mut shell = triaging(&store, &record);
+    let first = queue_key(&mut shell).unwrap();
     shell.key(press(KeyCode::Char(' ')));
     shell.key(press(KeyCode::Char(' ')));
-    record.refuse_key = Some("TM-8".into());
-    record.refused_why =
-        Some("TM-8 changed since you read it, its priority moved by another session");
+    record.refuse_key = Some(first.clone());
+    let why = format!("{first} changed since you read it, its priority moved by another session");
+    record.refused_why = Some(why.leak());
     pick(&mut shell, 'p', "high");
     shell.write(&record);
     let screen = drawn_sized(&mut shell, 80, 12);
     let said = screen.lines().rev().nth(2).unwrap_or_default();
-    assert!(said.starts_with("\"✗ TM-8: "), "{screen}");
+    assert!(said.starts_with(&format!("\"✗ {first}: ")), "{screen}");
     assert!(said.ends_with("…\""), "cut at its end: {screen}");
     let warned = screen.lines().rev().nth(1).unwrap_or_default();
     assert!(
