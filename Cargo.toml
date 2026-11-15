@@ -63,6 +63,10 @@ unreachable_pub = "warn"
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 
+# The bundled SQLite unoptimised took the tm-store tests from 12 s to 15 s.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 2
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
