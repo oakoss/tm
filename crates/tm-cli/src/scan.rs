@@ -366,25 +366,23 @@ fn landed(here: &Here, actor: &Actor, (id, name): (Uuid, &str), batch: Uuid, rep
 /// `master` by its upstream, else that local branch. tm fetches nothing.
 pub(crate) fn default_branch(dir: &Path) -> Result<Branch, CliError> {
     let head = "refs/remotes/origin/HEAD";
-    let origin = git(dir, &["for-each-ref", "--format=%(symref)", head])?;
-    if let Some(full) = origin.lines().next().filter(|full| !full.is_empty()) {
+    let names = ["refs/heads/main", "refs/heads/master"];
+    let format = "--format=%(refname) %(symref) %(upstream) %(upstream:track)";
+    let refs = git(dir, &["for-each-ref", format, head, names[0], names[1]])?;
+    // A pattern also matches refs below it, such as refs/heads/main/wip.
+    let lines: Vec<Vec<&str>> = refs.lines().map(words).collect();
+    let line_of = |name: &str| lines.iter().find(|parts| parts.first() == Some(&name));
+    let origin = line_of(head).and_then(|parts| parts.get(1).copied());
+    if let Some(full) = origin.filter(|full| !full.is_empty()) {
         return Ok(Branch {
             shown: shown(full),
             full: full.to_owned(),
             caveat: None,
         });
     }
-    let format = "--format=%(refname) %(upstream) %(upstream:track)";
-    let names = ["refs/heads/main", "refs/heads/master"];
-    let locals = git(dir, &["for-each-ref", format, names[0], names[1]])?;
-    // A pattern also matches refs below it, such as refs/heads/main/wip.
-    let lines: Vec<Vec<&str>> = locals.lines().map(words).collect();
-    let found = names
-        .iter()
-        .find_map(|name| lines.iter().find(|parts| parts.first() == Some(name)));
-    if let Some(parts) = found {
-        let (local, upstream) = (parts[0], parts.get(1).copied().unwrap_or_default());
-        let gone = parts.get(2).is_some_and(|track| track.contains("gone"));
+    if let Some(parts) = names.iter().find_map(|name| line_of(name)) {
+        let (local, upstream) = (parts[0], parts.get(2).copied().unwrap_or_default());
+        let gone = parts.get(3).is_some_and(|track| track.contains("gone"));
         if upstream.starts_with("refs/remotes/") && !gone {
             return Ok(Branch {
                 shown: shown(upstream),

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use tm_core::{Actor, Change};
 use tm_store::workspace::Workspace;
-use tm_store::{Draft, Store};
+use tm_store::{Draft, Store, Taking};
 use uuid::Uuid;
 
 /// Runs per command after one warm-up; the median absorbs a noisy runner.
@@ -63,12 +63,18 @@ impl Bench {
         fs::create_dir_all(&repo).unwrap();
         fs::write(
             root.join("gitconfig"),
-            "[user]\n\temail = jace@example.com\n",
+            "[user]\n\temail = jace@example.com\n\tname = Jace\n[init]\n\tdefaultBranch = main\n",
         )
         .unwrap();
         let bench = Self { root, repo };
-        let made = bench.command("git").args(["init", "-q"]).output().unwrap();
-        assert!(made.status.success(), "{made:?}");
+        // A commit gives prime a default branch to diff against.
+        for args in [
+            &["init", "-q"][..],
+            &["commit", "-q", "--allow-empty", "-m", "seed"],
+        ] {
+            let made = bench.command("git").args(args).output().unwrap();
+            assert!(made.status.success(), "{made:?}");
+        }
         bench
     }
 
@@ -154,8 +160,10 @@ impl Bench {
         };
         let mut drafts = Vec::new();
         let mut previous = None;
+        let mut first = None;
         for n in 0..size {
             let issue = Uuid::now_v7();
+            first.get_or_insert(issue);
             let mut changes = vec![
                 Change::Create,
                 set("type", json!("task")),
@@ -200,6 +208,13 @@ impl Bench {
         let started = Instant::now();
         let _ = store.append_all(drafts).unwrap();
         let elapsed = started.elapsed();
+        // Another session's Path Claim, so prime asks git what this checkout changes.
+        let codex = Actor::agent("codex", "jace@example.com");
+        let paths = Taking {
+            paths: vec!["src/*.rs".into()],
+            ..Taking::default()
+        };
+        store.take(&codex, first.unwrap(), paths).unwrap();
         let workspace = Workspace::at(&self.root.join("tm-home"), workspace);
         store.publish_snapshot(&workspace.snapshot_path()).unwrap();
         elapsed

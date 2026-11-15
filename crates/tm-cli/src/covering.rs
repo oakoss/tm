@@ -275,17 +275,29 @@ impl<'a> Git<'a> {
     /// The files the checkout changes: committed since the default branch,
     /// staged, unstaged or untracked.
     pub(crate) fn changed(&mut self) -> Vec<String> {
+        let dir = self.dir;
+        // The status needs nothing the default branch tells, so it runs alongside.
+        let (committed, status) = std::thread::scope(|scope| {
+            let status = scope.spawn(|| {
+                scan::git(
+                    dir,
+                    &["status", "--porcelain", "-z", "--untracked-files=all"],
+                )
+            });
+            let committed = self
+                .default()
+                .map(|default| names(dir, &format!("{default}...HEAD")));
+            let status = status
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            (committed, status)
+        });
         let mut files = BTreeSet::new();
-        if let Some(default) = self.default() {
-            match names(self.dir, &format!("{default}...HEAD")) {
-                Ok(names) => files.extend(names),
-                Err(why) => self.tell(format!("cannot list your committed changes: {why}")),
-            }
+        match committed {
+            Some(Ok(names)) => files.extend(names),
+            Some(Err(why)) => self.tell(format!("cannot list your committed changes: {why}")),
+            None => {}
         }
-        let status = scan::git(
-            self.dir,
-            &["status", "--porcelain", "-z", "--untracked-files=all"],
-        );
         match status {
             Ok(status) => files.extend(porcelain(&status)),
             Err(err) => self.tell(format!(
