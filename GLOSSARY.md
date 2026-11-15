@@ -38,6 +38,10 @@ _Avoid_: Lifecycle, process
 One of the fixed groups every status belongs to: triage, todo, active, done or cancelled.
 _Avoid_: State, phase
 
+**Violation**:
+A way an Issue breaks its Scheme, such as a required field left empty or a Status outside its Workflow; refused when this Replica writes, but a merge or a Scheme edit can leave one, so it is found when read, never on replay.
+_Avoid_: Error, problem, invalid state
+
 **Triage**:
 The status category for Issues that have not yet been accepted, typed or placed by a human or rule.
 _Avoid_: Inbox, backlog, intake
