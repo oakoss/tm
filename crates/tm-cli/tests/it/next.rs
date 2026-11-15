@@ -7,27 +7,19 @@ use std::process::Output;
 use serde_json::{Value, json};
 use tm_core::Actor;
 
-use crate::support::{Scratch, initialized, text, tm, tm_command, unpassed};
+use crate::support::{self, Scratch, agent, initialized, text, tm, tm_command, unpassed};
 
 /// `tm` as the Agent `claude` writing for `jace`, with `env` set.
 fn claude(scratch: &Scratch, repo: &Path, env: &[(&str, &str)], words: &str) -> Output {
-    let mut command = tm_command();
-    command
-        .args(words.split(' '))
-        .current_dir(repo)
-        .env("TM_HOME", scratch.home())
-        .env("TM_ACTOR", "jace")
-        .env("TM_AGENT", "claude")
-        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
-        .env("GIT_CONFIG_NOSYSTEM", "1");
-    for (key, value) in env {
-        command.env(key, value);
-    }
-    command.output().unwrap()
-}
-
-fn json_of(out: &Output) -> Value {
-    serde_json::from_slice(&out.stdout).unwrap()
+    agent(
+        scratch,
+        repo,
+        "claude",
+        &words.split(' ').collect::<Vec<_>>(),
+    )
+    .envs(env.iter().copied())
+    .output()
+    .unwrap()
 }
 
 /// A repo with four todo Issues, TM-1 to TM-4, and in another Project an
@@ -95,7 +87,7 @@ fn an_agent_takes_the_lists_first_eligible_issue_and_starts_it() {
     assert!(said.starts_with(line), "{said}");
 
     let out = claude(&scratch, &repo, &[], "--json next");
-    let doc = json_of(&out);
+    let doc = support::doc(&out);
     assert!(out.status.success(), "{doc}");
     assert_eq!(doc["data"]["key"], "TM-1");
     assert_eq!(doc["data"]["taken"], true);
@@ -132,10 +124,10 @@ fn with_nothing_eligible_it_says_why_and_takes_nothing() {
     let said = text(&out.stdout);
     let why = "nothing on docs can be taken next; of its 2 Issues: 1 blocked, 1 claimed\n";
     assert_eq!(said, format!("{why}tm ready lists other work\n"));
-    let doc = json_of(&claude(&scratch, &repo, &[], "--json next"));
+    let doc = support::doc(&claude(&scratch, &repo, &[], "--json next"));
     assert_eq!(doc["data"]["taken"], false);
     assert_eq!(doc["data"]["key"], Value::Null);
-    let peeked = json_of(&claude(&scratch, &repo, &[], "--json next --peek"));
+    let peeked = support::doc(&claude(&scratch, &repo, &[], "--json next --peek"));
     assert_eq!(peeked["data"]["key"], Value::Null);
     let second = &doc["data"]["passed_over"][1]["passed_over"];
     assert_eq!(second, &json!(["blocked"]));
@@ -149,10 +141,10 @@ fn a_question_waiting_on_an_answer_is_passed_over() {
     shortlist(&scratch, &repo, "shortlist create docs --actor claude");
     shortlist(&scratch, &repo, "shortlist add docs TM-1 TM-2");
     shortlist(&scratch, &repo, "ask TM-1 --of jace Which?");
-    let doc = json_of(&claude(&scratch, &repo, &[], "--json next --peek"));
+    let doc = support::doc(&claude(&scratch, &repo, &[], "--json next --peek"));
     assert_eq!(doc["data"]["key"], "TM-2", "{doc}");
     shortlist(&scratch, &repo, "ask TM-2 --of jace And?");
-    let doc = json_of(&claude(&scratch, &repo, &[], "--json next"));
+    let doc = support::doc(&claude(&scratch, &repo, &[], "--json next"));
     assert_eq!(doc["data"]["taken"], false, "{doc}");
     let first = &doc["data"]["passed_over"][0]["passed_over"];
     assert_eq!(first, &json!(["waiting"]));
@@ -175,7 +167,7 @@ fn a_session_holding_its_lists_last_issue_is_told_so() {
 fn a_session_with_no_lists_takes_the_most_urgent_ready_issue() {
     let scratch = Scratch::new();
     let repo = repo(&scratch);
-    let doc = json_of(&claude(&scratch, &repo, &[], "--json next"));
+    let doc = support::doc(&claude(&scratch, &repo, &[], "--json next"));
     assert_eq!(doc["data"]["key"], "TM-2", "{doc}");
     assert_eq!(doc["data"]["from"], "ready");
     let said = text(&claude(&scratch, &repo, &[], "next --peek").stdout);
@@ -194,14 +186,14 @@ fn the_ready_fallback_skips_epics_and_other_actors_lists() {
     shortlist(&scratch, &repo, "shortlist add codex TM-1");
     let said = text(&claude(&scratch, &repo, &[], "next --peek").stdout);
     assert!(said.starts_with("TM-3 is next"), "{said}");
-    let doc = json_of(&claude(&scratch, &repo, &[], "--json next"));
+    let doc = support::doc(&claude(&scratch, &repo, &[], "--json next"));
     assert_eq!(doc["data"]["key"], "TM-3", "{doc}");
     shortlist(&scratch, &repo, "shortlist add codex TM-4");
     let said = text(&claude(&scratch, &repo, &[], "next").stdout);
     let why = "nothing in TM's ready queue can be taken next; of its 3 Issues: 1 epic, 2 on a Short-list\n";
     let hint = "tm shortlist --all shows the lists holding the rest\n";
     assert_eq!(said, format!("{why}{hint}"));
-    let doc = json_of(&claude(&scratch, &repo, &[], "--json next"));
+    let doc = support::doc(&claude(&scratch, &repo, &[], "--json next"));
     let listed: Vec<&Value> = doc["data"]["passed_over"]
         .as_array()
         .unwrap()
@@ -219,7 +211,7 @@ fn tm_shortlist_binds_a_session_to_one_list_and_never_falls_back() {
     let bound = [("TM_SHORTLIST", "ops")];
     let out = claude(&scratch, &repo, &bound, "--json next");
     assert_eq!(out.status.code(), Some(1));
-    let doc = json_of(&out);
+    let doc = support::doc(&out);
     assert_eq!(doc["error"], "not_found");
     assert_eq!(doc["name"], "ops");
 
@@ -227,15 +219,15 @@ fn tm_shortlist_binds_a_session_to_one_list_and_never_falls_back() {
     shortlist(&scratch, &repo, "shortlist create ops --actor claude");
     shortlist(&scratch, &repo, "shortlist add docs TM-1");
     shortlist(&scratch, &repo, "shortlist add ops TM-3");
-    let doc = json_of(&claude(&scratch, &repo, &bound, "--json next"));
+    let doc = support::doc(&claude(&scratch, &repo, &bound, "--json next"));
     assert_eq!(doc["data"]["key"], "TM-3", "{doc}");
 
     shortlist(&scratch, &repo, "shortlist create web --actor codex");
     let out = claude(&scratch, &repo, &[("TM_SHORTLIST", "web")], "--json next");
-    let doc = json_of(&out);
+    let doc = support::doc(&out);
     assert_eq!(doc["valid"], json!(["docs", "ops"]), "{doc}");
     let out = claude(&scratch, &repo, &[("TM_SHORTLIST", "nope")], "--json next");
-    let doc = json_of(&out);
+    let doc = support::doc(&out);
     assert_eq!(doc["error"], "not_found");
     assert_eq!(doc["valid"], json!(["docs", "ops"]), "{doc}");
     let message = doc["message"].as_str().unwrap();
@@ -246,7 +238,7 @@ fn tm_shortlist_binds_a_session_to_one_list_and_never_falls_back() {
     );
     assert_eq!(doc["fix"], "TM_SHORTLIST='<name>' tm --json next", "{doc}");
     let by_env = [("TM_SHORTLIST", "nope"), ("TM_JSON", "1")];
-    let doc = json_of(&claude(&scratch, &repo, &by_env, "next"));
+    let doc = support::doc(&claude(&scratch, &repo, &by_env, "next"));
     assert_eq!(doc["fix"], "TM_SHORTLIST='<name>' tm --json next", "{doc}");
 
     let out = claude(
@@ -256,7 +248,7 @@ fn tm_shortlist_binds_a_session_to_one_list_and_never_falls_back() {
         "--json next --peek",
     );
     assert_eq!(out.status.code(), Some(1));
-    let doc = json_of(&out);
+    let doc = support::doc(&out);
     assert_eq!(doc["error"], "invalid_value");
     assert_eq!(
         doc["fix"], "TM_SHORTLIST='<name>' tm --json next --peek",
@@ -269,7 +261,7 @@ fn a_human_starts_the_next_issue_without_a_claim() {
     let scratch = Scratch::new();
     let repo = repo(&scratch);
     let out = tm(&scratch, &repo, &["--json", "next"]);
-    let doc = json_of(&out);
+    let doc = support::doc(&out);
     assert!(out.status.success(), "{doc}");
     assert_eq!(doc["data"]["key"], "TM-2");
     assert_eq!(doc["data"]["claim"], Value::Null);

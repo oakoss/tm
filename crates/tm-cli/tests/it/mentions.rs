@@ -3,9 +3,7 @@
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-use serde_json::Value;
-
-use crate::support::{Scratch, initialized, jace, tm};
+use crate::support::{Scratch, doc, initialized, jace, tm};
 
 /// `tm` writing as the human `actor`.
 fn as_actor(scratch: &Scratch, repo: &Path, actor: &str, args: &[&str]) -> Output {
@@ -29,10 +27,6 @@ fn two_kims(scratch: &Scratch) -> std::path::PathBuf {
         assert!(made.status.success(), "{made:?}");
     }
     repo
-}
-
-fn doc(out: &Output) -> Value {
-    serde_json::from_slice(&out.stdout).unwrap_or_else(|err| panic!("{err}: {out:?}"))
 }
 
 fn last_comment(scratch: &Scratch, repo: &Path) -> String {

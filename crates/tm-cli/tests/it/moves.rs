@@ -2,24 +2,11 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 use tm_core::Actor;
-use tm_store::Store;
 
-use crate::support::{Scratch, initialized, text, tm, tm_piped};
+use crate::support::{Scratch, initialized, ops, text, tm, tm_json, tm_piped};
 
 fn run(scratch: &Scratch, repo: &Path, args: &[&str]) -> (Option<i32>, Value) {
-    let out = tm(scratch, repo, &[&["--json", "move"], args].concat());
-    assert_eq!(text(&out.stderr), "", "nothing reaches stderr in JSON mode");
-    (
-        out.status.code(),
-        serde_json::from_slice(&out.stdout).unwrap(),
-    )
-}
-
-fn ops(store: &Store) -> i64 {
-    store
-        .connection()
-        .query_row("SELECT count(*) FROM ops", [], |row| row.get(0))
-        .unwrap()
+    tm_json(scratch, repo, &[&["move"], args].concat())
 }
 
 #[test]

@@ -8,20 +8,14 @@ use rexpect::process::WaitStatus;
 use serde_json::Value;
 use tm_core::Actor;
 
-use crate::support::{Scratch, initialized, jace, text, tm, tm_pty, wait_until};
+use crate::support::{Scratch, agent, data, initialized, jace, text, tm, tm_pty, wait_until};
 
 fn claude(scratch: &Scratch, repo: &Path, session: &str, args: &[&str]) -> Output {
-    jace(scratch, repo, args)
-        .env("TM_AGENT", "claude")
+    agent(scratch, repo, "claude", args)
         .env("TM_SESSION", session)
         .stdin(Stdio::null())
         .output()
         .unwrap()
-}
-
-fn data(out: &Output) -> Value {
-    assert!(out.status.success(), "{out:?}");
-    serde_json::from_slice::<Value>(&out.stdout).unwrap()["data"].clone()
 }
 
 fn error(out: &Output) -> String {

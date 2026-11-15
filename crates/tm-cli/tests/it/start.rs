@@ -7,25 +7,14 @@ use std::process::Output;
 use serde_json::{Value, json};
 use tm_core::Actor;
 
-use crate::support::{Scratch, initialized, text, tm, tm_command, unpassed};
+use crate::support::{Scratch, agent, doc, initialized, text, tm, unpassed};
 
 /// `tm` as the Agent `claude` for `jace`, in `session`.
 fn as_agent(scratch: &Scratch, repo: &Path, session: &str, args: &[&str]) -> Output {
-    tm_command()
-        .args(args)
-        .current_dir(repo)
-        .env("TM_HOME", scratch.home())
-        .env("TM_ACTOR", "jace")
-        .env("TM_AGENT", "claude")
+    agent(scratch, repo, "claude", args)
         .env("TM_SESSION", session)
-        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
         .output()
         .unwrap()
-}
-
-fn doc(out: &Output) -> Value {
-    serde_json::from_slice(&out.stdout).unwrap()
 }
 
 fn show(scratch: &Scratch, repo: &Path, key: &str) -> Value {

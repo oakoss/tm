@@ -6,27 +6,15 @@ use tm_core::scheme::{Field, FieldType, Scheme};
 use tm_core::{Actor, Change};
 use tm_store::{Draft, Store};
 
-use crate::support::{Scratch, initialized, jace, text, tm, tm_piped, unpassed};
+use crate::support::{Scratch, initialized, jace, ops, text, tm, tm_json, tm_piped, unpassed};
 
 fn run(scratch: &Scratch, repo: &Path, args: &[&str]) -> (Option<i32>, Value) {
-    let out = tm(scratch, repo, &[&["--json", "edit"], args].concat());
-    assert_eq!(text(&out.stderr), "", "nothing reaches stderr in JSON mode");
-    (
-        out.status.code(),
-        serde_json::from_slice(&out.stdout).unwrap(),
-    )
+    tm_json(scratch, repo, &[&["edit"], args].concat())
 }
 
 /// `tm edit` with `input` on stdin.
 fn piped(scratch: &Scratch, repo: &Path, args: &[&str], input: &str) -> Output {
     tm_piped(scratch, repo, &[&["--json", "edit"], args].concat(), input)
-}
-
-fn ops(store: &Store) -> i64 {
-    store
-        .connection()
-        .query_row("SELECT count(*) FROM ops", [], |row| row.get(0))
-        .unwrap()
 }
 
 fn two_issues(scratch: &Scratch) -> (std::path::PathBuf, Store) {

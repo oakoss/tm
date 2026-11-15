@@ -7,9 +7,10 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tm_core::ProjectId;
-use tm_store::Store;
+use serde_json::Value;
+use tm_core::{Actor, Change, ProjectId};
 use tm_store::workspace::Workspace;
+use tm_store::{Draft, Store};
 use uuid::Uuid;
 
 /// What a write wrote, asserting it passed no Claim.
@@ -212,6 +213,65 @@ pub(crate) fn jace(scratch: &Scratch, dir: &Path, args: &[&str]) -> Command {
         .env("GIT_CONFIG_GLOBAL", scratch.git_config())
         .env("GIT_CONFIG_NOSYSTEM", "1");
     command
+}
+
+/// [`jace`] with the Agent `agent` writing for `jace`.
+pub(crate) fn agent(scratch: &Scratch, dir: &Path, agent: &str, args: &[&str]) -> Command {
+    let mut command = jace(scratch, dir, args);
+    command.env("TM_AGENT", agent);
+    command
+}
+
+/// `tm --json` with `args`: its exit code and document, asserting nothing
+/// reached stderr.
+pub(crate) fn tm_json(scratch: &Scratch, dir: &Path, args: &[&str]) -> (Option<i32>, Value) {
+    let out = tm(scratch, dir, &[&["--json"], args].concat());
+    assert_eq!(text(&out.stderr), "", "nothing reaches stderr in JSON mode");
+    (out.status.code(), doc(&out))
+}
+
+/// The JSON document on `out`'s stdout.
+pub(crate) fn doc(out: &Output) -> Value {
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|err| panic!("{err}: {out:?}"))
+}
+
+/// The `data` of a run that succeeded.
+pub(crate) fn data(out: &Output) -> Value {
+    assert!(out.status.success(), "{out:?}");
+    doc(out)["data"].clone()
+}
+
+/// `out`, asserting it succeeded.
+pub(crate) fn ok(out: Output) -> Output {
+    assert!(out.status.success(), "{out:?}");
+    out
+}
+
+/// Sets `field` on `issue` as the human `jace`.
+pub(crate) fn set(store: &mut Store, project: ProjectId, issue: Uuid, field: &str, value: Value) {
+    unpassed(
+        store
+            .append(Draft {
+                actor: Actor::human("jace"),
+                project,
+                subject: issue,
+                change: Change::SetField {
+                    field: field.into(),
+                    label: String::new(),
+                    value,
+                    value_label: None,
+                },
+            })
+            .unwrap(),
+    );
+}
+
+/// How many operations the store's log holds.
+pub(crate) fn ops(store: &Store) -> i64 {
+    store
+        .connection()
+        .query_row("SELECT count(*) FROM ops", [], |row| row.get(0))
+        .unwrap()
 }
 
 /// A repo mapped to a new Workspace with the Project TM, and its store.

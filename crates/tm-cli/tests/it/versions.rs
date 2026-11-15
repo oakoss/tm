@@ -6,14 +6,10 @@ use std::process::Output;
 
 use serde_json::Value;
 
-use crate::support::{Scratch, initialized, text, tm};
+use crate::support::{Scratch, doc, initialized, text, tm};
 
 fn run(scratch: &Scratch, repo: &Path, words: &str) -> Output {
     tm(scratch, repo, &words.split(' ').collect::<Vec<_>>())
-}
-
-fn doc(out: &Output) -> Value {
-    serde_json::from_slice(&out.stdout).unwrap()
 }
 
 fn version(scratch: &Scratch, repo: &Path) -> i64 {

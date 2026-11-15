@@ -7,7 +7,7 @@ use std::process::Output;
 use serde_json::{Value, json};
 use tm_core::Actor;
 
-use crate::support::{Scratch, initialized, piped, text, tm, tm_command, wait_until};
+use crate::support::{Scratch, initialized, jace, piped, text, tm, tm_command, wait_until};
 
 const SESSION: &str = "ddc943db-8b98-424d-8fef-3dc1a05051a4";
 const AGENT_ID: &str = "a0debfb50c6e9ec8e";
@@ -38,15 +38,8 @@ fn bash_input(agent: Option<(&str, &str)>, command: &str) -> Value {
 
 /// `tm` from a Bash command of this Claude Code session, as `agent`.
 fn from_session(scratch: &Scratch, repo: &Path, agent: Option<&str>, args: &[&str]) -> Output {
-    let mut command = tm_command();
-    command
-        .args(args)
-        .current_dir(repo)
-        .env("TM_HOME", scratch.home())
-        .env("TM_ACTOR", "jace")
-        .env("CLAUDE_CODE_SESSION_ID", SESSION)
-        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
-        .env("GIT_CONFIG_NOSYSTEM", "1");
+    let mut command = jace(scratch, repo, args);
+    command.env("CLAUDE_CODE_SESSION_ID", SESSION);
     if let Some(agent) = agent {
         command.env("TM_AGENT", agent);
     }
@@ -60,15 +53,8 @@ fn hook(scratch: &Scratch, repo: &Path, event: &str, agent_id: Option<&str>) -> 
         input["agent_id"] = json!(id);
         input["agent_type"] = json!("general-purpose");
     }
-    let mut command = tm_command();
-    command
-        .args(["hook", event, "claude"])
-        .current_dir(repo)
-        .env("TM_HOME", scratch.home())
-        .env("TM_ACTOR", "jace")
-        .env("CLAUDE_CODE_SESSION_ID", SESSION)
-        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
-        .env("GIT_CONFIG_NOSYSTEM", "1");
+    let mut command = jace(scratch, repo, &["hook", event, "claude"]);
+    command.env("CLAUDE_CODE_SESSION_ID", SESSION);
     piped(command, input.to_string())
 }
 

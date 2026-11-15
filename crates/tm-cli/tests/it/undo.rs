@@ -5,23 +5,7 @@ use serde_json::{Value, json};
 use tm_core::Actor;
 use tm_store::Store;
 
-use crate::support::{Scratch, initialized, text, tm, tm_command};
-
-fn run(scratch: &Scratch, repo: &Path, args: &[&str]) -> (Option<i32>, Value) {
-    let out = tm(scratch, repo, &[&["--json"], args].concat());
-    assert_eq!(text(&out.stderr), "", "nothing reaches stderr in JSON mode");
-    (
-        out.status.code(),
-        serde_json::from_slice(&out.stdout).unwrap(),
-    )
-}
-
-fn ops(store: &Store) -> i64 {
-    store
-        .connection()
-        .query_row("SELECT count(*) FROM ops", [], |row| row.get(0))
-        .unwrap()
-}
+use crate::support::{Scratch, agent, doc, initialized, ops, text, tm, tm_json as run};
 
 /// A repo with TM-1, moved to `in_progress`; the move's batch.
 fn moved(scratch: &Scratch) -> (std::path::PathBuf, Store, String) {
@@ -212,21 +196,11 @@ fn undoing_a_create_archives_and_a_comment_retracts() {
 }
 
 fn as_agent(scratch: &Scratch, repo: &Path, args: &[&str]) -> (Option<i32>, Value) {
-    let out = tm_command()
-        .args([&["--json"], args].concat())
-        .current_dir(repo)
-        .env("TM_HOME", scratch.home())
-        .env("TM_ACTOR", "jace")
-        .env("TM_AGENT", "claude")
-        .env("GIT_CONFIG_GLOBAL", scratch.git_config())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
+    let out = agent(scratch, repo, "claude", &[&["--json"], args].concat())
         .stdin(Stdio::null())
         .output()
         .unwrap();
-    (
-        out.status.code(),
-        serde_json::from_slice(&out.stdout).unwrap(),
-    )
+    (out.status.code(), doc(&out))
 }
 
 #[test]

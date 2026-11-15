@@ -7,7 +7,7 @@ use tm_core::{Actor, Change, ProjectId};
 use tm_store::{Draft, Store};
 use uuid::Uuid;
 
-use crate::support::{Scratch, initialized, text, tm, tm_command, unpassed, wait_until};
+use crate::support::{Scratch, doc, initialized, text, tm, tm_command, unpassed, wait_until};
 
 /// `tm` writing as the Agent `claude` for `jace`.
 fn as_agent(scratch: &Scratch, repo: &Path, args: &[&str]) -> Output {
@@ -27,10 +27,6 @@ fn as_named(scratch: &Scratch, repo: &Path, agent: &str, args: &[&str]) -> Outpu
         .stdin(Stdio::null())
         .output()
         .unwrap()
-}
-
-fn doc(out: &Output) -> Value {
-    serde_json::from_slice(&out.stdout).unwrap()
 }
 
 /// The Claim `tm show --json` gives the Issue.

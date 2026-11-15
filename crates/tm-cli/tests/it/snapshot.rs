@@ -6,7 +6,7 @@ use tm_store::Store;
 use tm_store::workspace::Workspace;
 use uuid::Uuid;
 
-use crate::support::{Scratch, initialized, tm};
+use crate::support::{Scratch, doc, initialized, tm};
 
 fn snapshot(scratch: &Scratch, store: &Store) -> (PathBuf, Uuid) {
     let id = store.workspace_id().unwrap().unwrap();
@@ -108,10 +108,6 @@ fn restoring_an_export_publishes_into_a_new_or_existing_workspace() {
     let out = import();
     assert!(out.status.success(), "{out:?}");
     assert_eq!(titles(&path, workspace), ["one"], "existing Workspace");
-}
-
-fn doc(out: &std::process::Output) -> Value {
-    serde_json::from_slice(&out.stdout).unwrap_or_else(|err| panic!("{err}: {out:?}"))
 }
 
 /// Runs `test` with the Workspace's directory and store unwritable, then
