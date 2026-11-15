@@ -121,7 +121,7 @@ pub(crate) fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>
     // A move into done or cancelled releases the Claim; a review status keeps
     // it (ADR 0009).
     let category = workflow.status(&status).map(|status| status.category);
-    let finished = matches!(category, Some(Category::Done | Category::Cancelled));
+    let finished = category.is_some_and(Category::is_closed);
     let forced = |err| CliError::past_claim(err, "tm move --force");
     if !crate::fields::piped(fields).is_empty() {
         let to = (status.as_str(), finished);
@@ -196,7 +196,7 @@ pub(crate) fn unwait(view: &IssueView) -> Option<Change> {
 }
 
 fn unchanged(here: &Here, view: &IssueView) -> Result<Output, CliError> {
-    let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
+    let name = view.shown_key();
     let mut output = show::render(here, view.id)?;
     output.text = format!("{name}: nothing changed\n");
     output.data["batch"] = Value::Null;
@@ -321,7 +321,7 @@ fn refuse_finish(
 /// A line for each field the move set, as `tm edit` prints them, and one for
 /// a released Claim; `--json` keeps the whole Issue.
 fn lines(view: &IssueView, changes: &[Change], ops: &[Op]) -> String {
-    let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
+    let name = view.shown_key();
     let mut text = String::new();
     for change in changes {
         if let Change::SetField { field, value, .. } = change {

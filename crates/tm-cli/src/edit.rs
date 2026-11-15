@@ -183,7 +183,7 @@ pub(crate) fn write(
     let (changes, report) = changes(here, &view, edit, &values, &appended, parent)?;
     let mut warnings = identity.warnings.clone();
     warnings.extend(fields::entity_warnings(&changes));
-    let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
+    let name = view.shown_key();
     let data = |report: &[Changed]| {
         json!({
             "id": view.id,

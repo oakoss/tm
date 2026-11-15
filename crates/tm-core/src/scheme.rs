@@ -36,6 +36,12 @@ impl Category {
             Self::Cancelled => "cancelled",
         }
     }
+
+    /// Done or cancelled: no work is left on an Issue in it.
+    #[must_use]
+    pub const fn is_closed(self) -> bool {
+        matches!(self, Self::Done | Self::Cancelled)
+    }
 }
 
 /// The person an Issue waits on to answer its question; `tm ask` sets it and

@@ -46,7 +46,7 @@ pub(crate) fn take(reference: &str, lasts: &Lasts) -> Result<Output, CliError> {
                 }
             })?;
         let key = key(here, issue)?;
-        let shown = key.clone().unwrap_or_else(|| issue.to_string());
+        let shown = tm_store::shown_key(key.as_deref(), issue);
         let (claimed, release) = taken_lines(&shown, &claim);
         let text = format!("{claimed}{release}");
         let data = json!({
@@ -150,7 +150,7 @@ pub(crate) fn heartbeat(reference: Option<&str>) -> Result<Output, CliError> {
     let shown: Vec<String> = beat
         .renewed
         .iter()
-        .map(|(issue, key)| key.clone().unwrap_or_else(|| issue.to_string()))
+        .map(|(issue, key)| tm_store::shown_key(key.as_deref(), *issue))
         .collect();
     let text = if shown.is_empty() {
         "no Claim is due for renewal\n".to_owned()
@@ -304,7 +304,7 @@ fn release_all(whole_session: bool) -> Result<Output, CliError> {
             )
             .fix("TM_AGENT='<name>' tm release --mine"));
         }
-        let human = writer.on_behalf_of().unwrap_or(writer.name());
+        let human = writer.for_whom();
         let session = writer.session().and_then(SessionId::parse);
         let claims = match (&session, whole_session) {
             (Some(_), true) => here.store.claims()?,
@@ -325,7 +325,7 @@ fn release_all(whole_session: bool) -> Result<Output, CliError> {
             // back to the id; a Claim another Agent took over is not this
             // session's to release.
             let key = key(here, claim.issue).ok().flatten();
-            let name = key.clone().unwrap_or_else(|| claim.issue.to_string());
+            let name = tm_store::shown_key(key.as_deref(), claim.issue);
             match here.store.release(&holder, claim.issue, claim.id) {
                 Ok(_) => {
                     shown.push(name);
@@ -369,7 +369,7 @@ pub(crate) fn release(reference: &str, claim: Option<Uuid>) -> Result<Output, Cl
         };
         let op = here.store.release(&identity.actor, issue, claim)?;
         let key = key(here, issue)?;
-        let shown = key.clone().unwrap_or_else(|| issue.to_string());
+        let shown = tm_store::shown_key(key.as_deref(), issue);
         let data = json!({
             "issue": { "id": issue, "key": key },
             "released": claim,

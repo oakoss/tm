@@ -258,7 +258,10 @@ fn list_of(conn: &Connection, scheme: &Scheme, issue: Uuid) -> Result<Uuid, Stor
 }
 
 fn key(conn: &Connection, issue: Uuid) -> Result<String, StoreError> {
-    Ok(crate::project::key_of(conn, issue)?.unwrap_or_else(|| issue.to_string()))
+    Ok(crate::shown_key(
+        crate::project::key_of(conn, issue)?.as_deref(),
+        issue,
+    ))
 }
 
 /// The writes that put `issues` at `at` on `list`. A place with no rank

@@ -482,7 +482,7 @@ impl Here {
             let key = self.store.issue(held.issue)?.and_then(|view| view.key);
             let warning = format!(
                 "{} is now held by {} for {}; your Claim lapsed",
-                key.unwrap_or_else(|| held.issue.to_string()),
+                tm_store::shown_key(key.as_deref(), held.issue),
                 held.taker(),
                 held.on_behalf_of
             );

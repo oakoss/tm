@@ -60,10 +60,7 @@ pub(crate) fn run(reference: &str, limit: Option<usize>, all: bool) -> Result<Ou
         me.get_or_init(|| {
             identity::writer_in(here.env(), &here.found.dir)
                 .ok()
-                .map(|identity| {
-                    let actor = identity.actor;
-                    actor.on_behalf_of().unwrap_or(actor.name()).to_owned()
-                })
+                .map(|identity| identity.actor.for_whom().to_owned())
         })
         .clone()
     };
@@ -156,7 +153,7 @@ pub(crate) fn render(
     }
     let total = writes.len();
     let shown = &writes[total - limit.unwrap_or(total).min(total)..];
-    let name = view.key.clone().unwrap_or_else(|| id.to_string());
+    let name = tm_store::shown_key(view.key.as_deref(), id);
     let title = view.fields.get("title").and_then(Value::as_str);
     let mut text = format!("{name}  {}\n", printable(title.unwrap_or_default()));
     for write in shown {
@@ -553,7 +550,7 @@ impl<'a> Names<'a> {
             return Ok(key.clone());
         }
         let key = self.store.issue(issue)?.and_then(|view| view.key);
-        let key = key.unwrap_or_else(|| issue.to_string());
+        let key = tm_store::shown_key(key.as_deref(), issue);
         self.keys.insert(issue, key.clone());
         Ok(key)
     }

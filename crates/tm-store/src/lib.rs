@@ -74,7 +74,7 @@ pub use membership::{Member, PassedOver, Place, Placed};
 pub use memory::{Memory, Remembered};
 pub use next::Next;
 pub use notifications::Notification;
-pub use read::{CommentRole, CommentView, Direction, IssueView, LinkView, Settled};
+pub use read::{CommentRole, CommentView, Direction, IssueView, LinkView, Settled, shown_key};
 pub use ready::Ready;
 pub use record::{
     CommentRecord, IssueRecord, LinkRecord, ListRecord, MemberRecord, MemoryRecord, list_source,

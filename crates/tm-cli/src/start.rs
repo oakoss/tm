@@ -124,7 +124,7 @@ pub(crate) fn report(
             .with("kind", "issue")
             .with("reference", reference)
     })?;
-    let name = issue.key.clone().unwrap_or_else(|| id.to_string());
+    let name = tm_store::shown_key(issue.key.as_deref(), id);
     let mut text = String::new();
     if let Some(held) = &held {
         let _ = writeln!(text, "{name} is already claimed by {}", claim::holder(held));
@@ -172,7 +172,7 @@ pub(crate) fn begin(scheme: &Scheme, actor: &Actor, lineage: &Lineage) -> (Vec<D
         return (Vec::new(), Begun::default());
     };
     let mut begun = Begun::default();
-    let name = issue.key.clone().unwrap_or_else(|| issue.id.to_string());
+    let name = issue.shown_key();
     let mut moved = false;
     if matches!(issue.category, Some(Category::Triage | Category::Todo)) {
         let issue_type = issue
@@ -196,8 +196,7 @@ pub(crate) fn begin(scheme: &Scheme, actor: &Actor, lineage: &Lineage) -> (Vec<D
         ));
     }
     if issue.fields.get("assignee").is_none_or(Value::is_null) {
-        let human = actor.on_behalf_of().unwrap_or(actor.name());
-        begun.changes.push(set("assignee", json!(human)));
+        begun.changes.push(set("assignee", json!(actor.for_whom())));
     }
     let mut drafts: Vec<Draft> = begun
         .changes

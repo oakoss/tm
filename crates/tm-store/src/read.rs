@@ -29,7 +29,18 @@ pub struct IssueView {
     pub sets: BTreeMap<String, BTreeMap<String, String>>,
 }
 
+/// An Issue as text names it: its Key, else its id.
+#[must_use]
+pub fn shown_key(key: Option<&str>, id: Uuid) -> String {
+    key.map_or_else(|| id.to_string(), str::to_owned)
+}
+
 impl IssueView {
+    #[must_use]
+    pub fn shown_key(&self) -> String {
+        shown_key(self.key.as_deref(), self.id)
+    }
+
     /// Whom the Issue's open question waits on, set by `tm ask`.
     #[must_use]
     pub fn waiting_on(&self) -> Option<&str> {

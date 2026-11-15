@@ -44,11 +44,6 @@ pub(crate) fn field(view: &IssueView, name: &str) -> String {
     printable(text.unwrap_or("-")).replace('\t', " ")
 }
 
-/// `view`'s Key, or its id until it has one.
-pub(crate) fn key(view: &IssueView) -> String {
-    view.key.clone().unwrap_or_else(|| view.id.to_string())
-}
-
 /// `filter` narrowed to the Project `actions` names, unless it names one.
 pub(crate) fn in_project(filter: &str, actions: &dyn Actions) -> String {
     match actions.project() {
@@ -70,7 +65,7 @@ pub(crate) fn issues(
             if let Some((view, version)) = store.issue_with_version(id)? {
                 read.push(Read {
                     id,
-                    key: key(&view),
+                    key: view.shown_key(),
                     version,
                     view,
                 });

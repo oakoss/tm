@@ -81,7 +81,7 @@ impl Claim {
         !self.handed
             && actor.is_agent()
             && self.agent == actor.name()
-            && self.on_behalf_of == actor.on_behalf_of().unwrap_or(actor.name())
+            && self.on_behalf_of == actor.for_whom()
             && self.session.as_deref() == actor.session()
     }
 
@@ -698,7 +698,7 @@ struct Take {
 impl Take {
     fn by(&self, writer: &Actor) -> bool {
         self.agent == writer.name()
-            && self.on_behalf_of == writer.on_behalf_of().unwrap_or(writer.name())
+            && self.on_behalf_of == writer.for_whom()
             && self.session.as_deref() == writer.session()
     }
 }
@@ -858,7 +858,7 @@ pub(crate) fn renewals(
     writer: &Actor,
     renew: impl Fn(&Claim) -> bool,
 ) -> Result<Vec<Draft>, StoreError> {
-    let held_for = writer.on_behalf_of().unwrap_or(writer.name());
+    let held_for = writer.for_whom();
     let mut drafts = Vec::new();
     for claim in claims_of(conn, writer.name(), held_for)? {
         let (true, Some(ttl_ms)) = (claim.taken_by(writer) && renew(&claim), claim.ttl_ms) else {
@@ -947,7 +947,7 @@ pub(crate) fn kept(mut taking: Taking) -> Taking {
 /// The paths a take covers: `paths`, or when it names none and takes up a
 /// Claim handed to its Agent, the paths that Claim covered.
 fn covering(held: Option<&Claim>, actor: &Actor, paths: &[String]) -> Vec<String> {
-    let human = actor.on_behalf_of().unwrap_or(actor.name());
+    let human = actor.for_whom();
     match held {
         Some(held)
             if paths.is_empty()
@@ -1125,7 +1125,7 @@ pub(crate) fn check(
     {
         return Err(invalid("can be renewed only by the session that took it"));
     }
-    let human = writer.on_behalf_of().unwrap_or(writer.name());
+    let human = writer.for_whom();
     if !stands(held.as_ref(), action, (at_ms, human)) {
         return Err(match (action, held) {
             (ClaimAction::Take { .. }, Some(held)) if held.lapsed(at_ms) => {

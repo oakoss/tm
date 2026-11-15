@@ -78,7 +78,7 @@ fn write(here: &mut Here, args: &Handoff) -> Result<(Output, Vec<String>), CliEr
     let held = state.claim().clone();
     // A lapsed Claim ends no one's work; one held for the caller's human is
     // handed on as theirs, while another human's stays held for them.
-    let own_human = held.on_behalf_of == actor.on_behalf_of().unwrap_or(actor.name());
+    let own_human = held.on_behalf_of == actor.for_whom();
     let own = held.taken_by(actor)
         || (!actor.is_agent() && held.on_behalf_of == actor.name())
         || (state.held().is_none() && own_human);
@@ -106,7 +106,7 @@ fn write(here: &mut Here, args: &Handoff) -> Result<(Output, Vec<String>), CliEr
     let ttl_ms = held.ttl_ms.or_else(|| here.found.file.claim_ttl_ms());
     let (ops, handed) = here.store.hand(actor, &held, to, ttl_ms, &note)?;
     let now_ms = here.store.utc_ms()?;
-    let shown = key.clone().unwrap_or_else(|| id.to_string());
+    let shown = tm_store::shown_key(key.as_deref(), id);
     let text = format!(
         "{shown} handed to {} for {}, {}; its next session takes it with tm start {shown}\n",
         handed.agent,

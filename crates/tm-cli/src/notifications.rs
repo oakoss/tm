@@ -169,9 +169,8 @@ fn one(store: &Store, actor: &Actor, reference: &str) -> Result<Notification, Cl
 
 fn key(store: &Store, notified: &Notification) -> Result<String, CliError> {
     let view = store.issue(notified.issue_id)?;
-    Ok(view
-        .and_then(|view| view.key)
-        .unwrap_or_else(|| notified.issue_id.to_string()))
+    let key = view.as_ref().and_then(|view| view.key.as_deref());
+    Ok(tm_store::shown_key(key, notified.issue_id))
 }
 
 /// Who wrote it: a person by their recorded name, else their email; an

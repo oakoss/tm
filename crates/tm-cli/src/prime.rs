@@ -199,7 +199,7 @@ fn gather(
 ) -> Result<Read, CliError> {
     let waiting = waiting(store, actor, warnings)?;
     let mut claims = match actor.filter(|actor| actor.is_agent()) {
-        Some(actor) => store.claims_by(actor.name(), holder(actor))?,
+        Some(actor) => store.claims_by(actor.name(), actor.for_whom())?,
         None => AgentClaims::default(),
     };
     // A question's Claim waits with it, and is shown there.
@@ -246,14 +246,18 @@ pub(crate) fn waiting(
     let Some(actor) = actor else {
         return Ok(Vec::new());
     };
-    let human = actor.on_behalf_of().unwrap_or_else(|| actor.name());
-    let ids = store.find("waiting_on:@me", Context { me: Some(human) })?;
+    let ids = store.find(
+        "waiting_on:@me",
+        Context {
+            me: Some(actor.for_whom()),
+        },
+    )?;
     let mut waiting = Vec::with_capacity(ids.len());
     for view in store.issues(&ids)? {
         let question = match store.open_question(view.id) {
             Ok(question) => question,
             Err(err) => {
-                let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
+                let name = view.shown_key();
                 warnings.push(format!("the question {name} waits on: {err}"));
                 None
             }
@@ -287,7 +291,7 @@ fn resumes(
             }
             Ok(_) => {}
             Err(err) => {
-                let name = view.key.clone().unwrap_or_else(|| view.id.to_string());
+                let name = view.shown_key();
                 warnings.push(format!("the session that asked {name}: {err}"));
             }
         }
@@ -317,7 +321,7 @@ fn waiting_section(
     projects: &HashMap<ProjectId, Option<String>>,
     now_ms: i64,
 ) -> Value {
-    let human = actor.map(|actor| actor.on_behalf_of().unwrap_or_else(|| actor.name()));
+    let human = actor.map(Actor::for_whom);
     if waiting.is_empty() {
         return json!({ "on": human, "issues": [] });
     }
@@ -537,7 +541,7 @@ fn path_claims_section(
             .ok()
             .flatten()
             .and_then(|view| view.key);
-        let shown = key.clone().unwrap_or_else(|| claim.issue.to_string());
+        let shown = tm_store::shown_key(key.as_deref(), claim.issue);
         let names: Vec<String> = files
             .iter()
             .map(|overlap| printable(&overlap.file))
@@ -897,11 +901,6 @@ fn section(
     if rest > 0 {
         let _ = writeln!(text, "  and {rest} more: {more}");
     }
-}
-
-/// The human a Claim taken by `actor` is held for.
-fn holder(actor: &Actor) -> &str {
-    actor.on_behalf_of().unwrap_or_else(|| actor.name())
 }
 
 fn named(actor: &Actor) -> String {

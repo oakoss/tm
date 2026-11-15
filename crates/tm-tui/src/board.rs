@@ -189,7 +189,7 @@ fn columns(scheme: &Scheme, all: bool) -> Vec<Column> {
         .workflows
         .iter()
         .flat_map(|workflow| &workflow.statuses)
-        .filter(|status| all || !matches!(status.category, Category::Done | Category::Cancelled))
+        .filter(|status| all || !status.category.is_closed())
         .filter(|status| seen.insert(status.id.clone()))
         .map(|status| Column {
             status: status.id.clone(),

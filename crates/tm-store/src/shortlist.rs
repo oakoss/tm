@@ -237,7 +237,7 @@ pub(crate) fn check_batch(
     for issue in issues.difference(&exempt) {
         let (_, fields) = held(tx, *issue)?;
         if let [field] = fields[..] {
-            let named = crate::project::key_of(tx, *issue)?.unwrap_or_else(|| issue.to_string());
+            let named = crate::shown_key(crate::project::key_of(tx, *issue)?.as_deref(), *issue);
             return Err(StoreError::Invalid {
                 field: field.into(),
                 reason: format!("of Issue {named} is held only with both a Short-list and a rank"),
@@ -355,10 +355,7 @@ pub(crate) fn finished(tx: &Connection, scheme: &Scheme, issue: Uuid) -> Result<
         )
         .optional()?;
     let category = row.and_then(|(issue_type, status)| scheme.category(&issue_type?, &status?));
-    Ok(matches!(
-        category,
-        Some(Category::Done | Category::Cancelled)
-    ))
+    Ok(category.is_some_and(Category::is_closed))
 }
 
 /// Every Issue that names `list`, whether or not it reads as a member.

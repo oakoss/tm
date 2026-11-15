@@ -62,7 +62,7 @@ fn write(
             .find(|view| view.id == id)
             .and_then(|view| view.key.clone())
     };
-    let shown = |id: Uuid| key(id).unwrap_or_else(|| id.to_string());
+    let shown = |id: Uuid| tm_store::shown_key(key(id).as_deref(), id);
     let text = format!(
         "{} {}{name} {}\n",
         shown(from),
