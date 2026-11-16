@@ -59,12 +59,26 @@ fn typed_after_slash(shell: &mut Shell, text: &str) -> Flow {
     shell.key(press(KeyCode::Enter))
 }
 
+/// The system clock, but each reading at least a millisecond after the last,
+/// so lists sorted by when an Issue was written never tie on a fast machine.
+struct Ticking(std::cell::Cell<i64>);
+
+impl tm_store::Clock for Ticking {
+    fn now(&self) -> Result<tm_store::WallTime, String> {
+        let mut now = tm_store::SystemClock.now()?;
+        now.utc_ms = now.utc_ms.max(self.0.get() + 1);
+        self.0.set(now.utc_ms);
+        Ok(now)
+    }
+}
+
 /// A store with three open Issues, the newest assigned to jace, and one
 /// done, titled for what they test.
 fn store() -> Store {
     let dir = std::env::temp_dir().join(format!("tm-tui-{}", uuid::Uuid::now_v7()));
     std::fs::create_dir_all(&dir).unwrap();
-    let mut store = Store::open(&dir.join("store.db")).unwrap();
+    let clock = Box::new(Ticking(std::cell::Cell::new(0)));
+    let mut store = Store::open_with_clock(&dir.join("store.db"), clock).unwrap();
     let jace = Actor::human("jace");
     let (project, _) = store.create_project(&jace, "TM", "Core").unwrap();
     let mut ids = Vec::new();
