@@ -8,6 +8,7 @@ mod apply;
 mod ask;
 mod beads;
 mod claim;
+mod creation;
 mod export;
 mod family;
 mod history;
@@ -66,6 +67,7 @@ pub use beads::{BeadsExport, BeadsImported, read_beads};
 pub use claim::{
     AgentClaims, Claim, ClaimState, Holder, PROTECTED_FIELDS, TakenWith, short_session,
 };
+pub use creation::NewIssue;
 pub use export::{Exported, Restored, copy_store, read_export};
 pub use family::Lineage;
 pub use history::HistoryEntry;
@@ -1215,7 +1217,7 @@ impl Store {
         .collect()
     }
 
-    /// Creates an Issue in its Workflow's starting Status.
+    /// Creates an Issue of `issue_type` titled `title`, as [`NewIssue`] does.
     ///
     /// # Errors
     ///
@@ -1228,18 +1230,12 @@ impl Store {
         title: &str,
     ) -> Result<(Uuid, Vec<Op>), StoreError> {
         let issue_id = Uuid::now_v7();
-        let start = self
-            .scheme
-            .workflow(issue_type)
-            .map(|workflow| workflow.start.clone());
-        let mut changes = vec![
-            Change::Create,
-            set("type", serde_json::json!(issue_type)),
-            set("title", serde_json::json!(title)),
-        ];
-        if let Some(start) = start {
-            changes.push(set("status", serde_json::json!(start)));
+        let changes = NewIssue {
+            issue_type: Some(issue_type.to_owned()),
+            title: Some(title.to_owned()),
+            ..NewIssue::default()
         }
+        .changes(&self.scheme);
         let actor = actor.clone();
         let drafts = changes
             .into_iter()

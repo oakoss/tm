@@ -416,9 +416,18 @@ fn a_damaged_or_foreign_file_is_refused_by_line() {
         .iter()
         .rposition(|record| record["_type"] == "op")
         .unwrap();
+    let status = records
+        .iter()
+        .position(|record| {
+            record["_type"] == "op"
+                && record["payload"]
+                    .as_str()
+                    .is_some_and(|p| p.contains(r#""field":"status""#) && p.contains("todo"))
+        })
+        .unwrap();
     let mut tampered = records.clone();
-    tampered[last]["payload"] = json!(
-        tampered[last]["payload"]
+    tampered[status]["payload"] = json!(
+        tampered[status]["payload"]
             .as_str()
             .unwrap()
             .replace("todo", "done")
@@ -427,7 +436,7 @@ fn a_damaged_or_foreign_file_is_refused_by_line() {
         .restore(&mut to_bytes(&tampered).as_slice())
         .unwrap_err();
     assert!(
-        matches!(err, StoreError::InvalidExport { line, .. } if line == last + 1),
+        matches!(err, StoreError::InvalidExport { line, .. } if line == status + 1),
         "{err}"
     );
 

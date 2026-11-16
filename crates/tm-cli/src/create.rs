@@ -3,11 +3,11 @@
 use serde_json::{Value, json};
 use tm_core::Change;
 use tm_core::scheme::{Category, FieldType, Scheme};
-use tm_store::{Draft, StoreError, WriteOptions};
+use tm_store::{Draft, NewIssue, StoreError, WriteOptions};
 use uuid::Uuid;
 
 use crate::error::CliError;
-use crate::fields::{self, quoted, set, split_pair, typed};
+use crate::fields::{self, quoted, split_pair, typed};
 use crate::follow::{self, Starts};
 use crate::here::{self, Here};
 use crate::mention;
@@ -119,29 +119,19 @@ fn status(changes: &[Change]) -> Option<&str> {
     })
 }
 
-/// The create, then each field given; the Status comes from the type's
-/// Workflow, so it is set only when the type is known.
 fn changes(scheme: &Scheme, create: &Create, parent: Option<Uuid>) -> Vec<Change> {
-    let mut changes = vec![Change::Create];
-    if let Some(issue_type) = &create.issue_type {
-        changes.push(set("type", json!(issue_type)));
-        if let Some(workflow) = scheme.workflow(issue_type) {
-            changes.push(set("status", json!(workflow.start)));
-        }
+    NewIssue {
+        issue_type: create.issue_type.clone(),
+        title: create.title.clone(),
+        parent,
+        fields: create
+            .set
+            .iter()
+            .map(|(field, value)| (field.clone(), typed(scheme, field, value)))
+            .collect(),
+        labels: create.labels.clone(),
     }
-    if let Some(title) = &create.title {
-        changes.push(set("title", json!(title)));
-    }
-    if let Some(parent) = parent {
-        changes.push(set("parent", json!(parent.to_string())));
-    }
-    for (field, value) in &create.set {
-        changes.push(set(field, typed(scheme, field, value)));
-    }
-    for label in &create.labels {
-        changes.push(fields::label(label, true));
-    }
-    changes
+    .changes(scheme)
 }
 
 /// `missing_fields` with each field's allowed values. Without a type the
