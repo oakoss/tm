@@ -923,9 +923,24 @@ fn scheme_brief(text: &mut String, scheme: &Scheme) -> Value {
             .iter()
             .map(|status| format!("{} ({})", status.id, status.category.id()))
             .collect();
-        let _ = writeln!(text, "  statuses: {}", statuses.join(", "));
+        let users: Vec<&str> = scheme
+            .types
+            .iter()
+            .filter(|issue_type| issue_type.workflow == workflow.name)
+            .map(|issue_type| issue_type.id.as_str())
+            .collect();
+        // With one Workflow every type uses it, so naming it adds nothing.
+        let whose = if scheme.workflows.len() == 1 {
+            String::new()
+        } else if users.is_empty() {
+            format!(" of {}", workflow.name)
+        } else {
+            format!(" of {} ({})", workflow.name, users.join(", "))
+        };
+        let _ = writeln!(text, "  statuses{whose}: {}", statuses.join(", "));
         workflows.push(json!({
             "name": workflow.name,
+            "types": users,
             "statuses": workflow.statuses.iter().map(|status| json!({
                 "id": status.id,
                 "category": status.category.id(),

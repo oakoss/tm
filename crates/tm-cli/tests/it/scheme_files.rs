@@ -192,6 +192,19 @@ workflow = "incident"
     assert_eq!(from("types", "id", "task"), "built_in");
     assert_eq!(from("workflows", "name", "incident"), "workspace");
     assert_eq!(from("workflows", "name", "default"), "built_in");
+    let primed = tm(&scratch, &repo, &["prime"]);
+    let primed = String::from_utf8_lossy(&primed.stdout);
+    assert!(
+        primed.contains(
+            "  statuses of incident (alpha, incident, zeta): open (todo), fixing (active), resolved (done)\n"
+        ),
+        "{primed}"
+    );
+    assert!(
+        primed
+            .contains("  statuses of default (epic, story, task, bug, sub_task, spike, design): "),
+        "{primed}"
+    );
     let incident = tm(&scratch, &repo, &["--json", "scheme", "show", "incident"]);
     assert_eq!(data(&incident)["type"]["from"], "workspace");
     assert_eq!(data(&incident)["workflow"]["from"], "workspace");
