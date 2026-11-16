@@ -5,9 +5,15 @@ use std::process::{Command, Output};
 
 use serde_json::{Value, json};
 
+/// `tm` outside any repo file, with a home of its own.
 fn tm(args: &[&str], envs: &[(&str, &str)]) -> Output {
+    let scratch = crate::support::Scratch::new();
     let mut command = Command::new(env!("CARGO_BIN_EXE_tm"));
-    command.args(args).env_remove("TM_JSON");
+    command
+        .args(args)
+        .current_dir(&scratch.0)
+        .env("TM_HOME", scratch.home())
+        .env_remove("TM_JSON");
     for (key, value) in envs {
         command.env(key, value);
     }
@@ -207,17 +213,24 @@ fn a_missing_subcommand_is_a_usage_error() {
 
 #[test]
 fn output_that_cannot_be_written_fails() {
-    for args in ["scheme show --json", "scheme show"] {
+    let scratch = crate::support::Scratch::new();
+    for (args, redirect, code) in [
+        ("scheme show --json", " 1</dev/null", 1),
+        ("scheme show", " 1</dev/null", 1),
+        ("scheme show", " >/dev/null", 0),
+    ] {
         let status = Command::new("sh")
             .args([
                 "-c",
-                &format!("\"$0\" {args} 1</dev/null"),
+                &format!("\"$0\" {args}{redirect}"),
                 env!("CARGO_BIN_EXE_tm"),
             ])
+            .current_dir(&scratch.0)
+            .env("TM_HOME", scratch.home())
             .env_remove("TM_JSON")
             .status()
             .unwrap();
-        assert_eq!(status.code(), Some(1), "{args} with stdout read-only");
+        assert_eq!(status.code(), Some(code), "{args}{redirect}");
     }
 }
 
