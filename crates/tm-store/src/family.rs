@@ -63,8 +63,8 @@ impl Store {
     }
 
     /// [`Store::write`] for a move of `issue` into an active Status by
-    /// `actor`, starting its ancestors as [`start_parents`] does, read inside
-    /// the same write.
+    /// `actor`, starting its ancestors as [`Lineage::start_parents`] does,
+    /// read inside the same write.
     ///
     /// # Errors
     ///
@@ -78,27 +78,24 @@ impl Store {
     ) -> Result<(Written<Vec<Op>>, Vec<ParentStart>), StoreError> {
         let scheme = self.scheme.clone();
         self.append_with_lineage(drafts, issue, options, |lineage| {
-            let parents = lineage.issues().get(1..).unwrap_or_default();
-            start_parents(&scheme, parents, lineage, actor)
+            lineage.start_parents(&scheme, actor)
         })
     }
 }
 
 /// What starting one parent came to.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParentStart {
     pub id: Uuid,
     pub key: Option<String>,
     pub outcome: ParentOutcome,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParentOutcome {
     /// Moved from `from` into `to`, the first active Status of its Workflow.
-    Started {
-        from: Option<String>,
-        to: String,
-    },
+    Started { from: String, to: String },
+    /// Archived, which wins over a Claim on it.
     Archived,
     /// Another session's live Claim, left to its holder.
     Held(Claim),
@@ -106,22 +103,26 @@ pub enum ParentOutcome {
     NoActiveStatus(String),
 }
 
-/// The moves starting each of `candidates` still in triage or todo, as a
-/// child entering an active Status does. An Agent leaves one another
-/// session's Claim holds in `lineage` to its holder.
-#[must_use]
-pub fn start_parents(
+/// The moves starting each of `parents` still in triage or todo, as a child
+/// entering an active Status does. An Agent leaves one another session's
+/// Claim holds in `lineage` to its holder.
+pub(crate) fn start(
     scheme: &Scheme,
-    candidates: &[IssueView],
+    parents: &[IssueView],
     lineage: &Lineage,
     actor: &Actor,
 ) -> (Vec<Draft>, Vec<ParentStart>) {
     let mut drafts = Vec::new();
     let mut starts = Vec::new();
-    for parent in candidates {
-        if !matches!(parent.category, Some(Category::Triage | Category::Todo)) {
+    for parent in parents {
+        let status = parent
+            .fields
+            .get("status")
+            .and_then(serde_json::Value::as_str);
+        let (Some(Category::Triage | Category::Todo), Some(from)) = (parent.category, status)
+        else {
             continue;
-        }
+        };
         let issue_type = parent.issue_type().unwrap_or_default();
         let to = scheme
             .workflow(issue_type)
@@ -140,12 +141,8 @@ pub fn start_parents(
                 subject: parent.id,
                 change: crate::set("status", serde_json::json!(to.id)),
             });
-            let from = parent
-                .fields
-                .get("status")
-                .and_then(serde_json::Value::as_str);
             ParentOutcome::Started {
-                from: from.map(str::to_owned),
+                from: from.to_owned(),
                 to: to.id.clone(),
             }
         } else {
@@ -178,6 +175,18 @@ impl Lineage {
     #[must_use]
     pub fn held(&self, issue: Uuid) -> Option<&Claim> {
         self.held.get(&issue)
+    }
+
+    /// The moves starting the Issue's ancestors, as its entering an active
+    /// Status does.
+    #[must_use]
+    pub fn start_parents(&self, scheme: &Scheme, actor: &Actor) -> (Vec<Draft>, Vec<ParentStart>) {
+        start(
+            scheme,
+            self.issues.get(1..).unwrap_or_default(),
+            self,
+            actor,
+        )
     }
 }
 

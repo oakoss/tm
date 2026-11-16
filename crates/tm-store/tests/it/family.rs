@@ -3,11 +3,11 @@
 
 use serde_json::json;
 use tm_core::Actor;
-use tm_store::{Draft, IssueView, ParentOutcome, Store, WriteOptions};
+use tm_store::{Draft, IssueView, NewIssue, ParentOutcome, Store, WriteOptions};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, TempDir, claude, draft, field, jace, new_issue, open, set_field, unpassed,
+    ManualClock, PROJECT, TempDir, claude, draft, field, jace, new_issue, open, set_field, unpassed,
 };
 
 fn ids(views: &[IssueView]) -> Vec<Uuid> {
@@ -117,21 +117,20 @@ fn an_agent_starting_work_starts_each_parent_but_one_archived_or_held_elsewhere(
             .collect::<Vec<_>>();
         (starts, passed)
     };
+    let started = || ParentOutcome::Started {
+        from: "todo".into(),
+        to: "in_progress".into(),
+    };
+    let holder = crate::support::held(&store, held).unwrap();
     let (starts, passed) = start(&mut store, &claude());
     assert_eq!(passed, []);
-    let [
-        (first, ParentOutcome::Archived),
-        (second, ParentOutcome::Held(holder)),
-        (third, ParentOutcome::Started { from, to }),
-    ] = starts.as_slice()
-    else {
-        panic!("{starts:?}");
-    };
-    assert_eq!([*first, *second, *third], [archived, held, epic]);
-    assert_eq!(holder.agent, "codex");
     assert_eq!(
-        (from.as_deref(), to.as_str()),
-        (Some("todo"), "in_progress")
+        starts,
+        [
+            (archived, ParentOutcome::Archived),
+            (held, ParentOutcome::Held(holder.clone())),
+            (epic, started()),
+        ]
     );
     assert_eq!(field(&store, epic, "status"), Some(json!("in_progress")));
     assert_eq!(field(&store, held, "status"), Some(json!("todo")));
@@ -143,13 +142,45 @@ fn an_agent_starting_work_starts_each_parent_but_one_archived_or_held_elsewhere(
             .unwrap(),
     );
     let (starts, passed) = start(&mut store, &jace());
-    assert_eq!(passed.len(), 1, "a human's start goes past codex's Claim");
+    assert_eq!(passed, [holder], "a human's start goes past codex's Claim");
+    assert_eq!(
+        starts,
+        [(archived, ParentOutcome::Archived), (held, started())]
+    );
+}
+
+#[test]
+fn a_new_issue_starts_its_parents_only_when_created_active() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let parent = new_issue(&mut store);
+    let child = |status: &str| NewIssue {
+        issue_type: Some("task".into()),
+        title: Some("t".into()),
+        parent: Some(parent),
+        fields: vec![("status".into(), json!(status))],
+        labels: Vec::new(),
+    };
+
+    let (written, created) = store.create(&jace(), PROJECT, &child("todo")).unwrap();
+    unpassed(written);
+    assert_eq!(created.starts, []);
+    assert_eq!(field(&store, parent, "status"), Some(json!("todo")));
+
+    let (written, created) = store
+        .create(&jace(), PROJECT, &child("in_progress"))
+        .unwrap();
+    let ops = unpassed(written);
+    let started = ParentOutcome::Started {
+        from: "todo".into(),
+        to: "in_progress".into(),
+    };
+    assert_eq!(created.starts.len(), 1);
+    assert_eq!(created.starts[0].outcome, started);
+    assert_eq!(field(&store, parent, "status"), Some(json!("in_progress")));
     assert!(
-        matches!(
-            starts.as_slice(),
-            [(_, ParentOutcome::Archived), (id, ParentOutcome::Started { .. })] if *id == held
-        ),
-        "a human starts a parent another session holds: {starts:?}"
+        ops.iter().any(|op| op.subject == parent),
+        "the start shares the create's batch"
     );
 }
 

@@ -1,5 +1,5 @@
 //! Parents follow their children: the store starts them as
-//! [`tm_store::start_parents`] says, and a child finishing or reopening
+//! [`tm_store::Lineage::start_parents`] says, and a child finishing or reopening
 //! prints the parent's matching move without making it, since a parent can
 //! carry work of its own. An import does not follow: it records what
 //! happened elsewhere.
@@ -27,7 +27,7 @@ pub(crate) fn report(
         let name = tm_store::shown_key(start.key.as_deref(), start.id);
         let why = match start.outcome {
             ParentOutcome::Started { from, to } => {
-                let shown = printable(from.as_deref().unwrap_or("none"));
+                let shown = printable(&from);
                 let _ = writeln!(output.text, "also started {name} ({shown} → {to})");
                 started.push(json!({ "id": start.id, "key": start.key, "from": from, "to": to }));
                 continue;

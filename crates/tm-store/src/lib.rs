@@ -67,9 +67,9 @@ pub use beads::{BeadsExport, BeadsImported, read_beads};
 pub use claim::{
     AgentClaims, Claim, ClaimState, Holder, PROTECTED_FIELDS, TakenWith, short_session,
 };
-pub use creation::NewIssue;
+pub use creation::{Created, NewIssue};
 pub use export::{Exported, Restored, copy_store, read_export};
-pub use family::{Lineage, ParentOutcome, ParentStart, start_parents};
+pub use family::{Lineage, ParentOutcome, ParentStart};
 pub use history::HistoryEntry;
 pub use import::{Conflict, RecordOutcome, RecordsImported};
 pub use import_list::{ListOutcome, Passed};
@@ -1229,24 +1229,13 @@ impl Store {
         issue_type: &str,
         title: &str,
     ) -> Result<(Uuid, Vec<Op>), StoreError> {
-        let issue_id = Uuid::now_v7();
-        let changes = NewIssue {
+        let new = NewIssue {
             issue_type: Some(issue_type.to_owned()),
             title: Some(title.to_owned()),
             ..NewIssue::default()
-        }
-        .changes(&self.scheme);
-        let actor = actor.clone();
-        let drafts = changes
-            .into_iter()
-            .map(|change| Draft {
-                actor: actor.clone(),
-                project,
-                subject: issue_id,
-                change,
-            })
-            .collect();
-        Ok((issue_id, self.append_all(drafts)?.unpassed()))
+        };
+        let (written, created) = self.create(actor, project, &new)?;
+        Ok((created.issue, written.unpassed()))
     }
 
     /// Links `from` to `to`: "`from` blocks `to`" for `blocks`. The Link is

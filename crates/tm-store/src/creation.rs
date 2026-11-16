@@ -2,10 +2,70 @@
 //! create sets beyond what was asked, such as the starting Status.
 
 use serde_json::{Value, json};
-use tm_core::{Change, Scheme};
+use tm_core::scheme::Category;
+use tm_core::{Actor, Change, Op, ProjectId, Scheme};
 use uuid::Uuid;
 
-use crate::set;
+use crate::family::{self, ParentStart};
+use crate::{Draft, Store, StoreError, WriteOptions, Written, set};
+
+/// The Issue a create made, and its parents the create started.
+#[derive(Debug)]
+pub struct Created {
+    pub issue: Uuid,
+    pub starts: Vec<ParentStart>,
+}
+
+impl Store {
+    /// Writes `new` into `project` as one batch. A new Issue whose Status is
+    /// active starts its parent and their ancestors, as
+    /// [`crate::Lineage::start_parents`] does, read inside the same write.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::append_all`].
+    pub fn create(
+        &mut self,
+        actor: &Actor,
+        project: ProjectId,
+        new: &NewIssue,
+    ) -> Result<(Written<Vec<Op>>, Created), StoreError> {
+        let issue = Uuid::now_v7();
+        let changes = new.changes(&self.scheme);
+        let active = new.issue_type.as_deref().is_some_and(|issue_type| {
+            status(&changes).and_then(|status| self.scheme.category(issue_type, status))
+                == Some(Category::Active)
+        });
+        let drafts = changes
+            .into_iter()
+            .map(|change| Draft {
+                actor: actor.clone(),
+                project,
+                subject: issue,
+                change,
+            })
+            .collect();
+        let (written, starts) = match new.parent {
+            Some(parent) if active => {
+                let scheme = self.scheme.clone();
+                let options = WriteOptions::default();
+                self.append_with_lineage(drafts, parent, &options, |lineage| {
+                    family::start(&scheme, lineage.issues(), lineage, actor)
+                })?
+            }
+            _ => (self.append_all(drafts)?, Vec::new()),
+        };
+        Ok((written, Created { issue, starts }))
+    }
+}
+
+/// The Status `changes` leave, the last one set.
+fn status(changes: &[Change]) -> Option<&str> {
+    changes.iter().rev().find_map(|change| match change {
+        Change::SetField { field, value, .. } if field == "status" => value.as_str(),
+        _ => None,
+    })
+}
 
 /// What a create asks for. Each field's value is already typed.
 #[derive(Debug, Clone, Default)]

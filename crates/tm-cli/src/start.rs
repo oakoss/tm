@@ -168,7 +168,7 @@ pub(crate) fn report(
 /// todo into its first active Status, and its parents with it, and making the
 /// human `actor` works for its Assignee when it has none.
 pub(crate) fn begin(scheme: &Scheme, actor: &Actor, lineage: &Lineage) -> (Vec<Draft>, Begun) {
-    let Some((issue, parents)) = lineage.issues().split_first() else {
+    let Some(issue) = lineage.issues().first() else {
         return (Vec::new(), Begun::default());
     };
     let mut begun = Begun::default();
@@ -205,7 +205,7 @@ pub(crate) fn begin(scheme: &Scheme, actor: &Actor, lineage: &Lineage) -> (Vec<D
         })
         .collect();
     if moved {
-        let (more, starts) = tm_store::start_parents(scheme, parents, lineage, actor);
+        let (more, starts) = lineage.start_parents(scheme, actor);
         drafts.extend(more);
         begun.starts = starts;
     }
