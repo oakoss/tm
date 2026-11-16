@@ -16,7 +16,6 @@ use crate::error::CliError;
 use crate::fields::set;
 use crate::follow;
 use crate::here::{self, Here};
-use crate::moves;
 use crate::output::{Output, printable, short};
 
 /// A `Closes` line on the default branch.
@@ -282,25 +281,25 @@ fn close(
         let commit = closing.with_commit(&closing.commit);
         let _ = write!(record, "; also closed by {commit}");
     }
-    let mut changes = vec![set("status", json!(done)), Change::Comment { body: record }];
-    changes.extend(moves::unwait(&view));
-    let drafts = || {
-        changes
-            .iter()
-            .map(|change| Draft {
-                actor: actor.clone(),
-                project: view.project,
-                subject: id,
-                change: change.clone(),
-            })
-            .collect()
-    };
+    let changes = [set("status", json!(done)), Change::Comment { body: record }];
+    let drafts = changes
+        .into_iter()
+        .map(|change| Draft {
+            actor: actor.clone(),
+            project: view.project,
+            subject: id,
+            change,
+        })
+        .collect();
     let batch = if report.dry_run {
         None
     } else {
         // A merged Closes line says the work is done, whoever holds it.
         let unguarded = (false, &WriteOptions::default());
-        let ops = moves::finish(here, actor, (view.project, id), drafts, unguarded)?;
+        let written = here
+            .store
+            .finish(actor, (view.project, id), drafts, unguarded)?;
+        let ops = here.passing(written);
         Some(ops[0].op_id)
     };
     let before = view.fields.get("status").and_then(Value::as_str);

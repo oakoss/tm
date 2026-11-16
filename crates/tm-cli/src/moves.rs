@@ -5,10 +5,9 @@ use std::fmt::Write as _;
 
 use serde_json::{Value, json};
 use tm_core::op::ClaimAction;
-use tm_core::scheme::{Category, WAITING_ON, Workflow};
-use tm_core::{Actor, Change, Op, ProjectId};
-use tm_store::{ClaimState, Draft, IssueView, Named, StoreError, WriteOptions};
-use uuid::Uuid;
+use tm_core::scheme::{Category, Workflow};
+use tm_core::{Actor, Change, Op};
+use tm_store::{Draft, IssueView, StoreError, WriteOptions};
 
 use crate::edit::{self, Changed};
 use crate::error::CliError;
@@ -17,9 +16,6 @@ use crate::follow::{self, Starts};
 use crate::here::{self, Here};
 use crate::output::Output;
 use crate::show;
-
-/// Retries after another writer claims or releases the Issue mid-move.
-const MOVE_TRIES: usize = 2;
 
 /// `--set FIELD=VALUE` for a move: the Status is the move's target.
 pub(crate) fn field_value(pair: &str) -> Result<(String, String), String> {
@@ -115,16 +111,12 @@ pub(crate) fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>
         let to = (status.as_str(), finished);
         refuse_early(here, &identity.actor, &view, to, args, based_on)?;
     }
-    // Read once all else is checked, so a mistake keeps the piped text; the
-    // append below may retry, but this runs once.
+    // Read once all else is checked, so a mistake keeps the piped text.
     let fields = crate::fields::read_stdin(fields, "leave the field out")?;
 
     let mut changes = vec![set("status", json!(status))];
     for (field, value) in &fields {
         changes.push(set(field, typed(&scheme, field, value)));
-    }
-    if finished {
-        changes.extend(unwait(&view));
     }
     changes.retain(|change| match change {
         Change::SetField { field, value, .. } => !view
@@ -133,8 +125,13 @@ pub(crate) fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>
             .is_some_and(|before| edit::same(before, value)),
         _ => true,
     });
-    // A finished Issue a Claim still holds is let go by moving it again.
-    if changes.is_empty() && !(finished && here.store.claim_state(id)?.is_some()) {
+    // A finished Issue a Claim or a question still holds is let go by moving
+    // it again.
+    let lets_go = || -> Result<bool, StoreError> {
+        let asked = view.fields.contains_key(tm_core::scheme::WAITING_ON);
+        Ok(asked || here.store.claim_state(id)?.is_some())
+    };
+    if changes.is_empty() && !(finished && lets_go()?) {
         // A version not read from the Issue is a mistake even here.
         here.store.check_version(id, based_on, &[])?;
         return Ok((unchanged(here, &view)?, identity.warnings));
@@ -160,8 +157,11 @@ pub(crate) fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>
         (here.passing(written), Starts::default())
     } else {
         let issue = (view.project, id);
-        let ops = finish(here, &identity.actor, issue, drafts, (!force, &options))
+        let written = here
+            .store
+            .finish(&identity.actor, issue, drafts(), (!force, &options))
             .map_err(held_elsewhere)?;
+        let ops = here.passing(written);
         // Another session can release the Claim this move came to release.
         if ops.is_empty() {
             return Ok((unchanged(here, &view)?, identity.warnings));
@@ -169,18 +169,10 @@ pub(crate) fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>
         (ops, Starts::default())
     };
     let mut shown = show::render(here, id)?;
-    shown.text = lines(&view, &changes, &ops);
+    shown.text = lines(&view, &ops);
     let shown = follow::report(&here.store, shown, starts, id)?;
     let output = here.undoable(shown, ops[0].op_id, &identity.actor)?;
     Ok((output, identity.warnings))
-}
-
-/// The change a move that finishes `view` adds: finished work waits on no
-/// one, so its question leaves the lists.
-pub(crate) fn unwait(view: &IssueView) -> Option<Change> {
-    view.fields
-        .contains_key(WAITING_ON)
-        .then(|| set(WAITING_ON, Value::Null))
 }
 
 fn unchanged(here: &Here, view: &IssueView) -> Result<Output, CliError> {
@@ -203,55 +195,6 @@ fn held_elsewhere(err: StoreError) -> CliError {
     err
 }
 
-/// Writes `drafts` for a move of `issue` into done or cancelled, releasing
-/// its Claim in the same batch, as `options` asks. With `guarded`, an Agent's
-/// move is refused with [`StoreError::AlreadyClaimed`] while another session
-/// holds a live Claim (ADR 0009).
-pub(crate) fn finish(
-    here: &mut Here,
-    actor: &Actor,
-    (project, issue): (ProjectId, Uuid),
-    drafts: impl Fn() -> Vec<Draft>,
-    (guarded, options): (bool, &WriteOptions),
-) -> Result<Vec<Op>, StoreError> {
-    let mut tries = 0;
-    loop {
-        let state = refuse_finish(here, actor, issue, guarded)?;
-        let mut drafts = drafts();
-        // The release names the Claim read here, so the write refuses one
-        // that was taken, renewed or released since, and the move reads it
-        // and judges it again. A lapsed Claim is released too, so finished
-        // work holds none.
-        let held = state.map(|state| state.claim().clone());
-        if let Some(claim) = &held {
-            drafts.push(Draft {
-                actor: actor.clone(),
-                project,
-                subject: issue,
-                change: Change::Claim {
-                    action: ClaimAction::Release { claim: claim.id },
-                },
-            });
-        }
-        // Another session released the Claim this move came to release; a
-        // write of nothing has no Issue to judge, so the version is read here.
-        if drafts.is_empty() {
-            if let Some(based_on) = options.based_on {
-                here.store.check_version(issue, based_on, &[])?;
-            }
-            break Ok(Vec::new());
-        }
-        let options = WriteOptions {
-            claim: Some(held),
-            ..options.clone()
-        };
-        match here.store.write(drafts, &options) {
-            Err(StoreError::ClaimChanged(_)) if tries < MOVE_TRIES => tries += 1,
-            written => break written.map(|written| here.passing(written)),
-        }
-    }
-}
-
 /// Refuses a move to `status` as its write would, before piped text is read,
 /// since a refusal after would lose it; the write checks again.
 fn refuse_early(
@@ -271,7 +214,11 @@ fn refuse_early(
         written.push("status");
     }
     if finished {
-        refuse_finish(here, actor, view.id, !args.force).map_err(held_elsewhere)?;
+        if !args.force {
+            here.store
+                .check_finish(actor, view.id)
+                .map_err(held_elsewhere)?;
+        }
     } else {
         here.store
             .check_protected(actor, view.id, &written, args.force)
@@ -280,47 +227,25 @@ fn refuse_early(
     Ok(here.store.check_version(view.id, based_on, &written)?)
 }
 
-/// `issue`'s Claim, unless `guarded` refuses an Agent's finish of it while
-/// another session holds it.
-fn refuse_finish(
-    here: &Here,
-    actor: &Actor,
-    issue: Uuid,
-    guarded: bool,
-) -> Result<Option<ClaimState>, StoreError> {
-    let state = here.store.claim_state(issue)?;
-    if guarded
-        && actor.is_agent()
-        && let Some(ClaimState::Held(holder)) = &state
-        && !holder.taken_by(actor)
-    {
-        let key = here.store.issue(issue)?.and_then(|view| view.key);
-        return Err(StoreError::AlreadyClaimed {
-            issue: Named {
-                key,
-                ..issue.into()
-            },
-            holder: Box::new(holder.clone()),
-        });
-    }
-    Ok(state)
-}
-
 /// A line for each field the move set, as `tm edit` prints them, and one for
 /// a released Claim; `--json` keeps the whole Issue.
-fn lines(view: &IssueView, changes: &[Change], ops: &[Op]) -> String {
+fn lines(view: &IssueView, ops: &[Op]) -> String {
     let name = view.shown_key();
     let mut text = String::new();
-    for change in changes {
+    let written = ops
+        .iter()
+        .filter(|op| op.subject == view.id)
+        .filter_map(|op| op.change().ok());
+    for change in written {
         if let Change::SetField { field, value, .. } = change {
-            let before = view.fields.get(field).cloned().unwrap_or(Value::Null);
-            if edit::same(&before, value) {
+            let before = view.fields.get(&field).cloned().unwrap_or(Value::Null);
+            if edit::same(&before, &value) {
                 continue;
             }
             let line = edit::summary(&Changed {
-                field: field.clone(),
+                field,
                 before,
-                after: value.clone(),
+                after: value,
             });
             let _ = writeln!(text, "{name}  {line}");
         }
@@ -380,86 +305,37 @@ fn status(workflow: &Workflow, issue_type: &str, target: &str) -> Result<String,
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-
     use tm_core::Scheme;
-    use tm_store::Store;
 
     use super::*;
 
     #[test]
-    fn a_finish_whose_claim_another_session_releases_writes_nothing() {
-        let at = here::fixture();
-        let mut here = here::open_at(&at).unwrap();
-        let claude = Actor::agent("claude", "jace");
-        let project = here.project().unwrap();
-        let (issue, _) = here
-            .store
-            .create_issue(&claude, project, "task", "alpha")
-            .unwrap();
-        let held = here.store.take(&claude, issue, None::<u64>).unwrap();
-        let other = Store::open_existing(&here.workspace.store_path(), here.workspace.id);
-        let other = RefCell::new(Some(other.unwrap()));
-        let drafts = || {
-            if let Some(mut store) = other.borrow_mut().take() {
-                store.release(&claude, issue, held.id).unwrap();
-            }
-            Vec::new()
-        };
-        let read = here.store.issue_version(issue).unwrap();
-        let options = WriteOptions {
-            based_on: Some(read),
-            ..WriteOptions::default()
-        };
-        let ops = finish(
-            &mut here,
-            &claude,
-            (project, issue),
-            drafts,
-            (true, &options),
-        );
-        assert_eq!(ops.unwrap(), []);
-
-        let ahead = WriteOptions {
-            based_on: Some(read + 100),
-            ..WriteOptions::default()
-        };
-        let none = || Vec::new();
-        let err = finish(&mut here, &claude, (project, issue), none, (true, &ahead));
-        assert!(matches!(err, Err(StoreError::Invalid { .. })), "{err:?}");
-    }
-
-    #[test]
-    fn a_finish_releases_the_claim_held_at_its_write_not_the_one_it_read() {
+    fn a_finished_issue_still_waiting_on_a_question_is_let_go_by_moving_it_again() {
         let at = here::fixture();
         let mut here = here::open_at(&at).unwrap();
         let jace = Actor::human("jace");
-        let claude = Actor::agent("claude", "jace");
         let project = here.project().unwrap();
-        let (issue, _) = here
+        let (id, _) = here
             .store
             .create_issue(&jace, project, "task", "alpha")
             .unwrap();
-        let read = here.store.take(&claude, issue, None::<u64>).unwrap();
-        let other = Store::open_existing(&here.workspace.store_path(), here.workspace.id);
-        let other = RefCell::new(Some(other.unwrap()));
-        // Called after the move reads the Claim and before it writes.
-        let drafts = || {
-            if let Some(mut store) = other.borrow_mut().take() {
-                store.release(&claude, issue, read.id).unwrap();
-                let codex = Actor::agent("codex", "jace");
-                store.take(&codex, issue, None::<u64>).unwrap();
-            }
-            vec![Draft {
-                actor: jace.clone(),
-                project,
-                subject: issue,
-                change: set("status", json!("done")),
-            }]
+        write(&mut here, &Move::to("TM-1", "done", None)).unwrap();
+        let asked = Draft {
+            actor: jace,
+            project,
+            subject: id,
+            change: set("waiting_on", json!("jace")),
         };
-        let unguarded = (false, &WriteOptions::default());
-        finish(&mut here, &jace, (project, issue), drafts, unguarded).unwrap();
-        assert!(here.store.claim_state(issue).unwrap().is_none());
+        let written = here.store.append(asked).unwrap();
+        here.passing(written);
+        let (output, _) = write(&mut here, &Move::to("TM-1", "done", None)).unwrap();
+        assert!(
+            output.text.starts_with("TM-1  waiting_on:"),
+            "{}",
+            output.text
+        );
+        let view = here.store.issue(id).unwrap().unwrap();
+        assert_eq!(view.fields.get("waiting_on"), None);
     }
 
     #[test]
