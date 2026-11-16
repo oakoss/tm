@@ -881,14 +881,7 @@ fn scheme_type(scheme: &Scheme, wanted: &str) -> Result<Output, CliError> {
         .ok_or_else(|| {
             CliError::new("invalid_value", format!("{wanted:?} is not an Issue type"))
                 .with("field", "type")
-                .with(
-                    "allowed",
-                    scheme
-                        .types
-                        .iter()
-                        .map(|t| t.id.clone())
-                        .collect::<Vec<_>>(),
-                )
+                .with("allowed", scheme.type_ids())
         })?;
     let workflow = scheme.workflow(&issue_type.id);
     let data = json!({

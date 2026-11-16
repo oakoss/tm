@@ -168,9 +168,8 @@ pub(crate) fn next(
 pub(crate) fn first(scheme: &Scheme, issue_type: &str, category: Category) -> Option<String> {
     scheme
         .workflow(issue_type)?
-        .statuses
-        .iter()
-        .find(|status| status.category == category)
+        .of_category(category)
+        .next()
         .map(|status| status.id.clone())
 }
 

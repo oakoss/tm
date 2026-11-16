@@ -204,12 +204,40 @@ impl Workflow {
         self.statuses.iter().find(|status| status.id == id)
     }
 
+    /// The Status `name` means: its id or label, without case.
+    #[must_use]
+    pub fn named(&self, name: &str) -> Option<&Status> {
+        self.statuses.iter().find(|status| {
+            status.id.eq_ignore_ascii_case(name) || status.label.eq_ignore_ascii_case(name)
+        })
+    }
+
+    /// The Statuses of `category`, in order.
+    pub fn of_category(&self, category: Category) -> impl Iterator<Item = &Status> {
+        self.statuses
+            .iter()
+            .filter(move |status| status.category == category)
+    }
+
     /// Whether moving from `from` (none for a new Issue) to `to` is allowed.
     #[must_use]
     pub fn allows(&self, _from: Option<&str>, to: &str) -> bool {
         match self.transitions {
             Transitions::Any => self.status(to).is_some(),
         }
+    }
+
+    /// The Statuses an Issue in `from` may move to, its own left out; none
+    /// when `from` is a Status this Workflow does not define.
+    #[must_use]
+    pub fn moves_from(&self, from: Option<&str>) -> Vec<&Status> {
+        if from.is_some_and(|from| self.status(from).is_none()) {
+            return Vec::new();
+        }
+        self.statuses
+            .iter()
+            .filter(|status| Some(status.id.as_str()) != from && self.allows(from, &status.id))
+            .collect()
     }
 }
 
@@ -420,6 +448,15 @@ impl Scheme {
         self.fields.iter().find(|field| field.name == name)
     }
 
+    /// Every Issue type's id, in the Scheme's order.
+    #[must_use]
+    pub fn type_ids(&self) -> Vec<String> {
+        self.types
+            .iter()
+            .map(|issue_type| issue_type.id.clone())
+            .collect()
+    }
+
     #[must_use]
     pub fn issue_type(&self, id: &str) -> Option<&IssueType> {
         self.types.iter().find(|issue_type| issue_type.id == id)
@@ -459,6 +496,30 @@ mod tests {
             let workflow = scheme.workflow(&issue_type.id).unwrap();
             assert!(workflow.status(&workflow.start).is_some());
         }
+    }
+
+    #[test]
+    fn a_workflow_names_finds_and_moves_its_statuses() {
+        let scheme = Scheme::built_in();
+        assert_eq!(scheme.type_ids()[..2], ["epic", "story"]);
+        let workflow = scheme.workflow("task").unwrap();
+        assert_eq!(workflow.named("IN PROGRESS").unwrap().id, "in_progress");
+        assert_eq!(workflow.named("In_Review").unwrap().id, "in_review");
+        assert!(workflow.named("active").is_none());
+        let active: Vec<&str> = workflow
+            .of_category(Category::Active)
+            .map(|status| status.id.as_str())
+            .collect();
+        assert_eq!(active, ["in_progress", "in_review"]);
+        let ids = |moves: Vec<&Status>| -> Vec<String> {
+            moves.into_iter().map(|status| status.id.clone()).collect()
+        };
+        assert_eq!(
+            ids(workflow.moves_from(Some("todo"))),
+            ["triage", "in_progress", "in_review", "done", "cancelled"]
+        );
+        assert_eq!(ids(workflow.moves_from(None)).len(), 6);
+        assert_eq!(ids(workflow.moves_from(Some("gone"))), Vec::<String>::new());
     }
 
     #[test]

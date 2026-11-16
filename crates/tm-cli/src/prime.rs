@@ -914,7 +914,7 @@ fn named(actor: &Actor) -> String {
 /// categories, and the fields a create must set; `tm scheme show` has the
 /// rest.
 fn scheme_brief(text: &mut String, scheme: &Scheme) -> Value {
-    let types: Vec<&str> = scheme.types.iter().map(|kind| kind.id.as_str()).collect();
+    let types = scheme.type_ids();
     let _ = writeln!(text, "Scheme {}: types {}", scheme.name, types.join(", "));
     let mut workflows = Vec::new();
     for workflow in &scheme.workflows {

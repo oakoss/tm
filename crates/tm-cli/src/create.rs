@@ -56,7 +56,7 @@ fn write(here: &mut Here, mut create: Create) -> Result<(Output, Vec<String>), C
         return Err(StoreError::Invalid {
             field: "type".into(),
             reason: "is not a type".into(),
-            valid: scheme.types.iter().map(|t| t.id.clone()).collect(),
+            valid: scheme.type_ids(),
         }
         .into());
     }

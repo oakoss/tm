@@ -6,7 +6,7 @@ use rusqlite::{Connection, Row};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tm_core::ProjectId;
-use tm_core::scheme::{Category, FieldType, PRIORITY_RANKS, Scheme, WAITING_ON};
+use tm_core::scheme::{Category, FieldType, PRIORITY_RANKS, Scheme, WAITING_ON, Workflow};
 use uuid::Uuid;
 
 use crate::StoreError;
@@ -39,6 +39,19 @@ impl IssueView {
     #[must_use]
     pub fn shown_key(&self) -> String {
         shown_key(self.key.as_deref(), self.id)
+    }
+
+    /// The Issue's type id, as set.
+    #[must_use]
+    pub fn issue_type(&self) -> Option<&str> {
+        self.fields.get("type").and_then(Value::as_str)
+    }
+
+    /// The Workflow the Issue's type follows in `scheme`; `None` when the
+    /// Scheme does not define its type.
+    #[must_use]
+    pub fn workflow<'a>(&self, scheme: &'a Scheme) -> Option<&'a Workflow> {
+        scheme.workflow(self.issue_type()?)
     }
 
     /// Whom the Issue's open question waits on, set by `tm ask`.
