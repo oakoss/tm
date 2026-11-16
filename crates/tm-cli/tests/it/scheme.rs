@@ -1,10 +1,9 @@
-use std::process::Command;
+use crate::support::Scratch;
 
+/// `tm` outside any repo file, so it shows the built-in Scheme.
 fn tm(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_tm"))
-        .args(args)
-        .output()
-        .expect("tm binary should start")
+    let scratch = Scratch::new();
+    crate::support::tm(&scratch, &scratch.0, args)
 }
 
 #[test]

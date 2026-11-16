@@ -294,12 +294,25 @@ pub(crate) fn scheme_at(
     workspace: &Workspace,
     cwd: &Path,
 ) -> Result<tm_core::Scheme, SchemeFileError> {
+    layered_at(found, workspace, cwd).map(|layered| layered.scheme)
+}
+
+/// [`scheme_at`], with the layer each field comes from.
+///
+/// # Errors
+///
+/// As [`scheme_at`].
+pub(crate) fn layered_at(
+    found: &Found,
+    workspace: &Workspace,
+    cwd: &Path,
+) -> Result<scheme_file::Layered, SchemeFileError> {
     let relative = cwd.strip_prefix(&found.dir).unwrap_or(cwd);
     let project = found.file.project_for(relative);
     let mapped: Vec<&str> = std::iter::once(found.file.project.as_str())
         .chain(found.file.paths.iter().map(|path| path.project.as_str()))
         .collect();
-    scheme_file::read(&workspace.dir, Some(&found.dir), &mapped, project)
+    scheme_file::read_layered(&workspace.dir, Some(&found.dir), &mapped, project)
 }
 
 /// The Here, unless its Scheme file could not be read (ADR 0022).
