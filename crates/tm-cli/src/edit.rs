@@ -5,8 +5,8 @@ use std::fmt::Write as _;
 
 use serde_json::{Value, json};
 use tm_core::Change;
-use tm_core::scheme::{FieldType, Scheme};
-use tm_store::{Draft, IssueView, Named, StoreError, WriteOptions};
+use tm_core::scheme::FieldType;
+use tm_store::{Draft, IssueView, Store, WriteOptions};
 use uuid::Uuid;
 
 use crate::error::CliError;
@@ -147,7 +147,7 @@ pub(crate) fn write(
         here.store.check_parent(id, parent)?;
     }
     let identity = here.writer()?;
-    check_flags(here.store.scheme(), &view, edit)?;
+    check_flags(&here.store, &view, edit)?;
     let options = WriteOptions {
         force: edit.force,
         based_on: Some(based_on),
@@ -253,7 +253,8 @@ fn refuse_status(reference: &str, edit: &Edit) -> Result<(), CliError> {
 /// Refuses what the flags ask for that no value could make right: a field
 /// the Scheme lacks or computes, one that cannot be cleared, a blank label
 /// to add, or a label both added and removed.
-fn check_flags(scheme: &Scheme, view: &IssueView, edit: &Edit) -> Result<(), CliError> {
+fn check_flags(store: &Store, view: &IssueView, edit: &Edit) -> Result<(), CliError> {
+    let scheme = store.scheme();
     fields::known(
         scheme,
         edit.set.iter().chain(&edit.append).map(|(field, _)| field),
@@ -278,7 +279,7 @@ fn check_flags(scheme: &Scheme, view: &IssueView, edit: &Edit) -> Result<(), Cli
     }
     fields::labels(&edit.labels)?;
     for name in &edit.unset {
-        unsettable(scheme, view, name)?;
+        unsettable(store, view, name)?;
     }
     if let Some(both) = edit.labels.iter().find(|label| {
         edit.remove_labels
@@ -397,14 +398,10 @@ pub(crate) fn same(before: &Value, after: &Value) -> bool {
     before == after || before.as_f64().is_some_and(|b| after.as_f64() == Some(b))
 }
 
-fn held(value: &Value) -> bool {
-    !value.is_null() && value.as_str().is_none_or(|text| !text.trim().is_empty())
-}
-
 /// Whether `--unset` can clear `name`. Priority and archived always hold a
 /// value, so clearing them would write their default; a field the Scheme
 /// lacks clears only while the Issue still holds it.
-fn unsettable(scheme: &Scheme, view: &IssueView, name: &str) -> Result<(), CliError> {
+fn unsettable(store: &Store, view: &IssueView, name: &str) -> Result<(), CliError> {
     if matches!(name, "priority" | "archived") {
         return Err(CliError::new(
             "invalid_value",
@@ -412,34 +409,11 @@ fn unsettable(scheme: &Scheme, view: &IssueView, name: &str) -> Result<(), CliEr
         )
         .with("field", name));
     }
-    match scheme.field(name) {
-        Some(field) if field.derived => return Err(fields::computed(name)),
-        // The store refuses only a required field the write would empty, and
-        // counts blank text as empty.
-        Some(field) if field.required && view.fields.get(name).is_some_and(held) => {
-            return Err(StoreError::MissingFields {
-                issue: Named {
-                    id: view.id,
-                    key: view.key.clone(),
-                    source: None,
-                },
-                fields: vec![name.to_owned()],
-            }
-            .into());
-        }
-        _ => {}
-    }
-    if scheme.field(name).is_none() && !view.fields.contains_key(name) {
-        return Err(StoreError::UnknownField {
-            field: name.to_owned(),
-            valid: scheme
-                .fields
-                .iter()
-                .filter(|field| !field.derived)
-                .map(|field| field.name.clone())
-                .collect(),
-        }
-        .into());
+    if store.scheme().field(name).is_some() {
+        tm_store::settable(store.scheme(), name)?;
+        store.check_unset(view.id, name)?;
+    } else if !view.fields.contains_key(name) {
+        tm_store::settable(store.scheme(), name)?;
     }
     Ok(())
 }
