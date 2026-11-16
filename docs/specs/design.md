@@ -36,8 +36,8 @@
 - A **Workspace** is a store plus its config. The global one lives under `~/.tm/`, as does tm's own config, never `~/.config/tm.toml`, which is the repo file of a git repo at `$HOME`; others can be created for isolation. Issue data never lives in a code repo ([ADR 0003](../decisions/0003-issue-data-lives-outside-code-repos.md)).
 - **Repo scope** works like `bd init`: `tm init` in a repo with no Workspace creates a Workspace dedicated to it.
 - **Projects** nest freely; a repo maps to a Project through one file, `.config/tm.toml` (or `.tm.toml` at the root, never both). Without the file, the Workspace maps repos by git remote URL. Monorepos map path prefixes to Projects.
-- **Per-machine values never go in the repo file**: sync server URLs, hostnames, tokens and paths live in the Workspace or user config, and no command writes them into a tracked file.
-- **Config layers**: Workspace defaults, then Project overrides from the repo file. Config can be one file or split with `include`, kept under `.config/tm/` in a repo.
+- **Per-machine values never go in a tracked file**, the repo file and the repo's Scheme file included: sync server URLs, hostnames, tokens and paths live in the Workspace or user config, and no command writes them into a tracked file.
+- **Config layers**: Workspace defaults, then Project overrides from the repo. Config can be one file or split with `include`, kept under `.config/tm/` in a repo. The Scheme is its own file in each layer, `scheme.toml` in the Workspace directory and `.config/tm/scheme.toml` in a repo, merged by id ([ADR 0022](../decisions/0022-the-scheme-is-read-from-a-workspace-file-and-a-repo-file.md)).
 - **Setup wizard**: `tm init` offers **Presets** (for example Minimal, Solo + agents, Jira-style, Release-managed). A Preset only writes config, so everything stays editable.
 
 ## Issues
@@ -54,7 +54,7 @@ Key, type, title, description, status, Assignee, reporter, Agent and Claim, pare
 
 ### Schemes, types and fields
 
-- A **Scheme** defines issue types, their fields, their Workflows and which types may be parents of which. Projects inherit their parent's Scheme unless they override it.
+- A **Scheme** defines issue types, their fields, their Workflows and which types may be parents of which. Projects inherit their parent's Scheme unless they override it. Fields are defined once for the whole Scheme, and each type lists the fields it carries ([ADR 0022](../decisions/0022-the-scheme-is-read-from-a-workspace-file-and-a-repo-file.md)).
 - **Default types**: Epic, Story, Task, Bug, Sub-task, Spike (covers research and investigation) and Design. Any can be removed; hierarchy limits are off unless configured.
 - **Field types**: text, rich text, number, date, boolean, single select, multi select, person, version, URL, Issue reference, file paths and code anchor.
 - Behaviour comes from fields, not type names: any type can carry a code anchor or file paths.
