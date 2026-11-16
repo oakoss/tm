@@ -496,6 +496,68 @@ impl Store {
         Ok(current(&self.conn, issue)?.map(|claim| ClaimState::at(claim, at_ms)))
     }
 
+    /// Writes `drafts` finishing `issue`, its move into done or cancelled,
+    /// with what finishing implies in the same batch: its Claim released,
+    /// lapsed or not, and its question cleared. Both are read inside the
+    /// write, so neither can change in between. With `guarded`, an Agent's
+    /// finish is refused while another session holds the Claim (ADR 0009).
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::AlreadyClaimed`], or as [`Store::write`].
+    pub fn finish(
+        &mut self,
+        actor: &Actor,
+        (project, issue): (tm_core::ProjectId, Uuid),
+        mut drafts: Vec<Draft>,
+        (guarded, options): (bool, &WriteOptions),
+    ) -> Result<Written<Vec<Op>>, StoreError> {
+        let mut options = options.clone();
+        // A version is judged from what the drafts write; with none, it is
+        // judged here, as a write of nothing would be.
+        if drafts.is_empty()
+            && let Some(based_on) = options.based_on.take()
+        {
+            self.check_version(issue, based_on, &[])?;
+        }
+        let draft = |change| Draft {
+            actor: actor.clone(),
+            project,
+            subject: issue,
+            change,
+        };
+        let finishing = |tx: &Transaction<'_>, at_ms: i64| {
+            let mut more = Vec::new();
+            if crate::validate::has_value(tx, issue, tm_core::scheme::WAITING_ON)? {
+                more.push(draft(crate::set(
+                    tm_core::scheme::WAITING_ON,
+                    serde_json::Value::Null,
+                )));
+            }
+            if let Some(claim) = finishing(tx, actor, issue, at_ms, guarded)? {
+                more.push(draft(Change::Claim {
+                    action: ClaimAction::Release { claim: claim.id },
+                }));
+            }
+            Ok(more)
+        };
+        let drafts = drafts.drain(..).map(|draft| (draft, None)).collect();
+        self.write_with(drafts, &options, finishing, true, None)
+    }
+
+    /// Refuses as [`Store::finish`] would, ahead of the write, which checks
+    /// again.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::AlreadyClaimed`], [`StoreError::Clock`] or any SQLite
+    /// failure.
+    pub fn check_finish(&self, actor: &Actor, issue: Uuid) -> Result<(), StoreError> {
+        let at_ms = self.utc_ms()?;
+        self.read(|store| finishing(&store.conn, actor, issue, at_ms, true).map(drop))
+            .map_err(|err| err.named(&self.conn))
+    }
+
     /// The Claims `agent` took for `on_behalf_of`, held and lapsed, each by
     /// Issue id.
     ///
@@ -556,6 +618,31 @@ impl Store {
             change: Change::Claim { action },
         })
     }
+}
+
+/// The Claim a finish of `issue` releases, held or lapsed; with `guarded`,
+/// refused for an Agent while another session holds it.
+fn finishing(
+    conn: &Connection,
+    actor: &Actor,
+    issue: Uuid,
+    at_ms: i64,
+    guarded: bool,
+) -> Result<Option<Claim>, StoreError> {
+    let Some(claim) = current(conn, issue)? else {
+        return Ok(None);
+    };
+    if guarded
+        && actor.is_agent()
+        && let ClaimState::Held(holder) = ClaimState::at(claim.clone(), at_ms)
+        && !holder.taken_by(actor)
+    {
+        return Err(StoreError::AlreadyClaimed {
+            issue: issue.into(),
+            holder: Box::new(holder),
+        });
+    }
+    Ok(Some(claim))
 }
 
 pub(crate) fn current(conn: &Connection, issue: Uuid) -> Result<Option<Claim>, StoreError> {

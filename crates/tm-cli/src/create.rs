@@ -1,14 +1,13 @@
 //! `tm create`: a new Issue in the Project the working directory maps to.
 
 use serde_json::{Value, json};
-use tm_core::Change;
-use tm_core::scheme::{Category, FieldType, Scheme};
-use tm_store::{Draft, NewIssue, StoreError, WriteOptions};
+use tm_core::scheme::{FieldType, Scheme};
+use tm_store::{NewIssue, StoreError};
 use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::fields::{self, quoted, split_pair, typed};
-use crate::follow::{self, Starts};
+use crate::follow;
 use crate::here::{self, Here};
 use crate::mention;
 use crate::output::Output;
@@ -69,57 +68,24 @@ fn write(here: &mut Here, mut create: Create) -> Result<(Output, Vec<String>), C
         }
     }
     let create = &create;
-    let issue = Uuid::now_v7();
-    let changes = changes(&scheme, create, parent);
+    let new = new_issue(&scheme, create, parent);
     let mut warnings = identity.warnings.clone();
-    warnings.extend(fields::entity_warnings(&changes));
-    let active = create.issue_type.as_deref().is_some_and(|issue_type| {
-        status(&changes).and_then(|status| scheme.category(issue_type, status))
-            == Some(Category::Active)
-    });
-    let drafts = changes
-        .into_iter()
-        .map(|change| Draft {
-            actor: identity.actor.clone(),
-            project,
-            subject: issue,
-            change,
-        })
-        .collect();
-    let written = match parent {
-        Some(parent) if active => {
-            let options = WriteOptions::default();
-            here.store
-                .append_with_lineage(drafts, parent, &options, |lineage| {
-                    follow::starts(&scheme, lineage.issues(), lineage, &identity.actor)
-                })
-        }
-        _ => here
-            .store
-            .append_all(drafts)
-            .map(|ops| (ops, Starts::default())),
-    };
-    let (ops, starts) = match written {
-        Ok((written, starts)) => (here.passing(written), starts),
+    warnings.extend(fields::entity_warnings(&new.changes(&scheme)));
+    let (ops, created) = match here.store.create(&identity.actor, project, &new) {
+        Ok((written, created)) => (here.passing(written), created),
         Err(StoreError::MissingFields { fields, .. }) => {
             return Err(missing(&scheme, create, fields));
         }
         Err(err) => return Err(err.into()),
     };
-    let shown = follow::report(&here.store, show::render(here, issue)?, starts, issue)?;
+    let issue = created.issue;
+    let shown = show::render(here, issue)?;
+    let shown = follow::report(&here.store, shown, created.starts, issue)?;
     let output = here.undoable(shown, ops[0].op_id, &identity.actor)?;
     Ok((output, warnings))
 }
 
-/// The Status `changes` leave, the last one set.
-fn status(changes: &[Change]) -> Option<&str> {
-    changes.iter().rev().find_map(|change| match change {
-        Change::SetField { field, value, .. } if field == "status" => value.as_str(),
-        _ => None,
-    })
-}
-
-fn changes(scheme: &Scheme, create: &Create, parent: Option<Uuid>) -> Vec<Change> {
+fn new_issue(scheme: &Scheme, create: &Create, parent: Option<Uuid>) -> NewIssue {
     NewIssue {
         issue_type: create.issue_type.clone(),
         title: create.title.clone(),
@@ -131,7 +97,6 @@ fn changes(scheme: &Scheme, create: &Create, parent: Option<Uuid>) -> Vec<Change
             .collect(),
         labels: create.labels.clone(),
     }
-    .changes(scheme)
 }
 
 /// `missing_fields` with each field's allowed values. Without a type the

@@ -3,6 +3,8 @@
 use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, OptionalExtension};
+use tm_core::scheme::Category;
+use tm_core::{Actor, Scheme};
 use uuid::Uuid;
 
 use crate::apply::uuid_from;
@@ -59,6 +61,100 @@ impl Store {
         )?;
         Ok((ops, made))
     }
+
+    /// [`Store::write`] for a move of `issue` into an active Status by
+    /// `actor`, starting its ancestors as [`Lineage::start_parents`] does,
+    /// read inside the same write.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::write`].
+    pub fn write_starting_parents(
+        &mut self,
+        actor: &Actor,
+        drafts: Vec<Draft>,
+        issue: Uuid,
+        options: &WriteOptions,
+    ) -> Result<(Written<Vec<Op>>, Vec<ParentStart>), StoreError> {
+        let scheme = self.scheme.clone();
+        self.append_with_lineage(drafts, issue, options, |lineage| {
+            lineage.start_parents(&scheme, actor)
+        })
+    }
+}
+
+/// What starting one parent came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParentStart {
+    pub id: Uuid,
+    pub key: Option<String>,
+    pub outcome: ParentOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParentOutcome {
+    /// Moved from `from` into `to`, the first active Status of its Workflow.
+    Started { from: String, to: String },
+    /// Archived, which wins over a Claim on it.
+    Archived,
+    /// Another session's live Claim, left to its holder.
+    Held(Claim),
+    /// Its Issue type, whose Workflow has no active Status.
+    NoActiveStatus(String),
+}
+
+/// The moves starting each of `parents` still in triage or todo, as a child
+/// entering an active Status does. An Agent leaves one another session's
+/// Claim holds in `lineage` to its holder.
+pub(crate) fn start(
+    scheme: &Scheme,
+    parents: &[IssueView],
+    lineage: &Lineage,
+    actor: &Actor,
+) -> (Vec<Draft>, Vec<ParentStart>) {
+    let mut drafts = Vec::new();
+    let mut starts = Vec::new();
+    for parent in parents {
+        let status = parent
+            .fields
+            .get("status")
+            .and_then(serde_json::Value::as_str);
+        let (Some(Category::Triage | Category::Todo), Some(from)) = (parent.category, status)
+        else {
+            continue;
+        };
+        let issue_type = parent.issue_type().unwrap_or_default();
+        let to = scheme
+            .workflow(issue_type)
+            .and_then(|workflow| workflow.of_category(Category::Active).next());
+        let held = lineage
+            .held(parent.id)
+            .filter(|holder| actor.is_agent() && !holder.taken_by(actor));
+        let outcome = if parent.fields.get("archived") == Some(&serde_json::json!(true)) {
+            ParentOutcome::Archived
+        } else if let Some(holder) = held {
+            ParentOutcome::Held(holder.clone())
+        } else if let Some(to) = to {
+            drafts.push(Draft {
+                actor: actor.clone(),
+                project: parent.project,
+                subject: parent.id,
+                change: crate::set("status", serde_json::json!(to.id)),
+            });
+            ParentOutcome::Started {
+                from: from.to_owned(),
+                to: to.id.clone(),
+            }
+        } else {
+            ParentOutcome::NoActiveStatus(issue_type.to_owned())
+        };
+        starts.push(ParentStart {
+            id: parent.id,
+            key: parent.key.clone(),
+            outcome,
+        });
+    }
+    (drafts, starts)
 }
 
 /// An Issue and its ancestors, nearest first, with the live Claims on them,
@@ -79,6 +175,18 @@ impl Lineage {
     #[must_use]
     pub fn held(&self, issue: Uuid) -> Option<&Claim> {
         self.held.get(&issue)
+    }
+
+    /// The moves starting the Issue's ancestors, as its entering an active
+    /// Status does.
+    #[must_use]
+    pub fn start_parents(&self, scheme: &Scheme, actor: &Actor) -> (Vec<Draft>, Vec<ParentStart>) {
+        start(
+            scheme,
+            self.issues.get(1..).unwrap_or_default(),
+            self,
+            actor,
+        )
     }
 }
 

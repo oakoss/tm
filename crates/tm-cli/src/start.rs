@@ -6,14 +6,14 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 use tm_core::scheme::Category;
 use tm_core::{Actor, Change, Op, Scheme};
-use tm_store::{Claim, Draft, IssueView, Lineage, WriteOptions};
+use tm_store::{Claim, Draft, IssueView, Lineage, ParentStart, WriteOptions};
 use uuid::Uuid;
 
 use crate::claim::{self, Lasts};
 use crate::edit::{self, Changed};
 use crate::error::CliError;
 use crate::fields::set;
-use crate::follow::{self, Starts};
+use crate::follow;
 use crate::here::{self, Here};
 use crate::output::{Output, printable};
 use crate::show;
@@ -26,7 +26,7 @@ pub(crate) struct Begun {
     changes: Vec<Change>,
     warnings: Vec<String>,
     /// Its parents the write started too.
-    starts: Starts,
+    starts: Vec<ParentStart>,
 }
 
 pub(crate) struct Started {
@@ -168,7 +168,7 @@ pub(crate) fn report(
 /// todo into its first active Status, and its parents with it, and making the
 /// human `actor` works for its Assignee when it has none.
 pub(crate) fn begin(scheme: &Scheme, actor: &Actor, lineage: &Lineage) -> (Vec<Draft>, Begun) {
-    let Some((issue, parents)) = lineage.issues().split_first() else {
+    let Some(issue) = lineage.issues().first() else {
         return (Vec::new(), Begun::default());
     };
     let mut begun = Begun::default();
@@ -205,7 +205,7 @@ pub(crate) fn begin(scheme: &Scheme, actor: &Actor, lineage: &Lineage) -> (Vec<D
         })
         .collect();
     if moved {
-        let (more, starts) = follow::starts(scheme, parents, lineage, actor);
+        let (more, starts) = lineage.start_parents(scheme, actor);
         drafts.extend(more);
         begun.starts = starts;
     }

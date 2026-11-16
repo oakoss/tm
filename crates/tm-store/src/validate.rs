@@ -544,7 +544,7 @@ fn stored_member(
         .optional()?)
 }
 
-fn has_value(tx: &Connection, issue_id: Uuid, field: &str) -> Result<bool, StoreError> {
+pub(crate) fn has_value(tx: &Connection, issue_id: Uuid, field: &str) -> Result<bool, StoreError> {
     Ok(tx
         .query_row(
             "SELECT 1 FROM field_values WHERE issue_id = ?1 AND field = ?2",

@@ -1,103 +1,48 @@
-//! Parents follow their children: a child entering an active Status starts
-//! each parent still in triage or todo in the same batch, and a child
-//! finishing or reopening prints the parent's matching move without making
-//! it, since a parent can carry work of its own. Only `tm move` and
-//! `tm create` follow; an import records what happened elsewhere.
+//! Parents follow their children: the store starts them as
+//! [`tm_store::Lineage::start_parents`] says, and a child finishing or reopening
+//! prints the parent's matching move without making it, since a parent can
+//! carry work of its own. An import does not follow: it records what
+//! happened elsewhere.
 
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
-use tm_core::Actor;
 use tm_core::scheme::{Category, Scheme};
-use tm_store::{Draft, IssueView, Lineage, Store, StoreError};
+use tm_store::{IssueView, ParentOutcome, ParentStart, Store, StoreError};
 use uuid::Uuid;
 
-use crate::fields::set;
 use crate::output::{Output, printable};
 
-/// The parents a write starts.
-#[derive(Default)]
-pub(crate) struct Starts {
-    /// Each started parent's text line and JSON entry.
-    started: Vec<(String, Value)>,
-    warnings: Vec<String>,
-}
-
-/// The moves starting each of `candidates` still in triage or todo, into the
-/// first active Status of its own Workflow. An Agent leaves one another
-/// session's Claim holds in `lineage` to its holder.
-pub(crate) fn starts(
-    scheme: &Scheme,
-    candidates: &[IssueView],
-    lineage: &Lineage,
-    actor: &Actor,
-) -> (Vec<Draft>, Starts) {
-    let mut drafts = Vec::new();
-    let mut starts = Starts::default();
-    for parent in candidates {
-        if !matches!(parent.category, Some(Category::Triage | Category::Todo)) {
-            continue;
-        }
-        let name = parent.shown_key();
-        if archived(parent) {
-            starts
-                .warnings
-                .push(format!("{name} was not started: it is archived"));
-            continue;
-        }
-        if actor.is_agent()
-            && let Some(holder) = lineage
-                .held(parent.id)
-                .filter(|holder| !holder.taken_by(actor))
-        {
-            starts.warnings.push(format!(
-                "{name} was not started: {} holds it",
-                crate::claim::holder(holder)
-            ));
-            continue;
-        }
-        let issue_type = text(parent, "type");
-        let Some(to) = first(scheme, issue_type, Category::Active) else {
-            starts.warnings.push(format!(
-                "{name} was not started: Issue type {issue_type} has no active Status"
-            ));
-            continue;
-        };
-        let from = parent
-            .fields
-            .get("status")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        drafts.push(Draft {
-            actor: actor.clone(),
-            project: parent.project,
-            subject: parent.id,
-            change: set("status", json!(to)),
-        });
-        starts.started.push((
-            format!(
-                "also started {name} ({} → {to})",
-                printable(from.as_deref().unwrap_or("none"))
-            ),
-            json!({ "id": parent.id, "key": parent.key, "from": from, "to": to }),
-        ));
-    }
-    (drafts, starts)
-}
-
-/// `output` with the parents `starts` moved, and the move `child`'s parent
-/// may want now: closing it when `child` finished its last open child, or
-/// reopening it when `child` is open under a finished parent.
+/// `output` with the parents `starts` moved or left, and the move `child`'s
+/// parent may want now: closing it when `child` finished its last open child,
+/// or reopening it when `child` is open under a finished parent.
 pub(crate) fn report(
     store: &Store,
     mut output: Output,
-    starts: Starts,
+    starts: Vec<ParentStart>,
     child: Uuid,
 ) -> Result<Output, StoreError> {
-    let (lines, started): (Vec<String>, Vec<Value>) = starts.started.into_iter().unzip();
-    output.warnings.extend(starts.warnings);
-    for line in &lines {
-        let _ = writeln!(output.text, "{line}");
+    let mut started = Vec::new();
+    for start in starts {
+        let name = tm_store::shown_key(start.key.as_deref(), start.id);
+        let why = match start.outcome {
+            ParentOutcome::Started { from, to } => {
+                let shown = printable(&from);
+                let _ = writeln!(output.text, "also started {name} ({shown} → {to})");
+                started.push(json!({ "id": start.id, "key": start.key, "from": from, "to": to }));
+                continue;
+            }
+            ParentOutcome::Archived => "it is archived".to_owned(),
+            ParentOutcome::Held(holder) => {
+                format!("{} holds it", crate::claim::holder(&holder))
+            }
+            ParentOutcome::NoActiveStatus(issue_type) => {
+                format!("Issue type {issue_type} has no active Status")
+            }
+        };
+        output
+            .warnings
+            .push(format!("{name} was not started: {why}"));
     }
     let mut commands = Vec::new();
     if let Some((message, command)) = next(store, child, &mut output.warnings)? {
