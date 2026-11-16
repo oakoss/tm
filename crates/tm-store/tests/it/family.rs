@@ -2,10 +2,13 @@
 //! itself.
 
 use serde_json::json;
-use tm_store::{IssueView, Store, WriteOptions};
+use tm_core::Actor;
+use tm_store::{Draft, IssueView, ParentOutcome, Store, WriteOptions};
 use uuid::Uuid;
 
-use crate::support::{ManualClock, TempDir, draft, field, new_issue, open, set_field, unpassed};
+use crate::support::{
+    ManualClock, TempDir, claude, draft, field, jace, new_issue, open, set_field, unpassed,
+};
 
 fn ids(views: &[IssueView]) -> Vec<Uuid> {
     views.iter().map(|view| view.id).collect()
@@ -69,6 +72,85 @@ fn the_lineage_stops_at_a_cycle_and_leaves_out_a_missing_ancestor() {
 
     force_parent(&store, c, Uuid::now_v7());
     assert_eq!(lineage(&mut store, c), [c]);
+}
+
+#[test]
+fn an_agent_starting_work_starts_each_parent_but_one_archived_or_held_elsewhere() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let [task, archived, held, epic] = [(); 4].map(|()| new_issue(&mut store));
+    let under =
+        |issue: Uuid, above: Uuid| draft(issue, set_field("parent", json!(above.to_string())));
+    unpassed(
+        store
+            .append_all(vec![
+                under(task, archived),
+                under(archived, held),
+                under(held, epic),
+            ])
+            .unwrap(),
+    );
+    let codex = Actor::agent("codex", "jace");
+    store.take(&codex, held, None).unwrap();
+    // Archived as well as held, so archived must win.
+    store.take(&codex, archived, None).unwrap();
+    let archive = Draft {
+        actor: codex.clone(),
+        ..draft(archived, set_field("archived", json!(true)))
+    };
+    unpassed(store.append(archive).unwrap());
+
+    let start = |store: &mut Store, actor: &Actor| {
+        let moved = Draft {
+            actor: actor.clone(),
+            ..draft(task, set_field("status", json!("in_progress")))
+        };
+        let options = WriteOptions::default();
+        let (written, starts) = store
+            .write_starting_parents(actor, vec![moved], task, &options)
+            .unwrap();
+        let mut passed = Vec::new();
+        written.into_inner(&mut passed);
+        let starts = starts
+            .into_iter()
+            .map(|start| (start.id, start.outcome))
+            .collect::<Vec<_>>();
+        (starts, passed)
+    };
+    let (starts, passed) = start(&mut store, &claude());
+    assert_eq!(passed, []);
+    let [
+        (first, ParentOutcome::Archived),
+        (second, ParentOutcome::Held(holder)),
+        (third, ParentOutcome::Started { from, to }),
+    ] = starts.as_slice()
+    else {
+        panic!("{starts:?}");
+    };
+    assert_eq!([*first, *second, *third], [archived, held, epic]);
+    assert_eq!(holder.agent, "codex");
+    assert_eq!(
+        (from.as_deref(), to.as_str()),
+        (Some("todo"), "in_progress")
+    );
+    assert_eq!(field(&store, epic, "status"), Some(json!("in_progress")));
+    assert_eq!(field(&store, held, "status"), Some(json!("todo")));
+    assert_eq!(field(&store, archived, "status"), Some(json!("todo")));
+
+    unpassed(
+        store
+            .append(draft(task, set_field("status", json!("todo"))))
+            .unwrap(),
+    );
+    let (starts, passed) = start(&mut store, &jace());
+    assert_eq!(passed.len(), 1, "a human's start goes past codex's Claim");
+    assert!(
+        matches!(
+            starts.as_slice(),
+            [(_, ParentOutcome::Archived), (id, ParentOutcome::Started { .. })] if *id == held
+        ),
+        "a human starts a parent another session holds: {starts:?}"
+    );
 }
 
 #[test]

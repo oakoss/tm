@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::error::CliError;
 use crate::fields::{self, quoted, split_pair, typed};
-use crate::follow::{self, Starts};
+use crate::follow;
 use crate::here::{self, Here};
 use crate::mention;
 use crate::output::Output;
@@ -91,13 +91,10 @@ fn write(here: &mut Here, mut create: Create) -> Result<(Output, Vec<String>), C
             let options = WriteOptions::default();
             here.store
                 .append_with_lineage(drafts, parent, &options, |lineage| {
-                    follow::starts(&scheme, lineage.issues(), lineage, &identity.actor)
+                    tm_store::start_parents(&scheme, lineage.issues(), lineage, &identity.actor)
                 })
         }
-        _ => here
-            .store
-            .append_all(drafts)
-            .map(|ops| (ops, Starts::default())),
+        _ => here.store.append_all(drafts).map(|ops| (ops, Vec::new())),
     };
     let (ops, starts) = match written {
         Ok((written, starts)) => (here.passing(written), starts),

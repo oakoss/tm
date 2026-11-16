@@ -69,7 +69,7 @@ pub use claim::{
 };
 pub use creation::NewIssue;
 pub use export::{Exported, Restored, copy_store, read_export};
-pub use family::Lineage;
+pub use family::{Lineage, ParentOutcome, ParentStart, start_parents};
 pub use history::HistoryEntry;
 pub use import::{Conflict, RecordOutcome, RecordsImported};
 pub use import_list::{ListOutcome, Passed};

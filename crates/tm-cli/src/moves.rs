@@ -12,7 +12,7 @@ use tm_store::{Draft, IssueView, StoreError, WriteOptions};
 use crate::edit::{self, Changed};
 use crate::error::CliError;
 use crate::fields::{set, split_pair, typed};
-use crate::follow::{self, Starts};
+use crate::follow;
 use crate::here::{self, Here};
 use crate::output::Output;
 use crate::show;
@@ -146,15 +146,12 @@ pub(crate) fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>
     let (ops, starts) = if category == Some(Category::Active) {
         let (written, starts) = here
             .store
-            .append_with_lineage(drafts(), id, &options, |lineage| {
-                let parents = lineage.issues().get(1..).unwrap_or_default();
-                follow::starts(&scheme, parents, lineage, &identity.actor)
-            })
+            .write_starting_parents(&identity.actor, drafts(), id, &options)
             .map_err(forced)?;
         (here.passing(written), starts)
     } else if !finished {
         let written = here.store.write(drafts(), &options).map_err(forced)?;
-        (here.passing(written), Starts::default())
+        (here.passing(written), Vec::new())
     } else {
         let issue = (view.project, id);
         let written = here
@@ -166,7 +163,7 @@ pub(crate) fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>
         if ops.is_empty() {
             return Ok((unchanged(here, &view)?, identity.warnings));
         }
-        (ops, Starts::default())
+        (ops, Vec::new())
     };
     let mut shown = show::render(here, id)?;
     shown.text = lines(&view, &ops);
