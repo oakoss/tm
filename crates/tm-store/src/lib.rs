@@ -29,6 +29,7 @@ mod read;
 mod ready;
 mod record;
 mod schema;
+pub mod scheme_file;
 mod session;
 mod shortlist;
 mod snapshot;
@@ -870,8 +871,8 @@ impl Store {
     /// Replaces the Scheme writes are checked against and reads are labelled
     /// with. The projection does not depend on it, so no rebuild follows.
     #[must_use]
-    pub fn with_scheme(mut self, scheme: Scheme) -> Self {
-        self.scheme = Arc::new(scheme);
+    pub fn with_scheme(mut self, scheme: impl Into<Arc<Scheme>>) -> Self {
+        self.scheme = scheme.into();
         self.last_write = None;
         self
     }

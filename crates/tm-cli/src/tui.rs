@@ -76,13 +76,15 @@ fn shown(at: &Place, here: here::Here) -> Result<Result<tm_tui::Ended, CliError>
     // file, so the list's reader is opened again on each change, and first
     // after the watch starts, so no change between the two is missed.
     let snapshot = here.snapshot.is_some();
+    let scheme = std::sync::Arc::clone(here.store.scheme());
     let workspace = here.workspace;
     let open = || {
-        if snapshot {
+        let store = if snapshot {
             Store::open_snapshot(&workspace.snapshot_path(), workspace.id)
         } else {
             Store::open_existing(&workspace.store_path(), workspace.id)
-        }
+        };
+        store.map(|store| store.with_scheme(std::sync::Arc::clone(&scheme)))
     };
     let mut watch = watch::watch()?;
     let store = open()?;

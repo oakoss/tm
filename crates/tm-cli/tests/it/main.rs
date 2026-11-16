@@ -29,6 +29,7 @@ mod ready;
 mod remember;
 mod scan;
 mod scheme;
+mod scheme_files;
 mod sessions;
 mod setup;
 mod shapes;

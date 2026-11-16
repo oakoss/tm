@@ -251,7 +251,8 @@ pub(crate) fn import_records(
         let target = workspace::locate(&home, &found)?;
         let staged = Staged::new(&std::env::temp_dir())?;
         tm_store::copy_store(&target.store_path(), &staged.store())?;
-        let mut copy = Store::open_existing(&staged.store(), target.id)?;
+        let scheme = here::scheme_at(&found, &target, &cwd)?;
+        let mut copy = Store::open_existing(&staged.store(), target.id)?.with_scheme(scheme);
         // The copy's batches, on success or refusal, are gone with it.
         let key = project(&copy)?;
         let (mut imported, dropped) = write(&mut copy, &key).map_err(|err| match err {

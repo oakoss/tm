@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tm_core::{Actor, ProjectId};
+use tm_store::scheme_file::{self, SchemeFileError};
 use tm_store::workspace::{self, Found, Workspace, WorkspaceError};
 use tm_store::{Claim, Store, StoreError, Workplace, Written};
 use uuid::Uuid;
@@ -72,6 +73,10 @@ pub(crate) struct Here {
     passed: Vec<Claim>,
 }
 
+/// A Here, with the Scheme file that could not be read when there is one; its
+/// store then holds the built-in Scheme, and only `tm doctor` goes on.
+pub(crate) type PastScheme = (Here, Option<SchemeFileError>);
+
 impl Here {
     /// The environment this Here reads its writer and reader from.
     pub(crate) fn env(&self) -> Env {
@@ -136,7 +141,9 @@ fn open_warning(
 ) -> Result<Here, CliError> {
     let found = place.found()?;
     match workspace::workspace_for(&place.home, &found) {
-        Ok((workspace, store)) => opened(place, found, workspace, store, warnings),
+        Ok((workspace, store)) => {
+            opened(place, found, workspace, store, warnings).and_then(schemed)
+        }
         Err(err) => Err(match refused(&err) {
             Some(path) => CliError::new(
                 "read_only",
@@ -163,6 +170,16 @@ pub(crate) fn read() -> Result<Here, CliError> {
 
 /// [`read`] at `place`.
 pub(crate) fn read_at(place: &Place) -> Result<Here, CliError> {
+    read_past_scheme_at(place).and_then(schemed)
+}
+
+/// [`read`] for `tm doctor`, which reports a Scheme file that cannot be read
+/// rather than stopping at it.
+pub(crate) fn read_past_scheme() -> Result<PastScheme, CliError> {
+    read_past_scheme_at(&Place::process()?)
+}
+
+fn read_past_scheme_at(place: &Place) -> Result<PastScheme, CliError> {
     let found = place.found()?;
     let store_path = match workspace::workspace_for(&place.home, &found) {
         Ok((workspace, store)) => {
@@ -185,11 +202,11 @@ pub(crate) fn read_at(place: &Place) -> Result<Here, CliError> {
         ));
     };
     let store = Store::open_snapshot(&path, workspace.id)?;
-    let mut here = opened(place, found, workspace, store, unapplied_warning)?;
+    let (mut here, fault) = opened(place, found, workspace, store, unapplied_warning)?;
     let published = snapshot_read(published);
     here.warnings.insert(0, published.clone());
     here.snapshot = Some(published);
-    Ok(here)
+    Ok((here, fault))
 }
 
 /// The warning that what is shown was read from a Snapshot published at
@@ -239,7 +256,7 @@ fn opened(
     workspace: Workspace,
     store: Store,
     warnings: fn(&Store) -> Result<Vec<String>, CliError>,
-) -> Result<Here, CliError> {
+) -> Result<PastScheme, CliError> {
     let cwd = canonical(&place.cwd)?;
     let log_end = store.log_end()?;
     let warnings = warnings(&store)?;
@@ -247,7 +264,11 @@ fn opened(
         dir: Some(found.dir.display().to_string()),
         harnesses: identity::harness_sessions(place.env),
     });
-    Ok(Here {
+    let (store, fault) = match scheme_at(&found, &workspace, &cwd) {
+        Ok(scheme) => (store.with_scheme(scheme), None),
+        Err(fault) => (store, Some(fault)),
+    };
+    let here = Here {
         home: place.home.clone(),
         found,
         cwd,
@@ -258,7 +279,35 @@ fn opened(
         warnings,
         env: place.env,
         passed: Vec::new(),
-    })
+    };
+    Ok((here, fault))
+}
+
+/// The Scheme for the Project `found` maps `cwd` to, read from `workspace`
+/// and the repo (ADR 0022). `cwd` is canonical, as [`canonical`] returns.
+///
+/// # Errors
+///
+/// [`SchemeFileError`] when a Scheme file cannot be used.
+pub(crate) fn scheme_at(
+    found: &Found,
+    workspace: &Workspace,
+    cwd: &Path,
+) -> Result<tm_core::Scheme, SchemeFileError> {
+    let relative = cwd.strip_prefix(&found.dir).unwrap_or(cwd);
+    let project = found.file.project_for(relative);
+    let mapped: Vec<&str> = std::iter::once(found.file.project.as_str())
+        .chain(found.file.paths.iter().map(|path| path.project.as_str()))
+        .collect();
+    scheme_file::read(&workspace.dir, Some(&found.dir), &mapped, project)
+}
+
+/// The Here, unless its Scheme file could not be read (ADR 0022).
+fn schemed((here, fault): PastScheme) -> Result<Here, CliError> {
+    match fault {
+        Some(fault) => Err(fault.into()),
+        None => Ok(here),
+    }
 }
 
 /// The path writes to Issues and Claims take: the store's warnings come

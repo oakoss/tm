@@ -602,7 +602,8 @@ fn claim_release_and_doctor_answer_in_fixed_shapes() {
             "reason": "unknown field",
             "seq": "[seq]"
           }
-        ]
+        ],
+        "scheme": null
       },
       "schema_version": 1,
       "warnings": []
