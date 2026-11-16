@@ -3,11 +3,12 @@
 
 use serde_json::json;
 use tm_core::Actor;
-use tm_store::{Draft, IssueView, NewIssue, ParentOutcome, Store, WriteOptions};
+use tm_store::{Draft, IssueView, NewIssue, ParentOutcome, ParentStart, Store, WriteOptions};
 use uuid::Uuid;
 
 use crate::support::{
-    ManualClock, PROJECT, TempDir, claude, draft, field, jace, new_issue, open, set_field, unpassed,
+    ManualClock, PROJECT, TempDir, claude, draft, field, jace, key, new_issue, open, set_field,
+    unpassed,
 };
 
 fn ids(views: &[IssueView]) -> Vec<Uuid> {
@@ -153,7 +154,15 @@ fn an_agent_starting_work_starts_each_parent_but_one_archived_or_held_elsewhere(
 fn a_new_issue_starts_its_parents_only_when_created_active() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000));
-    let parent = new_issue(&mut store);
+    let [parent, grandparent] = [(); 2].map(|()| new_issue(&mut store));
+    unpassed(
+        store
+            .append(draft(
+                parent,
+                set_field("parent", json!(grandparent.to_string())),
+            ))
+            .unwrap(),
+    );
     let child = |status: &str| NewIssue {
         issue_type: Some("task".into()),
         title: Some("t".into()),
@@ -171,17 +180,22 @@ fn a_new_issue_starts_its_parents_only_when_created_active() {
         .create(&jace(), PROJECT, &child("in_progress"))
         .unwrap();
     let ops = unpassed(written);
-    let started = ParentOutcome::Started {
-        from: "todo".into(),
-        to: "in_progress".into(),
+    let started = |id: Uuid| ParentStart {
+        id,
+        key: Some(key(&store, id)),
+        outcome: ParentOutcome::Started {
+            from: "todo".into(),
+            to: "in_progress".into(),
+        },
     };
-    assert_eq!(created.starts.len(), 1);
-    assert_eq!(created.starts[0].outcome, started);
-    assert_eq!(field(&store, parent, "status"), Some(json!("in_progress")));
-    assert!(
-        ops.iter().any(|op| op.subject == parent),
-        "the start shares the create's batch"
-    );
+    assert_eq!(created.starts, [started(parent), started(grandparent)]);
+    for above in [parent, grandparent] {
+        assert_eq!(field(&store, above, "status"), Some(json!("in_progress")));
+        assert!(
+            ops.iter().any(|op| op.subject == above),
+            "the start shares the create's batch"
+        );
+    }
 }
 
 #[test]
