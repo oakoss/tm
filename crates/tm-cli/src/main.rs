@@ -56,6 +56,7 @@ use clap::{ArgGroup, CommandFactory, FromArgMatches as _, Parser, Subcommand};
 use serde_json::json;
 use tm_core::Scheme;
 use tm_core::scheme::Category;
+use tm_store::scheme_file::{Layered, Origin};
 
 use crate::error::CliError;
 use crate::output::Output;
@@ -706,18 +707,7 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             let help = cli().render_help().to_string();
             Ok(Output::new(help.clone(), json!({ "help": help })))
         }
-        Some(Command::Scheme {
-            action: None | Some(SchemeAction::Show { issue_type: None }),
-        }) => {
-            let scheme = Scheme::built_in();
-            Ok(Output::new(scheme_text(&scheme), scheme_json(&scheme)))
-        }
-        Some(Command::Scheme {
-            action:
-                Some(SchemeAction::Show {
-                    issue_type: Some(issue_type),
-                }),
-        }) => scheme_type(&Scheme::built_in(), &issue_type),
+        Some(Command::Scheme { action }) => scheme_show(action),
         Some(Command::Init { key, name, yes }) => init::run(&init::Init { key, name, yes }, json),
         Some(Command::Start { issue, lasts }) => start::run(&issue, &lasts),
         Some(Command::Next { peek, lasts }) => next::run(peek, &lasts),
@@ -865,15 +855,103 @@ fn usage_message(rendered: &str) -> (String, Option<String>) {
     (message, (!tips.is_empty()).then(|| tips.join("; ")))
 }
 
-fn scheme_json(scheme: &Scheme) -> serde_json::Value {
-    let mut json = serde_json::to_value(scheme).expect("a Scheme always serializes");
+/// `tm scheme` and `tm scheme show [TYPE]`.
+fn scheme_show(action: Option<SchemeAction>) -> Result<Output, CliError> {
+    let (layered, warnings) = loaded_scheme()?;
+    let mut output = match action {
+        None | Some(SchemeAction::Show { issue_type: None }) => {
+            Output::new(scheme_text(&layered), scheme_json(&layered))
+        }
+        Some(SchemeAction::Show {
+            issue_type: Some(issue_type),
+        }) => scheme_type(&layered, &issue_type)?,
+    };
+    output.warnings = warnings;
+    Ok(output)
+}
+
+/// The Scheme the working directory's Project uses (ADR 0022); outside any
+/// repo file, the built-in Scheme, with a warning saying so.
+fn loaded_scheme() -> Result<(Layered, Vec<String>), CliError> {
+    match here::find() {
+        Ok((home, cwd, found)) => {
+            let workspace = tm_store::workspace::locate(&home, &found)?;
+            let cwd = here::canonical(&cwd)?;
+            Ok((here::layered_at(&found, &workspace, &cwd)?, Vec::new()))
+        }
+        Err(err) if err.code == "no_workspace" => {
+            let built_in = Layered {
+                scheme: Scheme::built_in(),
+                origins: std::collections::BTreeMap::new(),
+            };
+            let warning = "no repo file maps this directory, so this is the built-in Scheme";
+            Ok((built_in, vec![warning.to_owned()]))
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Each field's JSON with the layer it comes from.
+fn fields_json(layered: &Layered) -> serde_json::Value {
+    let fields = layered.scheme.fields.iter().map(|field| {
+        let mut json = serde_json::to_value(field).expect("a field always serializes");
+        json["from"] = json!(layered.origin(&field.name));
+        json
+    });
+    json!(fields.collect::<Vec<_>>())
+}
+
+fn scheme_json(layered: &Layered) -> serde_json::Value {
+    let mut json = serde_json::to_value(&layered.scheme).expect("a Scheme always serializes");
+    json["fields"] = fields_json(layered);
     json["status_categories"] = serde_json::json!(Category::ALL);
     json
 }
 
+/// A field's line: its id and label, what it takes, and notes such as the
+/// layer it comes from when a file defines it.
+fn field_line(layered: &Layered, field: &tm_core::scheme::Field, computed: bool) -> String {
+    let mut notes = Vec::new();
+    if field.required {
+        notes.push("required");
+    }
+    if computed && field.derived {
+        notes.push("computed");
+    }
+    match layered.origin(&field.name) {
+        Origin::BuiltIn => {}
+        Origin::Workspace => notes.push("from the Workspace's Scheme"),
+        Origin::Repo => notes.push("from the repo's Scheme"),
+    }
+    let notes = if notes.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", notes.join(", "))
+    };
+    let options: Vec<String> = field
+        .options
+        .iter()
+        .map(|option| {
+            if option.label == option.id {
+                option.id.clone()
+            } else {
+                format!("{} ({})", option.id, output::printable(&option.label))
+            }
+        })
+        .collect();
+    let options = if options.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", options.join(", "))
+    };
+    let label = output::printable(&field.label);
+    format!("field {} ({label}){notes}{options}", field.name)
+}
+
 /// One Issue type: its Workflow's Statuses in order and every field, marked
 /// required where the Scheme requires it of every Issue.
-fn scheme_type(scheme: &Scheme, wanted: &str) -> Result<Output, CliError> {
+fn scheme_type(layered: &Layered, wanted: &str) -> Result<Output, CliError> {
+    let scheme = &layered.scheme;
     let issue_type = scheme
         .types
         .iter()
@@ -887,7 +965,7 @@ fn scheme_type(scheme: &Scheme, wanted: &str) -> Result<Output, CliError> {
     let data = json!({
         "type": issue_type,
         "workflow": workflow,
-        "fields": scheme.fields,
+        "fields": fields_json(layered),
     });
     let mut text = format!("type {} ({})\n", issue_type.id, issue_type.label);
     if let Some(workflow) = workflow {
@@ -907,13 +985,13 @@ fn scheme_type(scheme: &Scheme, wanted: &str) -> Result<Output, CliError> {
         }
     }
     for field in scheme.fields.iter().filter(|field| !field.derived) {
-        let required = if field.required { " [required]" } else { "" };
-        let _ = writeln!(text, "field {} ({}){required}", field.name, field.label);
+        let _ = writeln!(text, "{}", field_line(layered, field, false));
     }
     Ok(Output::new(text, data))
 }
 
-fn scheme_text(scheme: &Scheme) -> String {
+fn scheme_text(layered: &Layered) -> String {
+    let scheme = &layered.scheme;
     let mut out = String::new();
     let line = |out: &mut String, text: String| {
         let _ = writeln!(out, "{text}");
@@ -943,22 +1021,7 @@ fn scheme_text(scheme: &Scheme) -> String {
         }
     }
     for field in &scheme.fields {
-        let mut notes = Vec::new();
-        if field.required {
-            notes.push("required");
-        }
-        if field.derived {
-            notes.push("computed");
-        }
-        let notes = if notes.is_empty() {
-            String::new()
-        } else {
-            format!(" [{}]", notes.join(", "))
-        };
-        line(
-            &mut out,
-            format!("field {} ({}){notes}", field.name, field.label),
-        );
+        line(&mut out, field_line(layered, field, true));
     }
     out
 }

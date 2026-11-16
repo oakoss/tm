@@ -67,6 +67,89 @@ fn a_workspace_field_applies_and_a_repo_removal_leaves_its_values_readable() {
 }
 
 #[test]
+fn scheme_show_lists_the_loaded_fields_and_where_each_comes_from() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    fs::write(
+        workspace_dir(&scratch, &repo).join("scheme.toml"),
+        "[fields.area]\ntype = \"number\"\n",
+    )
+    .unwrap();
+    repo_scheme(
+        &repo,
+        "[projects.TM.fields.tier]\nlabel = \"Tier\"\ntype = \"single_select\"\noptions = [{ id = \"gold\", label = \"Gold\" }, { id = \"free\" }]\n",
+    );
+
+    let shown = tm(&scratch, &repo, &["--json", "scheme", "show"]);
+    let fields = data(&shown)["fields"].as_array().unwrap().clone();
+    let from = |name: &str| {
+        let field = fields.iter().find(|field| field["name"] == name).unwrap();
+        field["from"].clone()
+    };
+    assert_eq!(from("title"), "built_in");
+    assert_eq!(from("area"), "workspace");
+    assert_eq!(from("tier"), "repo");
+
+    let text = tm(&scratch, &repo, &["scheme", "show", "task"]);
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert!(
+        text.contains("field area (area) [from the Workspace's Scheme]\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("field tier (Tier) [from the repo's Scheme]: gold (Gold), free\n"),
+        "{text}"
+    );
+
+    repo_scheme(&repo, "[projects.TM.fields.tier]\ntype = \"colour\"\n");
+    let refused = tm(&scratch, &repo, &["--json", "scheme", "show"]);
+    assert!(!refused.status.success());
+    assert_eq!(doc(&refused)["error"], "invalid_scheme");
+
+    let outside = tm(&scratch, &scratch.0, &["--json", "scheme", "show"]);
+    assert!(outside.status.success(), "{outside:?}");
+    assert!(
+        doc(&outside)["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("built-in Scheme"),
+        "{outside:?}"
+    );
+}
+
+#[test]
+fn scheme_show_escapes_a_label_that_would_drive_the_terminal() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    repo_scheme(
+        &repo,
+        "[projects.TM.fields.tier]\nlabel = \"Tier\\u001b[2J\"\ntype = \"single_select\"\noptions = [{ id = \"gold\", label = \"Gold\\u202e\" }]\n",
+    );
+    let shown = tm(&scratch, &repo, &["scheme", "show"]);
+    let text = String::from_utf8_lossy(&shown.stdout);
+    assert!(
+        text.contains(
+            "field tier (Tier\\u{1b}[2J) [from the repo's Scheme]: gold (Gold\\u{202e})\n"
+        ),
+        "{text}"
+    );
+    let json = tm(&scratch, &repo, &["--json", "scheme", "show"]);
+    let tier = data(&json)["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|field| field["name"] == "tier")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        tier["label"], "Tier\u{1b}[2J",
+        "JSON keeps the label as written"
+    );
+}
+
+#[test]
 fn a_malformed_scheme_stops_commands_and_tm_doctor_reports_it() {
     let scratch = Scratch::new();
     let (repo, store, _) = initialized(&scratch);

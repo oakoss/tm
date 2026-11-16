@@ -122,10 +122,51 @@ pub fn resolve(
     mapped: &[&str],
     project: &str,
 ) -> Result<Scheme, SchemeFileError> {
-    let mut scheme = Scheme::built_in();
+    layered(workspace, repo, mapped, project).map(|layered| layered.scheme)
+}
+
+/// The layer a Scheme field comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Origin {
+    BuiltIn,
+    Workspace,
+    Repo,
+}
+
+/// A resolved Scheme, with the layer each of its fields comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Layered {
+    pub scheme: Scheme,
+    pub origins: BTreeMap<String, Origin>,
+}
+
+impl Layered {
+    /// Where the field `name` comes from; built in when no file defines it.
+    #[must_use]
+    pub fn origin(&self, name: &str) -> Origin {
+        self.origins.get(name).copied().unwrap_or(Origin::BuiltIn)
+    }
+}
+
+/// [`resolve`], keeping the layer each field comes from.
+///
+/// # Errors
+///
+/// As [`resolve`].
+pub fn layered(
+    workspace: Option<Source<'_>>,
+    repo: Option<Source<'_>>,
+    mapped: &[&str],
+    project: &str,
+) -> Result<Layered, SchemeFileError> {
+    let mut scheme = Layered {
+        scheme: Scheme::built_in(),
+        origins: BTreeMap::new(),
+    };
     if let Some(source) = workspace {
         let layer: Layer = source.parse()?;
-        merge(&mut scheme, &layer, source)?;
+        merge(&mut scheme, &layer, source, Origin::Workspace)?;
     }
     let Some(source) = repo else {
         return Ok(scheme);
@@ -152,7 +193,7 @@ pub fn resolve(
             ));
         }
         let mut merged = scheme.clone();
-        merge(&mut merged, layer, source)?;
+        merge(&mut merged, layer, source, Origin::Repo)?;
         if name.eq_ignore_ascii_case(project) {
             ours = Some(merged);
         }
@@ -172,6 +213,20 @@ pub fn read(
     mapped: &[&str],
     project: &str,
 ) -> Result<Scheme, SchemeFileError> {
+    read_layered(workspace_dir, repo_dir, mapped, project).map(|layered| layered.scheme)
+}
+
+/// [`read`], keeping the layer each field comes from.
+///
+/// # Errors
+///
+/// As [`read`].
+pub fn read_layered(
+    workspace_dir: &Path,
+    repo_dir: Option<&Path>,
+    mapped: &[&str],
+    project: &str,
+) -> Result<Layered, SchemeFileError> {
     let workspace_path = workspace_dir.join(WORKSPACE_FILE);
     let repo_path = repo_dir.map(|dir| dir.join(REPO_FILE));
     let workspace_text = text(workspace_dir, &workspace_path)?;
@@ -179,7 +234,7 @@ pub fn read(
         (Some(dir), Some(path)) => text(dir, path)?,
         _ => None,
     };
-    resolve(
+    layered(
         workspace_text.as_deref().map(|text| Source {
             path: &workspace_path,
             text,
@@ -223,9 +278,15 @@ fn text(base: &Path, path: &Path) -> Result<Option<String>, SchemeFileError> {
     Err(refused(err))
 }
 
-/// `layer` over `scheme`: its removals, then its fields, each replacing an
-/// inherited one of its id whole.
-fn merge(scheme: &mut Scheme, layer: &Layer, source: Source<'_>) -> Result<(), SchemeFileError> {
+/// `layer` over `layered`: its removals, then its fields, each replacing an
+/// inherited one of its id whole and coming from `origin`.
+fn merge(
+    layered: &mut Layered,
+    layer: &Layer,
+    source: Source<'_>,
+    origin: Origin,
+) -> Result<(), SchemeFileError> {
+    let Layered { scheme, origins } = layered;
     for (table, value) in [
         ("types", &layer.types),
         ("workflows", &layer.workflows),
@@ -259,7 +320,10 @@ fn merge(scheme: &mut Scheme, layer: &Layer, source: Source<'_>) -> Result<(), S
                     format!("{name} is built in and cannot be removed"),
                 ));
             }
-            Some(_) => scheme.fields.retain(|field| field.name != *name),
+            Some(_) => {
+                scheme.fields.retain(|field| field.name != *name);
+                origins.remove(name);
+            }
         }
     }
     for (id, spec) in &layer.fields {
@@ -309,6 +373,7 @@ fn merge(scheme: &mut Scheme, layer: &Layer, source: Source<'_>) -> Result<(), S
         scheme
             .add_field(Field::custom(name, label, field_type, options))
             .map_err(|err: SchemeError| source.error(id.span().start, err.to_string()))?;
+        origins.insert(name.clone(), origin);
     }
     Ok(())
 }
