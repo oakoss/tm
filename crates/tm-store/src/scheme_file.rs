@@ -288,6 +288,15 @@ fn merge(scheme: &mut Scheme, layer: &Layer, source: Source<'_>) -> Result<(), S
                     ),
                 )
             })?;
+        let select = matches!(field_type, FieldType::SingleSelect | FieldType::MultiSelect);
+        if select == spec.options.is_empty() {
+            let message = if select {
+                format!("{name} is a {} with no options", spec.field_type.get_ref())
+            } else {
+                format!("{name} has options, which only single_select and multi_select take")
+            };
+            return Err(source.error(spec.field_type.span().start, message));
+        }
         let options = spec
             .options
             .iter()
@@ -429,6 +438,19 @@ type = "text"
         assert_eq!(
             fault("[fields.waiting_on]\ntype = \"text\"\n", ""),
             format!("{WORKSPACE}:1: waiting_on is built in and cannot be replaced")
+        );
+        assert_eq!(
+            fault(
+                "[fields.area]\ntype = \"number\"\noptions = [{ id = \"a\" }]\n",
+                ""
+            ),
+            format!(
+                "{WORKSPACE}:2: area has options, which only single_select and multi_select take"
+            )
+        );
+        assert_eq!(
+            fault("[fields.tier]\ntype = \"single_select\"\n", ""),
+            format!("{WORKSPACE}:2: tier is a single_select with no options")
         );
         assert_eq!(
             fault(
