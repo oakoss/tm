@@ -75,7 +75,7 @@ fn history_shows_each_write_oldest_first() {
     };
     let expected = format!(
         "TM-1  first\n\
-         <time>  jace  (batch {create})\n  created\n  Type: Task\n  Title: first\n  Status: Todo\n\
+         <time>  jace  (batch {create})\n  created\n  Type: Task\n  Status: Todo\n  Title: first\n\
          <time>  claude for jace  (batch {take})\n  claimed: claude for 1h\n\
          <time>  jace  (batch {edit})\n  Assignee: (none) → jace\n  Labels: + ui\n\
          <time>  jace  (batch {link})\n  linked: is blocked by TM-2\n\
