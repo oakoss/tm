@@ -119,6 +119,19 @@ fn scheme_show_lists_the_loaded_fields_and_where_each_comes_from() {
 }
 
 #[test]
+fn scheme_show_stops_at_a_broken_repo_file_rather_than_show_the_built_in_scheme() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    fs::write(repo.join(".config/tm.toml"), "not toml at all").unwrap();
+    let shown = tm(&scratch, &repo, &["--json", "scheme", "show"]);
+    assert!(!shown.status.success(), "{shown:?}");
+    let shown = doc(&shown);
+    assert_eq!(shown["error"], "invalid_repo_file", "{shown}");
+    assert_eq!(shown["warnings"], json!([]), "{shown}");
+}
+
+#[test]
 fn scheme_show_escapes_a_label_that_would_drive_the_terminal() {
     let scratch = Scratch::new();
     let (repo, store, _) = initialized(&scratch);

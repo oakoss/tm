@@ -967,27 +967,36 @@ fn scheme_type(layered: &Layered, wanted: &str) -> Result<Output, CliError> {
         "workflow": workflow,
         "fields": fields_json(layered),
     });
-    let mut text = format!("type {} ({})\n", issue_type.id, issue_type.label);
+    let mut text = type_line(issue_type);
+    text.push('\n');
     if let Some(workflow) = workflow {
-        let _ = writeln!(
-            text,
-            "workflow {}, starting in {}",
-            workflow.name, workflow.start
-        );
-        for status in &workflow.statuses {
-            let _ = writeln!(
-                text,
-                "  {} ({}): {}",
-                status.id,
-                status.label,
-                status.category.id()
-            );
+        for line in workflow_lines(workflow) {
+            let _ = writeln!(text, "{line}");
         }
     }
     for field in scheme.fields.iter().filter(|field| !field.derived) {
         let _ = writeln!(text, "{}", field_line(layered, field, false));
     }
     Ok(Output::new(text, data))
+}
+
+/// An Issue type's line, its label printed escaped.
+fn type_line(issue_type: &tm_core::scheme::IssueType) -> String {
+    let label = output::printable(&issue_type.label);
+    format!("type {} ({label})", issue_type.id)
+}
+
+/// A Workflow's line, then one per Status, labels printed escaped.
+fn workflow_lines(workflow: &tm_core::scheme::Workflow) -> Vec<String> {
+    let name = output::printable(&workflow.name);
+    let start = output::printable(&workflow.start);
+    let statuses = workflow.statuses.iter().map(|status| {
+        let label = output::printable(&status.label);
+        format!("  {} ({label}): {}", status.id, status.category.id())
+    });
+    std::iter::once(format!("workflow {name}, starting in {start}"))
+        .chain(statuses)
+        .collect()
 }
 
 fn scheme_text(layered: &Layered) -> String {
@@ -998,26 +1007,11 @@ fn scheme_text(layered: &Layered) -> String {
     };
     line(&mut out, format!("Scheme {}", scheme.name));
     for issue_type in &scheme.types {
-        line(
-            &mut out,
-            format!("type {} ({})", issue_type.id, issue_type.label),
-        );
+        line(&mut out, type_line(issue_type));
     }
     for workflow in &scheme.workflows {
-        line(
-            &mut out,
-            format!("workflow {}, starting in {}", workflow.name, workflow.start),
-        );
-        for status in &workflow.statuses {
-            line(
-                &mut out,
-                format!(
-                    "  {} ({}): {}",
-                    status.id,
-                    status.label,
-                    status.category.id()
-                ),
-            );
+        for text in workflow_lines(workflow) {
+            line(&mut out, text);
         }
     }
     for field in &scheme.fields {
@@ -1030,7 +1024,19 @@ fn scheme_text(layered: &Layered) -> String {
 mod tests {
     use clap::CommandFactory;
 
-    use super::{Cli, GROUPS, cli};
+    use super::{Cli, GROUPS, cli, type_line, workflow_lines};
+
+    #[test]
+    fn scheme_show_prints_type_and_status_labels_escaped() {
+        let mut scheme = tm_core::Scheme::built_in();
+        scheme.types[0].label = "Epic\u{1b}[2J".into();
+        scheme.workflows[0].statuses[0].label = "Triage\u{202e}".into();
+        assert_eq!(type_line(&scheme.types[0]), "type epic (Epic\\u{1b}[2J)");
+        assert_eq!(
+            workflow_lines(&scheme.workflows[0])[1],
+            "  triage (Triage\\u{202e}): triage"
+        );
+    }
 
     /// The longest first line a command list shows before it wraps at 80
     /// columns, past its two-space indent and the name column.

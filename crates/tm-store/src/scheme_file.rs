@@ -440,13 +440,25 @@ fields = ["area"]
 [projects.OPS.fields.other]
 type = "text"
 "#;
-        let scheme = resolve(
+        let layered = layered(
             Some(at(WORKSPACE, workspace)),
             Some(at(REPO, repo)),
             &["TM", "OPS"],
             "TM",
         )
         .unwrap();
+        let origins: Vec<(&str, Origin)> = layered
+            .origins
+            .iter()
+            .map(|(name, origin)| (name.as_str(), *origin))
+            .collect();
+        assert_eq!(
+            origins,
+            [("due", Origin::Repo), ("tier", Origin::Repo)],
+            "area removed, other in another Project"
+        );
+        assert_eq!(layered.origin("title"), Origin::BuiltIn);
+        let scheme = layered.scheme;
         assert_eq!(scheme.field("area"), None);
         assert_eq!(scheme.field("other"), None, "another Project's table");
         let tier = scheme.field("tier").unwrap();
