@@ -18,6 +18,7 @@ pub mod rank;
 pub mod scheme;
 pub mod shortlist;
 pub mod text;
+pub mod violation;
 
 pub use actor::Actor;
 pub use hlc::Hlc;

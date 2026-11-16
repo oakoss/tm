@@ -3,12 +3,13 @@
 //! makes a stored operation unreadable.
 
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 use tm_core::op::{COMMENTS_FIELD, question_options};
 use tm_core::scheme::{Field, FieldType, Scheme, WAITING_ON, is_date, priority_rank};
+use tm_core::violation::{self, Violation};
 use tm_core::{Actor, Change, Subject, link};
 use uuid::Uuid;
 
@@ -543,7 +544,7 @@ fn stored_member(
         .optional()?)
 }
 
-fn has_value(tx: &Transaction<'_>, issue_id: Uuid, field: &str) -> Result<bool, StoreError> {
+fn has_value(tx: &Connection, issue_id: Uuid, field: &str) -> Result<bool, StoreError> {
     Ok(tx
         .query_row(
             "SELECT 1 FROM field_values WHERE issue_id = ?1 AND field = ?2",
@@ -554,7 +555,7 @@ fn has_value(tx: &Transaction<'_>, issue_id: Uuid, field: &str) -> Result<bool, 
         .is_some())
 }
 
-fn has_member(tx: &Transaction<'_>, issue_id: Uuid, field: &str) -> Result<bool, StoreError> {
+fn has_member(tx: &Connection, issue_id: Uuid, field: &str) -> Result<bool, StoreError> {
     Ok(tx
         .query_row(
             "SELECT 1 FROM set_members WHERE issue_id = ?1 AND field = ?2",
@@ -565,28 +566,14 @@ fn has_member(tx: &Transaction<'_>, issue_id: Uuid, field: &str) -> Result<bool,
         .is_some())
 }
 
-/// Whether the Issue's Status belongs to its type's Workflow; true while either
-/// is unset or the Issue does not exist yet.
-pub(crate) fn status_fits_type(
-    tx: &Transaction<'_>,
+/// The Issue's Violations as stored, with `cleared` read as holding nothing;
+/// none for an Issue that does not exist yet.
+pub(crate) fn violations(
+    tx: &Connection,
     scheme: &Scheme,
     issue_id: Uuid,
-) -> Result<bool, StoreError> {
-    let (Some(issue_type), Some(status)) = (
-        current(tx, issue_id, "type")?,
-        current(tx, issue_id, "status")?,
-    ) else {
-        return Ok(true);
-    };
-    Ok(scheme.category(&issue_type, &status).is_some())
-}
-
-/// The required fields `issue_id` lacks; none for an Issue that does not exist yet.
-pub(crate) fn missing_fields(
-    tx: &Transaction<'_>,
-    scheme: &Scheme,
-    issue_id: Uuid,
-) -> Result<Vec<String>, StoreError> {
+    cleared: Option<&str>,
+) -> Result<Vec<Violation>, StoreError> {
     let columns = ["type", "title", "description", "status", "assignee"];
     let row: Option<Vec<Option<String>>> = tx
         .query_row(
@@ -606,10 +593,12 @@ pub(crate) fn missing_fields(
     let Some(values) = row else {
         return Ok(Vec::new());
     };
-    let mut missing = Vec::new();
+    let mut held = BTreeSet::new();
     for field in scheme.fields.iter().filter(|field| field.required) {
         let name = field.name.as_str();
-        let present = if let Some(i) = columns.iter().position(|column| *column == name) {
+        let present = if cleared == Some(name) {
+            false
+        } else if let Some(i) = columns.iter().position(|column| *column == name) {
             values[i]
                 .as_deref()
                 .is_some_and(|text| !text.trim().is_empty())
@@ -623,14 +612,24 @@ pub(crate) fn missing_fields(
         } else {
             has_value(tx, issue_id, name)?
         };
-        if !present {
-            missing.push(field.name.clone());
+        if present {
+            held.insert(name);
         }
     }
-    Ok(missing)
+    let (issue_type, status) = (values[0].as_deref(), values[3].as_deref());
+    Ok(violation::violations(
+        scheme,
+        (issue_type, status),
+        |field| held.contains(field.name.as_str()),
+    ))
 }
 
-fn settable<'a>(scheme: &'a Scheme, name: &str) -> Result<&'a Field, StoreError> {
+/// The field `name` names, if a write may set it.
+///
+/// # Errors
+///
+/// [`StoreError::UnknownField`], or [`StoreError::Invalid`] for a computed field.
+pub fn settable<'a>(scheme: &'a Scheme, name: &str) -> Result<&'a Field, StoreError> {
     let def = scheme.field(name).ok_or_else(|| StoreError::UnknownField {
         field: name.to_owned(),
         valid: scheme

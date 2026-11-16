@@ -56,6 +56,7 @@ use tm_core::filter::{
 use tm_core::hlc::MAX_MS;
 use tm_core::link::BLOCKS;
 use tm_core::op::CURRENT_VERSION;
+use tm_core::violation::{self, Violation};
 use tm_core::{Actor, Change, Hlc, Op, OpError, ProjectId, Scheme};
 use uuid::Uuid;
 
@@ -85,6 +86,7 @@ pub use session::{RecentSession, SessionPlace, SessionWork};
 pub use shortlist::{Shortlist, ShortlistEdit};
 pub use trekker::{TrekkerExport, TrekkerImported, read_trekker};
 pub use undo::{Restore, Target, UndoPlan};
+pub use validate::settable;
 pub use watch::Watch;
 
 /// How long a writer waits for another writer before giving up.
@@ -1774,6 +1776,21 @@ impl Store {
         Ok(missing)
     }
 
+    /// Refuses ahead of the write, which checks again, a clear of `field` that
+    /// would leave `issue` missing a field it holds.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::MissingFields`], or any SQLite failure.
+    pub fn check_unset(&self, issue: Uuid, field: &str) -> Result<(), StoreError> {
+        self.read(|store| {
+            let had = validate::violations(&store.conn, &store.scheme, issue, None)?;
+            let after = validate::violations(&store.conn, &store.scheme, issue, Some(field))?;
+            refuse_added(issue, &violation::added(&had, after))
+        })
+        .map_err(|err| err.named(&self.conn))
+    }
+
     /// Refuses `parent` for `issue` ahead of the write, which checks again.
     ///
     /// # Errors
@@ -2023,10 +2040,7 @@ fn write_drafts(
             continue;
         };
         if let Entry::Vacant(entry) = before.entry(draft.subject) {
-            entry.insert((
-                validate::missing_fields(tx, scheme, draft.subject)?,
-                validate::status_fits_type(tx, scheme, draft.subject)?,
-            ));
+            entry.insert(validate::violations(tx, scheme, draft.subject, None)?);
             if shortlist::half_held(tx, draft.subject)? {
                 half_held.insert(draft.subject);
             }
@@ -2097,31 +2111,40 @@ fn write_drafts(
     Ok((ops, hlc))
 }
 
-/// Refuses a batch that left an Issue missing a field it had, or with a
-/// Status outside its type's Workflow when it fitted before.
+/// Refuses a batch that gave an Issue a Violation it did not have.
 fn no_worse(
     tx: &Transaction<'_>,
     scheme: &Scheme,
-    before: BTreeMap<Uuid, (Vec<String>, bool)>,
+    before: BTreeMap<Uuid, Vec<Violation>>,
 ) -> Result<(), StoreError> {
-    for (issue, (missing, fitted)) in before {
-        let fields: Vec<String> = validate::missing_fields(tx, scheme, issue)?
-            .into_iter()
-            .filter(|field| !missing.contains(field))
-            .collect();
-        if !fields.is_empty() {
-            return Err(StoreError::MissingFields {
-                issue: issue.into(),
-                fields,
-            });
-        }
-        if fitted && !validate::status_fits_type(tx, scheme, issue)? {
-            return Err(StoreError::Invalid {
-                field: "status".into(),
-                reason: "is not in the Workflow of the Issue's type".into(),
-                valid: Vec::new(),
-            });
-        }
+    for (issue, had) in before {
+        let added = violation::added(&had, validate::violations(tx, scheme, issue, None)?);
+        refuse_added(issue, &added)?;
+    }
+    Ok(())
+}
+
+/// The refusal for the first of `added`, missing fields named together.
+fn refuse_added(issue: Uuid, added: &[Violation]) -> Result<(), StoreError> {
+    let fields: Vec<String> = added
+        .iter()
+        .filter_map(|violation| match violation {
+            Violation::MissingField(field) => Some(field.clone()),
+            Violation::StatusOutsideWorkflow => None,
+        })
+        .collect();
+    if !fields.is_empty() {
+        return Err(StoreError::MissingFields {
+            issue: issue.into(),
+            fields,
+        });
+    }
+    if added.contains(&Violation::StatusOutsideWorkflow) {
+        return Err(StoreError::Invalid {
+            field: "status".into(),
+            reason: "is not in the Workflow of the Issue's type".into(),
+            valid: Vec::new(),
+        });
     }
     Ok(())
 }

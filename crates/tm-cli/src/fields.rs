@@ -142,30 +142,9 @@ pub(crate) fn known<'a>(
     names: impl IntoIterator<Item = &'a String>,
 ) -> Result<(), CliError> {
     for name in names {
-        match scheme.field(name) {
-            None => {
-                let valid = scheme.fields.iter().filter(|field| !field.derived);
-                return Err(StoreError::UnknownField {
-                    field: name.clone(),
-                    valid: valid.map(|field| field.name.clone()).collect(),
-                }
-                .into());
-            }
-            Some(field) if field.derived => return Err(computed(name)),
-            Some(_) => {}
-        }
+        tm_store::settable(scheme, name)?;
     }
     Ok(())
-}
-
-/// A field the Scheme computes, which no write sets or clears.
-pub(crate) fn computed(name: &str) -> CliError {
-    StoreError::Invalid {
-        field: name.to_owned(),
-        reason: "is computed and cannot be set".into(),
-        valid: Vec::new(),
-    }
-    .into()
 }
 
 /// Refuses a label to add that the store would refuse whatever else is
