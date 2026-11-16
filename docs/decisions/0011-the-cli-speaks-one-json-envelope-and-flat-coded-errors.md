@@ -68,6 +68,7 @@ design.md promises that every command supports `--json` (or `TM_JSON=1`) "with a
 | No home directory, or a relative `TM_HOME` | `no_home` |
 | No human to write as, or a blank or non-UTF-8 `TM_ACTOR` or `TM_AGENT` | `no_identity` |
 | Two repo files, or one that does not parse | `invalid_repo_file` |
+| A Scheme file that does not parse or fit ([ADR 0022](0022-the-scheme-is-read-from-a-workspace-file-and-a-repo-file.md)) | `invalid_scheme`, with `path` and `line` |
 | A path, or an export stream, that cannot be read or written | `io`, naming the path when there is one |
 | A table `tm rebuild` makes again from the log, missing | `missing_table`, naming the table, with fix `tm rebuild` |
 | A filter that does not parse or fit | the filter's own codes |

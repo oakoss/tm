@@ -603,6 +603,14 @@ impl From<FilterError> for CliError {
     }
 }
 
+impl From<tm_store::scheme_file::SchemeFileError> for CliError {
+    fn from(fault: tm_store::scheme_file::SchemeFileError) -> Self {
+        Self::new("invalid_scheme", fault.to_string())
+            .with("path", fault.path.display().to_string())
+            .with("line", fault.line)
+    }
+}
+
 impl From<WorkspaceError> for CliError {
     fn from(err: WorkspaceError) -> Self {
         let message = err.to_string();
