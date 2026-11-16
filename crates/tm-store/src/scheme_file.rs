@@ -8,7 +8,10 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
-use tm_core::scheme::{Choice, Field, FieldType, Scheme, SchemeError, WAITING_ON};
+use tm_core::scheme::{
+    Category, Choice, Field, FieldType, IssueType, Parents, Scheme, SchemeError, Status,
+    Transitions, WAITING_ON, Workflow, is_id,
+};
 use toml::Spanned;
 
 /// The Workspace layer, in the Workspace directory.
@@ -47,8 +50,10 @@ struct Layer {
     fields: BTreeMap<Spanned<String>, FieldSpec>,
     #[serde(default)]
     remove: Remove,
-    types: Option<Spanned<toml::Value>>,
-    workflows: Option<Spanned<toml::Value>>,
+    #[serde(default)]
+    types: BTreeMap<Spanned<String>, TypeSpec>,
+    #[serde(default)]
+    workflows: BTreeMap<Spanned<String>, WorkflowSpec>,
     link_types: Option<Spanned<toml::Value>>,
 }
 
@@ -57,6 +62,32 @@ struct Layer {
 struct Remove {
     #[serde(default)]
     fields: Vec<Spanned<String>>,
+    #[serde(default)]
+    types: Vec<Spanned<String>>,
+    #[serde(default)]
+    workflows: Vec<Spanned<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TypeSpec {
+    label: Option<String>,
+    workflow: Spanned<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowSpec {
+    start: Spanned<String>,
+    statuses: Vec<StatusSpec>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StatusSpec {
+    id: Spanned<String>,
+    label: Option<String>,
+    category: Spanned<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,14 +169,48 @@ pub enum Origin {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layered {
     pub scheme: Scheme,
+    /// The fields a file defines, by name.
     pub origins: BTreeMap<String, Origin>,
+    /// The Issue types a file defines, by id.
+    pub type_origins: BTreeMap<String, Origin>,
+    /// The Workflows a file defines, by id.
+    pub workflow_origins: BTreeMap<String, Origin>,
 }
 
 impl Layered {
+    /// The built-in Scheme, which no file changes.
+    #[must_use]
+    pub fn built_in() -> Self {
+        Self {
+            scheme: Scheme::built_in(),
+            origins: BTreeMap::new(),
+            type_origins: BTreeMap::new(),
+            workflow_origins: BTreeMap::new(),
+        }
+    }
+
     /// Where the field `name` comes from; built in when no file defines it.
     #[must_use]
     pub fn origin(&self, name: &str) -> Origin {
         self.origins.get(name).copied().unwrap_or(Origin::BuiltIn)
+    }
+
+    /// Where the Issue type `id` comes from.
+    #[must_use]
+    pub fn type_origin(&self, id: &str) -> Origin {
+        self.type_origins
+            .get(id)
+            .copied()
+            .unwrap_or(Origin::BuiltIn)
+    }
+
+    /// Where the Workflow `id` comes from.
+    #[must_use]
+    pub fn workflow_origin(&self, id: &str) -> Origin {
+        self.workflow_origins
+            .get(id)
+            .copied()
+            .unwrap_or(Origin::BuiltIn)
     }
 }
 
@@ -160,10 +225,7 @@ pub fn layered(
     mapped: &[&str],
     project: &str,
 ) -> Result<Layered, SchemeFileError> {
-    let mut scheme = Layered {
-        scheme: Scheme::built_in(),
-        origins: BTreeMap::new(),
-    };
+    let mut scheme = Layered::built_in();
     if let Some(source) = workspace {
         let layer: Layer = source.parse()?;
         merge(&mut scheme, &layer, source, Origin::Workspace)?;
@@ -286,46 +348,133 @@ fn merge(
     source: Source<'_>,
     origin: Origin,
 ) -> Result<(), SchemeFileError> {
-    let Layered { scheme, origins } = layered;
-    for (table, value) in [
-        ("types", &layer.types),
-        ("workflows", &layer.workflows),
-        ("link_types", &layer.link_types),
-    ] {
-        if let Some(value) = value {
+    if let Some(value) = &layer.link_types {
+        return Err(source.error(value.span().start, "link_types is not read by this tm yet"));
+    }
+    let Layered {
+        scheme,
+        origins,
+        type_origins,
+        workflow_origins,
+    } = layered;
+    removed(source, "fields", &layer.remove.fields, |name| {
+        scheme.field(name).map(|field| !fixed(field))
+    })?;
+    removed(source, "types", &layer.remove.types, |id| {
+        scheme.issue_type(id).map(|_| true)
+    })?;
+    removed(source, "workflows", &layer.remove.workflows, |id| {
+        scheme
+            .workflows
+            .iter()
+            .any(|workflow| workflow.name == id)
+            .then_some(true)
+    })?;
+    for name in &layer.remove.fields {
+        scheme.fields.retain(|field| field.name != *name.get_ref());
+        origins.remove(name.get_ref());
+    }
+    for id in &layer.remove.types {
+        scheme
+            .types
+            .retain(|issue_type| issue_type.id != *id.get_ref());
+        type_origins.remove(id.get_ref());
+    }
+    for id in &layer.remove.workflows {
+        scheme
+            .workflows
+            .retain(|workflow| workflow.name != *id.get_ref());
+        workflow_origins.remove(id.get_ref());
+    }
+    for (id, spec) in &layer.workflows {
+        let workflow = workflow(source, id, spec)?;
+        scheme.workflows.retain(|kept| kept.name != workflow.name);
+        scheme.workflows.push(workflow);
+        workflow_origins.insert(id.get_ref().clone(), origin);
+    }
+    for (id, spec) in &layer.types {
+        let name = id.get_ref();
+        if !is_id(name) {
             return Err(source.error(
-                value.span().start,
-                format!("{table} is not read by this tm yet; only fields and remove.fields are"),
+                id.span().start,
+                SchemeError::InvalidId(name.clone()).to_string(),
+            ));
+        }
+        scheme.types.retain(|kept| kept.id != *name);
+        scheme.types.push(IssueType {
+            id: name.clone(),
+            label: spec.label.clone().unwrap_or_else(|| name.clone()),
+            workflow: spec.workflow.get_ref().clone(),
+            parents: Parents::Any,
+        });
+        type_origins.insert(name.clone(), origin);
+    }
+    every_type_has_its_workflow(scheme, layer, source)?;
+    merge_fields(scheme, origins, layer, source, origin)
+}
+
+/// Refuses `layer` when it leaves a type naming a Workflow that does not
+/// exist, or no type at all.
+fn every_type_has_its_workflow(
+    scheme: &Scheme,
+    layer: &Layer,
+    source: Source<'_>,
+) -> Result<(), SchemeFileError> {
+    for (id, spec) in &layer.types {
+        let wanted = spec.workflow.get_ref();
+        if !scheme
+            .workflows
+            .iter()
+            .any(|workflow| workflow.name == *wanted)
+        {
+            return Err(source.error(
+                spec.workflow.span().start,
+                format!(
+                    "type {} names workflow {wanted}, which no layer defines",
+                    id.get_ref()
+                ),
             ));
         }
     }
-    for (at, id) in layer.remove.fields.iter().enumerate() {
-        let name = id.get_ref();
-        if layer.remove.fields[..at]
+    for id in &layer.remove.workflows {
+        if scheme
+            .workflows
             .iter()
-            .any(|before| before.get_ref() == name)
+            .any(|workflow| workflow.name == *id.get_ref())
         {
-            return Err(source.error(id.span().start, format!("remove.fields names {name} twice")));
+            continue;
         }
-        match scheme.field(name) {
-            None => {
-                return Err(source.error(
-                    id.span().start,
-                    format!("remove.fields names {name}, which no layer below defines"),
-                ));
-            }
-            Some(field) if fixed(field) => {
-                return Err(source.error(
-                    id.span().start,
-                    format!("{name} is built in and cannot be removed"),
-                ));
-            }
-            Some(_) => {
-                scheme.fields.retain(|field| field.name != *name);
-                origins.remove(name);
-            }
+        if let Some(user) = scheme
+            .types
+            .iter()
+            .find(|issue_type| issue_type.workflow == *id.get_ref())
+        {
+            return Err(source.error(
+                id.span().start,
+                format!(
+                    "workflow {} is removed, but type {} uses it",
+                    id.get_ref(),
+                    user.id
+                ),
+            ));
         }
     }
+    if scheme.types.is_empty() {
+        let at = layer.remove.types.first().map_or(0, |id| id.span().start);
+        return Err(source.error(at, "no Issue type is left; a Scheme needs one"));
+    }
+    Ok(())
+}
+
+/// `layer`'s fields over `scheme`, each replacing an inherited one of its id
+/// whole and coming from `origin`.
+fn merge_fields(
+    scheme: &mut Scheme,
+    origins: &mut BTreeMap<String, Origin>,
+    layer: &Layer,
+    source: Source<'_>,
+    origin: Origin,
+) -> Result<(), SchemeFileError> {
     for (id, spec) in &layer.fields {
         let name = id.get_ref();
         if let Some(existing) = scheme.field(name) {
@@ -376,6 +525,97 @@ fn merge(
         origins.insert(name.clone(), origin);
     }
     Ok(())
+}
+
+/// Checks the ids `remove.TABLE` lists: each once, and each one a layer below
+/// defines and `removable` allows (`None` when undefined, `Some(false)` when
+/// built in).
+fn removed(
+    source: Source<'_>,
+    table: &str,
+    ids: &[Spanned<String>],
+    removable: impl Fn(&str) -> Option<bool>,
+) -> Result<(), SchemeFileError> {
+    for (at, id) in ids.iter().enumerate() {
+        let name = id.get_ref();
+        let message = if ids[..at].iter().any(|before| before.get_ref() == name) {
+            format!("remove.{table} names {name} twice")
+        } else {
+            match removable(name) {
+                None => format!("remove.{table} names {name}, which no layer below defines"),
+                Some(false) => format!("{name} is built in and cannot be removed"),
+                Some(true) => continue,
+            }
+        };
+        return Err(source.error(id.span().start, message));
+    }
+    Ok(())
+}
+
+/// The Workflow `spec` describes, refused at the line of its fault.
+fn workflow(
+    source: Source<'_>,
+    id: &Spanned<String>,
+    spec: &WorkflowSpec,
+) -> Result<Workflow, SchemeFileError> {
+    let name = id.get_ref();
+    let invalid = |at: &Spanned<String>| {
+        source.error(
+            at.span().start,
+            SchemeError::InvalidId(at.get_ref().clone()).to_string(),
+        )
+    };
+    if !is_id(name) {
+        return Err(invalid(id));
+    }
+    if spec.statuses.is_empty() {
+        return Err(source.error(id.span().start, format!("workflow {name} has no statuses")));
+    }
+    let mut statuses: Vec<Status> = Vec::new();
+    for status in &spec.statuses {
+        let status_id = status.id.get_ref();
+        if !is_id(status_id) {
+            return Err(invalid(&status.id));
+        }
+        if statuses.iter().any(|seen| seen.id == *status_id) {
+            return Err(source.error(
+                status.id.span().start,
+                format!("workflow {name} lists status {status_id} twice"),
+            ));
+        }
+        let category = Category::ALL
+            .into_iter()
+            .find(|category| category.id() == status.category.get_ref())
+            .ok_or_else(|| {
+                let ids: Vec<&str> = Category::ALL.iter().map(|category| category.id()).collect();
+                source.error(
+                    status.category.span().start,
+                    format!(
+                        "{:?} is not a status category; one of: {}",
+                        status.category.get_ref(),
+                        ids.join(", ")
+                    ),
+                )
+            })?;
+        statuses.push(Status {
+            id: status_id.clone(),
+            label: status.label.clone().unwrap_or_else(|| status_id.clone()),
+            category,
+        });
+    }
+    let start = spec.start.get_ref();
+    if !statuses.iter().any(|status| status.id == *start) {
+        return Err(source.error(
+            spec.start.span().start,
+            format!("workflow {name} starts in {start}, which is not one of its statuses"),
+        ));
+    }
+    Ok(Workflow {
+        name: name.clone(),
+        start: start.clone(),
+        statuses,
+        transitions: Transitions::Any,
+    })
 }
 
 /// A field no Scheme file may remove or replace: a built-in one, or the
@@ -495,11 +735,182 @@ type = "text"
             format!("{REPO}:1: Project OPS is not one the repo file maps; it maps TM")
         );
         assert_eq!(
-            fault("\n\n[types.incident]\nlabel = \"Incident\"\n", ""),
-            format!(
-                "{WORKSPACE}:3: types is not read by this tm yet; only fields and remove.fields are"
-            )
+            fault("\n\n[link_types.feeds]\nlabel = \"Feeds\"\n", ""),
+            format!("{WORKSPACE}:3: link_types is not read by this tm yet")
         );
+        let incident = "[workflows.incident]\nstart = \"open\"\nstatuses = [{ id = \"open\", category = \"todo\" }]\n";
+        for (layer, line, message) in [
+            (
+                "[types.page]\nworkflow = \"gone\"\n",
+                2,
+                "type page names workflow gone, which no layer defines",
+            ),
+            (
+                "[workflows.w]\nstart = \"later\"\nstatuses = [{ id = \"now\", category = \"todo\" }]\n",
+                2,
+                "workflow w starts in later, which is not one of its statuses",
+            ),
+            (
+                "[workflows.w]\nstart = \"a\"\nstatuses = []\n",
+                1,
+                "workflow w has no statuses",
+            ),
+            (
+                "[workflows.w]\nstart = \"a\"\nstatuses = [\n  { id = \"a\", category = \"todo\" },\n  { id = \"a\", category = \"done\" },\n]\n",
+                5,
+                "workflow w lists status a twice",
+            ),
+            (
+                "[workflows.w]\nstart = \"a\"\nstatuses = [{ id = \"a\", category = \"open\" }]\n",
+                3,
+                "\"open\" is not a status category; one of: triage, todo, active, done, cancelled",
+            ),
+            (
+                "[remove]\nworkflows = [\"default\"]\n",
+                2,
+                "workflow default is removed, but type epic uses it",
+            ),
+            (
+                "[remove]\ntypes = [\"epic\", \"story\", \"task\", \"bug\", \"sub_task\", \"spike\", \"design\"]\n",
+                2,
+                "no Issue type is left; a Scheme needs one",
+            ),
+            (
+                "[remove]\ntypes = [\"saga\"]\n",
+                2,
+                "remove.types names saga, which no layer below defines",
+            ),
+            (
+                "[types.Page]\nworkflow = \"default\"\n",
+                1,
+                "\"Page\" must be lowercase letters, digits and underscores, starting with a letter",
+            ),
+        ] {
+            assert_eq!(
+                fault(layer, ""),
+                format!("{WORKSPACE}:{line}: {message}"),
+                "{layer}"
+            );
+        }
+        assert!(
+            resolve(Some(at(WORKSPACE, incident)), None, &["TM"], "TM").is_ok(),
+            "a workflow no type uses yet is allowed"
+        );
+    }
+
+    #[test]
+    fn types_and_workflows_merge_by_id_and_keep_their_origins() {
+        let workspace = r#"
+[workflows.incident]
+start = "open"
+statuses = [
+  { id = "open", label = "Open", category = "todo" },
+  { id = "fixing", category = "active" },
+  { id = "resolved", category = "done" },
+]
+
+[types.incident]
+label = "Incident"
+workflow = "incident"
+
+[remove]
+types = ["design"]
+"#;
+        let repo = r#"
+[projects.TM.workflows.default]
+start = "todo"
+statuses = [
+  { id = "todo", label = "To do", category = "todo" },
+  { id = "done", label = "Done", category = "done" },
+]
+
+[projects.TM.types.spike]
+label = "Research"
+workflow = "default"
+"#;
+        let layered = layered(
+            Some(at(WORKSPACE, workspace)),
+            Some(at(REPO, repo)),
+            &["TM"],
+            "TM",
+        )
+        .unwrap();
+        let scheme = &layered.scheme;
+        assert_eq!(scheme.issue_type("design"), None);
+        assert_eq!(scheme.issue_type("spike").unwrap().label, "Research");
+        assert_eq!(
+            scheme.category("incident", "fixing"),
+            Some(tm_core::scheme::Category::Active)
+        );
+        assert_eq!(
+            scheme
+                .workflow("incident")
+                .unwrap()
+                .status("fixing")
+                .unwrap()
+                .label,
+            "fixing"
+        );
+        assert_eq!(
+            scheme.category("task", "in_progress"),
+            None,
+            "default replaced whole"
+        );
+        assert_eq!(scheme.workflow("task").unwrap().start, "todo");
+        assert_eq!(layered.type_origin("incident"), Origin::Workspace);
+        assert_eq!(layered.type_origin("spike"), Origin::Repo);
+        assert_eq!(layered.type_origin("task"), Origin::BuiltIn);
+        assert_eq!(layered.workflow_origin("default"), Origin::Repo);
+        assert_eq!(layered.workflow_origin("incident"), Origin::Workspace);
+    }
+
+    #[test]
+    fn a_type_follows_its_workflow_when_a_higher_layer_replaces_it() {
+        let workspace = "[workflows.w]\nstart = \"a\"\nstatuses = [{ id = \"a\", category = \"todo\" }]\n[types.t]\nworkflow = \"w\"\n";
+        let repo = "[projects.TM.workflows.w]\nstart = \"b\"\nstatuses = [{ id = \"b\", category = \"active\" }]\n";
+        let scheme = resolve(
+            Some(at(WORKSPACE, workspace)),
+            Some(at(REPO, repo)),
+            &["TM"],
+            "TM",
+        )
+        .unwrap();
+        assert_eq!(scheme.workflow("t").unwrap().start, "b");
+        assert_eq!(
+            scheme.issue_type("t").unwrap().label,
+            "t",
+            "label defaults to id"
+        );
+    }
+
+    #[test]
+    fn a_workflow_is_removed_when_unused_or_redefined_in_the_same_layer() {
+        let workspace =
+            "[workflows.w]\nstart = \"a\"\nstatuses = [{ id = \"a\", category = \"todo\" }]\n";
+        let repo = "[projects.TM.remove]\nworkflows = [\"w\"]\n";
+        let layered = layered(
+            Some(at(WORKSPACE, workspace)),
+            Some(at(REPO, repo)),
+            &["TM"],
+            "TM",
+        )
+        .unwrap();
+        assert!(
+            layered
+                .scheme
+                .workflows
+                .iter()
+                .all(|workflow| workflow.name != "w")
+        );
+        assert_eq!(layered.workflow_origin("w"), Origin::BuiltIn);
+
+        let redefined = "[remove]\nworkflows = [\"default\"]\n[workflows.default]\nstart = \"a\"\nstatuses = [{ id = \"a\", category = \"todo\" }]\n";
+        let scheme = resolve(Some(at(WORKSPACE, redefined)), None, &["TM"], "TM").unwrap();
+        assert_eq!(scheme.workflow("epic").unwrap().start, "a");
+    }
+
+    #[test]
+    fn field_and_project_faults_name_their_file_and_line() {
         assert!(
             fault("[fields.Area]\ntype = \"text\"\n", "").starts_with(&format!("{WORKSPACE}:1: ")),
             "an id add_field refuses"
