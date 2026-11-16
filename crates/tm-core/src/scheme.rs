@@ -204,12 +204,16 @@ impl Workflow {
         self.statuses.iter().find(|status| status.id == id)
     }
 
-    /// The Status `name` means: its id or label, without case.
+    /// The Status `name` means: its id, else its label, without case. An id
+    /// wins, since a configured label may spell another Status's id.
     #[must_use]
     pub fn named(&self, name: &str) -> Option<&Status> {
-        self.statuses.iter().find(|status| {
-            status.id.eq_ignore_ascii_case(name) || status.label.eq_ignore_ascii_case(name)
-        })
+        let by = |key: fn(&Status) -> &str| {
+            self.statuses
+                .iter()
+                .find(|status| key(status).eq_ignore_ascii_case(name))
+        };
+        by(|status| &status.id).or_else(|| by(|status| &status.label))
     }
 
     /// The Statuses of `category`, in order.
@@ -506,6 +510,13 @@ mod tests {
         assert_eq!(workflow.named("IN PROGRESS").unwrap().id, "in_progress");
         assert_eq!(workflow.named("In_Review").unwrap().id, "in_review");
         assert!(workflow.named("active").is_none());
+        let mut shadowed = workflow.clone();
+        shadowed.statuses[1].label = "Done".into();
+        assert_eq!(
+            shadowed.named("done").unwrap().id,
+            "done",
+            "an id wins over another Status's label"
+        );
         let active: Vec<&str> = workflow
             .of_category(Category::Active)
             .map(|status| status.id.as_str())

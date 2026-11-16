@@ -329,6 +329,15 @@ expression: doc
               "category": "cancelled",
               "id": "cancelled"
             }
+          ],
+          "types": [
+            "epic",
+            "story",
+            "task",
+            "bug",
+            "sub_task",
+            "spike",
+            "design"
           ]
         }
       ]

@@ -119,6 +119,114 @@ fn scheme_show_lists_the_loaded_fields_and_where_each_comes_from() {
 }
 
 #[test]
+fn a_custom_type_follows_its_workflow_and_survives_its_removal() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    fs::write(
+        workspace_dir(&scratch, &repo).join("scheme.toml"),
+        r#"
+[workflows.incident]
+start = "open"
+statuses = [
+  { id = "open", label = "Open", category = "todo" },
+  { id = "fixing", label = "Fixing", category = "active" },
+  { id = "resolved", label = "Resolved", category = "done" },
+]
+
+[types.incident]
+label = "Incident"
+workflow = "incident"
+
+[types.alpha]
+label = "Zeta"
+workflow = "incident"
+
+[types.zeta]
+workflow = "incident"
+"#,
+    )
+    .unwrap();
+    let zeta = tm(&scratch, &repo, &["--json", "scheme", "show", "zeta"]);
+    assert_eq!(
+        data(&zeta)["type"]["id"],
+        "zeta",
+        "an id wins over another type's label"
+    );
+
+    let created = tm(
+        &scratch,
+        &repo,
+        &[
+            "--json", "create", "--type", "incident", "--title", "outage",
+        ],
+    );
+    assert_eq!(data(&created)["fields"]["status"], "open", "{created:?}");
+    let moved = tm(&scratch, &repo, &["--json", "move", "TM-1", "fixing"]);
+    assert!(moved.status.success(), "{moved:?}");
+    let active = tm(&scratch, &repo, &["--json", "list", "category:active"]);
+    assert_eq!(data(&active)["total"], 1, "{active:?}");
+
+    let shown = tm(&scratch, &repo, &["scheme", "show"]);
+    let text = String::from_utf8_lossy(&shown.stdout);
+    assert!(
+        text.contains("type incident (Incident) [from the Workspace's Scheme]\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("workflow incident, starting in open [from the Workspace's Scheme]\n"),
+        "{text}"
+    );
+
+    let shown = tm(&scratch, &repo, &["--json", "scheme", "show"]);
+    let from = |list: &str, key: &str, id: &str| {
+        data(&shown)[list]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry[key] == id)
+            .unwrap()["from"]
+            .clone()
+    };
+    assert_eq!(from("types", "id", "incident"), "workspace");
+    assert_eq!(from("types", "id", "task"), "built_in");
+    assert_eq!(from("workflows", "name", "incident"), "workspace");
+    assert_eq!(from("workflows", "name", "default"), "built_in");
+    let primed = tm(&scratch, &repo, &["prime"]);
+    let primed = String::from_utf8_lossy(&primed.stdout);
+    assert!(
+        primed.contains(
+            "  statuses of incident (alpha, incident, zeta): open (todo), fixing (active), resolved (done)\n"
+        ),
+        "{primed}"
+    );
+    assert!(
+        primed
+            .contains("  statuses of default (epic, story, task, bug, sub_task, spike, design): "),
+        "{primed}"
+    );
+    let incident = tm(&scratch, &repo, &["--json", "scheme", "show", "incident"]);
+    assert_eq!(data(&incident)["type"]["from"], "workspace");
+    assert_eq!(data(&incident)["workflow"]["from"], "workspace");
+
+    repo_scheme(&repo, "[projects.TM.remove]\ntypes = [\"incident\"]\n");
+    let listed = tm(&scratch, &repo, &["--json", "list", "category:triage"]);
+    assert_eq!(
+        data(&listed)["total"],
+        1,
+        "an Issue of a removed type reads as Triage: {listed:?}"
+    );
+    let edited = tm(
+        &scratch,
+        &repo,
+        &["edit", "TM-1", "--set", "title=still here"],
+    );
+    assert!(edited.status.success(), "{edited:?}");
+    let refused = tm(&scratch, &repo, &["--json", "move", "TM-1", "resolved"]);
+    assert!(!refused.status.success(), "{refused:?}");
+}
+
+#[test]
 fn scheme_show_stops_at_a_broken_repo_file_rather_than_show_the_built_in_scheme() {
     let scratch = Scratch::new();
     let (repo, store, _) = initialized(&scratch);

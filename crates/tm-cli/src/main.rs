@@ -54,7 +54,6 @@ use std::process::ExitCode;
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{ArgGroup, CommandFactory, FromArgMatches as _, Parser, Subcommand};
 use serde_json::json;
-use tm_core::Scheme;
 use tm_core::scheme::Category;
 use tm_store::scheme_file::{Layered, Origin};
 
@@ -880,12 +879,8 @@ fn loaded_scheme() -> Result<(Layered, Vec<String>), CliError> {
             Ok((here::layered_at(&found, &workspace, &cwd)?, Vec::new()))
         }
         Err(err) if err.code == "no_workspace" => {
-            let built_in = Layered {
-                scheme: Scheme::built_in(),
-                origins: std::collections::BTreeMap::new(),
-            };
             let warning = "no repo file maps this directory, so this is the built-in Scheme";
-            Ok((built_in, vec![warning.to_owned()]))
+            Ok((Layered::built_in(), vec![warning.to_owned()]))
         }
         Err(err) => Err(err),
     }
@@ -901,11 +896,38 @@ fn fields_json(layered: &Layered) -> serde_json::Value {
     json!(fields.collect::<Vec<_>>())
 }
 
+/// `value`'s JSON with the layer it comes from.
+fn with_origin(value: &impl serde::Serialize, origin: Origin) -> serde_json::Value {
+    let mut json = serde_json::to_value(value).expect("a Scheme part always serializes");
+    json["from"] = json!(origin);
+    json
+}
+
 fn scheme_json(layered: &Layered) -> serde_json::Value {
-    let mut json = serde_json::to_value(&layered.scheme).expect("a Scheme always serializes");
+    let scheme = &layered.scheme;
+    let mut json = serde_json::to_value(scheme).expect("a Scheme always serializes");
     json["fields"] = fields_json(layered);
+    json["types"] = scheme
+        .types
+        .iter()
+        .map(|issue_type| with_origin(issue_type, layered.type_origin(&issue_type.id)))
+        .collect();
+    json["workflows"] = scheme
+        .workflows
+        .iter()
+        .map(|workflow| with_origin(workflow, layered.workflow_origin(&workflow.name)))
+        .collect();
     json["status_categories"] = serde_json::json!(Category::ALL);
     json
+}
+
+/// The note a Scheme part a file defines carries in text.
+fn origin_note(origin: Origin) -> Option<&'static str> {
+    match origin {
+        Origin::BuiltIn => None,
+        Origin::Workspace => Some("from the Workspace's Scheme"),
+        Origin::Repo => Some("from the repo's Scheme"),
+    }
 }
 
 /// A field's line: its id and label, what it takes, and notes such as the
@@ -918,11 +940,7 @@ fn field_line(layered: &Layered, field: &tm_core::scheme::Field, computed: bool)
     if computed && field.derived {
         notes.push("computed");
     }
-    match layered.origin(&field.name) {
-        Origin::BuiltIn => {}
-        Origin::Workspace => notes.push("from the Workspace's Scheme"),
-        Origin::Repo => notes.push("from the repo's Scheme"),
-    }
+    notes.extend(origin_note(layered.origin(&field.name)));
     let notes = if notes.is_empty() {
         String::new()
     } else {
@@ -952,25 +970,31 @@ fn field_line(layered: &Layered, field: &tm_core::scheme::Field, computed: bool)
 /// required where the Scheme requires it of every Issue.
 fn scheme_type(layered: &Layered, wanted: &str) -> Result<Output, CliError> {
     let scheme = &layered.scheme;
-    let issue_type = scheme
-        .types
-        .iter()
-        .find(|t| t.id.eq_ignore_ascii_case(wanted) || t.label.eq_ignore_ascii_case(wanted))
+    let by = |key: fn(&tm_core::scheme::IssueType) -> &str| {
+        scheme
+            .types
+            .iter()
+            .find(|issue_type| key(issue_type).eq_ignore_ascii_case(wanted))
+    };
+    let issue_type = by(|issue_type| &issue_type.id)
+        .or_else(|| by(|issue_type| &issue_type.label))
         .ok_or_else(|| {
             CliError::new("invalid_value", format!("{wanted:?} is not an Issue type"))
                 .with("field", "type")
                 .with("allowed", scheme.type_ids())
         })?;
     let workflow = scheme.workflow(&issue_type.id);
+    let workflow_origin =
+        |workflow: &tm_core::scheme::Workflow| layered.workflow_origin(&workflow.name);
     let data = json!({
-        "type": issue_type,
-        "workflow": workflow,
+        "type": with_origin(issue_type, layered.type_origin(&issue_type.id)),
+        "workflow": workflow.map(|workflow| with_origin(workflow, workflow_origin(workflow))),
         "fields": fields_json(layered),
     });
-    let mut text = type_line(issue_type);
+    let mut text = type_line(issue_type, layered.type_origin(&issue_type.id));
     text.push('\n');
     if let Some(workflow) = workflow {
-        for line in workflow_lines(workflow) {
+        for line in workflow_lines(workflow, workflow_origin(workflow)) {
             let _ = writeln!(text, "{line}");
         }
     }
@@ -980,23 +1004,31 @@ fn scheme_type(layered: &Layered, wanted: &str) -> Result<Output, CliError> {
     Ok(Output::new(text, data))
 }
 
+/// `[NOTE]` after a line when a file defines its part, else nothing.
+fn noted(origin: Origin) -> String {
+    origin_note(origin).map_or_else(String::new, |note| format!(" [{note}]"))
+}
+
 /// An Issue type's line, its label printed escaped.
-fn type_line(issue_type: &tm_core::scheme::IssueType) -> String {
+fn type_line(issue_type: &tm_core::scheme::IssueType, origin: Origin) -> String {
     let label = output::printable(&issue_type.label);
-    format!("type {} ({label})", issue_type.id)
+    format!("type {} ({label}){}", issue_type.id, noted(origin))
 }
 
 /// A Workflow's line, then one per Status, labels printed escaped.
-fn workflow_lines(workflow: &tm_core::scheme::Workflow) -> Vec<String> {
+fn workflow_lines(workflow: &tm_core::scheme::Workflow, origin: Origin) -> Vec<String> {
     let name = output::printable(&workflow.name);
     let start = output::printable(&workflow.start);
     let statuses = workflow.statuses.iter().map(|status| {
         let label = output::printable(&status.label);
         format!("  {} ({label}): {}", status.id, status.category.id())
     });
-    std::iter::once(format!("workflow {name}, starting in {start}"))
-        .chain(statuses)
-        .collect()
+    std::iter::once(format!(
+        "workflow {name}, starting in {start}{}",
+        noted(origin)
+    ))
+    .chain(statuses)
+    .collect()
 }
 
 fn scheme_text(layered: &Layered) -> String {
@@ -1007,10 +1039,13 @@ fn scheme_text(layered: &Layered) -> String {
     };
     line(&mut out, format!("Scheme {}", scheme.name));
     for issue_type in &scheme.types {
-        line(&mut out, type_line(issue_type));
+        line(
+            &mut out,
+            type_line(issue_type, layered.type_origin(&issue_type.id)),
+        );
     }
     for workflow in &scheme.workflows {
-        for text in workflow_lines(workflow) {
+        for text in workflow_lines(workflow, layered.workflow_origin(&workflow.name)) {
             line(&mut out, text);
         }
     }
@@ -1024,18 +1059,27 @@ fn scheme_text(layered: &Layered) -> String {
 mod tests {
     use clap::CommandFactory;
 
-    use super::{Cli, GROUPS, cli, type_line, workflow_lines};
+    use super::{Cli, GROUPS, Origin, cli, type_line, workflow_lines};
 
     #[test]
     fn scheme_show_prints_type_and_status_labels_escaped() {
         let mut scheme = tm_core::Scheme::built_in();
         scheme.types[0].label = "Epic\u{1b}[2J".into();
         scheme.workflows[0].statuses[0].label = "Triage\u{202e}".into();
-        assert_eq!(type_line(&scheme.types[0]), "type epic (Epic\\u{1b}[2J)");
         assert_eq!(
-            workflow_lines(&scheme.workflows[0])[1],
-            "  triage (Triage\\u{202e}): triage"
+            type_line(&scheme.types[0], Origin::BuiltIn),
+            "type epic (Epic\\u{1b}[2J)"
         );
+        assert_eq!(
+            type_line(&scheme.types[0], Origin::Repo),
+            "type epic (Epic\\u{1b}[2J) [from the repo's Scheme]"
+        );
+        let lines = workflow_lines(&scheme.workflows[0], Origin::Workspace);
+        assert_eq!(
+            lines[0],
+            "workflow default, starting in todo [from the Workspace's Scheme]"
+        );
+        assert_eq!(lines[1], "  triage (Triage\\u{202e}): triage");
     }
 
     /// The longest first line a command list shows before it wraps at 80

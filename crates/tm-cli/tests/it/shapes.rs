@@ -749,6 +749,15 @@ fn prime_answers_in_a_fixed_shape() {
                   "category": "cancelled",
                   "id": "cancelled"
                 }
+              ],
+              "types": [
+                "epic",
+                "story",
+                "task",
+                "bug",
+                "sub_task",
+                "spike",
+                "design"
               ]
             }
           ]
