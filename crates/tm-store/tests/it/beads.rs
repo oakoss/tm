@@ -480,7 +480,11 @@ fn a_status_whose_category_the_workflow_lacks_is_refused_naming_it() {
     let input = lines(&[json!({"id": "b-1", "title": "a", "status": "in_progress",
                                "issue_type": "feature"})]);
     let err = import(&mut store, &input).unwrap_err();
-    assert!(err.to_string().contains("in_progress"), "{err}");
+    assert!(
+        err.to_string()
+            .contains("in_progress is not a Status of type story"),
+        "{err}"
+    );
 }
 
 #[test]
