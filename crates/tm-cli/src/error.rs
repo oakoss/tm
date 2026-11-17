@@ -341,6 +341,24 @@ impl CliError {
             .with("to_key", to.key)
     }
 
+    fn parent_type(message: String, refusal: tm_store::ParentType) -> Self {
+        let tm_store::ParentType {
+            child,
+            child_type,
+            parent,
+            parent_type,
+            allowed,
+        } = refusal;
+        Self::new("parent_type", message)
+            .with("issue", child.as_ref().map(|child| child.id.to_string()))
+            .with("key", child.and_then(|child| child.key))
+            .with("type", child_type)
+            .with("parent", parent.id.to_string())
+            .with("parent_key", parent.key)
+            .with("parent_type", parent_type)
+            .with("allowed", allowed)
+    }
+
     fn missing_fields(message: String, issue: Named, fields: Vec<String>) -> Self {
         Self::new("missing_fields", message).issue(issue).with(
             "fields",
@@ -470,6 +488,7 @@ impl From<StoreError> for CliError {
                 .with("reason", reason)
                 .with("allowed", valid),
             StoreError::Cycle { relation, path } => Self::cycle(message, relation, path),
+            StoreError::ParentType(refusal) => Self::parent_type(message, *refusal),
             StoreError::NoAgent { actor } => Self::new("no_agent", message).with("actor", actor),
             StoreError::UnknownBatch(batch) => Self::new("not_found", message)
                 .with("kind", "batch")

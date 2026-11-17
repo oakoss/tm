@@ -27,9 +27,10 @@ pub(crate) struct Writing<'a> {
 }
 
 impl Writing<'_> {
-    /// An undo restores an earlier Status and an import records one reached
-    /// elsewhere, so neither is held to the Workflow's transitions.
-    const fn checks_moves(&self) -> bool {
+    /// An undo restores an earlier state and an import records one reached
+    /// elsewhere, so neither is held to the Workflow's transitions or the
+    /// Scheme's parent types.
+    pub(crate) const fn checks_rules(&self) -> bool {
         !self.undoing && !self.imported
     }
 }
@@ -76,7 +77,7 @@ fn check_set(
         (FieldType::Shortlist, Value::String(list)) => {
             member_of(tx, scheme, (issue_id, def, list), writing.undoing)?
         }
-        _ => check_value(tx, scheme, (issue_id, writing.checks_moves()), def, &value)?,
+        _ => check_value(tx, scheme, (issue_id, writing.checks_rules()), def, &value)?,
     };
     Ok(Change::SetField {
         label: def.label.clone(),

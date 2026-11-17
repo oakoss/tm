@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 use tm_store::workspace::{RepoFile, Workspace};
 
-use crate::support::{Scratch, data, doc, initialized, tm};
+use crate::support::{Scratch, data, doc, initialized, tm, tm_piped};
 
 /// The Workspace directory the repo file at `repo` names.
 fn workspace_dir(scratch: &Scratch, repo: &Path) -> PathBuf {
@@ -327,6 +327,156 @@ fn a_type_takes_only_the_fields_it_carries() {
         ],
     );
     assert_eq!(data(&changed)["changed"][0]["after"], "bug", "{changed:?}");
+}
+
+/// A repo holding epic TM-1, task TM-2 and story TM-3 under TM-2, whose
+/// Workspace Scheme then gives an epic no parent and a story only an epic.
+fn epics_hold_stories(scratch: &Scratch) -> PathBuf {
+    let (repo, store, _) = initialized(scratch);
+    drop(store);
+    for (issue_type, parent) in [("epic", None), ("task", None), ("story", Some("TM-2"))] {
+        let mut args = vec!["create", "--type", issue_type, "--title", issue_type];
+        args.extend(
+            parent
+                .map(|parent| ["--parent", parent])
+                .into_iter()
+                .flatten(),
+        );
+        assert!(tm(scratch, &repo, &args).status.success(), "{args:?}");
+    }
+    fs::write(
+        workspace_dir(scratch, &repo).join("scheme.toml"),
+        r#"
+[types.epic]
+label = "Epic"
+workflow = "default"
+parents = []
+
+[types.story]
+label = "Story"
+workflow = "default"
+parents = ["epic"]
+
+[types.chore]
+workflow = "default"
+fields = []
+parents = ["epic", "task"]
+"#,
+    )
+    .unwrap();
+    repo
+}
+
+#[test]
+fn a_type_takes_only_the_parents_it_lists() {
+    let scratch = Scratch::new();
+    let repo = epics_hold_stories(&scratch);
+    let run = |args: &[&str]| tm(&scratch, &repo, args);
+    let text = String::from_utf8_lossy(&run(&["scheme", "show"]).stdout).into_owned();
+    assert!(
+        text.contains("type epic (Epic) [from the Workspace's Scheme]: takes no parent\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "type story (Story) [from the Workspace's Scheme]: takes a parent of type epic\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "type chore (chore) [from the Workspace's Scheme]: no Scheme fields; takes a parent of type epic or task\n"
+        ),
+        "{text}"
+    );
+    let json = run(&["--json", "scheme", "show", "story"]);
+    assert_eq!(data(&json)["type"]["parents"], json!(["epic"]), "{json:?}");
+
+    assert!(
+        run(&["edit", "TM-3", "--set", "title=kept"])
+            .status
+            .success(),
+        "a pair the Scheme now refuses stays editable"
+    );
+    let refused = |args: &[&str], message: &str| {
+        let out = run(args);
+        assert!(!out.status.success(), "{args:?}: {out:?}");
+        let error = doc(&out);
+        assert_eq!(error["error"], "parent_type", "{error}");
+        assert_eq!(error["message"], message, "{error}");
+        error
+    };
+    let error = refused(
+        &[
+            "--json", "create", "--type", "story", "--title", "s", "--parent", "TM-2",
+        ],
+        "the new Issue has type story, which takes a parent of type epic, so TM-2 of type task cannot be its parent",
+    );
+    assert_eq!(error["key"], json!(null), "{error}");
+    assert_eq!(error["allowed"], json!(["epic"]), "{error}");
+    assert_eq!(error["parent_key"], "TM-2", "{error}");
+    refused(
+        &["--json", "edit", "TM-1", "--parent", "TM-2"],
+        "TM-1 has type epic, which takes no parent, so TM-2 of type task cannot be its parent",
+    );
+    assert!(run(&["edit", "TM-3", "--parent", "TM-1"]).status.success());
+    refused(
+        &["--json", "edit", "TM-1", "--set", "type=task"],
+        "TM-3 has type story, which takes a parent of type epic, so TM-1 of type task cannot be its parent",
+    );
+    assert!(run(&["edit", "TM-2", "--parent", "TM-3"]).status.success());
+    refused(
+        &["--json", "edit", "TM-2", "--set", "type=story"],
+        "TM-2 has type story, which takes a parent of type epic, so TM-3 of type story cannot be its parent",
+    );
+
+    let blank_stdin = |args: &[&str]| {
+        let args = [&["--json"], args, &["--set", "description=-"]].concat();
+        doc(&tm_piped(&scratch, &repo, &args, " \n"))["error"].clone()
+    };
+    assert_eq!(
+        blank_stdin(&[
+            "create", "--type", "story", "--title", "s", "--parent", "TM-2"
+        ]),
+        "parent_type",
+        "refused before the piped text is read"
+    );
+    assert_eq!(
+        blank_stdin(&["edit", "TM-2", "--set", "type=story"]),
+        "parent_type"
+    );
+    assert!(
+        run(&["create", "--type", "task", "--title", "t"])
+            .status
+            .success()
+    );
+    assert_eq!(
+        blank_stdin(&["edit", "TM-1", "--parent", "TM-4"]),
+        "parent_type"
+    );
+    assert_eq!(
+        blank_stdin(&["edit", "TM-1", "--set", "type=task"]),
+        "parent_type",
+        "judged against the type being written, not the stored one"
+    );
+}
+
+#[test]
+fn a_pair_the_scheme_now_refuses_is_repaired_by_retyping_its_parent() {
+    let scratch = Scratch::new();
+    let repo = epics_hold_stories(&scratch);
+    let run = |args: &[&str]| tm(&scratch, &repo, args).status.success();
+    assert!(
+        run(&["edit", "TM-3", "--set", "type=story"]),
+        "the type it has"
+    );
+    assert!(
+        run(&["edit", "TM-2", "--parent", "TM-1"]),
+        "a new parent leaves its children unchecked"
+    );
+    assert!(run(&["edit", "TM-2", "--no-parent"]));
+    assert!(run(&["edit", "TM-2", "--set", "type=epic"]));
+    assert!(!run(&["edit", "TM-2", "--set", "type=task"]));
 }
 
 #[test]

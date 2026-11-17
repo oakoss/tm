@@ -1019,16 +1019,26 @@ fn noted(origin: Origin) -> String {
     origin_note(origin).map_or_else(String::new, |note| format!(" [{note}]"))
 }
 
-/// An Issue type's line, its label printed escaped, ending with the fields it
-/// lists when it lists them.
+/// An Issue type's line, its label printed escaped, ending with the fields and
+/// parent types it lists when it lists them.
 fn type_line(issue_type: &tm_core::scheme::IssueType, origin: Origin) -> String {
     let label = output::printable(&issue_type.label);
     let fields = match issue_type.fields.as_deref() {
-        None => String::new(),
-        Some([]) => ": no Scheme fields".to_owned(),
-        Some(fields) => format!(": carries {}", fields.join(", ")),
+        None => None,
+        Some([]) => Some("no Scheme fields".to_owned()),
+        Some(fields) => Some(format!("carries {}", fields.join(", "))),
     };
-    format!("type {} ({label}){}{fields}", issue_type.id, noted(origin))
+    let parents = match &issue_type.parents {
+        tm_core::scheme::Parents::Any => None,
+        tm_core::scheme::Parents::Listed(types) => Some(tm_core::scheme::parent_rule(types)),
+    };
+    let listed: Vec<String> = fields.into_iter().chain(parents).collect();
+    let listed = if listed.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", listed.join("; "))
+    };
+    format!("type {} ({label}){}{listed}", issue_type.id, noted(origin))
 }
 
 /// A Workflow's line, then one per Status, labels printed escaped.
