@@ -119,6 +119,112 @@ fn scheme_show_lists_the_loaded_fields_and_where_each_comes_from() {
 }
 
 #[test]
+fn a_type_offers_and_takes_only_the_fields_it_carries() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    fs::write(
+        workspace_dir(&scratch, &repo).join("scheme.toml"),
+        r#"
+[fields.severity]
+type = "text"
+
+[fields.area]
+type = "text"
+
+[types.bug]
+label = "Bug"
+workflow = "default"
+fields = ["severity"]
+"#,
+    )
+    .unwrap();
+    let shown = tm(&scratch, &repo, &["scheme", "show", "bug"]);
+    let text = String::from_utf8_lossy(&shown.stdout);
+    assert!(text.contains("field severity (severity)"), "{text}");
+    assert!(text.contains("field priority (Priority)"), "{text}");
+    assert!(!text.contains("field area"), "{text}");
+    let shown = tm(&scratch, &repo, &["--json", "scheme", "show", "bug"]);
+    let names: Vec<_> = data(&shown)["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field["name"].clone())
+        .collect();
+    assert!(names.contains(&json!("severity")) && names.contains(&json!("waiting_on")));
+    assert!(!names.contains(&json!("area")), "{names:?}");
+    assert_eq!(data(&shown)["type"]["fields"], json!(["severity"]));
+    let task = tm(&scratch, &repo, &["--json", "scheme", "show", "task"]);
+    assert!(data(&task)["type"].get("fields").is_none(), "{task:?}");
+    let shown = tm(&scratch, &repo, &["scheme", "show"]);
+    let text = String::from_utf8_lossy(&shown.stdout);
+    assert!(
+        text.contains("type bug (Bug) [from the Workspace's Scheme]: carries severity\n"),
+        "{text}"
+    );
+
+    let refused_with = |args: &[&str], reason: &str| {
+        let out = tm(&scratch, &repo, args);
+        assert!(!out.status.success(), "{out:?}");
+        let error = doc(&out);
+        assert_eq!(error["error"], "invalid_value", "{error}");
+        assert_eq!(error["field"], "area", "{error}");
+        assert_eq!(error["reason"], reason, "{error}");
+    };
+    let not_carried = "is not a field of type bug";
+    refused_with(
+        &[
+            "--json", "create", "--type", "bug", "--title", "b", "--set", "area=cli",
+        ],
+        not_carried,
+    );
+    let created = tm(
+        &scratch,
+        &repo,
+        &[
+            "--json",
+            "create",
+            "--type",
+            "bug",
+            "--title",
+            "b",
+            "--set",
+            "severity=high",
+        ],
+    );
+    assert_eq!(data(&created)["fields"]["severity"], "high");
+    refused_with(
+        &["--json", "edit", "TM-1", "--set", "area=cli"],
+        not_carried,
+    );
+    refused_with(
+        &["--json", "move", "TM-1", "in_progress", "--set", "area=cli"],
+        not_carried,
+    );
+
+    let task = tm(
+        &scratch,
+        &repo,
+        &[
+            "--json", "create", "--type", "task", "--title", "t", "--set", "area=cli",
+        ],
+    );
+    assert!(task.status.success(), "{task:?}");
+    refused_with(
+        &["--json", "edit", "TM-2", "--set", "type=bug"],
+        "holds a value, and type bug does not carry it; clear it in the same change",
+    );
+    let changed = tm(
+        &scratch,
+        &repo,
+        &[
+            "--json", "edit", "TM-2", "--set", "type=bug", "--unset", "area",
+        ],
+    );
+    assert_eq!(data(&changed)["changed"][0]["after"], "bug", "{changed:?}");
+}
+
+#[test]
 fn a_custom_type_follows_its_workflow_and_survives_its_removal() {
     let scratch = Scratch::new();
     let (repo, store, _) = initialized(&scratch);

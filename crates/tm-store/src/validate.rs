@@ -593,8 +593,12 @@ pub(crate) fn violations(
     let Some(values) = row else {
         return Ok(Vec::new());
     };
+    let (issue_type, status) = (values[0].as_deref(), values[3].as_deref());
     let mut held = BTreeSet::new();
-    for field in scheme.fields.iter().filter(|field| field.required) {
+    let judged = |field: &&Field| {
+        field.required || issue_type.is_some_and(|issue_type| !scheme.carries(issue_type, field))
+    };
+    for field in scheme.fields.iter().filter(judged) {
         let name = field.name.as_str();
         let present = if cleared == Some(name) {
             false
@@ -616,7 +620,6 @@ pub(crate) fn violations(
             held.insert(name);
         }
     }
-    let (issue_type, status) = (values[0].as_deref(), values[3].as_deref());
     Ok(violation::violations(
         scheme,
         (issue_type, status),

@@ -886,9 +886,12 @@ fn loaded_scheme() -> Result<(Layered, Vec<String>), CliError> {
     }
 }
 
-/// Each field's JSON with the layer it comes from.
-fn fields_json(layered: &Layered) -> serde_json::Value {
-    let fields = layered.scheme.fields.iter().map(|field| {
+/// The JSON of each field `wanted` keeps, with the layer it comes from.
+fn fields_json(
+    layered: &Layered,
+    wanted: impl Fn(&&tm_core::scheme::Field) -> bool,
+) -> serde_json::Value {
+    let fields = layered.scheme.fields.iter().filter(wanted).map(|field| {
         let mut json = serde_json::to_value(field).expect("a field always serializes");
         json["from"] = json!(layered.origin(&field.name));
         json
@@ -906,7 +909,7 @@ fn with_origin(value: &impl serde::Serialize, origin: Origin) -> serde_json::Val
 fn scheme_json(layered: &Layered) -> serde_json::Value {
     let scheme = &layered.scheme;
     let mut json = serde_json::to_value(scheme).expect("a Scheme always serializes");
-    json["fields"] = fields_json(layered);
+    json["fields"] = fields_json(layered, |_| true);
     json["types"] = scheme
         .types
         .iter()
@@ -966,8 +969,8 @@ fn field_line(layered: &Layered, field: &tm_core::scheme::Field, computed: bool)
     format!("field {} ({label}){notes}{options}", field.name)
 }
 
-/// One Issue type: its Workflow's Statuses in order and every field, marked
-/// required where the Scheme requires it of every Issue.
+/// One Issue type: its Workflow's Statuses in order and the fields it
+/// carries, marked required where the Scheme requires it of every Issue.
 fn scheme_type(layered: &Layered, wanted: &str) -> Result<Output, CliError> {
     let scheme = &layered.scheme;
     let by = |key: fn(&tm_core::scheme::IssueType) -> &str| {
@@ -986,10 +989,11 @@ fn scheme_type(layered: &Layered, wanted: &str) -> Result<Output, CliError> {
     let workflow = scheme.workflow(&issue_type.id);
     let workflow_origin =
         |workflow: &tm_core::scheme::Workflow| layered.workflow_origin(&workflow.name);
+    let carried = |field: &&tm_core::scheme::Field| scheme.carries(&issue_type.id, field);
     let data = json!({
         "type": with_origin(issue_type, layered.type_origin(&issue_type.id)),
         "workflow": workflow.map(|workflow| with_origin(workflow, workflow_origin(workflow))),
-        "fields": fields_json(layered),
+        "fields": fields_json(layered, carried),
     });
     let mut text = type_line(issue_type, layered.type_origin(&issue_type.id));
     text.push('\n');
@@ -998,7 +1002,12 @@ fn scheme_type(layered: &Layered, wanted: &str) -> Result<Output, CliError> {
             let _ = writeln!(text, "{line}");
         }
     }
-    for field in scheme.fields.iter().filter(|field| !field.derived) {
+    for field in scheme
+        .fields
+        .iter()
+        .filter(carried)
+        .filter(|field| !field.derived)
+    {
         let _ = writeln!(text, "{}", field_line(layered, field, false));
     }
     Ok(Output::new(text, data))
@@ -1009,10 +1018,16 @@ fn noted(origin: Origin) -> String {
     origin_note(origin).map_or_else(String::new, |note| format!(" [{note}]"))
 }
 
-/// An Issue type's line, its label printed escaped.
+/// An Issue type's line, its label printed escaped, ending with the fields it
+/// lists when it lists them.
 fn type_line(issue_type: &tm_core::scheme::IssueType, origin: Origin) -> String {
     let label = output::printable(&issue_type.label);
-    format!("type {} ({label}){}", issue_type.id, noted(origin))
+    let fields = match issue_type.fields.as_deref() {
+        None => String::new(),
+        Some([]) => ": no Scheme fields".to_owned(),
+        Some(fields) => format!(": carries {}", fields.join(", ")),
+    };
+    format!("type {} ({label}){}{fields}", issue_type.id, noted(origin))
 }
 
 /// A Workflow's line, then one per Status, labels printed escaped.

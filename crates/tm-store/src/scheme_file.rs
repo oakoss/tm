@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use tm_core::scheme::{
     Category, Choice, Field, FieldType, IssueType, Parents, Scheme, SchemeError, Status,
-    Transitions, WAITING_ON, Workflow, is_id,
+    Transitions, Workflow, is_id,
 };
 use toml::Spanned;
 
@@ -73,6 +73,7 @@ struct Remove {
 struct TypeSpec {
     label: Option<String>,
     workflow: Spanned<String>,
+    fields: Option<Vec<Spanned<String>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -358,7 +359,7 @@ fn merge(
         workflow_origins,
     } = layered;
     removed(source, "fields", &layer.remove.fields, |name| {
-        scheme.field(name).map(|field| !fixed(field))
+        scheme.field(name).map(|field| !field.is_fixed())
     })?;
     removed(source, "types", &layer.remove.types, |id| {
         scheme.issue_type(id).map(|_| true)
@@ -406,11 +407,66 @@ fn merge(
             label: spec.label.clone().unwrap_or_else(|| name.clone()),
             workflow: spec.workflow.get_ref().clone(),
             parents: Parents::Any,
+            fields: spec
+                .fields
+                .as_ref()
+                .map(|fields| fields.iter().map(|field| field.get_ref().clone()).collect()),
         });
         type_origins.insert(name.clone(), origin);
     }
     every_type_has_its_workflow(scheme, layer, source)?;
-    merge_fields(scheme, origins, layer, source, origin)
+    merge_fields(scheme, origins, layer, source, origin)?;
+    every_type_has_its_fields(scheme, layer, source)
+}
+
+/// Refuses `layer` when a type it defines lists a field twice, a fixed one,
+/// or one no layer defines, or when it removes a field a type still lists.
+fn every_type_has_its_fields(
+    scheme: &Scheme,
+    layer: &Layer,
+    source: Source<'_>,
+) -> Result<(), SchemeFileError> {
+    for (id, spec) in &layer.types {
+        let listed = spec.fields.as_deref().unwrap_or_default();
+        for (at, field) in listed.iter().enumerate() {
+            let (type_id, name) = (id.get_ref(), field.get_ref());
+            let message = if listed[..at].iter().any(|before| before.get_ref() == name) {
+                format!("type {type_id} lists field {name} twice")
+            } else {
+                match scheme.field(name) {
+                    None => format!(
+                        "type {type_id} lists field {name}, which neither this layer nor one below defines"
+                    ),
+                    Some(def) if def.is_fixed() => {
+                        format!("type {type_id} lists field {name}, which every type carries")
+                    }
+                    Some(_) => continue,
+                }
+            };
+            return Err(source.error(field.span().start, message));
+        }
+    }
+    for name in &layer.remove.fields {
+        if scheme.field(name.get_ref()).is_some() {
+            continue;
+        }
+        if let Some(user) = scheme.types.iter().find(|issue_type| {
+            issue_type
+                .fields
+                .as_ref()
+                .is_some_and(|fields| fields.contains(name.get_ref()))
+        }) {
+            return Err(source.error(
+                name.span().start,
+                format!(
+                    "field {} is removed, but type {} lists it",
+                    name.get_ref(),
+                    user.id
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Refuses `layer` when it leaves a type naming a Workflow that does not
@@ -478,7 +534,7 @@ fn merge_fields(
     for (id, spec) in &layer.fields {
         let name = id.get_ref();
         if let Some(existing) = scheme.field(name) {
-            if fixed(existing) {
+            if existing.is_fixed() {
                 return Err(source.error(
                     id.span().start,
                     format!("{name} is built in and cannot be replaced"),
@@ -616,12 +672,6 @@ fn workflow(
         statuses,
         transitions: Transitions::Any,
     })
-}
-
-/// A field no Scheme file may remove or replace: a built-in one, or the
-/// question `tm ask` sets.
-fn fixed(field: &Field) -> bool {
-    field.builtin || field.name == WAITING_ON
 }
 
 #[cfg(test)]
@@ -907,6 +957,72 @@ workflow = "default"
         let redefined = "[remove]\nworkflows = [\"default\"]\n[workflows.default]\nstart = \"a\"\nstatuses = [{ id = \"a\", category = \"todo\" }]\n";
         let scheme = resolve(Some(at(WORKSPACE, redefined)), None, &["TM"], "TM").unwrap();
         assert_eq!(scheme.workflow("epic").unwrap().start, "a");
+    }
+
+    #[test]
+    fn a_type_carries_the_fields_it_lists() {
+        let workspace = "[fields.severity]\ntype = \"text\"\n[fields.area]\ntype = \"text\"\n[types.bug]\nworkflow = \"default\"\nfields = [\"severity\"]\n[types.chore]\nworkflow = \"default\"\nfields = []\n";
+        let scheme = resolve(Some(at(WORKSPACE, workspace)), None, &["TM"], "TM").unwrap();
+        let field = |name: &str| scheme.field(name).unwrap();
+        assert!(scheme.carries("bug", field("severity")));
+        assert!(!scheme.carries("bug", field("area")));
+        assert!(!scheme.carries("chore", field("severity")));
+        assert!(scheme.carries("chore", field("waiting_on")));
+        assert!(scheme.carries("task", field("area")));
+
+        let repo = "[projects.TM.fields.area]\ntype = \"number\"\n";
+        let scheme = resolve(
+            Some(at(WORKSPACE, workspace)),
+            Some(at(REPO, repo)),
+            &["TM"],
+            "TM",
+        )
+        .unwrap();
+        assert_eq!(
+            scheme.issue_type("bug").unwrap().fields,
+            Some(vec!["severity".to_owned()]),
+            "replacing a field keeps the types that list it"
+        );
+    }
+
+    #[test]
+    fn a_type_lists_each_field_once_and_only_defined_unfixed_ones() {
+        let typed = |fields: &str| {
+            format!(
+                "[fields.area]\ntype = \"text\"\n[types.bug]\nworkflow = \"default\"\nfields = {fields}\n"
+            )
+        };
+        assert_eq!(
+            fault(&typed("[\"area\", \"area\"]"), ""),
+            format!("{WORKSPACE}:5: type bug lists field area twice")
+        );
+        assert_eq!(
+            fault(&typed("[\"gone\"]"), ""),
+            format!(
+                "{WORKSPACE}:5: type bug lists field gone, which neither this layer nor one below defines"
+            )
+        );
+        assert_eq!(
+            fault(&typed("[\"priority\"]"), ""),
+            format!("{WORKSPACE}:5: type bug lists field priority, which every type carries")
+        );
+        assert_eq!(
+            fault(
+                &typed("[\"area\"]"),
+                "[projects.TM.remove]\nfields = [\"area\"]\n"
+            ),
+            format!("{REPO}:2: field area is removed, but type bug lists it")
+        );
+        let redefined = "[projects.TM.remove]\nfields = [\"area\"]\n[projects.TM.types.bug]\nworkflow = \"default\"\n";
+        let scheme = resolve(
+            Some(at(WORKSPACE, &typed("[\"area\"]"))),
+            Some(at(REPO, redefined)),
+            &["TM"],
+            "TM",
+        )
+        .unwrap();
+        assert!(scheme.field("area").is_none());
+        assert_eq!(scheme.issue_type("bug").unwrap().fields, None);
     }
 
     #[test]

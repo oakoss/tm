@@ -1772,7 +1772,14 @@ impl Store {
         self.read(|store| {
             let had = validate::violations(&store.conn, &store.scheme, issue, None)?;
             let after = validate::violations(&store.conn, &store.scheme, issue, Some(field))?;
-            refuse_added(issue, &violation::added(&had, after))
+            let added = violation::added(&had, after);
+            refuse_added(
+                &store.conn,
+                &store.scheme,
+                issue,
+                &added,
+                (&BTreeSet::new(), false),
+            )
         })
         .map_err(|err| err.named(&self.conn))
     }
@@ -2010,6 +2017,7 @@ fn write_drafts(
     // a batch may not make it worse, but an Issue that arrived incomplete
     // or inconsistent stays editable.
     let mut before = BTreeMap::new();
+    let mut written: BTreeMap<Uuid, BTreeSet<String>> = BTreeMap::new();
     let mut half_held = BTreeSet::new();
     let mut was_finished = BTreeSet::new();
     let mut pending: VecDeque<_> = drafts.into();
@@ -2042,6 +2050,9 @@ fn write_drafts(
             undoing,
         };
         let change = validate::check(tx, scheme, &writing, draft.subject, draft.change)?;
+        if let Some(field) = valued(&change) {
+            written.entry(draft.subject).or_default().insert(field);
+        }
         hlc = hlc.tick(now_ms);
         let base_seq: i64 = tx.query_row(
             "SELECT coalesce(max(server_seq), 0) FROM ops WHERE project = ?1",
@@ -2091,32 +2102,60 @@ fn write_drafts(
         }
         ops.push(op);
     }
-    no_worse(tx, scheme, before)?;
+    no_worse(tx, scheme, before, (&written, undoing))?;
     shortlist::check_batch(tx, &ops, &half_held)?;
     memory::check_batch(tx, &ops)?;
     Ok((ops, hlc))
 }
 
-/// Refuses a batch that gave an Issue a Violation it did not have.
+/// The field `change` gives a value or an element, if any.
+fn valued(change: &Change) -> Option<String> {
+    match change {
+        Change::SetField { field, value, .. } if !value.is_null() => Some(field.clone()),
+        Change::Add { field, .. } => Some(field.clone()),
+        _ => None,
+    }
+}
+
+/// Refuses a batch that gave an Issue a Violation it did not have, or wrote a
+/// value for a field its type does not carry.
 fn no_worse(
     tx: &Transaction<'_>,
     scheme: &Scheme,
     before: BTreeMap<Uuid, Vec<Violation>>,
+    (written, undoing): (&BTreeMap<Uuid, BTreeSet<String>>, bool),
 ) -> Result<(), StoreError> {
+    let none = BTreeSet::new();
     for (issue, had) in before {
-        let added = violation::added(&had, validate::violations(tx, scheme, issue, None)?);
-        refuse_added(issue, &added)?;
+        let wrote = written.get(&issue).unwrap_or(&none);
+        let refused: Vec<Violation> = validate::violations(tx, scheme, issue, None)?
+            .into_iter()
+            .filter(|violation| {
+                !had.contains(violation)
+                    || matches!(violation, Violation::UncarriedField(field) if wrote.contains(field))
+            })
+            .collect();
+        if !refused.is_empty() {
+            refuse_added(tx, scheme, issue, &refused, (wrote, undoing))?;
+        }
     }
     Ok(())
 }
 
-/// The refusal for the first of `added`, missing fields named together.
-fn refuse_added(issue: Uuid, added: &[Violation]) -> Result<(), StoreError> {
+/// The refusal for the first kind of Violation in `added`, missing and
+/// uncarried fields named together; `wrote` holds the fields the batch set.
+fn refuse_added(
+    conn: &Connection,
+    scheme: &Scheme,
+    issue: Uuid,
+    added: &[Violation],
+    (wrote, undoing): (&BTreeSet<String>, bool),
+) -> Result<(), StoreError> {
     let fields: Vec<String> = added
         .iter()
         .filter_map(|violation| match violation {
             Violation::MissingField(field) => Some(field.clone()),
-            Violation::StatusOutsideWorkflow => None,
+            Violation::UncarriedField(_) | Violation::StatusOutsideWorkflow => None,
         })
         .collect();
     if !fields.is_empty() {
@@ -2124,6 +2163,26 @@ fn refuse_added(issue: Uuid, added: &[Violation]) -> Result<(), StoreError> {
             issue: issue.into(),
             fields,
         });
+    }
+    let uncarried: Vec<&String> = added
+        .iter()
+        .filter_map(|violation| match violation {
+            Violation::UncarriedField(field) => Some(field),
+            Violation::MissingField(_) | Violation::StatusOutsideWorkflow => None,
+        })
+        .collect();
+    if !uncarried.is_empty() {
+        let issue_type: Option<String> = conn.query_row(
+            "SELECT type FROM issues WHERE id = ?1",
+            [issue.as_bytes()],
+            |row| row.get(0),
+        )?;
+        return Err(uncarried_refusal(
+            scheme,
+            &issue_type.unwrap_or_default(),
+            &uncarried,
+            (wrote, undoing),
+        ));
     }
     if added.contains(&Violation::StatusOutsideWorkflow) {
         return Err(StoreError::Invalid {
@@ -2133,6 +2192,58 @@ fn refuse_added(issue: Uuid, added: &[Violation]) -> Result<(), StoreError> {
         });
     }
     Ok(())
+}
+
+/// The refusal of values held for `uncarried`, fields `issue_type` does not
+/// carry: one the batch wrote by itself, else every one it left behind.
+fn uncarried_refusal(
+    scheme: &Scheme,
+    issue_type: &str,
+    uncarried: &[&String],
+    (wrote, undoing): (&BTreeSet<String>, bool),
+) -> StoreError {
+    let valid = scheme
+        .fields
+        .iter()
+        .filter(|def| !def.derived && scheme.carries(issue_type, def))
+        .map(|def| def.name.clone())
+        .collect();
+    if let Some(field) = uncarried.iter().find(|field| wrote.contains(**field)) {
+        return StoreError::Invalid {
+            field: (*field).clone(),
+            reason: format!("is not a field of type {issue_type}"),
+            valid,
+        };
+    }
+    let (field, rest) = (uncarried[0], &uncarried[1..]);
+    let named = if undoing {
+        format!("type {issue_type}, which this undo restores,")
+    } else {
+        format!("type {issue_type}")
+    };
+    let (held, carry, clear) = match rest {
+        [] => ("holds a value".to_owned(), "does not carry it", "it"),
+        [other] => (
+            format!("holds a value, as does {other}"),
+            "carries none of them",
+            "them",
+        ),
+        [others @ .., last] => {
+            let others: Vec<&str> = others.iter().map(|name| name.as_str()).collect();
+            let held = format!("holds a value, as do {} and {last}", others.join(", "));
+            (held, "carries none of them", "them")
+        }
+    };
+    let clear = if undoing {
+        String::new()
+    } else {
+        format!("; clear {clear} in the same change")
+    };
+    StoreError::Invalid {
+        field: field.clone(),
+        reason: format!("{held}, and {named} {carry}{clear}"),
+        valid,
+    }
 }
 
 /// The clock's last value. The log bounds it as well as `last_hlc`, so a lost

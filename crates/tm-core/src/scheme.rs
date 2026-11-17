@@ -167,6 +167,13 @@ impl Field {
         }
     }
 
+    /// Built in, or the question `tm ask` sets: every type carries it, and
+    /// no Scheme file may remove or replace it.
+    #[must_use]
+    pub fn is_fixed(&self) -> bool {
+        self.builtin || self.name == WAITING_ON
+    }
+
     /// The option with this id, for enumerated fields.
     #[must_use]
     pub fn option(&self, id: &str) -> Option<&Choice> {
@@ -259,6 +266,10 @@ pub struct IssueType {
     pub label: String,
     pub workflow: String,
     pub parents: Parents,
+    /// The Scheme fields it carries besides the fixed ones; `None` carries
+    /// every field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -363,6 +374,7 @@ impl Scheme {
             label: label.into(),
             workflow: "default".into(),
             parents: Parents::Any,
+            fields: None,
         })
         .collect();
         let priorities = [
@@ -464,6 +476,17 @@ impl Scheme {
     #[must_use]
     pub fn issue_type(&self, id: &str) -> Option<&IssueType> {
         self.types.iter().find(|issue_type| issue_type.id == id)
+    }
+
+    /// Whether an Issue of `issue_type` carries `field`: a fixed field always,
+    /// any field for a type with no list or one the Scheme lacks.
+    #[must_use]
+    pub fn carries(&self, issue_type: &str, field: &Field) -> bool {
+        field.is_fixed()
+            || self
+                .issue_type(issue_type)
+                .and_then(|issue_type| issue_type.fields.as_ref())
+                .is_none_or(|carried| carried.contains(&field.name))
     }
 
     #[must_use]
