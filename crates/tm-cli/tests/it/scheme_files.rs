@@ -470,6 +470,11 @@ fn a_pair_the_scheme_now_refuses_is_repaired_by_retyping_its_parent() {
         run(&["edit", "TM-3", "--set", "type=story"]),
         "the type it has"
     );
+    assert!(
+        run(&["edit", "TM-2", "--parent", "TM-1"]),
+        "a new parent leaves its children unchecked"
+    );
+    assert!(run(&["edit", "TM-2", "--no-parent"]));
     assert!(run(&["edit", "TM-2", "--set", "type=epic"]));
     assert!(!run(&["edit", "TM-2", "--set", "type=task"]));
 }

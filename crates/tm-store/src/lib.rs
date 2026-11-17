@@ -1823,8 +1823,8 @@ impl Store {
             .map_err(|err| err.named(&self.conn))
     }
 
-    /// Ahead of a write, which checks again; `new_type` also checks the
-    /// children.
+    /// Ahead of a write, which checks again. `parent` is the parent `issue`
+    /// will have, not read from the store; `new_type` also checks the children.
     ///
     /// # Errors
     ///
