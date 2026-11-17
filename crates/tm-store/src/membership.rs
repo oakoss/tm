@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tm_core::filter::{Context, OPEN, parse, resolve};
 use tm_core::link::BLOCKS;
-use tm_core::scheme::{Category, Scheme, WAITING_ON};
+use tm_core::scheme::{Category, MoveGap, Scheme, WAITING_ON};
 use tm_core::{Actor, Change, Op, ProjectId, rank};
 use uuid::Uuid;
 
@@ -446,8 +446,10 @@ pub(crate) fn cannot_start(scheme: &Scheme, view: &IssueView) -> bool {
         .and_then(serde_json::Value::as_str);
     view.category == Some(Category::Todo)
         && view.workflow(scheme).is_some_and(|workflow| {
-            workflow.of_category(Category::Active).next().is_some()
-                && workflow.first_move(from, Category::Active).is_none()
+            matches!(
+                workflow.first_move(from, Category::Active),
+                Err(MoveGap::Unreachable(_))
+            )
         })
 }
 

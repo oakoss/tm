@@ -279,11 +279,31 @@ impl Workflow {
     }
 
     /// The first Status of `category` an Issue in `from` may move to.
-    #[must_use]
-    pub fn first_move(&self, from: Option<&str>, category: Category) -> Option<&Status> {
-        self.of_category(category)
+    ///
+    /// # Errors
+    ///
+    /// [`MoveGap`] when there is none.
+    pub fn first_move(
+        &self,
+        from: Option<&str>,
+        category: Category,
+    ) -> Result<&Status, MoveGap<'_>> {
+        let mut statuses = self.of_category(category).peekable();
+        if statuses.peek().is_none() {
+            return Err(MoveGap::NoStatus);
+        }
+        statuses
             .find(|status| self.allows(from, &status.id))
+            .ok_or_else(|| MoveGap::Unreachable(self.moves_from(from)))
     }
+}
+
+/// Why an Issue has no Status of a category to move to.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MoveGap<'a> {
+    NoStatus,
+    /// None is allowed from where it is; holds the moves that are.
+    Unreachable(Vec<&'a Status>),
 }
 
 /// Which types an Issue's parent may have. Only `Any` exists until Schemes
@@ -726,9 +746,22 @@ mod tests {
             workflow
                 .first_move(Some(from), category)
                 .map(|s| s.id.as_str())
+                .map_err(|gap| match gap {
+                    MoveGap::NoStatus => Vec::new(),
+                    MoveGap::Unreachable(moves) => {
+                        moves.into_iter().map(|s| s.id.as_str()).collect()
+                    }
+                })
         };
-        assert_eq!(first("todo", Category::Active), Some("in_progress"));
-        assert_eq!(first("todo", Category::Done), None);
-        assert_eq!(first("in_review", Category::Done), Some("done"));
+        assert_eq!(first("todo", Category::Active), Ok("in_progress"));
+        assert_eq!(first("todo", Category::Done), Err(vec!["in_progress"]));
+        assert_eq!(first("in_review", Category::Done), Ok("done"));
+        let mut bare = workflow.clone();
+        bare.statuses
+            .retain(|status| status.category != Category::Done);
+        assert_eq!(
+            bare.first_move(Some("todo"), Category::Done),
+            Err(MoveGap::NoStatus)
+        );
     }
 }

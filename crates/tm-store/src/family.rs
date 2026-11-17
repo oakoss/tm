@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, OptionalExtension};
-use tm_core::scheme::Category;
+use tm_core::scheme::{Category, MoveGap};
 use tm_core::{Actor, Scheme};
 use uuid::Uuid;
 
@@ -127,10 +127,11 @@ pub(crate) fn start(
             continue;
         };
         let issue_type = parent.issue_type().unwrap_or_default();
-        let workflow = scheme.workflow(issue_type);
-        let to = workflow.and_then(|workflow| workflow.first_move(Some(from), Category::Active));
-        let has_active = workflow
-            .is_some_and(|workflow| workflow.of_category(Category::Active).next().is_some());
+        let to = scheme
+            .workflow(issue_type)
+            .map_or(Err(MoveGap::NoStatus), |workflow| {
+                workflow.first_move(Some(from), Category::Active)
+            });
         let held = lineage
             .held(parent.id)
             .filter(|holder| actor.is_agent() && !holder.taken_by(actor));
@@ -138,21 +139,23 @@ pub(crate) fn start(
             ParentOutcome::Archived
         } else if let Some(holder) = held {
             ParentOutcome::Held(holder.clone())
-        } else if let Some(to) = to {
-            drafts.push(Draft {
-                actor: actor.clone(),
-                project: parent.project,
-                subject: parent.id,
-                change: crate::set("status", serde_json::json!(to.id)),
-            });
-            ParentOutcome::Started {
-                from: from.to_owned(),
-                to: to.id.clone(),
-            }
-        } else if has_active {
-            ParentOutcome::NoActiveMove(from.to_owned())
         } else {
-            ParentOutcome::NoActiveStatus(issue_type.to_owned())
+            match to {
+                Ok(to) => {
+                    drafts.push(Draft {
+                        actor: actor.clone(),
+                        project: parent.project,
+                        subject: parent.id,
+                        change: crate::set("status", serde_json::json!(to.id)),
+                    });
+                    ParentOutcome::Started {
+                        from: from.to_owned(),
+                        to: to.id.clone(),
+                    }
+                }
+                Err(MoveGap::Unreachable(_)) => ParentOutcome::NoActiveMove(from.to_owned()),
+                Err(MoveGap::NoStatus) => ParentOutcome::NoActiveStatus(issue_type.to_owned()),
+            }
         };
         starts.push(ParentStart {
             id: parent.id,

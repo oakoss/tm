@@ -7,7 +7,7 @@
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
-use tm_core::scheme::{Category, Scheme};
+use tm_core::scheme::{Category, MoveGap, Scheme};
 use tm_store::{IssueView, ParentOutcome, ParentStart, Store, StoreError};
 use uuid::Uuid;
 
@@ -144,38 +144,27 @@ pub(crate) fn first(
     from: Option<&str>,
     category: Category,
 ) -> Result<String, NoMove> {
-    let workflow = scheme.workflow(issue_type);
-    if let Some(status) = workflow.and_then(|workflow| workflow.first_move(from, category)) {
-        return Ok(status.id.clone());
-    }
-    let has_category = workflow.filter(|workflow| workflow.of_category(category).next().is_some());
-    let category = category.id();
-    match (has_category, from) {
-        _ if workflow.is_none() => Err(NoMove {
+    let Some(workflow) = scheme.workflow(issue_type) else {
+        return Err(NoMove {
             reason: format!(
                 "Issue type {} is not in the Scheme; tm scheme show lists the types",
                 printable(issue_type)
             ),
             allowed: None,
-        }),
-        (Some(workflow), Some(from)) => Err(NoMove {
+        });
+    };
+    let name = category.id();
+    match workflow.first_move(from, category) {
+        Ok(status) => Ok(status.id.clone()),
+        Err(MoveGap::Unreachable(moves)) => Err(NoMove {
             reason: format!(
-                "its Workflow allows no {category} Status from {}",
-                printable(from)
+                "its Workflow allows no {name} Status from {}",
+                printable(from.unwrap_or_default())
             ),
-            allowed: Some(
-                workflow
-                    .moves_from(Some(from))
-                    .into_iter()
-                    .map(|status| status.id.clone())
-                    .collect(),
-            ),
+            allowed: Some(moves.into_iter().map(|status| status.id.clone()).collect()),
         }),
-        _ => Err(NoMove {
-            reason: format!(
-                "Issue type {} has no {category} Status",
-                printable(issue_type)
-            ),
+        Err(MoveGap::NoStatus) => Err(NoMove {
+            reason: format!("Issue type {} has no {name} Status", printable(issue_type)),
             allowed: None,
         }),
     }
