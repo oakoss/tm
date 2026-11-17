@@ -194,7 +194,7 @@ fn show_prints_times_in_local_time_and_text_across_lines() {
 }
 
 #[test]
-fn show_names_no_moves_for_a_status_its_workflow_does_not_define() {
+fn show_names_every_move_from_a_status_its_workflow_does_not_define() {
     let scratch = Scratch::new();
     let (repo, mut store, project) = initialized(&scratch);
     let (issue, _) = store
@@ -211,9 +211,20 @@ fn show_names_no_moves_for_a_status_its_workflow_does_not_define() {
     let out = tm(&scratch, &repo, &["show", "TM-1"]);
     let shown = text(&out.stdout);
     assert!(shown.contains("status: blocked\n"), "{shown}");
-    assert!(!shown.contains("moves to:"), "{shown}");
+    assert!(
+        shown.contains(
+            "moves to: triage, todo, in_progress (active), in_review (active), done, cancelled\n"
+        ),
+        "{shown}"
+    );
     let (_, doc) = show(&scratch, &repo, "TM-1");
-    assert_eq!(doc["data"]["moves_to"], json!([]), "{doc}");
+    assert_eq!(
+        doc["data"]["moves_to"].as_array().unwrap().len(),
+        6,
+        "{doc}"
+    );
+    let moved = tm(&scratch, &repo, &["move", "TM-1", "todo"]);
+    assert!(moved.status.success(), "{moved:?}");
 }
 
 #[test]

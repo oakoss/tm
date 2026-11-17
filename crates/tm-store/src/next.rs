@@ -54,7 +54,7 @@ impl Store {
             let blocks = open_blocks(tx, &scheme)?;
             for view in crate::read::issues(tx, &scheme, candidates)? {
                 let todo = view.category == Some(Category::Todo);
-                if !todo || !passed_over(tx, &view, &blocks, at_ms)?.is_empty() {
+                if !todo || !passed_over(tx, &scheme, &view, &blocks, at_ms)?.is_empty() {
                     continue;
                 }
                 let twice = || StoreError::Corrupt("tm next began two Issues".into());

@@ -93,7 +93,8 @@ pub struct ParentStart {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParentOutcome {
-    /// Moved from `from` into `to`, the first active Status of its Workflow.
+    /// Moved from `from` into `to`, the first active Status its Workflow
+    /// allows from there.
     Started { from: String, to: String },
     /// Archived, which wins over a Claim on it.
     Archived,
@@ -101,6 +102,8 @@ pub enum ParentOutcome {
     Held(Claim),
     /// Its Issue type, whose Workflow has no active Status.
     NoActiveStatus(String),
+    /// Its Status, from which its Workflow allows no active one.
+    NoActiveMove(String),
 }
 
 /// The moves starting each of `parents` still in triage or todo, as a child
@@ -124,9 +127,10 @@ pub(crate) fn start(
             continue;
         };
         let issue_type = parent.issue_type().unwrap_or_default();
-        let to = scheme
-            .workflow(issue_type)
-            .and_then(|workflow| workflow.of_category(Category::Active).next());
+        let workflow = scheme.workflow(issue_type);
+        let to = workflow.and_then(|workflow| workflow.first_move(Some(from), Category::Active));
+        let has_active = workflow
+            .is_some_and(|workflow| workflow.of_category(Category::Active).next().is_some());
         let held = lineage
             .held(parent.id)
             .filter(|holder| actor.is_agent() && !holder.taken_by(actor));
@@ -145,6 +149,8 @@ pub(crate) fn start(
                 from: from.to_owned(),
                 to: to.id.clone(),
             }
+        } else if has_active {
+            ParentOutcome::NoActiveMove(from.to_owned())
         } else {
             ParentOutcome::NoActiveStatus(issue_type.to_owned())
         };

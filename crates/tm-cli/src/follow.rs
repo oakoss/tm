@@ -39,6 +39,12 @@ pub(crate) fn report(
             ParentOutcome::NoActiveStatus(issue_type) => {
                 format!("Issue type {issue_type} has no active Status")
             }
+            ParentOutcome::NoActiveMove(from) => {
+                format!(
+                    "its Workflow allows no active Status from {}",
+                    printable(&from)
+                )
+            }
         };
         output
             .warnings
@@ -89,12 +95,19 @@ pub(crate) fn next(
     } else {
         (Category::Done, "closing")
     };
-    let Some(to) = first(store.scheme(), text(&parent, "type"), category) else {
-        warnings.push(format!(
-            "{key} has no {} Status, so tm cannot suggest {verb} it",
-            category.id()
-        ));
-        return Ok(None);
+    let from = Some(text(&parent, "status")).filter(|status| !status.is_empty());
+    let to = match first(store.scheme(), text(&parent, "type"), from, category) {
+        Ok(to) => to,
+        Err(no) => {
+            let allowed = match no.allowed.as_deref() {
+                Some([]) => "; it can move nowhere".to_owned(),
+                Some(allowed) => format!("; it can move to {}", allowed.join(", ")),
+                None => String::new(),
+            };
+            let reason = no.reason;
+            warnings.push(format!("tm cannot suggest {verb} {key}: {reason}{allowed}"));
+            return Ok(None);
+        }
     };
     let command = format!("tm move {key} {to}");
     let message = if reopen {
@@ -109,13 +122,51 @@ pub(crate) fn next(
     Ok(Some((message, command)))
 }
 
-/// The first Status of `category` in `issue_type`'s Workflow.
-pub(crate) fn first(scheme: &Scheme, issue_type: &str, category: Category) -> Option<String> {
-    scheme
-        .workflow(issue_type)?
-        .of_category(category)
-        .next()
-        .map(|status| status.id.clone())
+/// Why an Issue has no Status of a category to move to.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct NoMove {
+    pub(crate) reason: String,
+    /// The moves its Workflow allows instead, when it has a Status of the
+    /// category but none it may reach; `None` when it has none at all.
+    pub(crate) allowed: Option<Vec<String>>,
+}
+
+/// The first Status of `category` an Issue of `issue_type` in `from` may move
+/// to, or why there is none.
+pub(crate) fn first(
+    scheme: &Scheme,
+    issue_type: &str,
+    from: Option<&str>,
+    category: Category,
+) -> Result<String, NoMove> {
+    let workflow = scheme.workflow(issue_type);
+    if let Some(status) = workflow.and_then(|workflow| workflow.first_move(from, category)) {
+        return Ok(status.id.clone());
+    }
+    let has_category = workflow.filter(|workflow| workflow.of_category(category).next().is_some());
+    let category = category.id();
+    match (has_category, from) {
+        (Some(workflow), Some(from)) => Err(NoMove {
+            reason: format!(
+                "its Workflow allows no {category} Status from {}",
+                printable(from)
+            ),
+            allowed: Some(
+                workflow
+                    .moves_from(Some(from))
+                    .into_iter()
+                    .map(|status| status.id.clone())
+                    .collect(),
+            ),
+        }),
+        _ => Err(NoMove {
+            reason: format!(
+                "Issue type {} has no {category} Status",
+                printable(issue_type)
+            ),
+            allowed: None,
+        }),
+    }
 }
 
 pub(crate) fn finished(issue: &IssueView) -> bool {
@@ -137,4 +188,38 @@ fn text<'a>(issue: &'a IssueView, field: &str) -> &'a str {
         .get(field)
         .and_then(Value::as_str)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use tm_core::scheme::Transitions;
+
+    use super::*;
+
+    #[test]
+    fn the_first_move_of_a_category_says_why_there_is_none() {
+        let mut scheme = Scheme::built_in();
+        scheme.workflows[0].transitions =
+            Transitions::Listed([("todo".to_owned(), vec!["cancelled".to_owned()])].into());
+        let first = |from, category| first(&scheme, "task", Some(from), category);
+        assert_eq!(
+            first("todo", Category::Cancelled),
+            Ok("cancelled".to_owned())
+        );
+        assert_eq!(
+            first("todo", Category::Done),
+            Err(NoMove {
+                reason: "its Workflow allows no done Status from todo".to_owned(),
+                allowed: Some(vec!["cancelled".to_owned()]),
+            })
+        );
+        assert_eq!(first("in_review", Category::Done), Ok("done".to_owned()));
+        assert_eq!(
+            super::first(&scheme, "gone", Some("todo"), Category::Done),
+            Err(NoMove {
+                reason: "Issue type gone has no done Status".to_owned(),
+                allowed: None,
+            })
+        );
+    }
 }

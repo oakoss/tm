@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::cursor;
 use crate::issue::{Issue, IssueScreen, body, now_ms};
 use crate::keys::{self, Binding, ch, plain};
-use crate::picker::{Choice, Field, Picker, assignees, people, priorities, shared, statuses};
+use crate::picker::{Choice, Field, Picker, assignees, people, priorities, shared};
 use crate::read;
 use crate::{Actions, Outcome, Screen};
 
@@ -132,10 +132,11 @@ struct Shown {
     id: Uuid,
     key: String,
     version: i64,
-    issue_type: String,
     priority: String,
     assignee: String,
     title: String,
+    /// The Statuses its Workflow allows it to move to.
+    moves: Vec<Choice>,
 }
 
 #[derive(Default)]
@@ -150,8 +151,6 @@ pub(crate) struct Triage {
     me: Option<String>,
     /// People assigned open work, offered when assigning.
     people: Vec<String>,
-    /// Statuses per Issue type, offered when moving.
-    statuses: Vec<(String, Vec<Choice>)>,
     problem: Option<String>,
     /// The selected Issue as the Issue screen lays it out, or why it cannot
     /// be read.
@@ -169,7 +168,7 @@ impl Triage {
             let rows: Vec<Shown> = read::issues(store, &queue, Context { me: me.ok() })?
                 .into_iter()
                 .map(|issue| Shown {
-                    issue_type: issue.field("type"),
+                    moves: issue.moves(store),
                     priority: issue.field("priority"),
                     assignee: issue.field("assignee"),
                     title: issue.field("title"),
@@ -183,7 +182,6 @@ impl Triage {
         let kept = self.then.take().or_else(|| self.selected_key());
         match read {
             Ok((rows, people)) => {
-                self.statuses = statuses(store, rows.iter().map(|row| row.issue_type.as_str()));
                 self.rows = rows;
                 self.people = people;
                 self.problem = None;
@@ -282,13 +280,16 @@ impl Triage {
         if targets.is_empty() {
             return Outcome::Stay;
         }
-        let types: BTreeSet<&str> = targets.iter().map(|row| row.issue_type.as_str()).collect();
         let captured = targets
             .iter()
             .map(|row| (row.key.clone(), row.version))
             .collect();
         let choices = match field {
-            Field::Status => shared(&self.statuses, &types),
+            Field::Status => {
+                let moves: Vec<&[Choice]> =
+                    targets.iter().map(|row| row.moves.as_slice()).collect();
+                shared(&moves)
+            }
             Field::Priority => priorities(),
             Field::Assignee => assignees(self.me.as_deref(), &self.people),
         };

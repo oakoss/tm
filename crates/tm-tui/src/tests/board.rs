@@ -106,6 +106,24 @@ fn a_refused_move_leaves_the_cursor_on_its_issue() {
 }
 
 #[test]
+fn s_offers_only_the_moves_the_workflow_allows() {
+    let mut scheme = tm_core::Scheme::built_in();
+    scheme.workflows[0].transitions = tm_core::scheme::Transitions::Listed(
+        [("todo".to_owned(), vec!["in_review".to_owned()])].into(),
+    );
+    let store = store().with_scheme(scheme);
+    let record = Record::new();
+    let mut shell = on_board(&store, &record);
+    shell.key(press(KeyCode::Char('s')));
+    let picker = drawn_sized(&mut shell, 120, 14);
+    assert_eq!(
+        picked_from(&picker, "Status"),
+        ["Todo", "In Review"],
+        "{picker}"
+    );
+}
+
+#[test]
 fn s_moves_the_issue_to_a_status_its_workflow_has() {
     let store = store();
     let record = Record::new();

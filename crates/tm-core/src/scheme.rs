@@ -3,6 +3,8 @@
 //! The projection never reads the Scheme; values are stored by id and the
 //! Scheme is applied when reading, so editing it never needs a rebuild.
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 
 /// Every Status belongs to one category; cross-type features read categories,
@@ -188,12 +190,30 @@ pub struct Status {
     pub category: Category,
 }
 
-/// Which Status changes a Workflow allows. Only `Any` exists until Schemes
-/// become configurable.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+/// Which Status changes a Workflow allows. JSON writes `"any"`, or the list
+/// of `{ "from", "to" }` a Scheme file gives.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Transitions {
     Any,
+    /// The Statuses each listed Status may move to; one not listed moves to
+    /// any.
+    Listed(BTreeMap<String, Vec<String>>),
+}
+
+impl Serialize for Transitions {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Move<'a> {
+            from: &'a str,
+            to: &'a [String],
+        }
+        match self {
+            Self::Any => serializer.serialize_str("any"),
+            Self::Listed(moves) => {
+                serializer.collect_seq(moves.iter().map(|(from, to)| Move { from, to }))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -231,24 +251,38 @@ impl Workflow {
     }
 
     /// Whether moving from `from` (none for a new Issue) to `to` is allowed.
+    /// An Issue in a Status this Workflow does not define may move to any, so
+    /// it can be repaired.
     #[must_use]
-    pub fn allows(&self, _from: Option<&str>, to: &str) -> bool {
-        match self.transitions {
-            Transitions::Any => self.status(to).is_some(),
+    pub fn allows(&self, from: Option<&str>, to: &str) -> bool {
+        if self.status(to).is_none() {
+            return false;
+        }
+        let Some(from) = from.filter(|from| self.status(from).is_some()) else {
+            return true;
+        };
+        match &self.transitions {
+            Transitions::Any => true,
+            Transitions::Listed(moves) => moves
+                .get(from)
+                .is_none_or(|allowed| allowed.iter().any(|id| id == to)),
         }
     }
 
-    /// The Statuses an Issue in `from` may move to, its own left out; none
-    /// when `from` is a Status this Workflow does not define.
+    /// The Statuses an Issue in `from` may move to, its own left out.
     #[must_use]
     pub fn moves_from(&self, from: Option<&str>) -> Vec<&Status> {
-        if from.is_some_and(|from| self.status(from).is_none()) {
-            return Vec::new();
-        }
         self.statuses
             .iter()
             .filter(|status| Some(status.id.as_str()) != from && self.allows(from, &status.id))
             .collect()
+    }
+
+    /// The first Status of `category` an Issue in `from` may move to.
+    #[must_use]
+    pub fn first_move(&self, from: Option<&str>, category: Category) -> Option<&Status> {
+        self.of_category(category)
+            .find(|status| self.allows(from, &status.id))
     }
 }
 
@@ -553,7 +587,11 @@ mod tests {
             ["triage", "in_progress", "in_review", "done", "cancelled"]
         );
         assert_eq!(ids(workflow.moves_from(None)).len(), 6);
-        assert_eq!(ids(workflow.moves_from(Some("gone"))), Vec::<String>::new());
+        assert_eq!(
+            ids(workflow.moves_from(Some("gone"))).len(),
+            6,
+            "a Status the Workflow lacks may move to any, to repair it"
+        );
     }
 
     #[test]
@@ -667,5 +705,30 @@ mod tests {
         assert!(workflow.allows(None, "todo"));
         assert!(workflow.allows(Some("done"), "triage"));
         assert!(!workflow.allows(Some("todo"), "shipped"));
+    }
+
+    #[test]
+    fn listed_transitions_restrict_only_the_statuses_they_list() {
+        let mut workflow = Scheme::built_in().workflows[0].clone();
+        workflow.transitions = Transitions::Listed(BTreeMap::from([
+            ("todo".to_owned(), vec!["in_progress".to_owned()]),
+            ("done".to_owned(), Vec::new()),
+        ]));
+        assert!(workflow.allows(Some("todo"), "in_progress"));
+        assert!(!workflow.allows(Some("todo"), "done"));
+        assert!(!workflow.allows(Some("done"), "todo"));
+        assert!(workflow.allows(Some("triage"), "done"));
+        assert!(workflow.allows(Some("gone"), "done"));
+        assert!(workflow.allows(None, "done"));
+        assert!(!workflow.allows(Some("triage"), "shipped"));
+        assert_eq!(workflow.moves_from(Some("done")), Vec::<&Status>::new());
+        let first = |from, category| {
+            workflow
+                .first_move(Some(from), category)
+                .map(|s| s.id.as_str())
+        };
+        assert_eq!(first("todo", Category::Active), Some("in_progress"));
+        assert_eq!(first("todo", Category::Done), None);
+        assert_eq!(first("in_review", Category::Done), Some("done"));
     }
 }

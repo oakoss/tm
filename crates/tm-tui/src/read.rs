@@ -22,6 +22,24 @@ impl Read {
         field(&self.view, name)
     }
 
+    /// The Statuses it may be set to: its own, a write that changes nothing,
+    /// and those its Workflow allows it to move to.
+    pub(crate) fn moves(&self, store: &Store) -> Vec<crate::picker::Choice> {
+        let from = self.view.fields.get("status").and_then(Value::as_str);
+        self.view
+            .workflow(store.scheme())
+            .map_or_else(Vec::new, |workflow| {
+                let allowed: Vec<_> = workflow
+                    .statuses
+                    .iter()
+                    .filter(|status| {
+                        Some(status.id.as_str()) == from || workflow.allows(from, &status.id)
+                    })
+                    .collect();
+                crate::picker::choices(&allowed)
+            })
+    }
+
     /// `name`'s value whatever its kind, `-` when unset: a set's elements
     /// joined, a number or a flag as written.
     pub(crate) fn value(&self, name: &str) -> String {

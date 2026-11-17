@@ -37,6 +37,28 @@ fn drawn(shell: &mut Shell) -> String {
     drawn_at(shell, 60)
 }
 
+/// The choices of the picker drawn under the box titled `title`.
+fn picked_from(picker: &str, title: &str) -> Vec<String> {
+    let lines: Vec<Vec<char>> = picker.lines().map(|line| line.chars().collect()).collect();
+    let (top, left) = lines
+        .iter()
+        .enumerate()
+        .find_map(|(row, line)| {
+            let text: String = line.iter().collect();
+            text.find(&format!("┌ {title}"))
+                .map(|byte| (row, text[..byte].chars().count()))
+        })
+        .unwrap();
+    lines[top + 1..]
+        .iter()
+        .take_while(|line| line.get(left) == Some(&'│'))
+        .map(|line| {
+            let inside = line[left + 1..].iter().take_while(|c| **c != '│');
+            inside.collect::<String>().trim().to_owned()
+        })
+        .collect()
+}
+
 fn press(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }

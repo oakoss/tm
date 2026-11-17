@@ -272,9 +272,20 @@ fn close(
         _ => {}
     }
     let issue_type = view.issue_type().unwrap_or_default();
-    let Some(done) = follow::first(here.store.scheme(), issue_type, Category::Done) else {
-        let message = format!("Issue type {} has no done Status", printable(issue_type));
-        return Err(CliError::new("no_done_status", message));
+    let scheme = here.store.scheme();
+    let from = view.fields.get("status").and_then(Value::as_str);
+    let done = match follow::first(scheme, issue_type, from, Category::Done) {
+        Ok(done) => done,
+        // Left where it is, uncounted as scanned, so a later scan retries.
+        Err(no) => {
+            let refusal = match no.allowed {
+                Some(allowed) => CliError::new("invalid_value", no.reason)
+                    .with("field", "status")
+                    .with("allowed", allowed),
+                None => CliError::new("no_done_status", no.reason),
+            };
+            return Err(refusal);
+        }
     };
     let mut record = format!("{RECORD}{}", first.with_commit(&first.commit));
     for closing in also {

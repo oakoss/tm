@@ -151,6 +151,8 @@ struct Card {
     title: String,
     /// Its value of the swimlane field, `-` when unset.
     lane: String,
+    /// The Statuses its Workflow allows it to move to.
+    moves: Vec<Choice>,
 }
 
 struct Column {
@@ -213,6 +215,7 @@ fn cards(
     Ok(read
         .into_iter()
         .map(|issue| Card {
+            moves: issue.moves(store),
             issue_type: issue.field("type"),
             status: issue.field("status"),
             title: issue.field("title"),
@@ -520,7 +523,7 @@ impl Board {
                 let Some(card) = self.selected() else {
                     return Outcome::Stay;
                 };
-                let choices = self.workflow(&card.issue_type).to_vec();
+                let choices = card.moves.clone();
                 let target = vec![(card.key.clone(), card.version)];
                 Outcome::Pick(Picker::new(Field::Status, choices, target))
             }
@@ -810,6 +813,7 @@ mod tests {
                 status: status.into(),
                 title: key.into(),
                 lane: String::new(),
+                moves: Vec::new(),
             });
         }
         shown

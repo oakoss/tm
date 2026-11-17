@@ -15,7 +15,7 @@ use crate::error::CliError;
 use crate::fields::set;
 use crate::follow;
 use crate::here::{self, Here};
-use crate::output::{Output, printable};
+use crate::output::Output;
 use crate::show;
 
 /// What starting an Issue changes on it, beside its Claim.
@@ -48,9 +48,9 @@ fn write(
     lasts: &Lasts,
 ) -> Result<(Output, Vec<String>), CliError> {
     let id = here.issue(reference)?;
-    if let Some(waiting) = here
-        .store
-        .issue(id)?
+    let view = here.store.issue(id)?;
+    if let Some(waiting) = view
+        .as_ref()
         .and_then(|view| view.waiting_on().map(str::to_owned))
     {
         return Err(CliError::new(
@@ -58,6 +58,9 @@ fn write(
             format!("{reference} waits on {waiting}'s answer; tm next takes other work"),
         )
         .with("waiting_on", waiting));
+    }
+    if let Some(view) = &view {
+        no_way_in(here.store.scheme(), view, reference)?;
     }
     let identity = here.writer()?;
     let actor = identity.actor.clone();
@@ -164,6 +167,32 @@ pub(crate) fn report(
     }
 }
 
+/// Refuses starting an Issue in triage or todo whose Workflow has an active
+/// Status but allows none from where it is, naming the moves it does allow.
+pub(crate) fn no_way_in(
+    scheme: &Scheme,
+    view: &IssueView,
+    reference: &str,
+) -> Result<(), CliError> {
+    if !matches!(view.category, Some(Category::Triage | Category::Todo)) {
+        return Ok(());
+    }
+    let from = view.fields.get("status").and_then(Value::as_str);
+    let issue_type = view.issue_type().unwrap_or_default();
+    match follow::first(scheme, issue_type, from, Category::Active) {
+        Err(follow::NoMove {
+            reason,
+            allowed: Some(allowed),
+        }) => Err(CliError::new(
+            "invalid_value",
+            format!("{reference} cannot start: {reason}"),
+        )
+        .with("field", "status")
+        .with("allowed", allowed)),
+        _ => Ok(()),
+    }
+}
+
 /// The drafts that begin `lineage`'s first Issue: moving it out of triage or
 /// todo into its first active Status, and its parents with it, and making the
 /// human `actor` works for its Assignee when it has none.
@@ -176,15 +205,15 @@ pub(crate) fn begin(scheme: &Scheme, actor: &Actor, lineage: &Lineage) -> (Vec<D
     let mut moved = false;
     if matches!(issue.category, Some(Category::Triage | Category::Todo)) {
         let issue_type = issue.issue_type().unwrap_or_default();
-        match follow::first(scheme, issue_type, Category::Active) {
-            Some(to) => {
+        let from = issue.fields.get("status").and_then(Value::as_str);
+        match follow::first(scheme, issue_type, from, Category::Active) {
+            Ok(to) => {
                 begun.changes.push(set("status", json!(to)));
                 moved = true;
             }
-            None => begun.warnings.push(format!(
-                "{name} was not moved: Issue type {} has no active Status",
-                printable(issue_type)
-            )),
+            Err(no) => begun
+                .warnings
+                .push(format!("{name} was not moved: {}", no.reason)),
         }
     } else if follow::finished(issue) {
         begun.warnings.push(format!(

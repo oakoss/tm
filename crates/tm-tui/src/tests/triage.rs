@@ -65,6 +65,24 @@ fn a_status_picked_moves_the_issue_as_read_and_goes_on_to_the_next() {
 }
 
 #[test]
+fn the_status_picker_offers_only_the_moves_the_workflow_allows() {
+    let mut scheme = tm_core::Scheme::built_in();
+    scheme.workflows[0].transitions = tm_core::scheme::Transitions::Listed(
+        [("triage".to_owned(), vec!["cancelled".to_owned()])].into(),
+    );
+    let store = triage_store().with_scheme(scheme);
+    let record = Record::new();
+    let mut shell = triaging(&store, &record);
+    shell.key(press(KeyCode::Char('s')));
+    let picker = drawn_sized(&mut shell, 70, 14);
+    assert_eq!(
+        picked_from(&picker, "Status"),
+        ["Triage", "Cancelled"],
+        "{picker}"
+    );
+}
+
+#[test]
 fn marked_issues_take_the_action_and_at_me_comes_first() {
     let store = triage_store();
     let record = Record::new();
