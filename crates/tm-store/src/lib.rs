@@ -89,7 +89,7 @@ pub use session::{RecentSession, SessionPlace, SessionWork};
 pub use shortlist::{Shortlist, ShortlistEdit};
 pub use trekker::{TrekkerExport, TrekkerImported, read_trekker};
 pub use undo::{Restore, Target, UndoPlan};
-pub use validate::settable;
+pub use validate::{refused_move, settable};
 pub use watch::Watch;
 
 /// How long a writer waits for another writer before giving up.
@@ -2044,6 +2044,7 @@ fn write_drafts(
             actor: &draft.actor,
             at_ms: at.utc_ms,
             undoing,
+            imported: source.is_some(),
         };
         let change = validate::check(tx, scheme, &writing, draft.subject, draft.change)?;
         if let Some(field) = valued(&change) {

@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tm_core::filter::{Context, OPEN, parse, resolve};
 use tm_core::link::BLOCKS;
-use tm_core::scheme::{Category, Scheme, WAITING_ON};
+use tm_core::scheme::{Category, MoveGap, Scheme, WAITING_ON};
 use tm_core::{Actor, Change, Op, ProjectId, rank};
 use uuid::Uuid;
 
@@ -37,6 +37,8 @@ pub enum PassedOver {
     Triage,
     /// Its question waits on an answer (`tm ask`).
     Waiting,
+    /// Its Workflow has active Statuses but allows none from its Status.
+    CannotStart,
 }
 
 /// A batch that placed Issues or took them off, with the list each was on as
@@ -107,7 +109,7 @@ impl Store {
             let blocks = open_blocks(&store.conn, &store.scheme)?;
             let mut members = Vec::with_capacity(views.len());
             for view in views {
-                let passed_over = passed_over(&store.conn, &view, &blocks, now_ms)?;
+                let passed_over = passed_over(&store.conn, &store.scheme, &view, &blocks, now_ms)?;
                 members.push(Member {
                     issue: view,
                     passed_over,
@@ -402,6 +404,7 @@ fn blocker_order(
 /// take read this one function, so they cannot disagree.
 pub(crate) fn passed_over(
     conn: &Connection,
+    scheme: &Scheme,
     view: &IssueView,
     blocks: &[(Uuid, Uuid)],
     now_ms: i64,
@@ -428,7 +431,26 @@ pub(crate) fn passed_over(
     if view.fields.contains_key(WAITING_ON) {
         passed_over.push(PassedOver::Waiting);
     }
+    if cannot_start(scheme, view) {
+        passed_over.push(PassedOver::CannotStart);
+    }
     Ok(passed_over)
+}
+
+/// A todo Issue whose Workflow has active Statuses but allows none from its
+/// own, so `tm start` refuses it.
+pub(crate) fn cannot_start(scheme: &Scheme, view: &IssueView) -> bool {
+    let from = view
+        .fields
+        .get("status")
+        .and_then(serde_json::Value::as_str);
+    view.category == Some(Category::Todo)
+        && view.workflow(scheme).is_some_and(|workflow| {
+            matches!(
+                workflow.first_move(from, Category::Active),
+                Err(MoveGap::Unreachable(_))
+            )
+        })
 }
 
 /// `(blocker, blocked)` for each `blocks` Link whose blocker is open,

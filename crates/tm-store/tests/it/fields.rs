@@ -697,3 +697,66 @@ fn a_field_redefined_between_one_value_and_several_still_holds_its_value() {
         assert_eq!(reason, "holds several values; add or remove them", "{name}");
     }
 }
+
+#[test]
+fn a_move_its_workflow_does_not_list_is_refused_but_undone_and_imported() {
+    let dir = TempDir::new();
+    let mut listed = scheme();
+    listed.workflows[0].transitions = tm_core::scheme::Transitions::Listed(
+        [
+            (
+                "todo".to_owned(),
+                vec!["in_progress".to_owned(), "cancelled".to_owned()],
+            ),
+            ("done".to_owned(), Vec::new()),
+        ]
+        .into(),
+    );
+    let mut store = open(&dir.db(), &ManualClock::at(1_000)).with_scheme(listed);
+    let issue = new_issue(&mut store);
+    let (named, reason, valid) =
+        refusal(set(&mut store, issue, "status", json!("done")).unwrap_err());
+    assert_eq!(
+        (named.as_str(), reason.as_str()),
+        ("status", "cannot go from todo to done")
+    );
+    assert_eq!(valid, ["in_progress", "cancelled"]);
+
+    set(&mut store, issue, "status", json!("in_progress")).unwrap();
+    let finished = unpassed(
+        store
+            .append(draft(issue, set_field("status", json!("done"))))
+            .unwrap(),
+    );
+    let (_, reason, valid) = refusal(set(&mut store, issue, "status", json!("todo")).unwrap_err());
+    assert_eq!(
+        (reason.as_str(), valid.len()),
+        ("cannot leave done, which its Workflow makes final", 0)
+    );
+    unpassed(store.undo(&jace(), finished.op_id).unwrap().1);
+    assert_eq!(field(&store, issue, "status"), Some(json!("in_progress")));
+    set(&mut store, issue, "status", json!("done")).unwrap();
+
+    let provenance = tm_store::Provenance {
+        source: "beads:a".into(),
+        at: tm_store::WallTime {
+            utc_ms: 1,
+            offset_min: 0,
+        },
+    };
+    store
+        .append_imported(vec![(
+            draft(issue, set_field("status", json!("todo"))),
+            provenance.clone(),
+        )])
+        .unwrap();
+    assert_eq!(field(&store, issue, "status"), Some(json!("todo")));
+    let unknown = store
+        .append_imported(vec![(
+            draft(issue, set_field("status", json!("shipped"))),
+            provenance,
+        )])
+        .unwrap_err();
+    let (_, reason, _) = refusal(unknown);
+    assert_eq!(reason, "shipped is not a Status of type task");
+}

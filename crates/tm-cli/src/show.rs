@@ -400,7 +400,7 @@ fn write_field(
 }
 
 /// The Statuses `view` can move to, as its Workflow allows; none when its
-/// type has no Workflow or its Status is one the Workflow does not define.
+/// type has no Workflow.
 fn moves_to<'a>(scheme: &'a Scheme, view: &IssueView) -> Vec<&'a Status> {
     let from = view.fields.get("status").and_then(Value::as_str);
     view.workflow(scheme)
@@ -642,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn an_issue_moves_to_its_workflows_other_statuses_or_none_tm_cannot_place() {
+    fn an_issue_moves_to_its_workflows_other_statuses_or_none_without_a_workflow() {
         let scheme = Scheme::built_in();
         let ids = |view: &IssueView| -> Vec<String> {
             moves_to(&scheme, view)
@@ -659,7 +659,11 @@ mod tests {
         let none: Vec<String> = Vec::new();
         assert_eq!(ids(&child("gone", Some("todo"), None)), none);
         let unknown = child("task", Some("blocked"), Some(Category::Triage));
-        assert_eq!(ids(&unknown), none);
+        assert_eq!(
+            ids(&unknown).len(),
+            6,
+            "a Status the Workflow lacks may move to any"
+        );
         assert_eq!(
             moves_line(&moves_to(&scheme, &done)),
             "triage, todo, in_progress (active), in_review (active), cancelled"

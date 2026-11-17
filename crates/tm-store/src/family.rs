@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, OptionalExtension};
-use tm_core::scheme::Category;
+use tm_core::scheme::{Category, MoveGap};
 use tm_core::{Actor, Scheme};
 use uuid::Uuid;
 
@@ -93,7 +93,8 @@ pub struct ParentStart {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParentOutcome {
-    /// Moved from `from` into `to`, the first active Status of its Workflow.
+    /// Moved from `from` into `to`, the first active Status its Workflow
+    /// allows from there.
     Started { from: String, to: String },
     /// Archived, which wins over a Claim on it.
     Archived,
@@ -101,6 +102,8 @@ pub enum ParentOutcome {
     Held(Claim),
     /// Its Issue type, whose Workflow has no active Status.
     NoActiveStatus(String),
+    /// Its Status, from which its Workflow allows no active one.
+    NoActiveMove(String),
 }
 
 /// The moves starting each of `parents` still in triage or todo, as a child
@@ -126,7 +129,9 @@ pub(crate) fn start(
         let issue_type = parent.issue_type().unwrap_or_default();
         let to = scheme
             .workflow(issue_type)
-            .and_then(|workflow| workflow.of_category(Category::Active).next());
+            .map_or(Err(MoveGap::NoStatus), |workflow| {
+                workflow.first_move(Some(from), Category::Active)
+            });
         let held = lineage
             .held(parent.id)
             .filter(|holder| actor.is_agent() && !holder.taken_by(actor));
@@ -134,19 +139,23 @@ pub(crate) fn start(
             ParentOutcome::Archived
         } else if let Some(holder) = held {
             ParentOutcome::Held(holder.clone())
-        } else if let Some(to) = to {
-            drafts.push(Draft {
-                actor: actor.clone(),
-                project: parent.project,
-                subject: parent.id,
-                change: crate::set("status", serde_json::json!(to.id)),
-            });
-            ParentOutcome::Started {
-                from: from.to_owned(),
-                to: to.id.clone(),
-            }
         } else {
-            ParentOutcome::NoActiveStatus(issue_type.to_owned())
+            match to {
+                Ok(to) => {
+                    drafts.push(Draft {
+                        actor: actor.clone(),
+                        project: parent.project,
+                        subject: parent.id,
+                        change: crate::set("status", serde_json::json!(to.id)),
+                    });
+                    ParentOutcome::Started {
+                        from: from.to_owned(),
+                        to: to.id.clone(),
+                    }
+                }
+                Err(MoveGap::Unreachable(_)) => ParentOutcome::NoActiveMove(from.to_owned()),
+                Err(MoveGap::NoStatus) => ParentOutcome::NoActiveStatus(issue_type.to_owned()),
+            }
         };
         starts.push(ParentStart {
             id: parent.id,

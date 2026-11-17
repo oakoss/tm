@@ -19,10 +19,10 @@ pub struct Ready {
 }
 
 impl Store {
-    /// Unarchived Issues in the todo category that no unlapsed Claim holds
-    /// and no open Issue blocks, most urgent first and then oldest. An Issue
-    /// is open until it is done, cancelled or archived. Parents and children
-    /// do not affect readiness.
+    /// Unarchived Issues in the todo category that no unlapsed Claim holds,
+    /// no open Issue blocks and whose Workflow lets them start, most urgent
+    /// first and then oldest. An Issue is open until it is done, cancelled or
+    /// archived. Parents and children do not affect readiness.
     ///
     /// # Errors
     ///
@@ -63,6 +63,13 @@ impl Store {
                 })?
                 .map(|id| uuid_from(&id?))
                 .collect::<Result<Vec<_>, _>>()?;
+            // Workflow transitions are no column, so these are judged as read.
+            let stuck: HashSet<Uuid> = crate::read::issues(&store.conn, &store.scheme, &ready)?
+                .iter()
+                .filter(|view| crate::membership::cannot_start(&store.scheme, view))
+                .map(|view| view.id)
+                .collect();
+            let ready: Vec<Uuid> = ready.into_iter().filter(|id| !stuck.contains(id)).collect();
 
             let blocks = store.blocks_between_open()?;
             let mut blockers: HashMap<Uuid, usize> = HashMap::new();

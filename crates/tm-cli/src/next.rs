@@ -509,6 +509,7 @@ fn nothing(here: &Here, actor: &Actor, from: &Source) -> Result<Output, CliError
     }
     let mut passed = Vec::new();
     let mut held = Vec::new();
+    let mut stuck = Vec::new();
     let mut groups: Vec<(String, Option<&Shortlist>, &[Member], usize)> = Vec::new();
     match from {
         Source::Lists(lists) => {
@@ -544,6 +545,9 @@ fn nothing(here: &Here, actor: &Actor, from: &Source) -> Result<Output, CliError
             if member.passed_over.contains(&PassedOver::Claimed) && mine(here, actor, member)? {
                 held.push(member.issue.key.clone().unwrap_or_default());
             }
+            if member.passed_over.contains(&PassedOver::CannotStart) {
+                stuck.push(&member.issue);
+            }
             passed.push(json!({
                 "key": member.issue.key,
                 "shortlist": list.and_then(|list| list.name.clone()),
@@ -567,6 +571,15 @@ fn nothing(here: &Here, actor: &Actor, from: &Source) -> Result<Output, CliError
     }
     for key in &held {
         let _ = writeln!(text, "you already hold {key}; tm show {key}");
+    }
+    for issue in stuck {
+        let key = issue.shown_key();
+        let status = issue.fields.get("status").and_then(Value::as_str);
+        let _ = writeln!(
+            text,
+            "{key} cannot start: its Workflow allows no active Status from {}; tm show {key} lists its moves",
+            printable(status.unwrap_or_default())
+        );
     }
     text.push_str(match from {
         Source::Lists(_) => "tm ready lists other work\n",

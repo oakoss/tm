@@ -209,6 +209,13 @@ fn refuse_early(
         .is_some_and(|before| edit::same(before, &json!(status)));
     if moves {
         written.push("status");
+        let from = view.fields.get("status").and_then(Value::as_str);
+        if let Some(refused) = view
+            .workflow(here.store.scheme())
+            .and_then(|workflow| tm_store::refused_move(workflow, from, status))
+        {
+            return Err(refused.into());
+        }
     }
     if finished {
         if !args.force {

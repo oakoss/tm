@@ -388,7 +388,8 @@ enum Command {
     ///
     /// A Short-list is an ordered list of what to do next. A member that
     /// cannot be taken next stays on its list, marked with why: blocked,
-    /// claimed, started, archived, an epic or in triage.
+    /// claimed, started, archived, an epic, in triage, waiting on an answer,
+    /// or unable to start under its Workflow.
     Shortlist(shortlist::Shortlists),
     /// Ask a person a question the Issue waits on and take other work.
     ///
@@ -1036,7 +1037,15 @@ fn workflow_lines(workflow: &tm_core::scheme::Workflow, origin: Origin) -> Vec<S
     let start = output::printable(&workflow.start);
     let statuses = workflow.statuses.iter().map(|status| {
         let label = output::printable(&status.label);
-        format!("  {} ({label}): {}", status.id, status.category.id())
+        let moves = match &workflow.transitions {
+            tm_core::scheme::Transitions::Listed(moves) => match moves.get(&status.id) {
+                Some(to) if to.is_empty() => ", moves nowhere".to_owned(),
+                Some(to) => format!(", moves to {}", to.join(", ")),
+                None => String::new(),
+            },
+            tm_core::scheme::Transitions::Any => String::new(),
+        };
+        format!("  {} ({label}): {}{moves}", status.id, status.category.id())
     });
     std::iter::once(format!(
         "workflow {name}, starting in {start}{}",

@@ -70,7 +70,10 @@ impl Report {
         let (key, shipped) = (&closing.key, closing.shipped());
         let warning = format!("{key} was not moved for {shipped}: {}", err.message);
         self.warnings.push(warning);
-        let failed = json!({ "key": key, "commit": closing.commit, "error": err.code });
+        let mut failed = json!({ "key": key, "commit": closing.commit, "error": err.code });
+        if let Some(allowed) = err.details.get("allowed") {
+            failed["allowed"] = allowed.clone();
+        }
         self.failed.push(failed);
     }
 }
@@ -272,9 +275,20 @@ fn close(
         _ => {}
     }
     let issue_type = view.issue_type().unwrap_or_default();
-    let Some(done) = follow::first(here.store.scheme(), issue_type, Category::Done) else {
-        let message = format!("Issue type {} has no done Status", printable(issue_type));
-        return Err(CliError::new("no_done_status", message));
+    let scheme = here.store.scheme();
+    let from = view.fields.get("status").and_then(Value::as_str);
+    let done = match follow::first(scheme, issue_type, from, Category::Done) {
+        Ok(done) => done,
+        // Left where it is, uncounted as scanned, so a later scan retries.
+        Err(no) => {
+            let refusal = match &no.allowed {
+                Some(allowed) => CliError::new("invalid_value", no.told())
+                    .with("field", "status")
+                    .with("allowed", allowed.clone()),
+                None => CliError::new("no_done_status", no.told()),
+            };
+            return Err(refusal);
+        }
     };
     let mut record = format!("{RECORD}{}", first.with_commit(&first.commit));
     for closing in also {

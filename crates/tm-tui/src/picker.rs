@@ -10,7 +10,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, List as Choices, ListState, Paragraph};
 use tm_core::filter::Context;
-use tm_core::scheme::PRIORITY_RANKS;
+use tm_core::scheme::{PRIORITY_RANKS, Status};
 use tm_core::text::printable;
 use tm_store::{Store, StoreError};
 
@@ -274,24 +274,26 @@ pub(crate) fn statuses<'a>(
         .collect()
 }
 
-/// The Statuses every one of `types` has, in the first one's order.
-pub(crate) fn shared(statuses: &[(String, Vec<Choice>)], types: &BTreeSet<&str>) -> Vec<Choice> {
-    let of = |issue_type: &str| {
-        statuses
-            .iter()
-            .find(|(listed, _)| listed == issue_type)
-            .map(|(_, choices)| choices.as_slice())
-            .unwrap_or_default()
+pub(crate) fn choices(statuses: &[&Status]) -> Vec<Choice> {
+    statuses
+        .iter()
+        .map(|status| Choice {
+            value: Some(status.id.clone()),
+            label: printable(&status.label),
+        })
+        .collect()
+}
+
+/// The choices every one of `lists` has, in the first one's order.
+pub(crate) fn shared(lists: &[&[Choice]]) -> Vec<Choice> {
+    let Some((first, rest)) = lists.split_first() else {
+        return Vec::new();
     };
-    let first = types.first().copied().unwrap_or_default();
-    of(first)
+    first
         .iter()
         .filter(|choice| {
-            types.iter().all(|issue_type| {
-                of(issue_type)
-                    .iter()
-                    .any(|other| other.value == choice.value)
-            })
+            rest.iter()
+                .all(|list| list.iter().any(|other| other.value == choice.value))
         })
         .cloned()
         .collect()
@@ -426,16 +428,10 @@ mod tests {
     }
 
     #[test]
-    fn shared_keeps_the_statuses_every_type_has_in_the_first_ones_order() {
-        let statuses = vec![
-            (
-                "bug".to_owned(),
-                choices(&["triage", "todo", "fixed", "done"]),
-            ),
-            ("task".to_owned(), choices(&["todo", "triage", "done"])),
-        ];
-        let types: BTreeSet<&str> = ["bug", "task"].into();
-        let kept: Vec<String> = shared(&statuses, &types)
+    fn shared_keeps_the_choices_every_list_has_in_the_first_ones_order() {
+        let bug = choices(&["triage", "todo", "fixed", "done"]);
+        let task = choices(&["todo", "triage", "done"]);
+        let kept: Vec<String> = shared(&[&bug, &task])
             .into_iter()
             .map(|choice| choice.label)
             .collect();

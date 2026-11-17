@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 use tm_core::op::{COMMENTS_FIELD, question_options};
-use tm_core::scheme::{Field, FieldType, Scheme, WAITING_ON, is_date, priority_rank};
+use tm_core::scheme::{Field, FieldType, Scheme, WAITING_ON, Workflow, is_date, priority_rank};
 use tm_core::violation::{self, Violation};
 use tm_core::{Actor, Change, Subject, link};
 use uuid::Uuid;
@@ -23,6 +23,15 @@ pub(crate) struct Writing<'a> {
     /// An undo writes back what a batch replaced, which may name a list
     /// deleted since; readers hide such a membership (ADR 0016).
     pub(crate) undoing: bool,
+    pub(crate) imported: bool,
+}
+
+impl Writing<'_> {
+    /// An undo restores an earlier Status and an import records one reached
+    /// elsewhere, so neither is held to the Workflow's transitions.
+    const fn checks_moves(&self) -> bool {
+        !self.undoing && !self.imported
+    }
 }
 
 /// Refuses a change no import may bring in, checked before anything else
@@ -67,7 +76,7 @@ fn check_set(
         (FieldType::Shortlist, Value::String(list)) => {
             member_of(tx, scheme, (issue_id, def, list), writing.undoing)?
         }
-        _ => check_value(tx, scheme, issue_id, def, &value)?,
+        _ => check_value(tx, scheme, (issue_id, writing.checks_moves()), def, &value)?,
     };
     Ok(Change::SetField {
         label: def.label.clone(),
@@ -686,10 +695,32 @@ fn member<'a>(
     }
 }
 
+/// The refusal of a move from `from` to `to`, a Status of `workflow`, when
+/// the Workflow does not allow it, naming the moves it does.
+#[must_use]
+pub fn refused_move(workflow: &Workflow, from: Option<&str>, to: &str) -> Option<StoreError> {
+    let from = from.filter(|from| !workflow.allows(Some(from), to))?;
+    let allowed: Vec<String> = workflow
+        .moves_from(Some(from))
+        .into_iter()
+        .map(|status| status.id.clone())
+        .collect();
+    let reason = if allowed.is_empty() {
+        format!("cannot leave {from}, which its Workflow makes final")
+    } else {
+        format!("cannot go from {from} to {to}")
+    };
+    Some(StoreError::Invalid {
+        field: "status".into(),
+        reason,
+        valid: allowed,
+    })
+}
+
 fn check_value(
     tx: &Transaction<'_>,
     scheme: &Scheme,
-    issue_id: Uuid,
+    (issue_id, checks_moves): (Uuid, bool),
     def: &Field,
     value: &Value,
 ) -> Result<Option<String>, StoreError> {
@@ -733,15 +764,20 @@ fn check_value(
                     [],
                 )
             })?;
-            let from = current(tx, issue_id, "status")?;
-            if !workflow.allows(from.as_deref(), id) {
+            let Some(status) = workflow.status(id) else {
                 return Err(invalid(
                     def,
-                    "is not allowed from the current Status",
+                    &format!("{id} is not a Status of type {issue_type}"),
                     workflow.statuses.iter().map(|status| status.id.clone()),
                 ));
+            };
+            if checks_moves
+                && let Some(refused) =
+                    refused_move(workflow, current(tx, issue_id, "status")?.as_deref(), id)
+            {
+                return Err(refused);
             }
-            Ok(workflow.status(id).map(|status| status.label.clone()))
+            Ok(Some(status.label.clone()))
         }
         (FieldType::Priority, Value::String(id)) => scheme
             .priority(id)

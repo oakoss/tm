@@ -184,6 +184,87 @@ fn a_type_offers_only_the_fields_it_carries() {
 }
 
 #[test]
+fn a_workflow_allows_only_the_moves_it_lists() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    fs::write(
+        workspace_dir(&scratch, &repo).join("scheme.toml"),
+        r#"
+[workflows.gated]
+start = "todo"
+statuses = [
+  { id = "todo", category = "todo" },
+  { id = "doing", category = "active" },
+  { id = "done", category = "done" },
+]
+transitions = [
+  { from = "todo", to = ["done"] },
+  { from = "done", to = [] },
+]
+
+[types.chore]
+workflow = "gated"
+"#,
+    )
+    .unwrap();
+    let run = |args: &[&str]| tm(&scratch, &repo, args);
+    assert!(
+        run(&["create", "--type", "chore", "--title", "c"])
+            .status
+            .success()
+    );
+    let scheme = run(&["scheme", "show", "chore"]);
+    let text = String::from_utf8_lossy(&scheme.stdout);
+    assert!(
+        text.contains("  todo (todo): todo, moves to done\n"),
+        "{text}"
+    );
+    assert!(text.contains("  doing (doing): active\n"), "{text}");
+    assert!(
+        text.contains("  done (done): done, moves nowhere\n"),
+        "{text}"
+    );
+    let shown = run(&["show", "TM-1"]);
+    assert!(
+        String::from_utf8_lossy(&shown.stdout).contains("moves to: done\n"),
+        "{shown:?}"
+    );
+    let refused = run(&["--json", "move", "TM-1", "doing"]);
+    let error = doc(&refused);
+    assert_eq!(error["error"], "invalid_value", "{error}");
+    assert_eq!(error["reason"], "cannot go from todo to doing", "{error}");
+    assert_eq!(error["allowed"], json!(["done"]), "{error}");
+
+    let started = run(&["--json", "start", "TM-1"]);
+    let error = doc(&started);
+    assert_eq!(error["error"], "invalid_value", "{error}");
+    assert_eq!(error["allowed"], json!(["done"]), "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("its Workflow allows no active Status from todo"),
+        "{error}"
+    );
+
+    let child = run(&[
+        "--json", "create", "--type", "task", "--title", "t", "--parent", "TM-1",
+    ]);
+    assert!(child.status.success(), "{child:?}");
+    let started = run(&["--json", "start", "TM-2"]);
+    let doc = doc(&started);
+    assert_eq!(data(&started)["fields"]["status"], "in_progress", "{doc}");
+    assert!(
+        doc["warnings"]
+            .to_string()
+            .contains("TM-1 was not started: its Workflow allows no active Status from todo"),
+        "{doc}"
+    );
+    assert!(run(&["move", "TM-1", "done"]).status.success());
+}
+
+#[test]
 fn a_type_takes_only_the_fields_it_carries() {
     let scratch = Scratch::new();
     let repo = typed_fields(&scratch);
@@ -450,4 +531,108 @@ fn a_malformed_scheme_stops_commands_and_tm_doctor_reports_it() {
         Some(&json!(null)),
         "no fault, no report"
     );
+}
+
+#[test]
+fn moves_tm_makes_follow_the_workflow_or_say_why_not() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    fs::write(
+        workspace_dir(&scratch, &repo).join("scheme.toml"),
+        r#"
+[workflows.gated]
+start = "todo"
+statuses = [
+  { id = "todo", category = "todo" },
+  { id = "doing", category = "active" },
+  { id = "done", category = "done" },
+  { id = "dropped", category = "cancelled" },
+]
+transitions = [{ from = "todo", to = ["dropped"] }]
+
+[types.chore]
+workflow = "gated"
+"#,
+    )
+    .unwrap();
+    let run = |args: &[&str]| tm(&scratch, &repo, args);
+    assert!(
+        run(&["create", "--type", "chore", "--title", "c"])
+            .status
+            .success()
+    );
+    let shown = run(&["--json", "scheme", "show", "chore"]);
+    assert_eq!(
+        data(&shown)["workflow"]["transitions"],
+        json!([{ "from": "todo", "to": ["dropped"] }])
+    );
+    let defaults = run(&["--json", "scheme", "show", "task"]);
+    assert_eq!(data(&defaults)["workflow"]["transitions"], json!("any"));
+
+    let peeked = run(&["next", "--peek"]);
+    let text = String::from_utf8_lossy(&peeked.stdout);
+    assert!(!text.contains("TM-1 is next"), "{peeked:?}");
+    let ready = run(&["--json", "ready"]);
+    assert_eq!(data(&ready)["issues"], json!([]), "{ready:?}");
+    assert!(
+        run(&["shortlist", "create", "docs", "--actor", "@me"])
+            .status
+            .success()
+    );
+    assert!(run(&["shortlist", "add", "docs", "TM-1"]).status.success());
+    let next = run(&["next"]);
+    let text = String::from_utf8_lossy(&next.stdout);
+    assert!(
+        text.contains(
+            "TM-1 cannot start: its Workflow allows no active Status from todo; tm show TM-1 lists its moves"
+        ),
+        "{next:?}"
+    );
+    assert!(run(&["shortlist", "delete", "docs"]).status.success());
+
+    // Refused before stdin is read, which would otherwise be found empty.
+    let piped = run(&["--json", "move", "TM-1", "doing", "--set", "description=-"]);
+    let error = doc(&piped);
+    assert_eq!(error["reason"], "cannot go from todo to doing", "{error}");
+
+    let child = run(&[
+        "--json", "create", "--type", "task", "--title", "t", "--parent", "TM-1",
+    ]);
+    assert!(child.status.success(), "{child:?}");
+    let finished = run(&["--json", "move", "TM-2", "done"]);
+    let finished = doc(&finished);
+    assert!(
+        finished["warnings"].to_string().contains(
+            "tm cannot suggest closing TM-1: its Workflow allows no done Status from todo; it can move to dropped"
+        ),
+        "{finished}"
+    );
+
+    let message = "fix: c\n\nCloses TM-1";
+    crate::support::git(
+        &scratch,
+        &repo,
+        &["commit", "-q", "--allow-empty", "-m", message],
+    );
+    let scanned = run(&["--json", "git", "scan"]);
+    let scanned = doc(&scanned);
+    assert_eq!(scanned["data"]["failed"][0]["key"], "TM-1", "{scanned}");
+    assert_eq!(
+        scanned["data"]["failed"][0]["error"], "invalid_value",
+        "{scanned}"
+    );
+    assert_eq!(
+        scanned["data"]["failed"][0]["allowed"],
+        json!(["dropped"]),
+        "{scanned}"
+    );
+    assert!(
+        scanned["warnings"]
+            .to_string()
+            .contains("its Workflow allows no done Status from todo; it can move to dropped"),
+        "{scanned}"
+    );
+    let text = String::from_utf8_lossy(&run(&["git", "scan"]).stdout).into_owned();
+    assert!(text.contains("1 not moved; the warnings say why"), "{text}");
 }

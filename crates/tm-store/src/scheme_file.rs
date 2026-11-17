@@ -81,6 +81,14 @@ struct TypeSpec {
 struct WorkflowSpec {
     start: Spanned<String>,
     statuses: Vec<StatusSpec>,
+    transitions: Option<Vec<TransitionSpec>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TransitionSpec {
+    from: Spanned<String>,
+    to: Vec<Spanned<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -666,12 +674,67 @@ fn workflow(
             format!("workflow {name} starts in {start}, which is not one of its statuses"),
         ));
     }
+    let transitions = match &spec.transitions {
+        None => Transitions::Any,
+        Some(listed) => Transitions::Listed(transitions(source, name, &statuses, listed)?),
+    };
     Ok(Workflow {
         name: name.clone(),
         start: start.clone(),
         statuses,
-        transitions: Transitions::Any,
+        transitions,
     })
+}
+
+/// The moves `listed` allows, each `from` once and every Status one of
+/// `statuses`.
+fn transitions(
+    source: Source<'_>,
+    name: &str,
+    statuses: &[Status],
+    listed: &[TransitionSpec],
+) -> Result<BTreeMap<String, Vec<String>>, SchemeFileError> {
+    let known = |at: &Spanned<String>| {
+        if statuses.iter().any(|status| status.id == *at.get_ref()) {
+            Ok(at.get_ref().clone())
+        } else {
+            Err(source.error(
+                at.span().start,
+                format!(
+                    "workflow {name} has no status {}, which a transition names",
+                    at.get_ref()
+                ),
+            ))
+        }
+    };
+    let mut moves = BTreeMap::new();
+    for spec in listed {
+        let from = known(&spec.from)?;
+        let mut to: Vec<String> = Vec::new();
+        for target in &spec.to {
+            let target_id = known(target)?;
+            if target_id == from {
+                return Err(source.error(
+                    target.span().start,
+                    format!("workflow {name} lists a move from {from} to itself"),
+                ));
+            }
+            if to.contains(&target_id) {
+                return Err(source.error(
+                    target.span().start,
+                    format!("workflow {name} lists the move from {from} to {target_id} twice"),
+                ));
+            }
+            to.push(target_id);
+        }
+        if moves.insert(from.clone(), to).is_some() {
+            return Err(source.error(
+                spec.from.span().start,
+                format!("workflow {name} lists the moves from {from} twice"),
+            ));
+        }
+    }
+    Ok(moves)
 }
 
 #[cfg(test)]
@@ -957,6 +1020,51 @@ workflow = "default"
         let redefined = "[remove]\nworkflows = [\"default\"]\n[workflows.default]\nstart = \"a\"\nstatuses = [{ id = \"a\", category = \"todo\" }]\n";
         let scheme = resolve(Some(at(WORKSPACE, redefined)), None, &["TM"], "TM").unwrap();
         assert_eq!(scheme.workflow("epic").unwrap().start, "a");
+    }
+
+    #[test]
+    fn a_workflow_lists_its_moves_once_between_its_own_statuses() {
+        let flow = |transitions: &str| {
+            format!(
+                "[workflows.w]\nstart = \"a\"\nstatuses = [{{ id = \"a\", category = \"todo\" }}, {{ id = \"b\", category = \"done\" }}]\ntransitions = {transitions}\n[types.task]\nworkflow = \"w\"\n"
+            )
+        };
+        let scheme = resolve(
+            Some(at(
+                WORKSPACE,
+                &flow("[{ from = \"a\", to = [\"b\"] }, { from = \"b\", to = [] }]"),
+            )),
+            None,
+            &["TM"],
+            "TM",
+        )
+        .unwrap();
+        let workflow = scheme.workflow("task").unwrap();
+        assert!(workflow.allows(Some("a"), "b"));
+        assert!(!workflow.allows(Some("b"), "a"));
+        assert_eq!(
+            scheme.workflow("epic").unwrap().transitions,
+            Transitions::Any
+        );
+        assert_eq!(
+            fault(&flow("[{ from = \"c\", to = [] }]"), ""),
+            format!("{WORKSPACE}:4: workflow w has no status c, which a transition names")
+        );
+        assert_eq!(
+            fault(&flow("[{ from = \"a\", to = [\"b\", \"b\"] }]"), ""),
+            format!("{WORKSPACE}:4: workflow w lists the move from a to b twice")
+        );
+        assert_eq!(
+            fault(
+                &flow("[{ from = \"a\", to = [] }, { from = \"a\", to = [\"b\"] }]"),
+                ""
+            ),
+            format!("{WORKSPACE}:4: workflow w lists the moves from a twice")
+        );
+        assert_eq!(
+            fault(&flow("[{ from = \"a\", to = [\"a\"] }]"), ""),
+            format!("{WORKSPACE}:4: workflow w lists a move from a to itself")
+        );
     }
 
     #[test]
