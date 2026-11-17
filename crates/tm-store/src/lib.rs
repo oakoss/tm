@@ -1770,16 +1770,12 @@ impl Store {
     /// [`StoreError::MissingFields`], or any SQLite failure.
     pub fn check_unset(&self, issue: Uuid, field: &str) -> Result<(), StoreError> {
         self.read(|store| {
-            let had = validate::violations(&store.conn, &store.scheme, issue, None)?;
-            let after = validate::violations(&store.conn, &store.scheme, issue, Some(field))?;
+            let (_, had) = validate::violations(&store.conn, &store.scheme, issue, None)?;
+            let (_, after) = validate::violations(&store.conn, &store.scheme, issue, Some(field))?;
+            // A clear never adds an uncarried value.
             let added = violation::added(&had, after);
-            refuse_added(
-                &store.conn,
-                &store.scheme,
-                issue,
-                &added,
-                (&BTreeSet::new(), false),
-            )
+            refuse_missing(issue, &added)?;
+            refuse_outside(&added)
         })
         .map_err(|err| err.named(&self.conn))
     }
@@ -2034,7 +2030,7 @@ fn write_drafts(
             continue;
         };
         if let Entry::Vacant(entry) = before.entry(draft.subject) {
-            entry.insert(validate::violations(tx, scheme, draft.subject, None)?);
+            entry.insert(validate::violations(tx, scheme, draft.subject, None)?.1);
             if shortlist::half_held(tx, draft.subject)? {
                 half_held.insert(draft.subject);
             }
@@ -2128,29 +2124,37 @@ fn no_worse(
     let none = BTreeSet::new();
     for (issue, had) in before {
         let wrote = written.get(&issue).unwrap_or(&none);
-        let refused: Vec<Violation> = validate::violations(tx, scheme, issue, None)?
+        let (issue_type, after) = validate::violations(tx, scheme, issue, None)?;
+        let refused: Vec<Violation> = after
             .into_iter()
             .filter(|violation| {
                 !had.contains(violation)
                     || matches!(violation, Violation::UncarriedField(field) if wrote.contains(field))
             })
             .collect();
-        if !refused.is_empty() {
-            refuse_added(tx, scheme, issue, &refused, (wrote, undoing))?;
+        refuse_missing(issue, &refused)?;
+        let uncarried: Vec<&String> = refused
+            .iter()
+            .filter_map(|violation| match violation {
+                Violation::UncarriedField(field) => Some(field),
+                Violation::MissingField(_) | Violation::StatusOutsideWorkflow => None,
+            })
+            .collect();
+        if !uncarried.is_empty() {
+            return Err(uncarried_refusal(
+                scheme,
+                &issue_type.unwrap_or_default(),
+                &uncarried,
+                (wrote, undoing),
+            ));
         }
+        refuse_outside(&refused)?;
     }
     Ok(())
 }
 
-/// The refusal for the first kind of Violation in `added`, missing and
-/// uncarried fields named together; `wrote` holds the fields the batch set.
-fn refuse_added(
-    conn: &Connection,
-    scheme: &Scheme,
-    issue: Uuid,
-    added: &[Violation],
-    (wrote, undoing): (&BTreeSet<String>, bool),
-) -> Result<(), StoreError> {
+/// Refuses the missing fields `added` names, all together.
+fn refuse_missing(issue: Uuid, added: &[Violation]) -> Result<(), StoreError> {
     let fields: Vec<String> = added
         .iter()
         .filter_map(|violation| match violation {
@@ -2158,32 +2162,17 @@ fn refuse_added(
             Violation::UncarriedField(_) | Violation::StatusOutsideWorkflow => None,
         })
         .collect();
-    if !fields.is_empty() {
-        return Err(StoreError::MissingFields {
-            issue: issue.into(),
-            fields,
-        });
+    if fields.is_empty() {
+        return Ok(());
     }
-    let uncarried: Vec<&String> = added
-        .iter()
-        .filter_map(|violation| match violation {
-            Violation::UncarriedField(field) => Some(field),
-            Violation::MissingField(_) | Violation::StatusOutsideWorkflow => None,
-        })
-        .collect();
-    if !uncarried.is_empty() {
-        let issue_type: Option<String> = conn.query_row(
-            "SELECT type FROM issues WHERE id = ?1",
-            [issue.as_bytes()],
-            |row| row.get(0),
-        )?;
-        return Err(uncarried_refusal(
-            scheme,
-            &issue_type.unwrap_or_default(),
-            &uncarried,
-            (wrote, undoing),
-        ));
-    }
+    Err(StoreError::MissingFields {
+        issue: issue.into(),
+        fields,
+    })
+}
+
+/// Refuses a Status `added` says is outside the type's Workflow.
+fn refuse_outside(added: &[Violation]) -> Result<(), StoreError> {
     if added.contains(&Violation::StatusOutsideWorkflow) {
         return Err(StoreError::Invalid {
             field: "status".into(),

@@ -571,14 +571,14 @@ fn has_member(tx: &Connection, issue_id: Uuid, field: &str) -> Result<bool, Stor
         .is_some())
 }
 
-/// The Issue's Violations as stored, with `cleared` read as holding nothing;
-/// none for an Issue that does not exist yet.
+/// The Issue's type and its Violations as stored, with `cleared` read as
+/// holding nothing; none for an Issue that does not exist yet.
 pub(crate) fn violations(
     tx: &Connection,
     scheme: &Scheme,
     issue_id: Uuid,
     cleared: Option<&str>,
-) -> Result<Vec<Violation>, StoreError> {
+) -> Result<(Option<String>, Vec<Violation>), StoreError> {
     let columns = ["type", "title", "description", "status", "assignee"];
     let row: Option<Vec<Option<String>>> = tx
         .query_row(
@@ -596,7 +596,7 @@ pub(crate) fn violations(
         )
         .optional()?;
     let Some(values) = row else {
-        return Ok(Vec::new());
+        return Ok((None, Vec::new()));
     };
     let (issue_type, status) = (values[0].as_deref(), values[3].as_deref());
     let mut held = BTreeSet::new();
@@ -627,11 +627,10 @@ pub(crate) fn violations(
             held.insert(name);
         }
     }
-    Ok(violation::violations(
-        scheme,
-        (issue_type, status),
-        |field| held.contains(field.name.as_str()),
-    ))
+    let found = violation::violations(scheme, (issue_type, status), |field| {
+        held.contains(field.name.as_str())
+    });
+    Ok((issue_type.map(str::to_owned), found))
 }
 
 /// The field `name` names, if a write may set it.
