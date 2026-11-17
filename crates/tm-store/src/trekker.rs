@@ -9,7 +9,7 @@ use rusqlite::{Connection, ErrorCode, OpenFlags, Row};
 use serde::Serialize;
 use tm_core::{Actor, entities, link};
 
-use crate::beads::add_label;
+use crate::beads::{add_label, place_statuses};
 use crate::import::Parsed;
 use crate::record::{CommentRecord, IssueRecord, LinkRecord};
 use crate::{RecordsImported, Store, StoreError};
@@ -87,7 +87,8 @@ impl Store {
         project: &str,
         runner: &Actor,
     ) -> Result<TrekkerImported, StoreError> {
-        let export = read_trekker(path, project)?;
+        let mut export = read_trekker(path, project)?;
+        place_statuses(&self.scheme, &mut export.issues);
         let imported = self.write_records(&Parsed::issues(export.issues), runner)?;
         Ok(TrekkerImported {
             imported,

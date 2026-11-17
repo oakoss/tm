@@ -1,6 +1,6 @@
 //! `tm`'s questions to a person, driven at a pseudo-terminal.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rexpect::process::WaitStatus;
 use rexpect::session::PtySession;
@@ -309,6 +309,80 @@ fn a_bd_export_chosen_at_the_prompt_is_imported_and_published() {
     assert!(imported > 0, "{rest}");
     let snapshot = Store::open_snapshot(&workspace.snapshot_path(), file.workspace).unwrap();
     assert_eq!(held(&snapshot), imported, "published after the import");
+}
+
+/// A repo with `.beads/` whose Scheme puts task in a Workflow of `statuses`,
+/// and a bd export holding one task in progress.
+fn beads_under_scheme(scratch: &Scratch, statuses: &str) -> (PathBuf, PathBuf) {
+    let repo = fixture(scratch, "repo");
+    std::fs::create_dir(repo.join(".beads")).unwrap();
+    std::fs::create_dir_all(repo.join(".config/tm")).unwrap();
+    std::fs::write(
+        repo.join(".config/tm/scheme.toml"),
+        format!(
+            "[projects.TM.workflows.flow]\nstart = \"open\"\nstatuses = [{statuses}]\n\n[projects.TM.types.task]\nworkflow = \"flow\"\n"
+        ),
+    )
+    .unwrap();
+    let beads = scratch.0.join("beads.jsonl");
+    std::fs::write(
+        &beads,
+        "{\"id\": \"b-1\", \"title\": \"one\", \"status\": \"in_progress\"}\n",
+    )
+    .unwrap();
+    (repo, beads)
+}
+
+#[test]
+fn a_bd_export_the_repo_schemes_workflow_cannot_hold_is_asked_for_again() {
+    let scratch = Scratch::new();
+    let (repo, beads) = beads_under_scheme(
+        &scratch,
+        r#"{ id = "open", category = "todo" }, { id = "shipped", category = "done" }"#,
+    );
+    let mut tm = tm_pty(&scratch, &repo, &["init", "--key", "TM", "--name", "repo"]);
+    tm.exp_string("Path to a bd export to import (Enter to skip): ")
+        .unwrap();
+    tm.send_line(beads.to_str().unwrap()).unwrap();
+    tm.exp_string("in_progress is not a Status of type task")
+        .unwrap();
+    tm.exp_string("Path to a bd export to import (Enter to skip): ")
+        .unwrap();
+    assert!(
+        !repo.join(".config/tm.toml").exists(),
+        "refused before init writes anything"
+    );
+}
+
+#[test]
+fn a_bd_export_imported_at_init_lands_in_the_repo_schemes_statuses() {
+    let scratch = Scratch::new();
+    let (repo, beads) = beads_under_scheme(
+        &scratch,
+        r#"{ id = "open", category = "todo" }, { id = "doing", category = "active" }, { id = "shipped", category = "done" }"#,
+    );
+
+    let mut tm = tm_pty(&scratch, &repo, &["init", "--key", "TM", "--name", "repo"]);
+    tm.exp_string("Path to a bd export to import (Enter to skip): ")
+        .unwrap();
+    tm.send_line(beads.to_str().unwrap()).unwrap();
+    tm.exp_string("Write .config/tm.toml? [y/N] ").unwrap();
+    tm.send_line("y").unwrap();
+    tm.exp_string("Add tm's lines to AGENTS.md? [y/N] ")
+        .unwrap();
+    tm.send_line("n").unwrap();
+    let rest = tm.exp_eof().unwrap();
+    exited(&tm, 0);
+
+    let file =
+        RepoFile::parse(&std::fs::read_to_string(repo.join(".config/tm.toml")).unwrap()).unwrap();
+    let workspace = Workspace::at(&scratch.home(), file.workspace);
+    let store = Store::open_existing(&workspace.store_path(), file.workspace).unwrap();
+    let status: String = store
+        .connection()
+        .query_row("SELECT status FROM issues", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(status, "doing", "{rest}");
 }
 
 #[test]

@@ -7,7 +7,7 @@ use std::io::BufRead;
 
 use serde::Serialize;
 use serde_json::{Map, Value};
-use tm_core::{Actor, link};
+use tm_core::{Actor, Scheme, link};
 
 use crate::export::unreadable;
 use crate::import::{Parsed, repeated_comment};
@@ -109,9 +109,10 @@ impl Store {
     /// As [`Store::import_records`].
     pub fn write_beads(
         &mut self,
-        export: BeadsExport,
+        mut export: BeadsExport,
         runner: &Actor,
     ) -> Result<BeadsImported, StoreError> {
+        place_statuses(&self.scheme, &mut export.issues);
         let imported = self.write_records(&Parsed::issues(export.issues), runner)?;
         Ok(BeadsImported {
             imported,
@@ -314,6 +315,30 @@ fn tm_type(kind: &str) -> &str {
         "feature" => "story",
         "decision" => "design",
         _ => "task",
+    }
+}
+
+/// Moves each record's Status, an id of the default Workflow, to the first
+/// Status of its category in the record type's Workflow. One whose Workflow
+/// has none keeps the id, which the write refuses naming it.
+pub(crate) fn place_statuses(scheme: &Scheme, issues: &mut [(usize, IssueRecord)]) {
+    let built_in = Scheme::built_in();
+    let Some(default) = built_in.workflow("task") else {
+        return;
+    };
+    for (_, issue) in issues {
+        let (Some(issue_type), Some(status)) = (&issue.issue_type, &mut issue.status) else {
+            continue;
+        };
+        let Some(category) = default.status(status).map(|status| status.category) else {
+            continue;
+        };
+        if let Some(placed) = scheme
+            .workflow(issue_type)
+            .and_then(|workflow| workflow.of_category(category).next())
+        {
+            status.clone_from(&placed.id);
+        }
     }
 }
 
