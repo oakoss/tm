@@ -536,3 +536,164 @@ fn a_store_from_the_previous_projection_version_is_rebuilt() {
     let store = open(&dir.db(), &clock);
     assert_eq!(field(&store, issue, "title"), Some(json!("t")));
 }
+
+fn bug_carries_area() -> tm_core::Scheme {
+    let mut carried = scheme();
+    let bug = carried.types.iter_mut().find(|t| t.id == "bug").unwrap();
+    bug.fields = Some(vec!["area".into()]);
+    carried
+}
+
+fn refusal(err: StoreError) -> (String, String, Vec<String>) {
+    match err {
+        StoreError::Invalid {
+            field,
+            reason,
+            valid,
+        } => (field, reason, valid),
+        other => panic!("not a refusal: {other}"),
+    }
+}
+
+#[test]
+fn a_field_its_type_does_not_carry_is_not_set_on_an_issue() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000)).with_scheme(bug_carries_area());
+    let (bug, _) = store.create_issue(&jace(), PROJECT, "bug", "b").unwrap();
+    set(&mut store, bug, "area", json!(3)).unwrap();
+    let (_, reason, _) = refusal(store.append(draft(bug, add("tags", "x"))).unwrap_err());
+    assert_eq!(reason, "is not a field of type bug");
+    let (field, reason, valid) = refusal(set(&mut store, bug, "tier", json!("gold")).unwrap_err());
+    assert_eq!(
+        (field.as_str(), reason.as_str()),
+        ("tier", "is not a field of type bug")
+    );
+    assert!(valid.contains(&"area".to_owned()) && valid.contains(&"priority".to_owned()));
+    assert!(!valid.contains(&"tier".to_owned()) && !valid.contains(&"key".to_owned()));
+    unpassed(store.append(draft(bug, add("labels", "l"))).unwrap());
+
+    let task = new_issue(&mut store);
+    set(&mut store, task, "tier", json!("gold")).unwrap();
+}
+
+#[test]
+fn a_value_its_type_stopped_carrying_reads_back_and_only_clears() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let (bug, other, third) = {
+        let mut store = open(&dir.db(), &clock);
+        let (bug, _) = store.create_issue(&jace(), PROJECT, "bug", "b").unwrap();
+        set(&mut store, bug, "tier", json!("gold")).unwrap();
+        unpassed(store.append(draft(bug, add("tags", "x"))).unwrap());
+        let (third, _) = store.create_issue(&jace(), PROJECT, "bug", "c").unwrap();
+        set(&mut store, third, "tier", json!("gold")).unwrap();
+        (bug, new_issue(&mut store), third)
+    };
+    let mut store = open(&dir.db(), &clock).with_scheme(bug_carries_area());
+    assert_eq!(field(&store, bug, "tier"), Some(json!("gold")));
+    set(&mut store, bug, "area", json!(1)).unwrap();
+    let (_, reason, _) = refusal(set(&mut store, bug, "tier", json!("free")).unwrap_err());
+    assert_eq!(reason, "is not a field of type bug");
+    let (named, reason, _) = refusal(store.append(draft(bug, add("tags", "y"))).unwrap_err());
+    assert_eq!(
+        (named.as_str(), reason.as_str()),
+        ("tags", "is not a field of type bug")
+    );
+    set(&mut store, bug, "tier", Value::Null).unwrap();
+    assert_eq!(field(&store, bug, "tier"), None);
+
+    set(&mut store, other, "tier", json!("gold")).unwrap();
+    let (field, reason, _) = refusal(set(&mut store, other, "type", json!("bug")).unwrap_err());
+    assert_eq!(
+        (field.as_str(), reason.as_str()),
+        (
+            "tier",
+            "holds a value, and type bug does not carry it; clear it in the same change"
+        )
+    );
+    unpassed(store.append(draft(other, add("tags", "x"))).unwrap());
+    let (field, reason, _) = refusal(set(&mut store, other, "type", json!("bug")).unwrap_err());
+    assert_eq!(
+        (field.as_str(), reason.as_str()),
+        (
+            "tier",
+            "holds a value, as does tags, and type bug carries none of them; clear them in the same change"
+        )
+    );
+    set(&mut store, other, "due", json!("2026-10-17")).unwrap();
+    set(&mut store, other, "flag", json!(true)).unwrap();
+    let (_, reason, _) = refusal(set(&mut store, other, "type", json!("bug")).unwrap_err());
+    assert_eq!(
+        reason,
+        "holds a value, as do tags, due and flag, and type bug carries none of them; clear them in the same change"
+    );
+    unpassed(
+        store
+            .append_all(vec![
+                draft(other, set_field("type", json!("bug"))),
+                draft(other, set_field("tier", Value::Null)),
+                draft(other, remove("tags", "x")),
+                draft(other, set_field("due", Value::Null)),
+                draft(other, set_field("flag", Value::Null)),
+            ])
+            .unwrap(),
+    );
+
+    let retyped = unpassed(
+        store
+            .append(draft(third, set_field("type", json!("task"))))
+            .unwrap(),
+    );
+    let (field, reason, _) = refusal(store.undo(&jace(), retyped.op_id).unwrap_err());
+    assert_eq!(
+        (field.as_str(), reason.as_str()),
+        (
+            "tier",
+            "holds a value, and type bug, which this undo restores, does not carry it"
+        )
+    );
+}
+
+#[test]
+fn a_field_redefined_between_one_value_and_several_still_holds_its_value() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let task = {
+        let mut store = open(&dir.db(), &clock);
+        let task = new_issue(&mut store);
+        set(&mut store, task, "tier", json!("gold")).unwrap();
+        unpassed(store.append(draft(task, add("tags", "x"))).unwrap());
+        task
+    };
+    let mut redefined = bug_carries_area();
+    for def in &mut redefined.fields {
+        match def.name.as_str() {
+            "tier" => def.field_type = FieldType::MultiSelect,
+            "tags" => def.field_type = FieldType::SingleSelect,
+            _ => {}
+        }
+    }
+    let mut store = open(&dir.db(), &clock).with_scheme(redefined);
+    let (named, reason, _) = refusal(set(&mut store, task, "type", json!("bug")).unwrap_err());
+    assert_eq!(
+        (named.as_str(), reason.as_str()),
+        (
+            "tier",
+            "holds a value, as does tags, and type bug carries none of them; clear them in the same change"
+        )
+    );
+    unpassed(
+        store
+            .append_all(vec![
+                draft(task, set_field("type", json!("bug"))),
+                draft(task, set_field("tier", Value::Null)),
+                draft(task, remove("tags", "x")),
+            ])
+            .unwrap(),
+    );
+    assert_eq!(field(&store, task, "tier"), None);
+    for name in ["tier", "labels"] {
+        let (_, reason, _) = refusal(set(&mut store, task, name, Value::Null).unwrap_err());
+        assert_eq!(reason, "holds several values; add or remove them", "{name}");
+    }
+}

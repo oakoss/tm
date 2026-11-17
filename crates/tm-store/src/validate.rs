@@ -45,10 +45,15 @@ fn check_set(
     issue_id: Uuid,
     (field, value): (String, Value),
 ) -> Result<Change, StoreError> {
-    // A stored value can be cleared even when the Scheme lacks its field.
-    if value.is_null() && scheme.field(&field).is_none() && has_value(tx, issue_id, &field)? {
+    // A stored value can be cleared even when the Scheme lacks its field or
+    // now gives it several values.
+    let def = scheme.field(&field);
+    if value.is_null()
+        && def.is_none_or(|def| def.field_type.is_multi())
+        && has_value(tx, issue_id, &field)?
+    {
         return Ok(Change::SetField {
-            label: field.clone(),
+            label: def.map_or_else(|| field.clone(), |def| def.label.clone()),
             field,
             value,
             value_label: None,
@@ -566,14 +571,14 @@ fn has_member(tx: &Connection, issue_id: Uuid, field: &str) -> Result<bool, Stor
         .is_some())
 }
 
-/// The Issue's Violations as stored, with `cleared` read as holding nothing;
-/// none for an Issue that does not exist yet.
+/// The Issue's type and its Violations as stored, with `cleared` read as
+/// holding nothing; none for an Issue that does not exist yet.
 pub(crate) fn violations(
     tx: &Connection,
     scheme: &Scheme,
     issue_id: Uuid,
     cleared: Option<&str>,
-) -> Result<Vec<Violation>, StoreError> {
+) -> Result<(Option<String>, Vec<Violation>), StoreError> {
     let columns = ["type", "title", "description", "status", "assignee"];
     let row: Option<Vec<Option<String>>> = tx
         .query_row(
@@ -591,10 +596,14 @@ pub(crate) fn violations(
         )
         .optional()?;
     let Some(values) = row else {
-        return Ok(Vec::new());
+        return Ok((None, Vec::new()));
     };
+    let (issue_type, status) = (values[0].as_deref(), values[3].as_deref());
     let mut held = BTreeSet::new();
-    for field in scheme.fields.iter().filter(|field| field.required) {
+    let judged = |field: &&Field| {
+        field.required || issue_type.is_some_and(|issue_type| !scheme.carries(issue_type, field))
+    };
+    for field in scheme.fields.iter().filter(judged) {
         let name = field.name.as_str();
         let present = if cleared == Some(name) {
             false
@@ -604,24 +613,24 @@ pub(crate) fn violations(
                 .is_some_and(|text| !text.trim().is_empty())
         } else if name == "parent" {
             values[columns.len()].is_some()
-        } else if field.field_type.is_multi() {
+        } else if field.builtin && field.field_type.is_multi() {
             has_member(tx, issue_id, name)?
         } else if field.builtin {
             // Priority and archived always hold a value; computed fields are not set.
             true
         } else {
-            has_value(tx, issue_id, name)?
+            // A Scheme field redefined between one value and several still
+            // holds what it stored as the other.
+            has_value(tx, issue_id, name)? || has_member(tx, issue_id, name)?
         };
         if present {
             held.insert(name);
         }
     }
-    let (issue_type, status) = (values[0].as_deref(), values[3].as_deref());
-    Ok(violation::violations(
-        scheme,
-        (issue_type, status),
-        |field| held.contains(field.name.as_str()),
-    ))
+    let found = violation::violations(scheme, (issue_type, status), |field| {
+        held.contains(field.name.as_str())
+    });
+    Ok((issue_type.map(str::to_owned), found))
 }
 
 /// The field `name` names, if a write may set it.
