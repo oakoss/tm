@@ -653,3 +653,47 @@ fn a_value_its_type_stopped_carrying_reads_back_and_only_clears() {
         )
     );
 }
+
+#[test]
+fn a_field_redefined_between_one_value_and_several_still_holds_its_value() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let task = {
+        let mut store = open(&dir.db(), &clock);
+        let task = new_issue(&mut store);
+        set(&mut store, task, "tier", json!("gold")).unwrap();
+        unpassed(store.append(draft(task, add("tags", "x"))).unwrap());
+        task
+    };
+    let mut redefined = bug_carries_area();
+    for def in &mut redefined.fields {
+        match def.name.as_str() {
+            "tier" => def.field_type = FieldType::MultiSelect,
+            "tags" => def.field_type = FieldType::SingleSelect,
+            _ => {}
+        }
+    }
+    let mut store = open(&dir.db(), &clock).with_scheme(redefined);
+    let (named, reason, _) = refusal(set(&mut store, task, "type", json!("bug")).unwrap_err());
+    assert_eq!(
+        (named.as_str(), reason.as_str()),
+        (
+            "tier",
+            "holds a value, as does tags, and type bug carries none of them; clear them in the same change"
+        )
+    );
+    unpassed(
+        store
+            .append_all(vec![
+                draft(task, set_field("type", json!("bug"))),
+                draft(task, set_field("tier", Value::Null)),
+                draft(task, remove("tags", "x")),
+            ])
+            .unwrap(),
+    );
+    assert_eq!(field(&store, task, "tier"), None);
+    for name in ["tier", "labels"] {
+        let (_, reason, _) = refusal(set(&mut store, task, name, Value::Null).unwrap_err());
+        assert_eq!(reason, "holds several values; add or remove them", "{name}");
+    }
+}

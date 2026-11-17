@@ -118,13 +118,13 @@ fn scheme_show_lists_the_loaded_fields_and_where_each_comes_from() {
     );
 }
 
-#[test]
-fn a_type_offers_and_takes_only_the_fields_it_carries() {
-    let scratch = Scratch::new();
-    let (repo, store, _) = initialized(&scratch);
+/// A repo whose Workspace Scheme gives bug only severity and chore no
+/// Scheme field.
+fn typed_fields(scratch: &Scratch) -> PathBuf {
+    let (repo, store, _) = initialized(scratch);
     drop(store);
     fs::write(
-        workspace_dir(&scratch, &repo).join("scheme.toml"),
+        workspace_dir(scratch, &repo).join("scheme.toml"),
         r#"
 [fields.severity]
 type = "text"
@@ -136,9 +136,20 @@ type = "text"
 label = "Bug"
 workflow = "default"
 fields = ["severity"]
+
+[types.chore]
+workflow = "default"
+fields = []
 "#,
     )
     .unwrap();
+    repo
+}
+
+#[test]
+fn a_type_offers_only_the_fields_it_carries() {
+    let scratch = Scratch::new();
+    let repo = typed_fields(&scratch);
     let shown = tm(&scratch, &repo, &["scheme", "show", "bug"]);
     let text = String::from_utf8_lossy(&shown.stdout);
     assert!(text.contains("field severity (severity)"), "{text}");
@@ -162,7 +173,20 @@ fields = ["severity"]
         text.contains("type bug (Bug) [from the Workspace's Scheme]: carries severity\n"),
         "{text}"
     );
+    assert!(
+        text.contains("type chore (chore) [from the Workspace's Scheme]: no Scheme fields\n"),
+        "{text}"
+    );
+    let chore = tm(&scratch, &repo, &["scheme", "show", "chore"]);
+    let text = String::from_utf8_lossy(&chore.stdout);
+    assert!(text.contains("field waiting_on"), "{text}");
+    assert!(!text.contains("field severity"), "{text}");
+}
 
+#[test]
+fn a_type_takes_only_the_fields_it_carries() {
+    let scratch = Scratch::new();
+    let repo = typed_fields(&scratch);
     let refused_with = |args: &[&str], reason: &str| {
         let out = tm(&scratch, &repo, args);
         assert!(!out.status.success(), "{out:?}");

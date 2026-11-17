@@ -45,10 +45,15 @@ fn check_set(
     issue_id: Uuid,
     (field, value): (String, Value),
 ) -> Result<Change, StoreError> {
-    // A stored value can be cleared even when the Scheme lacks its field.
-    if value.is_null() && scheme.field(&field).is_none() && has_value(tx, issue_id, &field)? {
+    // A stored value can be cleared even when the Scheme lacks its field or
+    // now gives it several values.
+    let def = scheme.field(&field);
+    if value.is_null()
+        && def.is_none_or(|def| def.field_type.is_multi())
+        && has_value(tx, issue_id, &field)?
+    {
         return Ok(Change::SetField {
-            label: field.clone(),
+            label: def.map_or_else(|| field.clone(), |def| def.label.clone()),
             field,
             value,
             value_label: None,
@@ -608,13 +613,15 @@ pub(crate) fn violations(
                 .is_some_and(|text| !text.trim().is_empty())
         } else if name == "parent" {
             values[columns.len()].is_some()
-        } else if field.field_type.is_multi() {
+        } else if field.builtin && field.field_type.is_multi() {
             has_member(tx, issue_id, name)?
         } else if field.builtin {
             // Priority and archived always hold a value; computed fields are not set.
             true
         } else {
-            has_value(tx, issue_id, name)?
+            // A Scheme field redefined between one value and several still
+            // holds what it stored as the other.
+            has_value(tx, issue_id, name)? || has_member(tx, issue_id, name)?
         };
         if present {
             held.insert(name);
