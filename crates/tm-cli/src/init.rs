@@ -63,14 +63,17 @@ pub(crate) fn run(init: &Init, json: bool) -> Result<Output, CliError> {
     check_not_ignored(&root).map_err(refused)?;
     let asks = init.asks(json);
     let (key, name) = project(&root, init, asks).map_err(refused)?;
+    let workspace_id = Uuid::now_v7();
+    let workspace_dir = Workspace::at(&home, workspace_id).dir;
+    let scheme = tm_store::scheme_file::read(&workspace_dir, Some(&root), &[&key], &key)?;
     let beads = recover::beads(
         &root,
         (&key, &name[..]),
-        &identity.actor,
+        (&identity.actor, &scheme),
         asks.then_some(prompt),
     )?;
     let file = RepoFile {
-        workspace: Uuid::now_v7(),
+        workspace: workspace_id,
         project: key.clone(),
         paths: Vec::new(),
         claim_expiry: None,
@@ -107,7 +110,7 @@ pub(crate) fn run(init: &Init, json: bool) -> Result<Output, CliError> {
         return Err(err);
     }
     let (workspace, mut store) = match Workspace::create(&home, file.workspace) {
-        Ok(made) => made,
+        Ok((workspace, store)) => (workspace, store.with_scheme(scheme)),
         Err(err) => {
             undo_config();
             return Err(err.into());

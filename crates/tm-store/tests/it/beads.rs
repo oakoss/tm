@@ -394,6 +394,95 @@ fn a_deleted_bead_and_an_unmapped_edge_to_itself_are_counted_not_refused() {
     );
 }
 
+/// The built-in Scheme with task in a Workflow of its own Status ids, and
+/// story in one with no active Status.
+fn renamed_statuses() -> tm_core::Scheme {
+    use tm_core::scheme::{Category, Status, Transitions, Workflow};
+    let status = |id: &str, category| Status {
+        id: id.into(),
+        label: id.into(),
+        category,
+    };
+    let mut scheme = tm_core::Scheme::built_in();
+    scheme.workflows.push(Workflow {
+        name: "flow".into(),
+        start: "open".into(),
+        statuses: vec![
+            status("open", Category::Todo),
+            status("doing", Category::Active),
+            status("checking", Category::Active),
+            status("shipped", Category::Done),
+            status("dropped", Category::Cancelled),
+        ],
+        transitions: Transitions::Any,
+    });
+    scheme.workflows.push(Workflow {
+        name: "lean".into(),
+        start: "open".into(),
+        statuses: vec![
+            status("open", Category::Todo),
+            status("shipped", Category::Done),
+        ],
+        transitions: Transitions::Any,
+    });
+    for issue_type in &mut scheme.types {
+        match issue_type.id.as_str() {
+            "task" => issue_type.workflow = "flow".into(),
+            "story" => issue_type.workflow = "lean".into(),
+            _ => {}
+        }
+    }
+    scheme
+}
+
+#[test]
+fn a_status_lands_on_the_first_of_its_category_in_the_types_workflow() {
+    let dir = TempDir::new();
+    let mut store =
+        open(&dir.db(), &ManualClock::at(1_900_000_000_000)).with_scheme(renamed_statuses());
+    let input = lines(&[
+        json!({"id": "b-1", "title": "a", "status": "open"}),
+        json!({"id": "b-2", "title": "b", "status": "in_progress"}),
+        json!({"id": "b-3", "title": "c", "status": "closed"}),
+        json!({"id": "b-4", "title": "d", "status": "deferred"}),
+    ]);
+    let imported = import(&mut store, &input).unwrap();
+    let status = |id| field(&store, issue(&imported, id), "status");
+    assert_eq!(
+        [status("b-1"), status("b-2"), status("b-3"), status("b-4")],
+        [
+            json!("open"),
+            json!("doing"),
+            json!("shipped"),
+            json!("open")
+        ]
+    );
+    assert_eq!(
+        labels(&store, issue(&imported, "b-4")),
+        ["beads-status:deferred"]
+    );
+    let again = import(&mut store, &input).unwrap();
+    assert!(
+        again
+            .imported
+            .records
+            .iter()
+            .all(|record| record.batches.is_empty()),
+        "{again:?}"
+    );
+}
+
+#[test]
+fn a_status_whose_category_the_workflow_lacks_is_refused_naming_it() {
+    let dir = TempDir::new();
+    let mut store =
+        open(&dir.db(), &ManualClock::at(1_900_000_000_000)).with_scheme(renamed_statuses());
+    let input = lines(&[json!({"id": "b-1", "title": "a", "status": "in_progress",
+                               "issue_type": "feature"})]);
+    let err = import(&mut store, &input).unwrap_err();
+    assert!(err.to_string().contains("in_progress"), "{err}");
+}
+
 #[test]
 fn a_comment_id_given_twice_is_refused() {
     let dir = TempDir::new();

@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use serde_json::json;
-use tm_core::Actor;
+use tm_core::{Actor, Scheme};
 use tm_store::{BeadsExport, Store};
 
 use crate::error::CliError;
@@ -41,7 +41,7 @@ enum Refused {
 pub(crate) fn beads(
     root: &Path,
     (key, name): (&str, &str),
-    runner: &Actor,
+    (runner, scheme): (&Actor, &Scheme),
     prompt: Option<impl Prompt>,
 ) -> Result<Beads, CliError> {
     if !root.join(".beads").is_dir() {
@@ -60,7 +60,13 @@ pub(crate) fn beads(
             tm_store::read_beads(&mut bytes.as_slice(), key)
                 .map_err(|err| Refused::Again(format!("{file} is not a bd export: {err}")))
         };
-        tried(&std::env::temp_dir(), file, read()?, (key, name), runner)?;
+        tried(
+            &std::env::temp_dir(),
+            file,
+            read()?,
+            (key, name),
+            (runner, scheme),
+        )?;
         read()
     })?;
     Ok(match chosen {
@@ -78,10 +84,12 @@ fn tried(
     file: &str,
     export: BeadsExport,
     (key, name): (&str, &str),
-    runner: &Actor,
+    (runner, scheme): (&Actor, &Scheme),
 ) -> Result<(), Refused> {
     let staged = export::Staged::new(scratch).map_err(Refused::Stop)?;
-    let mut store = Store::open(&staged.store()).map_err(|err| Refused::Stop(err.into()))?;
+    let mut store = Store::open(&staged.store())
+        .map_err(|err| Refused::Stop(err.into()))?
+        .with_scheme(scheme.clone());
     store
         .create_project(runner, key, name)
         .map_err(|err| Refused::Stop(err.into()))?;
@@ -270,7 +278,7 @@ mod tests {
         let absent = beads(
             &dir,
             ("TM", "Task"),
-            &jace(),
+            (&jace(), &Scheme::built_in()),
             Some(scripted(&[], &mut asked)),
         )
         .unwrap();
@@ -278,8 +286,35 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
 
         let dir = scratch(true);
-        let told = beads(&dir, ("TM", "Task"), &jace(), None::<fn(&str) -> _>).unwrap();
+        let told = beads(
+            &dir,
+            ("TM", "Task"),
+            (&jace(), &Scheme::built_in()),
+            None::<fn(&str) -> _>,
+        )
+        .unwrap();
         assert!(matches!(told, Beads::Told), "nobody is asked: {told:?}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_trial_store_that_cannot_be_made_stops_init_not_the_file() {
+        let dir = scratch(true);
+        let file = fixture();
+        let blocked = dir.join("not-a-dir");
+        fs::write(&blocked, "").unwrap();
+        let export = tm_store::read_beads(&mut fs::read(&file).unwrap().as_slice(), "TM").unwrap();
+        let tried = tried(
+            &blocked,
+            &file,
+            export,
+            ("TM", "Task"),
+            (&jace(), &Scheme::built_in()),
+        );
+        assert!(
+            matches!(&tried, Err(Refused::Stop(err)) if err.code == "io"),
+            "stops init rather than asking for another file"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -294,7 +329,7 @@ mod tests {
         let chosen = beads(
             &dir,
             ("TM", "Task"),
-            &jace(),
+            (&jace(), &Scheme::built_in()),
             Some(scripted(
                 &[Some("missing.jsonl"), Some(junk), Some(&file)],
                 &mut asked,
@@ -323,7 +358,7 @@ mod tests {
         let _ = beads(
             &dir,
             ("TM", "Task"),
-            &jace(),
+            (&jace(), &Scheme::built_in()),
             Some(scripted(&[Some("\u{1b}[2Jgone"), Some("")], &mut asked)),
         );
         assert!(
@@ -348,7 +383,7 @@ mod tests {
         let told = beads(
             &dir,
             ("TM", "Task"),
-            &jace(),
+            (&jace(), &Scheme::built_in()),
             Some(scripted(&[Some(cycle), Some("")], &mut asked)),
         )
         .unwrap();
@@ -358,22 +393,11 @@ mod tests {
             "refused before init writes anything: {asked:?}"
         );
 
-        // A trial store that cannot be made is not the file's fault.
-        let file = fixture();
-        let blocked = dir.join("not-a-dir");
-        fs::write(&blocked, "").unwrap();
-        let export = tm_store::read_beads(&mut fs::read(&file).unwrap().as_slice(), "TM").unwrap();
-        let tried = tried(&blocked, &file, export, ("TM", "Task"), &jace());
-        assert!(
-            matches!(&tried, Err(Refused::Stop(err)) if err.code == "io"),
-            "stops init rather than asking for another file"
-        );
-
         let mut asked = Vec::new();
         let skipped = beads(
             &dir,
             ("TM", "Task"),
-            &jace(),
+            (&jace(), &Scheme::built_in()),
             Some(scripted(&[Some("")], &mut asked)),
         )
         .unwrap();
@@ -383,7 +407,7 @@ mod tests {
         let stopped = beads(
             &dir,
             ("TM", "Task"),
-            &jace(),
+            (&jace(), &Scheme::built_in()),
             Some(scripted(&[None], &mut asked)),
         );
         assert_eq!(

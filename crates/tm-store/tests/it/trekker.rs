@@ -390,3 +390,34 @@ fn html_entities_an_agent_wrote_are_decoded_and_other_ampersands_kept() {
         "Holds Mutex<Pane> while it takes &mut self && reads &lt;"
     );
 }
+
+#[test]
+fn each_status_lands_on_the_first_of_its_category_in_a_renamed_workflow() {
+    use tm_core::scheme::{Category, Status, Transitions, Workflow};
+    let status = |id: &str, category| Status {
+        id: id.into(),
+        label: id.into(),
+        category,
+    };
+    let mut scheme = tm_core::Scheme::built_in();
+    scheme.workflows = vec![Workflow {
+        name: "default".into(),
+        start: "open".into(),
+        statuses: vec![
+            status("open", Category::Todo),
+            status("doing", Category::Active),
+            status("shipped", Category::Done),
+            status("dropped", Category::Cancelled),
+        ],
+        transitions: Transitions::Any,
+    }];
+    let dir = TempDir::new();
+    let path = trekker(&dir);
+    let mut store = open(&dir.db(), &ManualClock::at(1_900_000_000_000)).with_scheme(scheme);
+    let imported = import(&mut store, &path).unwrap();
+    let status = |id| store.issue(issue(&imported, id)).unwrap().unwrap().fields["status"].clone();
+    assert_eq!(
+        ["EPIC-1", "TREK-1", "TREK-2", "TREK-4", "TREK-5"].map(status),
+        ["shipped", "open", "doing", "dropped", "open"].map(Value::from)
+    );
+}
