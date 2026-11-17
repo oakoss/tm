@@ -822,6 +822,22 @@ fn a_parent_its_type_does_not_allow_is_refused_either_way_round() {
         matches!(&err, StoreError::ParentType(refusal) if refusal.child.is_none()),
         "a create the refusal rolled back is named as new: {err}"
     );
+    let fresh = Uuid::now_v7();
+    let under_epic = tm_store::NewIssue {
+        parent: Some(epic),
+        ..new
+    };
+    let mut drafts: Vec<_> = under_epic
+        .changes(store.scheme())
+        .into_iter()
+        .map(|change| draft(fresh, change))
+        .collect();
+    drafts.push(draft(epic, set_field("type", json!("task"))));
+    let err = store.append_all(drafts).unwrap_err();
+    assert!(
+        matches!(&err, StoreError::ParentType(refusal) if refusal.child.is_none()),
+        "named as new when its parent is retyped in the same batch: {err}"
+    );
     set(&mut store, user_story, "parent", parent(epic)).unwrap();
     let (.., message) = parent_refusal(set(&mut store, epic, "parent", parent(task)).unwrap_err());
     assert!(message.contains("which takes no parent"), "{message}");

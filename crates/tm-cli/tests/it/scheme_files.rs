@@ -356,6 +356,11 @@ parents = []
 label = "Story"
 workflow = "default"
 parents = ["epic"]
+
+[types.chore]
+workflow = "default"
+fields = []
+parents = ["epic", "task"]
 "#,
     )
     .unwrap();
@@ -375,6 +380,12 @@ fn a_type_takes_only_the_parents_it_lists() {
     assert!(
         text.contains(
             "type story (Story) [from the Workspace's Scheme]: takes a parent of type epic\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "type chore (chore) [from the Workspace's Scheme]: no Scheme fields; takes a parent of type epic or task\n"
         ),
         "{text}"
     );

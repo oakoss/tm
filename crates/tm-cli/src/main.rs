@@ -1030,12 +1030,7 @@ fn type_line(issue_type: &tm_core::scheme::IssueType, origin: Origin) -> String 
     };
     let parents = match &issue_type.parents {
         tm_core::scheme::Parents::Any => None,
-        tm_core::scheme::Parents::Listed(types) if types.is_empty() => {
-            Some("takes no parent".to_owned())
-        }
-        tm_core::scheme::Parents::Listed(types) => {
-            Some(format!("takes a parent of type {}", types.join(" or ")))
-        }
+        tm_core::scheme::Parents::Listed(types) => Some(tm_core::scheme::parent_rule(types)),
     };
     let listed: Vec<String> = fields.into_iter().chain(parents).collect();
     let listed = if listed.is_empty() {

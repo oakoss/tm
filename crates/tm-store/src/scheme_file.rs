@@ -1222,6 +1222,19 @@ workflow = "default"
         )
         .unwrap();
         assert_eq!(scheme.parent_types("bug"), None);
+        let replaced = "[projects.TM.remove]\ntypes = [\"saga\"]\n[projects.TM.types.saga]\nworkflow = \"default\"\n";
+        let scheme = resolve(
+            Some(at(WORKSPACE, &parented("[\"saga\"]"))),
+            Some(at(REPO, replaced)),
+            &["TM"],
+            "TM",
+        )
+        .unwrap();
+        assert_eq!(
+            scheme.parent_types("bug"),
+            Some(&["saga".to_owned()][..]),
+            "a type removed and defined again in one layer is still there to list"
+        );
     }
 
     #[test]

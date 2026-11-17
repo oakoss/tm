@@ -313,6 +313,16 @@ pub enum Parents {
     Listed(Vec<String>),
 }
 
+/// What a type's listed parent types allow.
+#[must_use]
+pub fn parent_rule(types: &[String]) -> String {
+    if types.is_empty() {
+        "takes no parent".to_owned()
+    } else {
+        format!("takes a parent of type {}", types.join(" or "))
+    }
+}
+
 /// `"any"`, or the list of type ids.
 impl Serialize for Parents {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

@@ -49,19 +49,18 @@ fn write(here: &mut Here, mut create: Create) -> Result<(Output, Vec<String>), C
     let scheme = here.store.scheme().clone();
     fields::known(&scheme, create.set.iter().map(|(field, _)| field))?;
     fields::labels(&create.labels)?;
-    if let Some(issue_type) = &create.issue_type
-        && scheme.issue_type(issue_type).is_none()
-    {
-        return Err(StoreError::Invalid {
-            field: "type".into(),
-            reason: "is not a type".into(),
-            valid: scheme.type_ids(),
-        }
-        .into());
-    }
     if let Some(issue_type) = &create.issue_type {
-        here.store
-            .check_parent_types((None, issue_type), parent, false)?;
+        if scheme.issue_type(issue_type).is_none() {
+            return Err(StoreError::Invalid {
+                field: "type".into(),
+                reason: "is not a type".into(),
+                valid: scheme.type_ids(),
+            }
+            .into());
+        }
+        if let Some(parent) = parent {
+            here.store.check_new_parent_type(issue_type, parent)?;
+        }
     }
     // Read once all else is checked, so a mistake keeps the piped text.
     // Stdin is spent once read, so from here on `set` holds what it gave.

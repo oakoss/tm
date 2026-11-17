@@ -315,16 +315,17 @@ impl From<Uuid> for Named {
 /// A child under a parent whose type its own type does not list.
 #[derive(Debug, thiserror::Error)]
 #[error(
-    "{} has type {child_type}, which {}, so {parent} of type {parent_type} cannot be its parent",
+    "{} has type {child_type}, which {}, so {parent} of {} cannot be its parent",
     child.as_ref().map_or_else(|| "the new Issue".to_owned(), ToString::to_string),
-    if allowed.is_empty() { "takes no parent".to_owned() } else { format!("takes a parent of type {}", allowed.join(" or ")) }
+    tm_core::scheme::parent_rule(allowed),
+    parent_type.as_ref().map_or_else(|| "no type".to_owned(), |t| format!("type {t}"))
 )]
 pub struct ParentType {
     /// `None` for an Issue not yet created.
     pub child: Option<Named>,
     pub child_type: String,
     pub parent: Named,
-    pub parent_type: String,
+    pub parent_type: Option<String>,
     pub allowed: Vec<String>,
 }
 
@@ -1812,26 +1813,30 @@ impl Store {
         validate::parent_allowed(&self.conn, issue, parent).map_err(|err| err.named(&self.conn))
     }
 
-    /// Refuses ahead of the write, which checks again, as
-    /// `validate::family_types_allowed` does.
+    /// Ahead of a create, which checks again.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::ParentType`], or any SQLite failure.
+    pub fn check_new_parent_type(&self, issue_type: &str, parent: Uuid) -> Result<(), StoreError> {
+        family::parent_type_allowed(&self.conn, &self.scheme, (None, issue_type), parent)
+            .map_err(|err| err.named(&self.conn))
+    }
+
+    /// Ahead of a write, which checks again; `new_type` also checks the
+    /// children.
     ///
     /// # Errors
     ///
     /// [`StoreError::ParentType`], or any SQLite failure.
     pub fn check_parent_types(
         &self,
-        (issue, issue_type): (Option<Uuid>, &str),
+        issue: Uuid,
+        new_type: Option<&str>,
         parent: Option<Uuid>,
-        retyped: bool,
     ) -> Result<(), StoreError> {
-        validate::family_types_allowed(
-            &self.conn,
-            &self.scheme,
-            (issue, issue_type),
-            parent,
-            retyped,
-        )
-        .map_err(|err| err.named(&self.conn))
+        family::types_allowed(&self.conn, &self.scheme, issue, new_type, parent)
+            .map_err(|err| err.named(&self.conn))
     }
 
     /// An Issue as it currently reads, labelled from the Scheme.
@@ -2059,7 +2064,7 @@ fn write_drafts(
     // or inconsistent stays editable.
     let mut before = BTreeMap::new();
     let mut written: BTreeMap<Uuid, BTreeSet<String>> = BTreeMap::new();
-    let mut family = validate::Family::default();
+    let mut family = family::Family::default();
     let mut half_held = BTreeSet::new();
     let mut was_finished = BTreeSet::new();
     let mut pending: VecDeque<_> = drafts.into();

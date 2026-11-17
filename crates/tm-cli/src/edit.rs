@@ -137,8 +137,7 @@ fn check_parent_types(
     if retype.is_none() && !(reparents && parent.is_some()) {
         return Ok(());
     }
-    let issue_type = retype.or(view.issue_type()).unwrap_or_default();
-    store.check_parent_types((Some(view.id), issue_type), parent, retype.is_some())?;
+    store.check_parent_types(view.id, retype, parent)?;
     Ok(())
 }
 
