@@ -1,7 +1,7 @@
 //! Each kind of field: what the Scheme check accepts, and how it reads back.
 
 use serde_json::{Value, json};
-use tm_core::scheme::{Field, FieldType};
+use tm_core::scheme::{Field, FieldType, Parents};
 use tm_core::{Change, Hlc};
 use tm_store::{Store, StoreError};
 use uuid::Uuid;
@@ -759,4 +759,141 @@ fn a_move_its_workflow_does_not_list_is_refused_but_undone_and_imported() {
         .unwrap_err();
     let (_, reason, _) = refusal(unknown);
     assert_eq!(reason, "shipped is not a Status of type task");
+}
+
+/// A story's parent is an epic, and an epic takes none.
+fn epics_hold_stories() -> tm_core::Scheme {
+    let mut limited = scheme();
+    for issue_type in &mut limited.types {
+        issue_type.parents = match issue_type.id.as_str() {
+            "story" => Parents::Listed(vec!["epic".into()]),
+            "epic" => Parents::Listed(Vec::new()),
+            _ => Parents::Any,
+        };
+    }
+    limited
+}
+
+fn typed(store: &mut Store, issue_type: &str) -> Uuid {
+    store
+        .create_issue(&jace(), PROJECT, issue_type, issue_type)
+        .unwrap()
+        .0
+}
+
+fn parent_refusal(err: StoreError) -> (Uuid, Uuid, Vec<String>, String) {
+    let message = err.to_string();
+    let StoreError::ParentType(refusal) = err else {
+        panic!("not a parent type refusal: {message}");
+    };
+    let child = refusal.child.expect("an Issue that exists");
+    (child.id, refusal.parent.id, refusal.allowed, message)
+}
+
+#[test]
+fn a_parent_its_type_does_not_allow_is_refused_either_way_round() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000)).with_scheme(epics_hold_stories());
+    let [epic, user_story, task] = ["epic", "story", "task"].map(|t| typed(&mut store, t));
+    let parent = |id: Uuid| json!(id.to_string());
+
+    let (child, refused, allowed, message) =
+        parent_refusal(set(&mut store, user_story, "parent", parent(task)).unwrap_err());
+    assert_eq!(
+        (child, refused, allowed),
+        (user_story, task, vec!["epic".to_owned()])
+    );
+    assert_eq!(
+        message,
+        format!(
+            "{} has type story, which takes a parent of type epic, so {} of type task cannot be its parent",
+            key(&store, user_story),
+            key(&store, task)
+        )
+    );
+    let new = tm_store::NewIssue {
+        issue_type: Some("story".into()),
+        title: Some("s".into()),
+        parent: Some(task),
+        ..Default::default()
+    };
+    let err = store.create(&jace(), PROJECT, &new).unwrap_err();
+    assert!(
+        matches!(&err, StoreError::ParentType(refusal) if refusal.child.is_none()),
+        "a create the refusal rolled back is named as new: {err}"
+    );
+    set(&mut store, user_story, "parent", parent(epic)).unwrap();
+    let (.., message) = parent_refusal(set(&mut store, epic, "parent", parent(task)).unwrap_err());
+    assert!(message.contains("which takes no parent"), "{message}");
+
+    let (child, refused, ..) =
+        parent_refusal(set(&mut store, epic, "type", json!("task")).unwrap_err());
+    assert_eq!((child, refused), (user_story, epic), "its child refuses it");
+    set(&mut store, user_story, "type", json!("task")).unwrap();
+    set(&mut store, user_story, "type", json!("story")).unwrap();
+    set(&mut store, user_story, "parent", Value::Null).unwrap();
+
+    let err = store
+        .append_all(vec![
+            draft(task, set_field("type", json!("story"))),
+            draft(task, set_field("parent", parent(user_story))),
+        ])
+        .unwrap_err();
+    assert_eq!(
+        parent_refusal(err).1,
+        user_story,
+        "judged as the batch leaves it"
+    );
+    unpassed(
+        store
+            .append_all(vec![
+                draft(user_story, set_field("parent", parent(task))),
+                draft(task, set_field("type", json!("epic"))),
+            ])
+            .unwrap(),
+    );
+}
+
+#[test]
+fn a_parent_pair_the_scheme_now_refuses_stays_editable_undone_and_imported() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000));
+    let [epic, user_story, task] = ["epic", "story", "task"].map(|t| typed(&mut store, t));
+    set(&mut store, user_story, "parent", json!(task.to_string())).unwrap();
+    let mut store = store.with_scheme(epics_hold_stories());
+    set(&mut store, user_story, "title", json!("kept")).unwrap();
+    set(&mut store, task, "title", json!("kept")).unwrap();
+
+    let moved = unpassed(
+        store
+            .append(draft(
+                user_story,
+                set_field("parent", json!(epic.to_string())),
+            ))
+            .unwrap(),
+    );
+    unpassed(store.undo(&jace(), moved.op_id).unwrap().1);
+    assert_eq!(
+        field(&store, user_story, "parent"),
+        Some(json!(task.to_string()))
+    );
+
+    set(&mut store, user_story, "parent", json!(epic.to_string())).unwrap();
+    let provenance = tm_store::Provenance {
+        source: "beads:a".into(),
+        at: tm_store::WallTime {
+            utc_ms: 1,
+            offset_min: 0,
+        },
+    };
+    store
+        .append_imported(vec![(
+            draft(user_story, set_field("parent", json!(task.to_string()))),
+            provenance,
+        )])
+        .unwrap();
+    assert_eq!(
+        field(&store, user_story, "parent"),
+        Some(json!(task.to_string()))
+    );
 }

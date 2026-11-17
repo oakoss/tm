@@ -236,7 +236,7 @@ fn chain(conn: &Connection, issue: Uuid) -> Result<Vec<Uuid>, StoreError> {
     Ok(chain)
 }
 
-fn parent(conn: &Connection, issue: Uuid) -> Result<Option<Uuid>, StoreError> {
+pub(crate) fn parent(conn: &Connection, issue: Uuid) -> Result<Option<Uuid>, StoreError> {
     conn.prepare_cached("SELECT parent_id FROM issues WHERE id = ?1")?
         .query_row([issue.as_bytes()], |row| row.get::<_, Option<Vec<u8>>>(0))
         .optional()?

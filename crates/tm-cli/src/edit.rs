@@ -117,6 +117,31 @@ pub(crate) fn run(edit: &Edit) -> Result<Output, CliError> {
     here::write(|here| write(here, &edit.issue, edit))
 }
 
+/// Refuses, before piped text is read, the parent types the edit would leave
+/// when it changes the type or gives a new `parent`.
+fn check_parent_types(
+    store: &Store,
+    view: &IssueView,
+    edit: &Edit,
+    (parent, reparents): (Option<Uuid>, bool),
+) -> Result<(), CliError> {
+    let retype = edit
+        .set
+        .iter()
+        .find(|(field, value)| {
+            field == "type"
+                && store.scheme().issue_type(value).is_some()
+                && view.issue_type() != Some(value.as_str())
+        })
+        .map(|(_, value)| value.as_str());
+    if retype.is_none() && !(reparents && parent.is_some()) {
+        return Ok(());
+    }
+    let issue_type = retype.or(view.issue_type()).unwrap_or_default();
+    store.check_parent_types((Some(view.id), issue_type), parent, retype.is_some())?;
+    Ok(())
+}
+
 pub(crate) fn write(
     here: &mut Here,
     reference: &str,
@@ -146,6 +171,12 @@ pub(crate) fn write(
     if let Some(parent) = parent.filter(|_| reparents) {
         here.store.check_parent(id, parent)?;
     }
+    let parent = if reparents {
+        parent
+    } else {
+        current.and_then(|current| Uuid::parse_str(current).ok())
+    };
+    check_parent_types(&here.store, &view, edit, (parent, reparents))?;
     let identity = here.writer()?;
     check_flags(&here.store, &view, edit)?;
     let options = WriteOptions {

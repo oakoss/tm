@@ -74,6 +74,7 @@ struct TypeSpec {
     label: Option<String>,
     workflow: Spanned<String>,
     fields: Option<Vec<Spanned<String>>>,
+    parents: Option<Vec<Spanned<String>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -414,7 +415,9 @@ fn merge(
             id: name.clone(),
             label: spec.label.clone().unwrap_or_else(|| name.clone()),
             workflow: spec.workflow.get_ref().clone(),
-            parents: Parents::Any,
+            parents: spec.parents.as_ref().map_or(Parents::Any, |parents| {
+                Parents::Listed(parents.iter().map(|id| id.get_ref().clone()).collect())
+            }),
             fields: spec
                 .fields
                 .as_ref()
@@ -423,6 +426,7 @@ fn merge(
         type_origins.insert(name.clone(), origin);
     }
     every_type_has_its_workflow(scheme, layer, source)?;
+    every_parent_type_exists(scheme, layer, source)?;
     merge_fields(scheme, origins, layer, source, origin)?;
     every_type_has_its_fields(scheme, layer, source)
 }
@@ -469,6 +473,47 @@ fn every_type_has_its_fields(
                 format!(
                     "field {} is removed, but type {} lists it",
                     name.get_ref(),
+                    user.id
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Refuses `layer` when a type it defines lists a parent type twice or one
+/// no layer defines, or when it removes a type another lists as a parent.
+fn every_parent_type_exists(
+    scheme: &Scheme,
+    layer: &Layer,
+    source: Source<'_>,
+) -> Result<(), SchemeFileError> {
+    for (id, spec) in &layer.types {
+        let listed = spec.parents.as_deref().unwrap_or_default();
+        for (at, parent) in listed.iter().enumerate() {
+            let (type_id, name) = (id.get_ref(), parent.get_ref());
+            let message = if listed[..at].iter().any(|before| before.get_ref() == name) {
+                format!("type {type_id} lists parent type {name} twice")
+            } else if scheme.issue_type(name).is_none() {
+                format!("type {type_id} lists parent type {name}, which no layer defines")
+            } else {
+                continue;
+            };
+            return Err(source.error(parent.span().start, message));
+        }
+    }
+    for id in &layer.remove.types {
+        if scheme.issue_type(id.get_ref()).is_some() {
+            continue;
+        }
+        if let Some(user) = scheme.types.iter().find(|issue_type| {
+            matches!(&issue_type.parents, Parents::Listed(types) if types.contains(id.get_ref()))
+        }) {
+            return Err(source.error(
+                id.span().start,
+                format!(
+                    "type {} is removed, but type {} lists it as a parent",
+                    id.get_ref(),
                     user.id
                 ),
             ));
@@ -1131,6 +1176,52 @@ workflow = "default"
         .unwrap();
         assert!(scheme.field("area").is_none());
         assert_eq!(scheme.issue_type("bug").unwrap().fields, None);
+    }
+
+    #[test]
+    fn a_type_lists_each_parent_type_once_and_only_defined_ones() {
+        let parented = |parents: &str| {
+            format!(
+                "[types.saga]\nworkflow = \"default\"\nparents = []\n[types.bug]\nworkflow = \"default\"\nparents = {parents}\n"
+            )
+        };
+        let scheme = resolve(
+            Some(at(WORKSPACE, &parented("[\"saga\", \"bug\"]"))),
+            None,
+            &["TM"],
+            "TM",
+        )
+        .unwrap();
+        assert_eq!(scheme.parent_types("saga"), Some(&[][..]));
+        assert_eq!(
+            scheme.parent_types("bug"),
+            Some(&["saga".to_owned(), "bug".to_owned()][..])
+        );
+        assert_eq!(scheme.parent_types("task"), None);
+        assert_eq!(
+            fault(&parented("[\"saga\", \"saga\"]"), ""),
+            format!("{WORKSPACE}:6: type bug lists parent type saga twice")
+        );
+        assert_eq!(
+            fault(&parented("[\"gone\"]"), ""),
+            format!("{WORKSPACE}:6: type bug lists parent type gone, which no layer defines")
+        );
+        assert_eq!(
+            fault(
+                &parented("[\"saga\"]"),
+                "[projects.TM.remove]\ntypes = [\"saga\"]\n"
+            ),
+            format!("{REPO}:2: type saga is removed, but type bug lists it as a parent")
+        );
+        let redefined = "[projects.TM.remove]\ntypes = [\"saga\"]\n[projects.TM.types.bug]\nworkflow = \"default\"\n";
+        let scheme = resolve(
+            Some(at(WORKSPACE, &parented("[\"saga\"]"))),
+            Some(at(REPO, redefined)),
+            &["TM"],
+            "TM",
+        )
+        .unwrap();
+        assert_eq!(scheme.parent_types("bug"), None);
     }
 
     #[test]

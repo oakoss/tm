@@ -59,6 +59,10 @@ fn write(here: &mut Here, mut create: Create) -> Result<(Output, Vec<String>), C
         }
         .into());
     }
+    if let Some(issue_type) = &create.issue_type {
+        here.store
+            .check_parent_types((None, issue_type), parent, false)?;
+    }
     // Read once all else is checked, so a mistake keeps the piped text.
     // Stdin is spent once read, so from here on `set` holds what it gave.
     create.set = fields::read_stdin(&create.set, "leave the field out")?;

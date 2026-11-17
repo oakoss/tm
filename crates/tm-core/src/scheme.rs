@@ -306,12 +306,21 @@ pub enum MoveGap<'a> {
     Unreachable(Vec<&'a Status>),
 }
 
-/// Which types an Issue's parent may have. Only `Any` exists until Schemes
-/// become configurable.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+/// Which types an Issue's parent may have; an empty list takes no parent.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Parents {
     Any,
+    Listed(Vec<String>),
+}
+
+/// `"any"`, or the list of type ids.
+impl Serialize for Parents {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Any => serializer.serialize_str("any"),
+            Self::Listed(types) => types.serialize(serializer),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -541,6 +550,16 @@ impl Scheme {
                 .issue_type(issue_type)
                 .and_then(|issue_type| issue_type.fields.as_ref())
                 .is_none_or(|carried| carried.contains(&field.name))
+    }
+
+    /// The parent types an Issue of `issue_type` is limited to; `None` when
+    /// any type may be its parent, as for a type the Scheme lacks.
+    #[must_use]
+    pub fn parent_types(&self, issue_type: &str) -> Option<&[String]> {
+        match &self.issue_type(issue_type)?.parents {
+            Parents::Any => None,
+            Parents::Listed(types) => Some(types),
+        }
     }
 
     #[must_use]

@@ -3,7 +3,7 @@
 //! makes a stored operation unreadable.
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
@@ -27,9 +27,10 @@ pub(crate) struct Writing<'a> {
 }
 
 impl Writing<'_> {
-    /// An undo restores an earlier Status and an import records one reached
-    /// elsewhere, so neither is held to the Workflow's transitions.
-    const fn checks_moves(&self) -> bool {
+    /// An undo restores an earlier state and an import records one reached
+    /// elsewhere, so neither is held to the Workflow's transitions or the
+    /// Scheme's parent types.
+    pub(crate) const fn checks_rules(&self) -> bool {
         !self.undoing && !self.imported
     }
 }
@@ -76,7 +77,7 @@ fn check_set(
         (FieldType::Shortlist, Value::String(list)) => {
             member_of(tx, scheme, (issue_id, def, list), writing.undoing)?
         }
-        _ => check_value(tx, scheme, (issue_id, writing.checks_moves()), def, &value)?,
+        _ => check_value(tx, scheme, (issue_id, writing.checks_rules()), def, &value)?,
     };
     Ok(Change::SetField {
         label: def.label.clone(),
@@ -864,6 +865,111 @@ fn ancestry_reaches(
         start,
         goal,
     )
+}
+
+fn type_of(conn: &Connection, issue: Uuid) -> Result<String, StoreError> {
+    Ok(conn
+        .query_row(
+            "SELECT type FROM issues WHERE id = ?1",
+            [issue.as_bytes()],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten()
+        .unwrap_or_default())
+}
+
+fn parent_type_allowed(
+    scheme: &Scheme,
+    (child, child_type): (Option<Uuid>, &str),
+    (parent, parent_type): (Uuid, String),
+) -> Result<(), StoreError> {
+    let Some(allowed) = scheme.parent_types(child_type) else {
+        return Ok(());
+    };
+    if allowed.contains(&parent_type) {
+        return Ok(());
+    }
+    Err(StoreError::ParentType(Box::new(crate::ParentType {
+        child: child.map(Into::into),
+        child_type: child_type.to_owned(),
+        parent: parent.into(),
+        parent_type,
+        allowed: allowed.to_vec(),
+    })))
+}
+
+/// Refuses the parent types `issue` would have as `issue_type`: `parent`'s,
+/// and its children's when `retyped`. `issue` is `None` for one not yet
+/// created, which has no children.
+pub(crate) fn family_types_allowed(
+    conn: &Connection,
+    scheme: &Scheme,
+    (issue, issue_type): (Option<Uuid>, &str),
+    parent: Option<Uuid>,
+    retyped: bool,
+) -> Result<(), StoreError> {
+    if let Some(parent) = parent {
+        let parent_type = type_of(conn, parent)?;
+        parent_type_allowed(scheme, (issue, issue_type), (parent, parent_type))?;
+    }
+    let Some(issue) = issue.filter(|_| retyped) else {
+        return Ok(());
+    };
+    let children: Vec<Vec<u8>> = conn
+        .prepare_cached("SELECT id FROM issues WHERE parent_id = ?1")?
+        .query_map([issue.as_bytes()], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    for child in children {
+        let child = uuid_from(&child)?;
+        let child_type = type_of(conn, child)?;
+        parent_type_allowed(
+            scheme,
+            (Some(child), &child_type),
+            (issue, issue_type.to_owned()),
+        )?;
+    }
+    Ok(())
+}
+
+/// The Issues a batch gave a parent or a type, held to the Scheme's parent
+/// types once the batch is written.
+#[derive(Default)]
+pub(crate) struct Family {
+    /// Each Issue, and whether its type was written.
+    written: BTreeMap<Uuid, bool>,
+    created: BTreeSet<Uuid>,
+}
+
+impl Family {
+    pub(crate) fn note(&mut self, issue: Uuid, change: &Change, writing: &Writing<'_>) {
+        match change {
+            Change::Create => {
+                self.created.insert(issue);
+            }
+            Change::SetField { field, value, .. }
+                if writing.checks_rules()
+                    && !value.is_null()
+                    && (field == "type" || field == "parent") =>
+            {
+                *self.written.entry(issue).or_default() |= field == "type";
+            }
+            _ => {}
+        }
+    }
+
+    /// An Issue the batch created is refused as new, since the refusal rolls
+    /// it back; a child it has was given its parent in the same batch, so is
+    /// checked as itself.
+    pub(crate) fn allowed(&self, conn: &Connection, scheme: &Scheme) -> Result<(), StoreError> {
+        for (&issue, &retyped) in &self.written {
+            let parent = crate::family::parent(conn, issue)?;
+            let issue_type = type_of(conn, issue)?;
+            let named = (!self.created.contains(&issue)).then_some(issue);
+            family_types_allowed(conn, scheme, (named, &issue_type), parent, retyped)?;
+        }
+        Ok(())
+    }
 }
 
 /// Refuses `parent` for `issue` as writing it would: the Issue itself, or

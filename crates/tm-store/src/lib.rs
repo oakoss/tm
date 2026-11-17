@@ -211,6 +211,8 @@ pub enum StoreError {
         /// From the Issue written, around the cycle and back to it.
         path: Vec<Named>,
     },
+    #[error(transparent)]
+    ParentType(Box<ParentType>),
     #[error("no batch {0} was written on this Replica")]
     UnknownBatch(Uuid),
     #[error("batch {batch} cannot be undone: {} was written again since", conflicts.iter().map(|c| c.field.as_str()).collect::<Vec<_>>().join(", "))]
@@ -310,6 +312,22 @@ impl From<Uuid> for Named {
     }
 }
 
+/// A child under a parent whose type its own type does not list.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "{} has type {child_type}, which {}, so {parent} of type {parent_type} cannot be its parent",
+    child.as_ref().map_or_else(|| "the new Issue".to_owned(), ToString::to_string),
+    if allowed.is_empty() { "takes no parent".to_owned() } else { format!("takes a parent of type {}", allowed.join(" or ")) }
+)]
+pub struct ParentType {
+    /// `None` for an Issue not yet created.
+    pub child: Option<Named>,
+    pub child_type: String,
+    pub parent: Named,
+    pub parent_type: String,
+    pub allowed: Vec<String>,
+}
+
 impl std::fmt::Display for Named {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match (&self.key, &self.source) {
@@ -342,6 +360,11 @@ impl StoreError {
                 relation,
                 path: path.into_iter().map(name).collect(),
             },
+            Self::ParentType(mut refusal) => {
+                refusal.child = refusal.child.map(&mut name);
+                refusal.parent = name(refusal.parent);
+                Self::ParentType(refusal)
+            }
             Self::MissingFields { issue, fields } => Self::MissingFields {
                 issue: name(issue),
                 fields,
@@ -1789,6 +1812,28 @@ impl Store {
         validate::parent_allowed(&self.conn, issue, parent).map_err(|err| err.named(&self.conn))
     }
 
+    /// Refuses ahead of the write, which checks again, as
+    /// `validate::family_types_allowed` does.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::ParentType`], or any SQLite failure.
+    pub fn check_parent_types(
+        &self,
+        (issue, issue_type): (Option<Uuid>, &str),
+        parent: Option<Uuid>,
+        retyped: bool,
+    ) -> Result<(), StoreError> {
+        validate::family_types_allowed(
+            &self.conn,
+            &self.scheme,
+            (issue, issue_type),
+            parent,
+            retyped,
+        )
+        .map_err(|err| err.named(&self.conn))
+    }
+
     /// An Issue as it currently reads, labelled from the Scheme.
     ///
     /// # Errors
@@ -2014,6 +2059,7 @@ fn write_drafts(
     // or inconsistent stays editable.
     let mut before = BTreeMap::new();
     let mut written: BTreeMap<Uuid, BTreeSet<String>> = BTreeMap::new();
+    let mut family = validate::Family::default();
     let mut half_held = BTreeSet::new();
     let mut was_finished = BTreeSet::new();
     let mut pending: VecDeque<_> = drafts.into();
@@ -2047,6 +2093,7 @@ fn write_drafts(
             imported: source.is_some(),
         };
         let change = validate::check(tx, scheme, &writing, draft.subject, draft.change)?;
+        family.note(draft.subject, &change, &writing);
         if let Some(field) = valued(&change) {
             written.entry(draft.subject).or_default().insert(field);
         }
@@ -2100,6 +2147,7 @@ fn write_drafts(
         ops.push(op);
     }
     no_worse(tx, scheme, before, (&written, undoing))?;
+    family.allowed(tx, scheme)?;
     shortlist::check_batch(tx, &ops, &half_held)?;
     memory::check_batch(tx, &ops)?;
     Ok((ops, hlc))
