@@ -99,13 +99,7 @@ pub(crate) fn next(
     let to = match first(store.scheme(), text(&parent, "type"), from, category) {
         Ok(to) => to,
         Err(no) => {
-            let allowed = match no.allowed.as_deref() {
-                Some([]) => "; it can move nowhere".to_owned(),
-                Some(allowed) => format!("; it can move to {}", allowed.join(", ")),
-                None => String::new(),
-            };
-            let reason = no.reason;
-            warnings.push(format!("tm cannot suggest {verb} {key}: {reason}{allowed}"));
+            warnings.push(format!("tm cannot suggest {verb} {key}: {}", no.told()));
             return Ok(None);
         }
     };
@@ -131,6 +125,17 @@ pub(crate) struct NoMove {
     pub(crate) allowed: Option<Vec<String>>,
 }
 
+impl NoMove {
+    /// The reason, then where the Issue can move instead when it has moves.
+    pub(crate) fn told(&self) -> String {
+        match self.allowed.as_deref() {
+            Some([]) => format!("{}; it can move nowhere", self.reason),
+            Some(allowed) => format!("{}; it can move to {}", self.reason, allowed.join(", ")),
+            None => self.reason.clone(),
+        }
+    }
+}
+
 /// The first Status of `category` an Issue of `issue_type` in `from` may move
 /// to, or why there is none.
 pub(crate) fn first(
@@ -146,6 +151,13 @@ pub(crate) fn first(
     let has_category = workflow.filter(|workflow| workflow.of_category(category).next().is_some());
     let category = category.id();
     match (has_category, from) {
+        _ if workflow.is_none() => Err(NoMove {
+            reason: format!(
+                "Issue type {} is not in the Scheme; tm scheme show lists the types",
+                printable(issue_type)
+            ),
+            allowed: None,
+        }),
         (Some(workflow), Some(from)) => Err(NoMove {
             reason: format!(
                 "its Workflow allows no {category} Status from {}",
@@ -217,7 +229,8 @@ mod tests {
         assert_eq!(
             super::first(&scheme, "gone", Some("todo"), Category::Done),
             Err(NoMove {
-                reason: "Issue type gone has no done Status".to_owned(),
+                reason: "Issue type gone is not in the Scheme; tm scheme show lists the types"
+                    .to_owned(),
                 allowed: None,
             })
         );

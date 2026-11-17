@@ -388,7 +388,8 @@ enum Command {
     ///
     /// A Short-list is an ordered list of what to do next. A member that
     /// cannot be taken next stays on its list, marked with why: blocked,
-    /// claimed, started, archived, an epic or in triage.
+    /// claimed, started, archived, an epic, in triage, waiting on an answer,
+    /// or unable to start under its Workflow.
     Shortlist(shortlist::Shortlists),
     /// Ask a person a question the Issue waits on and take other work.
     ///

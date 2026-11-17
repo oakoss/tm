@@ -713,6 +713,12 @@ fn transitions(
         let mut to: Vec<String> = Vec::new();
         for target in &spec.to {
             let target_id = known(target)?;
+            if target_id == from {
+                return Err(source.error(
+                    target.span().start,
+                    format!("workflow {name} lists a move from {from} to itself"),
+                ));
+            }
             if to.contains(&target_id) {
                 return Err(source.error(
                     target.span().start,
@@ -1054,6 +1060,10 @@ workflow = "default"
                 ""
             ),
             format!("{WORKSPACE}:4: workflow w lists the moves from a twice")
+        );
+        assert_eq!(
+            fault(&flow("[{ from = \"a\", to = [\"a\"] }]"), ""),
+            format!("{WORKSPACE}:4: workflow w lists a move from a to itself")
         );
     }
 

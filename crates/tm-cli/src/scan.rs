@@ -70,7 +70,10 @@ impl Report {
         let (key, shipped) = (&closing.key, closing.shipped());
         let warning = format!("{key} was not moved for {shipped}: {}", err.message);
         self.warnings.push(warning);
-        let failed = json!({ "key": key, "commit": closing.commit, "error": err.code });
+        let mut failed = json!({ "key": key, "commit": closing.commit, "error": err.code });
+        if let Some(allowed) = err.details.get("allowed") {
+            failed["allowed"] = allowed.clone();
+        }
         self.failed.push(failed);
     }
 }
@@ -278,11 +281,11 @@ fn close(
         Ok(done) => done,
         // Left where it is, uncounted as scanned, so a later scan retries.
         Err(no) => {
-            let refusal = match no.allowed {
-                Some(allowed) => CliError::new("invalid_value", no.reason)
+            let refusal = match &no.allowed {
+                Some(allowed) => CliError::new("invalid_value", no.told())
                     .with("field", "status")
-                    .with("allowed", allowed),
-                None => CliError::new("no_done_status", no.reason),
+                    .with("allowed", allowed.clone()),
+                None => CliError::new("no_done_status", no.told()),
             };
             return Err(refusal);
         }

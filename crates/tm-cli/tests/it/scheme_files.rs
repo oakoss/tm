@@ -575,6 +575,21 @@ workflow = "gated"
     assert!(!text.contains("TM-1 is next"), "{peeked:?}");
     let ready = run(&["--json", "ready"]);
     assert_eq!(data(&ready)["issues"], json!([]), "{ready:?}");
+    assert!(
+        run(&["shortlist", "create", "docs", "--actor", "@me"])
+            .status
+            .success()
+    );
+    assert!(run(&["shortlist", "add", "docs", "TM-1"]).status.success());
+    let next = run(&["next"]);
+    let text = String::from_utf8_lossy(&next.stdout);
+    assert!(
+        text.contains(
+            "TM-1 cannot start: its Workflow allows no active Status from todo; tm show TM-1 lists its moves"
+        ),
+        "{next:?}"
+    );
+    assert!(run(&["shortlist", "delete", "docs"]).status.success());
 
     // Refused before stdin is read, which would otherwise be found empty.
     let piped = run(&["--json", "move", "TM-1", "doing", "--set", "description=-"]);
@@ -607,10 +622,15 @@ workflow = "gated"
         scanned["data"]["failed"][0]["error"], "invalid_value",
         "{scanned}"
     );
+    assert_eq!(
+        scanned["data"]["failed"][0]["allowed"],
+        json!(["dropped"]),
+        "{scanned}"
+    );
     assert!(
         scanned["warnings"]
             .to_string()
-            .contains("its Workflow allows no done Status from todo"),
+            .contains("its Workflow allows no done Status from todo; it can move to dropped"),
         "{scanned}"
     );
     let text = String::from_utf8_lossy(&run(&["git", "scan"]).stdout).into_owned();
