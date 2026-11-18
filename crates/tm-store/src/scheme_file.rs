@@ -21,7 +21,7 @@ pub const WORKSPACE_FILE: &str = "scheme.toml";
 pub const REPO_FILE: &str = ".config/tm/scheme.toml";
 
 /// The field types a Scheme file may give a field.
-const FIELD_TYPES: [(&str, FieldType); 9] = [
+const FIELD_TYPES: [(&str, FieldType); 12] = [
     ("text", FieldType::Text),
     ("rich_text", FieldType::RichText),
     ("number", FieldType::Number),
@@ -31,6 +31,9 @@ const FIELD_TYPES: [(&str, FieldType); 9] = [
     ("single_select", FieldType::SingleSelect),
     ("multi_select", FieldType::MultiSelect),
     ("person", FieldType::Person),
+    ("version", FieldType::Version),
+    ("url", FieldType::Url),
+    ("file_paths", FieldType::FilePaths),
 ];
 
 /// A Scheme file this tm cannot use, at a line of it.
@@ -873,7 +876,7 @@ type = "text"
         assert_eq!(
             fault("[fields.area]\ntype = \"colour\"\n", ""),
             format!(
-                "{WORKSPACE}:2: \"colour\" is not a field type; one of: text, rich_text, number, date, datetime, boolean, single_select, multi_select, person"
+                "{WORKSPACE}:2: \"colour\" is not a field type; one of: text, rich_text, number, date, datetime, boolean, single_select, multi_select, person, version, url, file_paths"
             )
         );
         assert_eq!(

@@ -168,7 +168,7 @@ fn a_new_issue_starts_its_parents_only_when_created_active() {
         title: Some("t".into()),
         parent: Some(parent),
         fields: vec![("status".into(), json!(status))],
-        labels: Vec::new(),
+        ..NewIssue::default()
     };
 
     let (written, created) = store.create(&jace(), PROJECT, &child("todo")).unwrap();

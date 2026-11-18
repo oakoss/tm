@@ -88,6 +88,9 @@ pub enum FieldType {
     Date,
     SingleSelect,
     MultiSelect,
+    Version,
+    Url,
+    FilePaths,
     /// The id of a Short-list in the Issue's Project (ADR 0016).
     Shortlist,
     /// An ordering key from [`crate::rank`].
@@ -98,7 +101,7 @@ impl FieldType {
     /// Holds a set of elements changed by `add` and `remove`, not a value.
     #[must_use]
     pub const fn is_multi(self) -> bool {
-        matches!(self, Self::Labels | Self::MultiSelect)
+        matches!(self, Self::Labels | Self::MultiSelect | Self::FilePaths)
     }
 }
 
@@ -370,6 +373,89 @@ pub fn is_date(text: &str) -> bool {
             .is_ok_and(|date| date.to_string() == text)
 }
 
+/// A Semantic Versioning 2.0.0 version: `MAJOR.MINOR.PATCH`, then an
+/// optional `-` prerelease and `+` build, each dot-separated identifiers of
+/// ASCII letters, digits and hyphens. Numbers outside the build carry no leading zero.
+#[must_use]
+pub fn is_version(text: &str) -> bool {
+    let (rest, build) = match text.split_once('+') {
+        Some((rest, build)) => (rest, Some(build)),
+        None => (text, None),
+    };
+    let (core, prerelease) = match rest.split_once('-') {
+        Some((core, prerelease)) => (core, Some(prerelease)),
+        None => (rest, None),
+    };
+    let number = |part: &str| {
+        !part.is_empty()
+            && part.bytes().all(|b| b.is_ascii_digit())
+            && (part == "0" || !part.starts_with('0'))
+    };
+    let identifiers = |text: &str, numbered: bool| {
+        text.split('.').all(|part| {
+            !part.is_empty()
+                && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && (!numbered || !part.bytes().all(|b| b.is_ascii_digit()) || number(part))
+        })
+    };
+    let parts: Vec<&str> = core.split('.').collect();
+    parts.len() == 3
+        && parts.iter().all(|part| number(part))
+        && prerelease.is_none_or(|text| identifiers(text, true))
+        && build.is_none_or(|text| identifiers(text, false))
+}
+
+/// An absolute `http` or `https` URL with a host, a port only of digits, and
+/// no whitespace or control characters.
+#[must_use]
+pub fn is_url(text: &str) -> bool {
+    let lower = text.get(..8).unwrap_or(text).to_ascii_lowercase();
+    let rest = if lower.starts_with("https://") {
+        &text[8..]
+    } else if lower.starts_with("http://") {
+        &text[7..]
+    } else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host_port = authority.rsplit('@').next().unwrap_or_default();
+    let (host, port) = match host_port.strip_prefix('[') {
+        Some(bracketed) => match bracketed.split_once(']') {
+            Some((host, "")) => (host, None),
+            Some((host, after)) => match after.strip_prefix(':') {
+                Some(port) => (host, Some(port)),
+                None => return false,
+            },
+            None => return false,
+        },
+        None => match host_port.split_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (host_port, None),
+        },
+    };
+    let port_ok =
+        port.is_none_or(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()));
+    !host.is_empty()
+        && !host.contains(['[', ']'])
+        && port_ok
+        && !text.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// A path relative to the repo root: `/`-separated parts, none empty, `.`,
+/// `..` or padded with whitespace, no drive such as `C:`, and no backslash
+/// or control character, so it reads the same on every machine.
+#[must_use]
+pub fn is_repo_path(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    !text.is_empty()
+        && !drive
+        && !text.chars().any(|c| c == '\\' || c.is_control())
+        && text
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != ".." && part.trim() == part)
+}
+
 /// The shape of every id: lowercase letters, digits and underscores, starting
 /// with a letter, as operation field names already are.
 #[must_use]
@@ -497,6 +583,9 @@ impl Scheme {
                 | FieldType::SingleSelect
                 | FieldType::MultiSelect
                 | FieldType::Person
+                | FieldType::Version
+                | FieldType::Url
+                | FieldType::FilePaths
         ) {
             return Err(SchemeError::BuiltInType(field.field_type));
         }
@@ -597,6 +686,102 @@ impl Scheme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_version_is_semver_and_nothing_looser() {
+        for good in [
+            "0.0.0",
+            "1.2.3",
+            "10.20.30",
+            "1.0.0-rc.1",
+            "1.0.0-0.3.7",
+            "1.0.0+20130313",
+            "1.0.0-alpha+001",
+            "1.0.0-x-y",
+        ] {
+            assert!(is_version(good), "{good}");
+        }
+        for bad in [
+            "",
+            "1",
+            "1.2",
+            "v1.2.3",
+            "01.2.3",
+            "1.02.3",
+            "1.2.3.4",
+            "1.2.3-",
+            "1.2.3-01",
+            "1.2.3+",
+            "1.2.3-a..b",
+            "1.2.3 ",
+            "1.2.x",
+        ] {
+            assert!(!is_version(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_url_is_http_or_https_with_a_host() {
+        for good in [
+            "https://example.com",
+            "http://example.com/a?b#c",
+            "HTTPS://x.io:8080/p",
+            "https://user@host/x",
+            "http://[::1]:8080/x",
+        ] {
+            assert!(is_url(good), "{good}");
+        }
+        for bad in [
+            "",
+            "example.com",
+            "ftp://example.com",
+            "https://",
+            "https:///path",
+            "https://host/a b",
+            "https://:80",
+            "mailto:a@b.c",
+            "https://host:garbage",
+            "https://host:",
+            "https://[invalid",
+            "https://[::1]x",
+            "http://[::1]8080/x",
+        ] {
+            assert!(!is_url(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_repo_path_is_relative_slash_separated_and_climbs_nowhere() {
+        for good in [
+            "src/main.rs",
+            "README.md",
+            ".github/workflows/ci.yml",
+            "a/b c/d.txt",
+            "notes:/x.md",
+            "src/a:b.rs",
+        ] {
+            assert!(is_repo_path(good), "{good}");
+        }
+        for bad in [
+            "",
+            "/etc/passwd",
+            "src/",
+            "src//main.rs",
+            "./src",
+            "src/../x",
+            "..",
+            "src\\main.rs",
+            "a\tb",
+            "C:/Windows/system.ini",
+            "c:",
+            "C:outside.txt",
+            "C:dir/file.rs",
+            " lead.rs",
+            "src/trail.rs ",
+        ] {
+            assert!(!is_repo_path(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn every_default_type_has_a_workflow_with_its_start_status() {

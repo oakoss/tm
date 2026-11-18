@@ -786,3 +786,105 @@ workflow = "gated"
     let text = String::from_utf8_lossy(&run(&["git", "scan"]).stdout).into_owned();
     assert!(text.contains("1 not moved; the warnings say why"), "{text}");
 }
+
+#[test]
+fn version_url_and_file_paths_fields_are_set_added_and_found_from_the_cli() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    fs::write(
+        workspace_dir(&scratch, &repo).join("scheme.toml"),
+        "[fields.release]\ntype = \"version\"\n[fields.docs]\ntype = \"url\"\n[fields.paths]\ntype = \"file_paths\"\n",
+    )
+    .unwrap();
+    let run = |args: &[&str]| tm(&scratch, &repo, args);
+    let created = run(&[
+        "--json",
+        "create",
+        "--type",
+        "task",
+        "--title",
+        "t",
+        "--set",
+        "release=1.2.0",
+        "--set",
+        "docs=https://example.com/spec",
+        "--add",
+        "paths=src/a.rs",
+        "--add",
+        "paths=b.md",
+    ]);
+    assert!(created.status.success(), "{created:?}");
+    let edited = run(&[
+        "--json",
+        "edit",
+        "TM-1",
+        "--remove",
+        "paths=b.md",
+        "--add",
+        "paths=c/d.rs",
+    ]);
+    assert_eq!(
+        data(&edited)["changed"],
+        json!([{"field": "paths", "before": ["b.md", "src/a.rs"], "after": ["c/d.rs", "src/a.rs"]}]),
+        "{edited:?}"
+    );
+    let shown = String::from_utf8_lossy(&run(&["show", "TM-1"]).stdout).into_owned();
+    for line in ["release: 1.2.0", "docs: https://example.com/spec"] {
+        assert!(shown.contains(line), "{line}: {shown}");
+    }
+    assert!(
+        shown.contains("c/d.rs") && shown.contains("src/a.rs") && !shown.contains("b.md"),
+        "{shown}"
+    );
+    let found = run(&["--json", "list", "paths:c/d.rs", "release:1.2.0"]);
+    assert_eq!(data(&found)["total"], 1, "{found:?}");
+
+    let refused = |args: &[&str], code: &str, message: &str| {
+        let out = run(&[&["--json"], args].concat());
+        let error = doc(&out);
+        assert_eq!(error["error"], code, "{args:?}: {error}");
+        assert!(
+            error["message"].as_str().unwrap().contains(message),
+            "{args:?}: {error}"
+        );
+    };
+    refused(
+        &["edit", "TM-1", "--set", "release=v1.2"],
+        "invalid_value",
+        "is not a semantic version",
+    );
+    refused(
+        &["edit", "TM-1", "--set", "docs=example.com"],
+        "invalid_value",
+        "is not an http or https URL",
+    );
+    refused(
+        &["edit", "TM-1", "--add", "paths=../x"],
+        "invalid_value",
+        "is not a path relative to the repo root",
+    );
+    refused(
+        &["edit", "TM-1", "--add", "release=1.0.0"],
+        "invalid_value",
+        "release holds one value; give it with --set",
+    );
+    refused(
+        &["edit", "TM-1", "--set", "paths=x.rs"],
+        "invalid_value",
+        "holds several values",
+    );
+    refused(
+        &[
+            "edit",
+            "TM-1",
+            "--add",
+            "paths=x.rs",
+            "--remove",
+            "paths=x.rs",
+        ],
+        "invalid_value",
+        "x.rs is both added and removed",
+    );
+    refused(&["edit", "TM-1", "--add", "labels=x"], "usage", "--label");
+}

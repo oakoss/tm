@@ -18,6 +18,7 @@ pub(crate) struct Create {
     pub(crate) title: Option<String>,
     pub(crate) set: Vec<(String, String)>,
     pub(crate) labels: Vec<String>,
+    pub(crate) add: Vec<(String, String)>,
     pub(crate) parent: Option<String>,
 }
 
@@ -49,6 +50,7 @@ fn write(here: &mut Here, mut create: Create) -> Result<(Output, Vec<String>), C
     let scheme = here.store.scheme().clone();
     fields::known(&scheme, create.set.iter().map(|(field, _)| field))?;
     fields::labels(&create.labels)?;
+    fields::several(&scheme, &create.add)?;
     if let Some(issue_type) = &create.issue_type {
         if scheme.issue_type(issue_type).is_none() {
             return Err(StoreError::Invalid {
@@ -99,6 +101,7 @@ fn new_issue(scheme: &Scheme, create: &Create, parent: Option<Uuid>) -> NewIssue
             .map(|(field, value)| (field.clone(), typed(scheme, field, value)))
             .collect(),
         labels: create.labels.clone(),
+        elements: create.add.clone(),
     }
 }
 
@@ -125,6 +128,9 @@ fn missing(scheme: &Scheme, create: &Create, fields: Vec<String>) -> CliError {
     }
     for label in &create.labels {
         flag("--label", label);
+    }
+    for (field, value) in &create.add {
+        flag("--add", &format!("{field}={value}"));
     }
     if let Some(parent) = &create.parent {
         flag("--parent", parent);

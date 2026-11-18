@@ -101,7 +101,39 @@ pub(crate) fn typed(scheme: &Scheme, field: &str, value: &str) -> Value {
 
 /// A label to add, or with `present` false, to remove.
 pub(crate) fn label(elem: &str, present: bool) -> Change {
-    let field = "labels".to_owned();
+    element("labels", elem, present)
+}
+
+/// `--add` or `--remove FIELD=VALUE`: labels keep their own flags.
+pub(crate) fn element_value(pair: &str) -> Result<(String, String), String> {
+    let (field, value) = split_pair(pair)?;
+    if field == "labels" {
+        return Err("change labels with --label and --remove-label".into());
+    }
+    not_owned(&field).map(|()| (field, value))
+}
+
+/// Refuses an element for a field the Scheme lacks or that holds one value.
+pub(crate) fn several<'a>(
+    scheme: &Scheme,
+    pairs: impl IntoIterator<Item = &'a (String, String)>,
+) -> Result<(), CliError> {
+    for (name, _) in pairs {
+        let def = tm_store::settable(scheme, name)?;
+        if !def.field_type.is_multi() {
+            return Err(CliError::new(
+                "invalid_value",
+                format!("{name} holds one value; give it with --set"),
+            )
+            .with("field", name.as_str()));
+        }
+    }
+    Ok(())
+}
+
+/// An element of `field` to add, or with `present` false, to remove.
+pub(crate) fn element(field: &str, elem: &str, present: bool) -> Change {
+    let field = field.to_owned();
     let elem = elem.to_owned();
     if present {
         Change::Add {
