@@ -113,12 +113,18 @@ pub(crate) fn element_value(pair: &str) -> Result<(String, String), String> {
     not_owned(&field).map(|()| (field, value))
 }
 
-/// Refuses an element for a field the Scheme lacks or that holds one value.
-pub(crate) fn several<'a>(
+/// Refuses an element for a field the Scheme lacks or that holds one value,
+/// and an option a multi select lacks: always to add, and to remove unless
+/// `held`, so a mistyped `--remove` is no silent no-op while a value the
+/// Scheme stopped offering can still be taken out.
+pub(crate) fn several(
     scheme: &Scheme,
-    pairs: impl IntoIterator<Item = &'a (String, String)>,
+    adds: &[(String, String)],
+    removes: &[(String, String)],
+    held: impl Fn(&str, &str) -> bool,
 ) -> Result<(), CliError> {
-    for (name, _) in pairs {
+    let pairs = adds.iter().map(|pair| (pair, false));
+    for ((name, elem), removing) in pairs.chain(removes.iter().map(|pair| (pair, true))) {
         let def = tm_store::settable(scheme, name)?;
         if !def.field_type.is_multi() {
             return Err(CliError::new(
@@ -126,6 +132,17 @@ pub(crate) fn several<'a>(
                 format!("{name} holds one value; give it with --set"),
             )
             .with("field", name.as_str()));
+        }
+        if def.field_type == FieldType::MultiSelect
+            && def.option(elem).is_none()
+            && !(removing && held(name, elem))
+        {
+            return Err(StoreError::Invalid {
+                field: name.clone(),
+                reason: "has no such option".into(),
+                valid: def.options.iter().map(|choice| choice.id.clone()).collect(),
+            }
+            .into());
         }
     }
     Ok(())

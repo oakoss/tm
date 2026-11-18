@@ -50,7 +50,7 @@ fn write(here: &mut Here, mut create: Create) -> Result<(Output, Vec<String>), C
     let scheme = here.store.scheme().clone();
     fields::known(&scheme, create.set.iter().map(|(field, _)| field))?;
     fields::labels(&create.labels)?;
-    fields::several(&scheme, &create.add)?;
+    fields::several(&scheme, &create.add, &[], |_, _| false)?;
     if let Some(issue_type) = &create.issue_type {
         if scheme.issue_type(issue_type).is_none() {
             return Err(StoreError::Invalid {

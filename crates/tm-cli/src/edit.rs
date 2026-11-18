@@ -331,7 +331,11 @@ fn check_flags(store: &Store, view: &IssueView, edit: &Edit) -> Result<(), CliEr
         )
         .with("field", "labels"));
     }
-    fields::several(scheme, edit.add.iter().chain(&edit.remove))?;
+    fields::several(scheme, &edit.add, &edit.remove, |field, elem| {
+        view.sets
+            .get(field)
+            .is_some_and(|held| held.contains_key(elem))
+    })?;
     if let Some((field, both)) = edit.add.iter().find(|added| edit.remove.contains(added)) {
         return Err(CliError::new(
             "invalid_value",
@@ -490,7 +494,14 @@ fn unsettable(store: &Store, view: &IssueView, name: &str) -> Result<(), CliErro
         )
         .with("field", name));
     }
-    if store.scheme().field(name).is_some() {
+    if let Some(def) = store.scheme().field(name) {
+        if def.field_type.is_multi() {
+            return Err(CliError::new(
+                "invalid_value",
+                format!("{name} holds several values; take them out with --remove"),
+            )
+            .with("field", name));
+        }
         tm_store::settable(store.scheme(), name)?;
         store.check_unset(view.id, name)?;
     } else if !view.fields.contains_key(name) {

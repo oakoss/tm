@@ -888,3 +888,73 @@ fn version_url_and_file_paths_fields_are_set_added_and_found_from_the_cli() {
     );
     refused(&["edit", "TM-1", "--add", "labels=x"], "usage", "--label");
 }
+
+#[test]
+fn several_valued_fields_refuse_what_would_quietly_do_nothing() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    fs::write(
+        workspace_dir(&scratch, &repo).join("scheme.toml"),
+        "[fields.release]\ntype = \"version\"\n[fields.paths]\ntype = \"file_paths\"\n[fields.tags]\ntype = \"multi_select\"\noptions = [{ id = \"x\" }, { id = \"y\" }]\n",
+    )
+    .unwrap();
+    let run = |args: &[&str]| tm(&scratch, &repo, &[&["--json"], args].concat());
+    let created = run(&[
+        "create",
+        "--type",
+        "task",
+        "--title",
+        "t",
+        "--add",
+        "paths=a.rs",
+        "--add",
+        "tags=x",
+    ]);
+    assert!(created.status.success(), "{created:?}");
+
+    let unchanged = run(&["edit", "TM-1", "--add", "paths=a.rs", "--add", "tags=x"]);
+    assert_eq!(data(&unchanged)["changed"], json!([]), "{unchanged:?}");
+    for (args, message) in [
+        (
+            &["edit", "TM-1", "--remove", "tags=X"][..],
+            "tags has no such option; valid: x, y",
+        ),
+        (
+            &["edit", "TM-1", "--unset", "paths"],
+            "paths holds several values; take them out with --remove",
+        ),
+        (
+            &[
+                "create",
+                "--type",
+                "task",
+                "--title",
+                "u",
+                "--add",
+                "release=1.0.0",
+            ],
+            "release holds one value; give it with --set",
+        ),
+        (
+            &["edit", "TM-1", "--add", "tags=z"],
+            "tags has no such option; valid: x, y",
+        ),
+    ] {
+        let error = doc(&run(args));
+        assert_eq!(error["error"], "invalid_value", "{args:?}: {error}");
+        assert_eq!(error["message"], message, "{args:?}: {error}");
+    }
+
+    fs::write(
+        workspace_dir(&scratch, &repo).join("scheme.toml"),
+        "[fields.tags]\ntype = \"multi_select\"\noptions = [{ id = \"y\" }]\n",
+    )
+    .unwrap();
+    let removed = run(&["edit", "TM-1", "--remove", "tags=x"]);
+    assert_eq!(
+        data(&removed)["changed"],
+        json!([{"field": "tags", "before": ["x"], "after": []}]),
+        "a value the Scheme stopped offering still comes out: {removed:?}"
+    );
+}

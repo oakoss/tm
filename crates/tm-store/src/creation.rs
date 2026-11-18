@@ -105,7 +105,17 @@ impl NewIssue {
             .elements
             .iter()
             .map(|(field, elem)| (field.as_str(), elem));
+        let mut seen = std::collections::BTreeSet::new();
         for (field, elem) in labels.chain(elements) {
+            // Labels compare without case, as the store keys them.
+            let key = if field == "labels" {
+                elem.trim().to_lowercase()
+            } else {
+                elem.clone()
+            };
+            if !seen.insert((field, key)) {
+                continue;
+            }
             changes.push(Change::Add {
                 field: field.to_owned(),
                 label: String::new(),
@@ -142,8 +152,11 @@ mod tests {
             title: Some("t".into()),
             parent: Some(parent),
             fields: vec![("priority".into(), json!("high"))],
-            labels: vec!["ui".into()],
-            elements: vec![("paths".into(), "src/a.rs".into())],
+            labels: vec!["ui".into(), "UI ".into()],
+            elements: vec![
+                ("paths".into(), "src/a.rs".into()),
+                ("paths".into(), "src/a.rs".into()),
+            ],
         };
         assert_eq!(
             written(&new.changes(&scheme)),

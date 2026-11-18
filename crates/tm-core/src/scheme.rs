@@ -433,8 +433,8 @@ pub fn is_url(text: &str) -> bool {
             None => (host_port, None),
         },
     };
-    let port_ok =
-        port.is_none_or(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()));
+    let port_ok = port
+        .is_none_or(|port| port.bytes().all(|b| b.is_ascii_digit()) && port.parse::<u16>().is_ok());
     !host.is_empty()
         && !host.contains(['[', ']'])
         && port_ok
@@ -742,6 +742,8 @@ mod tests {
             "mailto:a@b.c",
             "https://host:garbage",
             "https://host:",
+            "https://host:65536",
+            "https://host:+80",
             "https://[invalid",
             "https://[::1]x",
             "http://[::1]8080/x",
