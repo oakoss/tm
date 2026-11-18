@@ -9,8 +9,8 @@ use uuid::Uuid;
 use tm_core::Hlc;
 
 use crate::support::{
-    IMPORT_START, ManualClock, TempDir, draft, field, insert_acked, jace, meanwhile, new_issue,
-    open, remote_op, set_field, unpassed,
+    self, IMPORT_START, ManualClock, TempDir, draft, field, insert_acked, jace, meanwhile,
+    new_issue, open, remote_op, set_field, unpassed,
 };
 
 const WORKSPACE: Uuid = Uuid::from_u128(0x0190_a000_0000_7000_8000_0000_0000_0002);
@@ -225,6 +225,23 @@ fn an_issue_reference_reaches_a_later_line_and_round_trips() {
     lines[0]["fields"] = json!({});
     let dropped = import(&mut store, &lines).unwrap();
     assert_eq!(issue(&dropped, "beads:a.1"), child);
+    assert_eq!(field(&store, child, "found_in"), None);
+}
+
+#[test]
+fn a_dropped_reference_clears_beside_a_type_that_does_not_carry_it() {
+    let dir = TempDir::new();
+    let mut scheme = support::scheme();
+    let bug = scheme.types.iter_mut().find(|t| t.id == "bug").unwrap();
+    bug.fields = Some(vec!["area".into()]);
+    let mut store = store(&dir, &ManualClock::at(1_900_000_000_000)).with_scheme(scheme);
+    let mut lines = records();
+    lines[0]["fields"] = json!({"found_in": "beads:a"});
+    let child = issue(&import(&mut store, &lines).unwrap(), "beads:a.1");
+    lines[0]["type"] = json!("bug");
+    lines[0]["fields"] = json!({});
+    import(&mut store, &lines).unwrap();
+    assert_eq!(field(&store, child, "type"), Some(json!("bug")));
     assert_eq!(field(&store, child, "found_in"), None);
 }
 

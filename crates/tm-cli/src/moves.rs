@@ -202,7 +202,8 @@ fn refuse_early(
     args: &Move,
     based_on: i64,
 ) -> Result<(), CliError> {
-    let mut written = crate::fields::written(here.store.scheme(), view, &args.set, &[]);
+    let set = crate::fields::resolved(here, &args.set)?;
+    let mut written = crate::fields::written(here.store.scheme(), view, &set, &[]);
     let moves = !view
         .fields
         .get("status")

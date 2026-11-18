@@ -4,8 +4,8 @@ use std::collections::btree_map::Entry;
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
-use tm_core::Change;
 use tm_core::scheme::FieldType;
+use tm_core::{Actor, Change};
 use tm_store::{Draft, IssueView, Store, WriteOptions};
 use uuid::Uuid;
 
@@ -193,18 +193,8 @@ pub(crate) fn write(
         ..WriteOptions::default()
     };
     let forced = |err| CliError::past_claim(err, "tm edit --force");
-    // A refusal would lose piped text, so check before reading it; the write
-    // checks again.
     if !fields::piped(&given).is_empty() {
-        let mut written = fields::written(here.store.scheme(), &view, &edit.set, &edit.unset);
-        written.extend(edit.append.iter().map(|(field, _)| field.as_str()));
-        if reparents {
-            written.push("parent");
-        }
-        here.store
-            .check_protected(&identity.actor, id, &written, edit.force)
-            .map_err(forced)?;
-        here.store.check_version(id, based_on, &written)?;
+        check_before_reading(here, &view, edit, &identity.actor, (based_on, reparents))?;
     }
     // Read once all else is checked, so a mistake keeps the piped text.
     let blank = if fields::piped(&edit.append).is_empty() {
@@ -263,6 +253,27 @@ pub(crate) fn write(
         &identity.actor,
     )?;
     Ok((output, warnings))
+}
+
+/// Refuses a write past a Claim or a changed version before piped text is
+/// read, since a refusal after would lose it; the write checks again.
+fn check_before_reading(
+    here: &Here,
+    view: &IssueView,
+    edit: &Edit,
+    actor: &Actor,
+    (based_on, reparents): (i64, bool),
+) -> Result<(), CliError> {
+    let set = fields::resolved(here, &edit.set)?;
+    let mut written = fields::written(here.store.scheme(), view, &set, &edit.unset);
+    written.extend(edit.append.iter().map(|(field, _)| field.as_str()));
+    if reparents {
+        written.push("parent");
+    }
+    here.store
+        .check_protected(actor, view.id, &written, edit.force)
+        .map_err(|err| CliError::past_claim(err, "tm edit --force"))?;
+    Ok(here.store.check_version(view.id, based_on, &written)?)
 }
 
 /// The Status changes only by `tm move`, which also releases a Claim when

@@ -694,21 +694,30 @@ fn is_set(scheme: &Scheme, field: &str) -> bool {
             .is_some_and(|def| def.field_type.is_multi())
 }
 
-/// A Scheme field naming another Issue, written in pass two with `parent`,
-/// since its target may not exist in pass one.
 fn is_reference(scheme: &Scheme, field: &str) -> bool {
     scheme
         .field(field)
         .is_some_and(|def| !def.builtin && def.field_type == FieldType::IssueReference)
 }
 
+/// A reference the record gives a target, written in pass two since the
+/// target may not exist yet; clearing one stays in pass one, beside a type
+/// change that may require it gone.
+fn in_pass_two(scheme: &Scheme, record: &IssueRecord, field: &str) -> bool {
+    is_reference(scheme, field)
+        && record
+            .fields
+            .get(field)
+            .is_some_and(|value| !value.is_null())
+}
+
 /// The single-valued fields pass one writes: the built-in ones, then the
-/// record's Scheme fields that are neither sets nor Issue references.
+/// record's Scheme fields that are neither sets nor written in pass two.
 fn single_fields(scheme: &Scheme, record: &IssueRecord) -> Vec<String> {
     let custom = record
         .fields
         .keys()
-        .filter(|field| !is_set(scheme, field) && !is_reference(scheme, field));
+        .filter(|field| !is_set(scheme, field) && !in_pass_two(scheme, record, field));
     SCALARS
         .iter()
         .map(|field| (*field).to_owned())
@@ -965,7 +974,7 @@ fn update_plan(
         };
         if !list.contains(&field)
             && !NOT_VALUES.contains(&field.as_str())
-            && !is_reference(scheme, &field)
+            && !in_pass_two(scheme, record, &field)
         {
             list.push(field);
         }
@@ -1242,31 +1251,23 @@ fn held_links(conn: &Connection, issue: Uuid) -> Result<BTreeSet<(Uuid, String)>
 
 /// The Issue reference fields pass two compares, each with the reference the
 /// record gives it. Only a parent can close a cycle, so the others wait for
-/// the pass that attaches. A field the record dropped still compares, as unset.
+/// the pass that attaches.
 fn references<'r>(
-    conn: &Connection,
     scheme: &Scheme,
     record: &'r IssueRecord,
-    issue: Uuid,
     detach: bool,
-) -> Result<Vec<(String, Option<&'r str>)>, StoreError> {
+) -> Vec<(String, Option<&'r str>)> {
     let mut references = vec![("parent".to_owned(), record.parent.as_deref())];
-    if detach {
-        return Ok(references);
+    if !detach {
+        references.extend(
+            record
+                .fields
+                .iter()
+                .filter(|(field, _)| in_pass_two(scheme, record, field))
+                .map(|(field, value)| (field.clone(), value.as_str())),
+        );
     }
-    let given = record
-        .fields
-        .keys()
-        .filter(|field| is_reference(scheme, field))
-        .cloned();
-    let dropped = imported_fields(conn, &record.source, issue)?
-        .into_iter()
-        .filter(|field| is_reference(scheme, field) && !record.fields.contains_key(field));
-    references.extend(given.chain(dropped).map(|field| {
-        let reference = record.fields.get(&field).and_then(Value::as_str);
-        (field, reference)
-    }));
-    Ok(references)
+    references
 }
 
 /// The Issue's parent, other Issue references and outward Links compared
@@ -1294,7 +1295,7 @@ fn relations_plan(
         change,
     };
 
-    for (field, reference) in references(conn, scheme, record, issue, detach)? {
+    for (field, reference) in references(scheme, record, detach) {
         let wanted = match reference {
             Some(reference) => json!(resolve(conn, &field, reference)?.to_string()),
             None => Value::Null,

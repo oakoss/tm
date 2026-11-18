@@ -101,27 +101,30 @@ pub(crate) fn typed(scheme: &Scheme, field: &str, value: &str) -> Value {
     }
 }
 
-/// [`read_stdin`], with each value given to an Issue reference field, by Key
-/// or id, as the id the field stores. A value given inline is looked up
-/// before stdin is read, so a mistake keeps the piped text.
+/// `set` with each value given to an Issue reference field, by Key or id, as
+/// the id the field stores; a `-` still to be read is left.
+pub(crate) fn resolved(
+    here: &Here,
+    set: &[(String, String)],
+) -> Result<Vec<(String, String)>, CliError> {
+    let mut set = set.to_vec();
+    for (field, value) in &mut set {
+        if value != "-" && is_reference(here.store.scheme(), field) {
+            *value = here.issue(value.trim())?.to_string();
+        }
+    }
+    Ok(set)
+}
+
+/// [`read_stdin`] then [`resolved`]. Inline values are looked up before
+/// stdin is read, so a mistake keeps the piped text.
 pub(crate) fn read_resolved(
     here: &Here,
     set: &[(String, String)],
     blank: &str,
 ) -> Result<Vec<(String, String)>, CliError> {
-    let resolve = |values: &mut [(String, String)]| -> Result<(), CliError> {
-        for (field, value) in values {
-            if value != "-" && is_reference(here.store.scheme(), field) {
-                *value = here.issue(value.trim())?.to_string();
-            }
-        }
-        Ok(())
-    };
-    let mut set = set.to_vec();
-    resolve(&mut set)?;
-    let mut read = read_stdin(&set, blank)?;
-    resolve(&mut read)?;
-    Ok(read)
+    let set = resolved(here, set)?;
+    resolved(here, &read_stdin(&set, blank)?)
 }
 
 /// Whether `field` holds an Issue's id: `parent`, or a Scheme field of that type.
