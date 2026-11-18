@@ -1,7 +1,7 @@
 //! `tm show`: one Issue, its fields and its Claim.
 
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::claim::{self, claim_json};
 use crate::error::CliError;
+use crate::fields;
 use crate::follow;
 use crate::here::{self, Here};
 use crate::mention;
@@ -83,17 +84,14 @@ pub(crate) fn render_with(
     limit: Comments,
     named: Option<Uuid>,
 ) -> Result<Output, CliError> {
-    let (view, project, parent, (claim, now_ms), links, below) = store.read(|store| {
+    let (view, project, referred, (claim, now_ms), links, below) = store.read(|store| {
         let view = store.issue(id)?.ok_or_else(|| {
             CliError::new("not_found", format!("Issue {id} does not exist"))
                 .with("kind", "issue")
                 .with("id", id.to_string())
         })?;
         let project = store.project_key(view.project)?;
-        let parent = match view.fields.get("parent").and_then(Value::as_str) {
-            Some(parent) => Some(parent_ref(store, parent)?),
-            None => None,
-        };
+        let referred = referred(store, &view)?;
         let now_ms = store.utc_ms()?;
         let claim = store.claim_state_at(id, now_ms)?;
         let links = store.links(id)?;
@@ -118,7 +116,7 @@ pub(crate) fn render_with(
         Ok::<_, CliError>((
             view,
             project,
-            parent,
+            referred,
             (claim, now_ms),
             links,
             (comments, children, membership, version, sessions),
@@ -138,7 +136,7 @@ pub(crate) fn render_with(
         "fields": fields,
         "shortlist": membership.as_ref().map(Membership::json),
         "sets": view.sets,
-        "parent": parent,
+        "parent": referred.get("parent"),
         "claim": claim.as_ref().and_then(ClaimState::held).map(|held| claim_json(held, now_ms)),
         "lapsed_claim": claim
             .as_ref()
@@ -160,7 +158,7 @@ pub(crate) fn render_with(
         .unwrap_or("");
     let mut text = format!("{name}  {}\n", printable(title));
     for (field, value) in fields.iter().filter(|(field, _)| *field != "title") {
-        write_field(&mut text, store, field, value, parent.as_ref());
+        write_field(&mut text, store, field, value, referred.get(field));
         if field == "status" && !moves.is_empty() {
             let _ = writeln!(text, "moves to: {}", moves_line(&moves));
         }
@@ -368,25 +366,25 @@ fn link_line(link: &LinkView, other: Option<&IssueView>) -> String {
     }
 }
 
-/// One field: a parent by Key, a time stored in milliseconds in local time,
-/// and text of several lines indented under the field's name.
+/// One field: an Issue reference by Key, a time stored in milliseconds in
+/// local time, and text of several lines indented under the field's name.
 fn write_field(
     text: &mut String,
     store: &Store,
     field: &str,
     value: &Value,
-    parent: Option<&Value>,
+    referred: Option<&Value>,
 ) {
     let instant = store
         .scheme()
         .field(field)
         .filter(|def| def.field_type == FieldType::Datetime)
         .and(value.as_i64());
-    let shown = match (field, parent, instant) {
-        ("parent", Some(parent), _) => parent["key"]
+    let shown = match (referred, instant) {
+        (Some(referred), _) => referred["key"]
             .as_str()
-            .map_or_else(|| plain(&parent["id"]), str::to_owned),
-        (_, _, Some(utc_ms)) => local_time(utc_ms),
+            .map_or_else(|| plain(&referred["id"]), str::to_owned),
+        (_, Some(utc_ms)) => local_time(utc_ms),
         _ => plain(value),
     };
     if shown.contains('\n') {
@@ -601,13 +599,17 @@ fn count_children(scheme: &Scheme, children: &[IssueView]) -> Children {
     }
 }
 
-/// A parent by id and, where it has one, Key.
-fn parent_ref(store: &Store, parent: &str) -> Result<Value, CliError> {
-    let key = match Uuid::parse_str(parent) {
-        Ok(id) => store.issue(id)?.and_then(|view| view.key),
-        Err(_) => None,
-    };
-    Ok(json!({ "id": parent, "key": key }))
+/// The Issues `view`'s reference fields name, `parent` included, by field.
+fn referred(store: &Store, view: &IssueView) -> Result<BTreeMap<String, Value>, CliError> {
+    let mut referred = BTreeMap::new();
+    for (field, value) in &view.fields {
+        if let Some(id) = value.as_str()
+            && fields::is_reference(store.scheme(), field)
+        {
+            referred.insert(field.clone(), fields::referred(store, id)?);
+        }
+    }
+    Ok(referred)
 }
 
 /// A value as a person reads it: strings without quotes.

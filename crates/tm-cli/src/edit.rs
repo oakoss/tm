@@ -212,7 +212,7 @@ pub(crate) fn write(
     } else {
         "give the text to add"
     };
-    let mut values = fields::read_stdin(&given, blank)?;
+    let mut values = fields::read_resolved(here, &given, blank)?;
     for (field, value) in &mut values {
         if field == "description" {
             *value = mention::resolve(here, value)?;
@@ -454,25 +454,17 @@ fn changes(
     if let Some(wanted) = wanted
         && wanted.as_deref() != current
     {
-        let key = |id: Option<&str>| -> Result<Value, CliError> {
-            let Some(id) = id else {
-                return Ok(Value::Null);
-            };
-            let key = match Uuid::parse_str(id) {
-                Ok(uuid) => here.store.issue(uuid)?.and_then(|view| view.key),
-                Err(_) => None,
-            };
-            Ok(json!({ "id": id, "key": key }))
-        };
-        changes.push(set(
-            "parent",
-            wanted.as_deref().map_or(Value::Null, |id| json!(id)),
-        ));
+        let after = wanted.map_or(Value::Null, Value::String);
+        changes.push(set("parent", after.clone()));
         report.push(Changed {
             field: "parent".into(),
-            before: key(current)?,
-            after: key(wanted.as_deref())?,
+            before: current.map_or(Value::Null, |id| json!(id)),
+            after,
         });
+    }
+    for changed in &mut report {
+        changed.before = fields::shown_value(&here.store, &changed.field, changed.before.take())?;
+        changed.after = fields::shown_value(&here.store, &changed.field, changed.after.take())?;
     }
     Ok((changes, report))
 }
@@ -510,7 +502,7 @@ fn unsettable(store: &Store, view: &IssueView, name: &str) -> Result<(), CliErro
     Ok(())
 }
 
-/// A value as a change line shows it; a parent by Key.
+/// A value as a change line shows it; an Issue reference by Key.
 pub(crate) fn shown(value: &Value) -> String {
     match value {
         Value::Null => "(none)".to_owned(),

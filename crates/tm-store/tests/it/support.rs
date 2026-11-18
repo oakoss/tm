@@ -252,6 +252,12 @@ pub(crate) fn scheme() -> Scheme {
         Field::custom("due", "Due", FieldType::Date, Vec::new()),
         Field::custom("seen", "Seen", FieldType::Datetime, Vec::new()),
         Field::custom("flag", "Flag", FieldType::Boolean, Vec::new()),
+        Field::custom(
+            "found_in",
+            "Found in",
+            FieldType::IssueReference,
+            Vec::new(),
+        ),
     ] {
         scheme.add_field(field).unwrap();
     }

@@ -66,7 +66,7 @@ fn write(here: &mut Here, mut create: Create) -> Result<(Output, Vec<String>), C
     }
     // Read once all else is checked, so a mistake keeps the piped text.
     // Stdin is spent once read, so from here on `set` holds what it gave.
-    create.set = fields::read_stdin(&create.set, "leave the field out")?;
+    create.set = fields::read_resolved(here, &create.set, "leave the field out")?;
     for (field, value) in &mut create.set {
         if field == "description" {
             *value = mention::resolve(here, value)?;

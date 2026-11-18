@@ -557,6 +557,9 @@ fn check_record(scheme: &Scheme, record: &IssueRecord) -> Result<(), StoreError>
                 "holds several values, written as a list of strings",
             ));
         }
+        if is_reference(scheme, name) && !value.is_null() && !value.is_string() {
+            return Err(invalid("names an Issue, written as its source, Key or id"));
+        }
     }
     for field in set_fields(scheme, record) {
         wanted_set(scheme, record, &field)?;
@@ -691,10 +694,21 @@ fn is_set(scheme: &Scheme, field: &str) -> bool {
             .is_some_and(|def| def.field_type.is_multi())
 }
 
-/// The single-valued fields a record speaks for: the built-in ones, then its
-/// Scheme fields that are not sets.
+/// A Scheme field naming another Issue, written in pass two with `parent`,
+/// since its target may not exist in pass one.
+fn is_reference(scheme: &Scheme, field: &str) -> bool {
+    scheme
+        .field(field)
+        .is_some_and(|def| !def.builtin && def.field_type == FieldType::IssueReference)
+}
+
+/// The single-valued fields pass one writes: the built-in ones, then the
+/// record's Scheme fields that are neither sets nor Issue references.
 fn single_fields(scheme: &Scheme, record: &IssueRecord) -> Vec<String> {
-    let custom = record.fields.keys().filter(|field| !is_set(scheme, field));
+    let custom = record
+        .fields
+        .keys()
+        .filter(|field| !is_set(scheme, field) && !is_reference(scheme, field));
     SCALARS
         .iter()
         .map(|field| (*field).to_owned())
@@ -949,7 +963,10 @@ fn update_plan(
         } else {
             &mut singles
         };
-        if !list.contains(&field) && !NOT_VALUES.contains(&field.as_str()) {
+        if !list.contains(&field)
+            && !NOT_VALUES.contains(&field.as_str())
+            && !is_reference(scheme, &field)
+        {
             list.push(field);
         }
     }
@@ -1223,7 +1240,37 @@ fn held_links(conn: &Connection, issue: Uuid) -> Result<BTreeSet<(Uuid, String)>
     Ok(held)
 }
 
-/// The Issue's parent and outward Links compared three ways.
+/// The Issue reference fields pass two compares, each with the reference the
+/// record gives it. Only a parent can close a cycle, so the others wait for
+/// the pass that attaches. A field the record dropped still compares, as unset.
+fn references<'r>(
+    conn: &Connection,
+    scheme: &Scheme,
+    record: &'r IssueRecord,
+    issue: Uuid,
+    detach: bool,
+) -> Result<Vec<(String, Option<&'r str>)>, StoreError> {
+    let mut references = vec![("parent".to_owned(), record.parent.as_deref())];
+    if detach {
+        return Ok(references);
+    }
+    let given = record
+        .fields
+        .keys()
+        .filter(|field| is_reference(scheme, field))
+        .cloned();
+    let dropped = imported_fields(conn, &record.source, issue)?
+        .into_iter()
+        .filter(|field| is_reference(scheme, field) && !record.fields.contains_key(field));
+    references.extend(given.chain(dropped).map(|field| {
+        let reference = record.fields.get(&field).and_then(Value::as_str);
+        (field, reference)
+    }));
+    Ok(references)
+}
+
+/// The Issue's parent, other Issue references and outward Links compared
+/// three ways.
 fn relations_plan(
     conn: &Connection,
     scheme: &Scheme,
@@ -1247,33 +1294,35 @@ fn relations_plan(
         change,
     };
 
-    let wanted = match &record.parent {
-        Some(parent) => json!(resolve(conn, "parent", parent)?.to_string()),
-        None => Value::Null,
-    };
-    let base_parent = base_value(&base(conn, source, Some(issue), "parent")?, issue, adopted);
-    let tm = current.fields.get("parent").cloned().unwrap_or(Value::Null);
-    match decide(&wanted, base_parent.as_ref(), &tm) {
-        // A parent moving to another Issue lets go of the old one first.
-        Decision::Write if detach && !wanted.is_null() => {
-            if !tm.is_null() {
-                let change = set("parent", Value::Null);
-                plan.push(draft(current.project, issue, change), source, writer.at);
+    for (field, reference) in references(conn, scheme, record, issue, detach)? {
+        let wanted = match reference {
+            Some(reference) => json!(resolve(conn, &field, reference)?.to_string()),
+            None => Value::Null,
+        };
+        let base_ref = base_value(&base(conn, source, Some(issue), &field)?, issue, adopted);
+        let tm = current.fields.get(&field).cloned().unwrap_or(Value::Null);
+        match decide(&wanted, base_ref.as_ref(), &tm) {
+            // A parent moving to another Issue lets go of the old one first.
+            Decision::Write if detach && !wanted.is_null() => {
+                if !tm.is_null() {
+                    let change = set(&field, Value::Null);
+                    plan.push(draft(current.project, issue, change), source, writer.at);
+                }
             }
+            Decision::Conflict if detach => {}
+            Decision::Keep => {}
+            Decision::Write => {
+                let change = set(&field, wanted);
+                plan.push(draft(current.project, issue, change), source, writer.at);
+                plan.written.push(field);
+            }
+            Decision::Conflict => plan.conflicts.push(Conflict {
+                field,
+                tm,
+                source: wanted,
+                reason: None,
+            }),
         }
-        Decision::Conflict if detach => {}
-        Decision::Keep => {}
-        Decision::Write => {
-            let change = set("parent", wanted);
-            plan.push(draft(current.project, issue, change), source, writer.at);
-            plan.written.push("parent".into());
-        }
-        Decision::Conflict => plan.conflicts.push(Conflict {
-            field: "parent".into(),
-            tm,
-            source: wanted,
-            reason: None,
-        }),
     }
 
     let wanted = wanted_links(conn, record, issue)?;
