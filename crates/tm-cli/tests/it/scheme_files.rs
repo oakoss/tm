@@ -957,4 +957,13 @@ fn several_valued_fields_refuse_what_would_quietly_do_nothing() {
         json!([{"field": "tags", "before": ["x"], "after": []}]),
         "a value the Scheme stopped offering still comes out: {removed:?}"
     );
+
+    let refused = doc(&run(&["edit", "TM-1", "--remove", "paths=other.rs"]));
+    assert_eq!(refused["error"], "unknown_field", "{refused}");
+    let removed = run(&["edit", "TM-1", "--remove", "paths=a.rs"]);
+    assert_eq!(
+        data(&removed)["changed"],
+        json!([{"field": "paths", "before": ["a.rs"], "after": []}]),
+        "a value of a field the Scheme dropped still comes out: {removed:?}"
+    );
 }

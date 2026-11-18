@@ -114,9 +114,9 @@ pub(crate) fn element_value(pair: &str) -> Result<(String, String), String> {
 }
 
 /// Refuses an element for a field the Scheme lacks or that holds one value,
-/// and an option a multi select lacks: always to add, and to remove unless
-/// `held`, so a mistyped `--remove` is no silent no-op while a value the
-/// Scheme stopped offering can still be taken out.
+/// and an option a multi select lacks. A value the Issue holds can always be
+/// removed, as the store allows, however the Scheme changed since; any other
+/// is checked, so a mistyped `--remove` is no silent no-op.
 pub(crate) fn several(
     scheme: &Scheme,
     adds: &[(String, String)],
@@ -125,6 +125,9 @@ pub(crate) fn several(
 ) -> Result<(), CliError> {
     let pairs = adds.iter().map(|pair| (pair, false));
     for ((name, elem), removing) in pairs.chain(removes.iter().map(|pair| (pair, true))) {
+        if removing && held(name, elem) {
+            continue;
+        }
         let def = tm_store::settable(scheme, name)?;
         if !def.field_type.is_multi() {
             return Err(CliError::new(
@@ -133,10 +136,7 @@ pub(crate) fn several(
             )
             .with("field", name.as_str()));
         }
-        if def.field_type == FieldType::MultiSelect
-            && def.option(elem).is_none()
-            && !(removing && held(name, elem))
-        {
+        if def.field_type == FieldType::MultiSelect && def.option(elem).is_none() {
             return Err(StoreError::Invalid {
                 field: name.clone(),
                 reason: "has no such option".into(),
