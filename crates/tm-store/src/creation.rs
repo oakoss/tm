@@ -75,6 +75,8 @@ pub struct NewIssue {
     pub parent: Option<Uuid>,
     pub fields: Vec<(String, Value)>,
     pub labels: Vec<String>,
+    /// Elements of several-valued Scheme fields, each with its field.
+    pub elements: Vec<(String, String)>,
 }
 
 impl NewIssue {
@@ -98,11 +100,26 @@ impl NewIssue {
         for (field, value) in &self.fields {
             changes.push(set(field, value.clone()));
         }
-        for label in &self.labels {
+        let labels = self.labels.iter().map(|label| ("labels", label));
+        let elements = self
+            .elements
+            .iter()
+            .map(|(field, elem)| (field.as_str(), elem));
+        let mut seen = std::collections::BTreeSet::new();
+        for (field, elem) in labels.chain(elements) {
+            // Labels compare without case, as the store keys them.
+            let key = if field == "labels" {
+                elem.trim().to_lowercase()
+            } else {
+                elem.clone()
+            };
+            if !seen.insert((field, key)) {
+                continue;
+            }
             changes.push(Change::Add {
-                field: "labels".to_owned(),
+                field: field.to_owned(),
                 label: String::new(),
-                elem: label.clone(),
+                elem: elem.clone(),
                 elem_label: None,
             });
         }
@@ -120,7 +137,7 @@ mod tests {
             .map(|change| match change {
                 Change::Create => "create".to_owned(),
                 Change::SetField { field, value, .. } => format!("{field}={value}"),
-                Change::Add { elem, .. } => format!("+{elem}"),
+                Change::Add { field, elem, .. } => format!("+{field}:{elem}"),
                 other => format!("{other:?}"),
             })
             .collect()
@@ -135,7 +152,12 @@ mod tests {
             title: Some("t".into()),
             parent: Some(parent),
             fields: vec![("priority".into(), json!("high"))],
-            labels: vec!["ui".into()],
+            labels: vec!["ui".into(), "UI ".into()],
+            elements: vec![
+                ("paths".into(), "src/a.rs".into()),
+                ("paths".into(), "src/a.rs".into()),
+                ("paths".into(), "src/A.rs".into()),
+            ],
         };
         assert_eq!(
             written(&new.changes(&scheme)),
@@ -146,7 +168,9 @@ mod tests {
                 r#"title="t""#,
                 &format!(r#"parent="{parent}""#),
                 r#"priority="high""#,
-                "+ui",
+                "+labels:ui",
+                "+paths:src/a.rs",
+                "+paths:src/A.rs",
             ]
         );
         let unknown = NewIssue {

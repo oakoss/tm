@@ -178,6 +178,8 @@ enum Kind {
     Text,
     /// The same, in one field; `has:` and `no:` read the second target.
     Words(String, Target),
+    /// A value matched as written.
+    Exact(Target),
     /// Known, but filtering by value arrives later; `has:`/`no:` still work
     /// when there is a target.
     Later(&'static str, Option<Target>),
@@ -333,6 +335,10 @@ fn scheme_field(def: &Field) -> Filterable {
         ),
         FieldType::Datetime => (Kind::Later("filtering by timestamp", Some(value())), None),
         FieldType::Text | FieldType::RichText => (Kind::Words(name.clone(), value()), None),
+        // Stored text would sort 1.10 before 1.9, so a version neither sorts
+        // nor compares.
+        FieldType::Version | FieldType::Url => (Kind::Exact(value()), None),
+        FieldType::FilePaths => (Kind::Exact(Target::Set(name.clone())), None),
         // `add_field` refuses these for Scheme fields.
         FieldType::Key
         | FieldType::Labels
@@ -439,6 +445,7 @@ fn present_target(def: &Filterable, span: Span) -> Result<Target, FilterError> {
         | Kind::Person(target)
         | Kind::Boolean(target)
         | Kind::Words(_, target)
+        | Kind::Exact(target)
         | Kind::Later(_, Some(target)) => Ok(target.clone()),
         Kind::Issue(field) => Ok(field.target()),
         Kind::Number(field) | Kind::Date(field) | Kind::Select(field, _) => {
@@ -459,9 +466,10 @@ fn match_condition(
     context: Context<'_>,
 ) -> Result<Condition, FilterError> {
     let target = match &def.kind {
-        Kind::Enumerated { target, .. } | Kind::Person(target) | Kind::Boolean(target) => {
-            target.clone()
-        }
+        Kind::Enumerated { target, .. }
+        | Kind::Person(target)
+        | Kind::Boolean(target)
+        | Kind::Exact(target) => target.clone(),
         Kind::Issue(field) => field.target(),
         Kind::Number(field) | Kind::Date(field) | Kind::Select(field, _) => {
             Target::SchemeValue(field.clone())
@@ -555,6 +563,7 @@ fn literal(
             Ok(Literal::Text(choose(def, text, span, ids)?))
         }
         Kind::Labels => Ok(Literal::Text(text.trim().to_lowercase())),
+        Kind::Exact(_) => Ok(Literal::Text(text.clone())),
         Kind::Issue(_) => Uuid::parse_str(text.trim())
             .map(Literal::Issue)
             .map_err(|_| invalid(def, text, span, "an Issue's Key or id")),

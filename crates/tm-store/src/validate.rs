@@ -8,7 +8,10 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 use tm_core::op::{COMMENTS_FIELD, question_options};
-use tm_core::scheme::{Field, FieldType, Scheme, WAITING_ON, Workflow, is_date, priority_rank};
+use tm_core::scheme::{
+    Field, FieldType, Scheme, WAITING_ON, Workflow, is_date, is_repo_path, is_url, is_version,
+    priority_rank,
+};
 use tm_core::violation::{self, Violation};
 use tm_core::{Actor, Change, Subject, link};
 use uuid::Uuid;
@@ -692,6 +695,12 @@ fn member<'a>(
                 .ok_or_else(|| invalid(def, "has no such option", option_ids(def)))?;
             Ok((def, elem.to_owned(), Some(choice.label.clone())))
         }
+        FieldType::FilePaths if is_repo_path(elem) => Ok((def, elem.to_owned(), None)),
+        FieldType::FilePaths => Err(invalid(
+            def,
+            "is not a path relative to the repo root, written with / and no ..",
+            [],
+        )),
         _ => Err(invalid(def, "holds one value; set it", [])),
     }
 }
@@ -816,6 +825,7 @@ fn check_value(
             }
             Ok(None)
         }
+        (FieldType::Version | FieldType::Url, Value::String(text)) => shaped(def, text),
         (FieldType::Date, Value::String(date)) if is_date(date) => Ok(None),
         (FieldType::Date, Value::String(_)) => {
             Err(invalid(def, "is not a date written YYYY-MM-DD", []))
@@ -825,6 +835,22 @@ fn check_value(
             .map(|_| None)
             .map_err(|_| invalid(def, "is not an RFC 3339 timestamp", [])),
         _ => Err(invalid(def, "has the wrong value type", [])),
+    }
+}
+
+/// Refuses a version or URL not in the shape its type holds.
+fn shaped(def: &Field, text: &str) -> Result<Option<String>, StoreError> {
+    let (fits, reason) = match def.field_type {
+        FieldType::Version => (
+            is_version(text),
+            "is not a semantic version such as 1.2.0 or 2.0.0-rc.1",
+        ),
+        _ => (is_url(text), "is not an http or https URL"),
+    };
+    if fits {
+        Ok(None)
+    } else {
+        Err(invalid(def, reason, []))
     }
 }
 

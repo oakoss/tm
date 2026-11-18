@@ -20,7 +20,7 @@ use crate::output::{Output, printable};
     clap::ArgGroup::new("changes")
         .required(true)
         .multiple(true)
-        .args(["set", "append", "unset", "labels", "remove_labels", "parent", "no_parent"])
+        .args(["set", "append", "unset", "labels", "remove_labels", "add", "remove", "parent", "no_parent"])
 ))]
 pub(crate) struct Edit {
     /// The Issue's Key or full id.
@@ -42,6 +42,13 @@ pub(crate) struct Edit {
     /// Remove a label; repeat for more.
     #[arg(long = "remove-label", value_name = "LABEL")]
     remove_labels: Vec<String>,
+    /// Add a value to a field that holds several, such as
+    /// paths=src/main.rs; repeat for more.
+    #[arg(long, value_name = "FIELD=VALUE", value_parser = fields::element_value)]
+    add: Vec<(String, String)>,
+    /// Remove a value from a field that holds several; repeat for more.
+    #[arg(long, value_name = "FIELD=VALUE", value_parser = fields::element_value)]
+    remove: Vec<(String, String)>,
     /// The new parent Issue's Key or id.
     #[arg(long, conflicts_with = "no_parent")]
     parent: Option<String>,
@@ -78,6 +85,8 @@ impl Edit {
             unset,
             labels: Vec::new(),
             remove_labels: Vec::new(),
+            add: Vec::new(),
+            remove: Vec::new(),
             parent: None,
             no_parent: false,
             force: false,
@@ -322,7 +331,52 @@ fn check_flags(store: &Store, view: &IssueView, edit: &Edit) -> Result<(), CliEr
         )
         .with("field", "labels"));
     }
+    fields::several(scheme, &edit.add, &edit.remove, |field, elem| {
+        view.sets
+            .get(field)
+            .is_some_and(|held| held.contains_key(elem))
+    })?;
+    if let Some((field, both)) = edit.add.iter().find(|added| edit.remove.contains(added)) {
+        return Err(CliError::new(
+            "invalid_value",
+            format!("{} is both added and removed", printable(both)),
+        )
+        .with("field", field.as_str()));
+    }
     Ok(())
+}
+
+/// The `--add` and `--remove` changes the Issue does not already reflect, and
+/// each field's elements before and after, as the store holds them.
+fn elements(view: &IssueView, edit: &Edit, changes: &mut Vec<Change>, report: &mut Vec<Changed>) {
+    let mut touched: Vec<&String> = Vec::new();
+    for (field, _) in edit.add.iter().chain(&edit.remove) {
+        if !touched.contains(&field) {
+            touched.push(field);
+        }
+    }
+    for field in touched {
+        let before = view.sets.get(field).cloned().unwrap_or_default();
+        let mut after = before.clone();
+        for (_, elem) in edit.add.iter().filter(|(name, _)| name == field) {
+            if let Entry::Vacant(entry) = after.entry(elem.clone()) {
+                entry.insert(elem.clone());
+                changes.push(fields::element(field, elem, true));
+            }
+        }
+        for (_, elem) in edit.remove.iter().filter(|(name, _)| name == field) {
+            if after.remove(elem).is_some() {
+                changes.push(fields::element(field, elem, false));
+            }
+        }
+        if after != before {
+            report.push(Changed {
+                field: field.clone(),
+                before: json!(before.keys().collect::<Vec<_>>()),
+                after: json!(after.keys().collect::<Vec<_>>()),
+            });
+        }
+    }
 }
 
 /// A label keyed as the store keys labels: trimmed and lowercased.
@@ -389,6 +443,7 @@ fn changes(
             after: json!(after.values().collect::<Vec<_>>()),
         });
     }
+    elements(view, edit, &mut changes, &mut report);
 
     let current = view.fields.get("parent").and_then(Value::as_str);
     let wanted = match (parent, edit.no_parent) {
@@ -439,7 +494,14 @@ fn unsettable(store: &Store, view: &IssueView, name: &str) -> Result<(), CliErro
         )
         .with("field", name));
     }
-    if store.scheme().field(name).is_some() {
+    if let Some(def) = store.scheme().field(name) {
+        if def.field_type.is_multi() {
+            return Err(CliError::new(
+                "invalid_value",
+                format!("{name} holds several values; take them out with --remove"),
+            )
+            .with("field", name));
+        }
         tm_store::settable(store.scheme(), name)?;
         store.check_unset(view.id, name)?;
     } else if !view.fields.contains_key(name) {

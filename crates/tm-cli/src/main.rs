@@ -190,6 +190,10 @@ enum Command {
         /// Add a label; repeat for more.
         #[arg(long = "label", value_name = "LABEL")]
         labels: Vec<String>,
+        /// Add a value to a field that holds several, such as
+        /// paths=src/main.rs; repeat for more.
+        #[arg(long, value_name = "FIELD=VALUE", value_parser = fields::element_value)]
+        add: Vec<(String, String)>,
         /// The parent Issue's Key or id.
         #[arg(long)]
         parent: Option<String>,
@@ -741,12 +745,14 @@ fn run(command: Option<Command>, json: bool) -> Result<Output, CliError> {
             title,
             set,
             labels,
+            add,
             parent,
         }) => create::run(create::Create {
             issue_type,
             title,
             set,
             labels,
+            add,
             parent,
         }),
         Some(Command::Edit(args)) => edit::run(&args),

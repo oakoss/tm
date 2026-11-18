@@ -913,3 +913,66 @@ fn a_parent_pair_the_scheme_now_refuses_stays_editable_undone_and_imported() {
         Some(json!(task.to_string()))
     );
 }
+
+#[test]
+fn a_version_url_and_file_paths_hold_only_their_shape_and_match_as_written() {
+    let mut typed = scheme();
+    for (name, field_type) in [
+        ("release", FieldType::Version),
+        ("docs", FieldType::Url),
+        ("paths", FieldType::FilePaths),
+    ] {
+        typed
+            .add_field(Field::custom(name, name, field_type, Vec::new()))
+            .unwrap();
+    }
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000)).with_scheme(typed);
+    let issue = new_issue(&mut store);
+
+    set(&mut store, issue, "release", json!("1.2.0-rc.1")).unwrap();
+    set(&mut store, issue, "docs", json!("https://example.com/a")).unwrap();
+    for path in ["src/Main.rs", "docs/x.md"] {
+        unpassed(store.append(draft(issue, add("paths", path))).unwrap());
+    }
+    for (name, value, reason) in [
+        (
+            "release",
+            "v1.2",
+            "is not a semantic version such as 1.2.0 or 2.0.0-rc.1",
+        ),
+        ("docs", "example.com", "is not an http or https URL"),
+        ("paths", "src", "holds several values; add or remove them"),
+    ] {
+        let (_, refused, _) = refusal(set(&mut store, issue, name, json!(value)).unwrap_err());
+        assert_eq!(refused, reason, "{name}");
+    }
+    let err = store
+        .append(draft(issue, add("paths", "../outside")))
+        .unwrap_err();
+    assert_eq!(
+        refusal(err).1,
+        "is not a path relative to the repo root, written with / and no .."
+    );
+
+    let context = tm_core::filter::Context { me: None };
+    for (filter, hits) in [
+        ("release:1.2.0-rc.1", 1),
+        ("release:1.2.0", 0),
+        ("docs:https://example.com/a", 1),
+        ("paths:src/Main.rs", 1),
+        ("paths:src/main.rs", 0),
+        ("paths:docs/x.md,nowhere.rs", 1),
+    ] {
+        assert_eq!(store.find(filter, context).unwrap().len(), hits, "{filter}");
+    }
+    unpassed(
+        store
+            .append(draft(issue, remove("paths", "src/Main.rs")))
+            .unwrap(),
+    );
+    assert_eq!(
+        store.find("paths:src/Main.rs", context).unwrap(),
+        Vec::<Uuid>::new()
+    );
+}

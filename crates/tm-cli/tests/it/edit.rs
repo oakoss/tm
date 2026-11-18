@@ -441,7 +441,7 @@ fn a_flag_tm_cannot_point_at_set_keeps_clap_error() {
     for (args, tip) in [
         (
             &["edit", "TM-2", "--reporter", "x"][..],
-            "to pass '--reporter' as a value",
+            "unexpected argument '--reporter'",
         ),
         (
             &["edit", "TM-2", "--shortlist", "x"],

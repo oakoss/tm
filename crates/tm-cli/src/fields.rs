@@ -101,7 +101,56 @@ pub(crate) fn typed(scheme: &Scheme, field: &str, value: &str) -> Value {
 
 /// A label to add, or with `present` false, to remove.
 pub(crate) fn label(elem: &str, present: bool) -> Change {
-    let field = "labels".to_owned();
+    element("labels", elem, present)
+}
+
+/// `--add` or `--remove FIELD=VALUE`: labels keep their own flags.
+pub(crate) fn element_value(pair: &str) -> Result<(String, String), String> {
+    let (field, value) = split_pair(pair)?;
+    if field == "labels" {
+        return Err("change labels with --label and --remove-label".into());
+    }
+    not_owned(&field).map(|()| (field, value))
+}
+
+/// Refuses an element for a field the Scheme lacks or that holds one value,
+/// and an option a multi select lacks. A value the Issue holds can always be
+/// removed, as the store allows, however the Scheme changed since; any other
+/// is checked, so a mistyped `--remove` is no silent no-op.
+pub(crate) fn several(
+    scheme: &Scheme,
+    adds: &[(String, String)],
+    removes: &[(String, String)],
+    held: impl Fn(&str, &str) -> bool,
+) -> Result<(), CliError> {
+    let pairs = adds.iter().map(|pair| (pair, false));
+    for ((name, elem), removing) in pairs.chain(removes.iter().map(|pair| (pair, true))) {
+        if removing && held(name, elem) {
+            continue;
+        }
+        let def = tm_store::settable(scheme, name)?;
+        if !def.field_type.is_multi() {
+            return Err(CliError::new(
+                "invalid_value",
+                format!("{name} holds one value; give it with --set"),
+            )
+            .with("field", name.as_str()));
+        }
+        if def.field_type == FieldType::MultiSelect && def.option(elem).is_none() {
+            return Err(StoreError::Invalid {
+                field: name.clone(),
+                reason: "has no such option".into(),
+                valid: def.options.iter().map(|choice| choice.id.clone()).collect(),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// An element of `field` to add, or with `present` false, to remove.
+pub(crate) fn element(field: &str, elem: &str, present: bool) -> Change {
+    let field = field.to_owned();
     let elem = elem.to_owned();
     if present {
         Change::Add {
