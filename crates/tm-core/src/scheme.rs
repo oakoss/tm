@@ -728,6 +728,8 @@ mod tests {
             "HTTPS://x.io:8080/p",
             "https://user@host/x",
             "http://[::1]:8080/x",
+            "https://host:65535",
+            "https://host:0",
         ] {
             assert!(is_url(good), "{good}");
         }

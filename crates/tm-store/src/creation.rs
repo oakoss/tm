@@ -156,6 +156,7 @@ mod tests {
             elements: vec![
                 ("paths".into(), "src/a.rs".into()),
                 ("paths".into(), "src/a.rs".into()),
+                ("paths".into(), "src/A.rs".into()),
             ],
         };
         assert_eq!(
@@ -169,6 +170,7 @@ mod tests {
                 r#"priority="high""#,
                 "+labels:ui",
                 "+paths:src/a.rs",
+                "+paths:src/A.rs",
             ]
         );
         let unknown = NewIssue {
