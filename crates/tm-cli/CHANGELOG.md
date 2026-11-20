@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.7.0 (2026-11-20)
+
+### Added
+
+`tm import --from beads`, `--from trekker` and the beads import `tm init` offers write each Issue's Status as the first Status of its category in the Issue type's Workflow, so a Scheme that renames Statuses still imports: beads `in_progress` lands in the first active Status, `closed` in the first done one, and Trekker's `wont_fix` in the first cancelled one. A type whose Workflow has no Status of that category is refused as before, naming the Status. `tm init` reads the repo's Scheme file for the new Project, so its import lands where `tm import` would, and a Scheme file it cannot use stops it. Under the built-in Scheme nothing changes.
+
+A Scheme file's fields can be of type `issue_reference`, naming another Issue. `tm create`, `tm edit` and `tm move` take it by Key or id with `--set FIELD=KEY` and store the Issue's id; `tm show`, the change lines and `tm history` name it by Key, while `tm show --json` keeps the id. An Issue that does not exist, or the Issue itself, is refused. `tm export` writes it as the target's `tm:` source, and a record import writes it after every Issue in the file exists, as it does `parent`, so a record may name an Issue on a later line. Filtering by such a field is refused as not supported yet, though `has:` and `no:` work.
+
+The Scheme is read from config. A Workspace's `scheme.toml`, in its directory under `~/.tm/workspaces/`, can add custom fields for every Project in it, and a repo's `.config/tm/scheme.toml` can add, replace or remove them for the Projects its repo file maps, under `[projects.KEY]`. A field takes a `type` (text, rich_text, number, date, datetime, boolean, single_select, multi_select or person), an optional `label` and, for selects, `options`; `remove.fields` drops one a layer below defined. Built-in fields cannot be replaced or removed. A Scheme file that cannot be used stops every command with the code `invalid_scheme`, naming its file and line, while `tm doctor` still runs and reports it. With no Scheme file, nothing changes.
+
+A Scheme file's `[types.ID]` can list the types an Issue's parent may have, as `parents = ["epic"]`; `parents = []` takes no parent, and a type without the list takes a parent of any type. `tm create --parent`, `tm edit --parent` and a type change through `tm edit --set type=` are refused with `parent_type` when they would leave a child under a parent its type does not list, naming the child, the parent and the allowed types; `tm create` and `tm edit` refuse before reading piped text. A parent and child already in place when the Scheme began refusing them stay editable, and `tm undo` and imports are not held to the list. `tm scheme show` names a type's parent types, and `tm scheme show --json` gives them as `"any"` or the list. A Scheme file is refused at its line when a type lists a parent type twice or one no layer defines, or when the file removes a type another lists as a parent.
+
+`tm scheme show` lists the Scheme the working directory's Project uses, its Workspace and repo Scheme files included, and marks each field a file defines with where it comes from: `[from the Workspace's Scheme]` or `[from the repo's Scheme]` in text, and `from` (`built_in`, `workspace` or `repo`) in `--json`. A select field lists its options. Outside any repo file it shows the built-in Scheme with a warning saying so. A Scheme file that cannot be used stops it with `invalid_scheme`, and a repo file naming a Workspace this machine lacks stops it with `unknown_workspace`, as other commands do.
+
+A Scheme file's `[workflows.ID]` can list the moves its Statuses allow, as `transitions = [{ from = "todo", to = ["in_progress", "cancelled"] }]`. A Workflow without the list, or a Status it does not name, allows any move, and `to = []` makes a Status final. `tm move` and the TUI refuse another move with `invalid_value`, naming the Statuses the Issue may move to; `tm move` refuses before reading piped text. `tm show`, the TUI's Status pickers and `tm scheme show` offer the same moves, and `tm scheme show --json` gives a Workflow's `transitions` as `"any"` or that list. `tm start`, a parent following its child, and `tm git scan` closing on merge take the first Status of the category the Workflow allows from where the Issue is: `tm start` is refused when there is none, `tm next` passes such an Issue over as `cannot_start` and `tm ready` leaves it out, a parent is left where it is with a warning, and `tm git scan` counts a merged Issue it cannot close as not moved, naming the moves it does allow, and retries it on the next scan. `tm undo` and imports are not held to the transitions. An Issue in a Status its Workflow lacks may move to any Status, and `tm show` now lists them all. A Scheme file is refused at its line when a transition names a Status its Workflow lacks, lists a move twice, or moves a Status to itself.
+
+A Scheme file's `[types.ID]` can list the Scheme fields the type carries, as `fields = ["severity"]`. A type with no list carries every field, and every type carries the built-in fields and `waiting_on`. `tm create`, `tm edit` and `tm move` refuse to set a field the Issue's type does not carry, and refuse a type change that would leave the Issue holding such a value unless the same command clears it. A value the Issue already holds for a field its type stopped carrying still reads back and can be cleared. `tm scheme show TYPE` lists only the fields the type carries, and `tm scheme show` prints each type's list. A Scheme file is refused at its line when a type lists a field twice, a field every type carries, or one no layer defines, or when it removes a field a type still lists.
+
+A Scheme file can add, replace or remove Issue types and Workflows, by id as it does fields. `[workflows.ID]` takes a `start` and its `statuses`, each an `id`, an optional `label` and a `category` (triage, todo, active, done or cancelled); `[types.ID]` takes an optional `label` and its `workflow`; `remove.types` and `remove.workflows` drop inherited ones, the built-in `default` Workflow included. An Issue whose type or Status the Scheme no longer defines reads as Triage and stays editable. A Scheme file is refused at its line when a type names a Workflow that does not exist, a Workflow starts in a Status it lacks, has no Statuses or lists one twice, a Workflow a type uses is removed, or no type is left. `tm scheme show` marks types and Workflows a file defines, and `--json` gives each a `from`.
+
+A Scheme file's fields can take three more types: `version`, a semantic version such as `1.2.0` or `2.0.0-rc.1`; `url`, an absolute http or https URL; and `file_paths`, paths relative to the repo root written with `/` and no `..`, held as a set. A value of another shape is refused with `invalid_value`. `tm create --add FIELD=VALUE`, and `tm edit --add` or `--remove FIELD=VALUE`, change a field that holds several values, `file_paths` and `multi_select` alike; `--set` or `--unset` on one of them, `--add` on a field that holds one value, and an option a `multi_select` lacks are refused, though a value the Issue holds can always be removed, even after the Scheme drops its option or its field, and a value given twice to `tm create` is written once. Filters match the new types exactly as written, such as `paths:src/main.rs` or `release:1.2.0`: versions do not compare or sort, and paths do not match by pattern.
+
+### Fixed
+
+A store missing one of the tables `tm rebuild` makes again from the log is refused with the code `missing_table`, naming the table, and the fix `tm rebuild`, where it used to stop on a bare SQLite error. `tm rebuild` now runs on a store missing its table of logged operations that did not apply, which every other command reads first and so could not repair.
+
+With `GIT_TRACE` set, an error that quotes git, such as the one saying no one can be named, no longer carries git's trace lines. Every git process tm starts now runs the same way, without git's optional locks and without its trace variables.
+
+`tm prime` asks git what this checkout changes faster when another session holds a Path Claim: git's status now runs alongside the default-branch lookup, and without an `origin/HEAD` that lookup takes one git process instead of two. Measured on macOS in a repo without a remote, that `tm prime` went from 58 ms to 45 ms.
+
+`tm remember` calls its argument `<FACT>` in its help, as the glossary words a memory, and a blank one is refused with "the fact is blank". A fact piped on stdin that cannot be read now names the field `body`, as a blank one already did, where it said `insight`.
+
+`tm start` and `tm next` suggest a branch name sooner: the two git reads that tell whether this repository's branches are named `word/…` now run together. Measured on macOS in a repo with an `origin` remote, `tm start` went from 66 ms to 59 ms.
+
+`tm tui` keeps what it used to drop: a failure to start prints the warnings read before it, such as logged operations that did not apply; a screen that cannot be read says the command that fixes it when the CLI gives one; and an unread count that cannot be read is a warning rather than no count.
+
+`tm tui` shows a write's or undo's warnings on the warning row, ahead of the store's, instead of after the result: a long refusal on a narrow terminal, or a reason over two lines, no longer cuts the warning off or hides it. A write no longer repeats the store's warnings, which the row reads afresh, so a count such as the logged operations that did not apply is never out of date.
+
 ## 0.6.0 (2026-11-14)
 
 ### Added
@@ -170,4 +208,4 @@ First release of tm: a local-first issue tracker for one human and their AI agen
 
 Until v1 the store's log format can change between releases without a version bump, so a tm of another version can misread a store rather than refuse it. Take a copy with `tm export` before upgrading.
 
-Generated by oakum 0.10.1.
+Generated by oakum 0.12.0.
