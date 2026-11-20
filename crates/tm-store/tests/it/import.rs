@@ -9,8 +9,8 @@ use uuid::Uuid;
 use tm_core::Hlc;
 
 use crate::support::{
-    IMPORT_START, ManualClock, TempDir, draft, field, insert_acked, jace, meanwhile, new_issue,
-    open, remote_op, set_field, unpassed,
+    self, IMPORT_START, ManualClock, TempDir, draft, field, insert_acked, jace, meanwhile,
+    new_issue, open, remote_op, set_field, unpassed,
 };
 
 const WORKSPACE: Uuid = Uuid::from_u128(0x0190_a000_0000_7000_8000_0000_0000_0002);
@@ -180,6 +180,84 @@ fn a_reimported_parent_is_refused_when_it_changes_before_the_write() {
     });
     let err = import(&mut store, &orphaned).unwrap_err();
     assert_changed(&err, child);
+}
+
+#[test]
+fn an_issue_reference_reaches_a_later_line_and_round_trips() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_900_000_000_000);
+    let mut store = store(&dir, &clock);
+    let mut lines = records();
+    lines[0]["fields"] = json!({"found_in": "beads:a"});
+    let imported = import(&mut store, &lines).unwrap();
+    let (child, parent) = (issue(&imported, "beads:a.1"), issue(&imported, "beads:a"));
+    assert_eq!(
+        field(&store, child, "found_in"),
+        Some(json!(parent.to_string()))
+    );
+    let again = import(&mut store, &lines).unwrap();
+    for record in &again.records {
+        assert!(record.batches.is_empty(), "{record:?}");
+        assert!(record.conflicts.is_empty(), "{record:?}");
+    }
+
+    let mut exported = Vec::new();
+    store.export(&mut exported, 1).unwrap();
+    let line = String::from_utf8(exported.clone())
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|line| line["source"] == format!("tm:{child}"))
+        .unwrap();
+    assert_eq!(line["fields"]["found_in"], json!(format!("tm:{parent}")));
+    let other = TempDir::new();
+    let mut elsewhere = open(&other.db(), &clock);
+    elsewhere.set_workspace_id(Uuid::now_v7()).unwrap();
+    let copied = elsewhere
+        .import_records(&mut exported.as_slice(), &jace())
+        .unwrap();
+    let here = |id: Uuid| issue(&copied, &format!("tm:{id}"));
+    assert_eq!(
+        field(&elsewhere, here(child), "found_in"),
+        Some(json!(here(parent).to_string()))
+    );
+
+    lines[0]["fields"] = json!({});
+    let dropped = import(&mut store, &lines).unwrap();
+    assert_eq!(issue(&dropped, "beads:a.1"), child);
+    assert_eq!(field(&store, child, "found_in"), None);
+}
+
+#[test]
+fn a_dropped_reference_clears_beside_a_type_that_does_not_carry_it() {
+    let dir = TempDir::new();
+    let mut scheme = support::scheme();
+    let bug = scheme.types.iter_mut().find(|t| t.id == "bug").unwrap();
+    bug.fields = Some(vec!["area".into()]);
+    let mut store = store(&dir, &ManualClock::at(1_900_000_000_000)).with_scheme(scheme);
+    let mut lines = records();
+    lines[0]["fields"] = json!({"found_in": "beads:a"});
+    let child = issue(&import(&mut store, &lines).unwrap(), "beads:a.1");
+    lines[0]["type"] = json!("bug");
+    lines[0]["fields"] = json!({});
+    import(&mut store, &lines).unwrap();
+    assert_eq!(field(&store, child, "type"), Some(json!("bug")));
+    assert_eq!(field(&store, child, "found_in"), None);
+}
+
+#[test]
+fn an_issue_reference_names_an_issue_as_a_string() {
+    let dir = TempDir::new();
+    let mut store = store(&dir, &ManualClock::at(1_900_000_000_000));
+    for (value, reason) in [
+        (json!(3), "names an Issue, written as its source, Key or id"),
+        (json!("beads:nowhere"), "beads:nowhere names no Issue"),
+    ] {
+        let mut lines = records();
+        lines[0]["fields"] = json!({ "found_in": value });
+        let err = import(&mut store, &lines).unwrap_err();
+        assert!(err.to_string().contains(reason), "{err}");
+    }
 }
 
 /// `err` refuses a record because `issue` changed while it was imported.

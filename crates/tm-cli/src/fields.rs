@@ -6,9 +6,11 @@ use std::io::{self, IsTerminal as _, Read as _};
 use serde_json::{Value, json};
 use tm_core::Change;
 use tm_core::scheme::{FieldType, Scheme, WAITING_ON};
-use tm_store::{IssueView, StoreError};
+use tm_store::{IssueView, Store, StoreError};
+use uuid::Uuid;
 
 use crate::error::CliError;
+use crate::here::Here;
 
 /// Refuses the fields only their own commands write: Short-list membership,
 /// whose ranks only `tm shortlist` chooses, and who an Issue waits on, which
@@ -96,6 +98,57 @@ pub(crate) fn typed(scheme: &Scheme, field: &str, value: &str) -> Value {
             .parse::<bool>()
             .map_or_else(|_| json!(value), Value::Bool),
         _ => json!(value),
+    }
+}
+
+/// `set` with each value given to an Issue reference field, by Key or id, as
+/// the id the field stores; a `-` still to be read is left.
+pub(crate) fn resolved(
+    here: &Here,
+    set: &[(String, String)],
+) -> Result<Vec<(String, String)>, CliError> {
+    let mut set = set.to_vec();
+    for (field, value) in &mut set {
+        if value != "-" && is_reference(here.store.scheme(), field) {
+            *value = here.issue(value.trim())?.to_string();
+        }
+    }
+    Ok(set)
+}
+
+/// [`read_stdin`] then [`resolved`]. Inline values are looked up before
+/// stdin is read, so a mistake keeps the piped text.
+pub(crate) fn read_resolved(
+    here: &Here,
+    set: &[(String, String)],
+    blank: &str,
+) -> Result<Vec<(String, String)>, CliError> {
+    let set = resolved(here, set)?;
+    resolved(here, &read_stdin(&set, blank)?)
+}
+
+/// Whether `field` holds an Issue's id: `parent`, or a Scheme field of that type.
+pub(crate) fn is_reference(scheme: &Scheme, field: &str) -> bool {
+    scheme
+        .field(field)
+        .is_some_and(|def| def.field_type == FieldType::IssueReference)
+}
+
+/// The Issue `id` names, by id and, where it has one, Key.
+pub(crate) fn referred(store: &Store, id: &str) -> Result<Value, CliError> {
+    let key = match Uuid::parse_str(id) {
+        Ok(uuid) => store.issue(uuid)?.and_then(|view| view.key),
+        Err(_) => None,
+    };
+    Ok(json!({ "id": id, "key": key }))
+}
+
+/// A value of `field` as a change line shows it: an Issue reference as
+/// [`referred`] gives it, anything else as it is.
+pub(crate) fn shown_value(store: &Store, field: &str, value: Value) -> Result<Value, CliError> {
+    match value {
+        Value::String(id) if is_reference(store.scheme(), field) => referred(store, &id),
+        other => Ok(other),
     }
 }
 

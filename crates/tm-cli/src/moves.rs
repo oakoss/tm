@@ -7,11 +7,11 @@ use serde_json::{Value, json};
 use tm_core::op::ClaimAction;
 use tm_core::scheme::{Category, Workflow};
 use tm_core::{Actor, Change, Op};
-use tm_store::{Draft, IssueView, StoreError, WriteOptions};
+use tm_store::{Draft, IssueView, Store, StoreError, WriteOptions};
 
 use crate::edit::{self, Changed};
 use crate::error::CliError;
-use crate::fields::{set, split_pair, typed};
+use crate::fields::{set, shown_value, split_pair, typed};
 use crate::follow;
 use crate::here::{self, Here};
 use crate::output::Output;
@@ -112,7 +112,7 @@ pub(crate) fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>
         refuse_early(here, &identity.actor, &view, to, args, based_on)?;
     }
     // Read once all else is checked, so a mistake keeps the piped text.
-    let fields = crate::fields::read_stdin(fields, "leave the field out")?;
+    let fields = crate::fields::read_resolved(here, fields, "leave the field out")?;
 
     let mut changes = vec![set("status", json!(status))];
     for (field, value) in &fields {
@@ -166,7 +166,7 @@ pub(crate) fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>
         (ops, Vec::new())
     };
     let mut shown = show::render(here, id)?;
-    shown.text = lines(&view, &ops);
+    shown.text = lines(&here.store, &view, &ops)?;
     let shown = follow::report(&here.store, shown, starts, id)?;
     let output = here.undoable(shown, ops[0].op_id, &identity.actor)?;
     Ok((output, identity.warnings))
@@ -202,7 +202,8 @@ fn refuse_early(
     args: &Move,
     based_on: i64,
 ) -> Result<(), CliError> {
-    let mut written = crate::fields::written(here.store.scheme(), view, &args.set, &[]);
+    let set = crate::fields::resolved(here, &args.set)?;
+    let mut written = crate::fields::written(here.store.scheme(), view, &set, &[]);
     let moves = !view
         .fields
         .get("status")
@@ -233,7 +234,7 @@ fn refuse_early(
 
 /// A line for each field the move set, as `tm edit` prints them, and one for
 /// a released Claim; `--json` keeps the whole Issue.
-fn lines(view: &IssueView, ops: &[Op]) -> String {
+fn lines(store: &Store, view: &IssueView, ops: &[Op]) -> Result<String, CliError> {
     let name = view.shown_key();
     let mut text = String::new();
     let written = ops
@@ -247,9 +248,9 @@ fn lines(view: &IssueView, ops: &[Op]) -> String {
                 continue;
             }
             let line = edit::summary(&Changed {
+                before: shown_value(store, &field, before)?,
+                after: shown_value(store, &field, value)?,
                 field,
-                before,
-                after: value,
             });
             let _ = writeln!(text, "{name}  {line}");
         }
@@ -269,7 +270,7 @@ fn lines(view: &IssueView, ops: &[Op]) -> String {
     if text.is_empty() {
         let _ = writeln!(text, "{name}: nothing changed");
     }
-    text
+    Ok(text)
 }
 
 /// The Status `target` names in `workflow`, by id or label without case. A

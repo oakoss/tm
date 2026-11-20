@@ -586,6 +586,7 @@ impl Scheme {
                 | FieldType::Version
                 | FieldType::Url
                 | FieldType::FilePaths
+                | FieldType::IssueReference
         ) {
             return Err(SchemeError::BuiltInType(field.field_type));
         }

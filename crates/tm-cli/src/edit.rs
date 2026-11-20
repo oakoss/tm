@@ -4,8 +4,8 @@ use std::collections::btree_map::Entry;
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
-use tm_core::Change;
 use tm_core::scheme::FieldType;
+use tm_core::{Actor, Change};
 use tm_store::{Draft, IssueView, Store, WriteOptions};
 use uuid::Uuid;
 
@@ -193,18 +193,8 @@ pub(crate) fn write(
         ..WriteOptions::default()
     };
     let forced = |err| CliError::past_claim(err, "tm edit --force");
-    // A refusal would lose piped text, so check before reading it; the write
-    // checks again.
     if !fields::piped(&given).is_empty() {
-        let mut written = fields::written(here.store.scheme(), &view, &edit.set, &edit.unset);
-        written.extend(edit.append.iter().map(|(field, _)| field.as_str()));
-        if reparents {
-            written.push("parent");
-        }
-        here.store
-            .check_protected(&identity.actor, id, &written, edit.force)
-            .map_err(forced)?;
-        here.store.check_version(id, based_on, &written)?;
+        check_before_reading(here, &view, edit, &identity.actor, (based_on, reparents))?;
     }
     // Read once all else is checked, so a mistake keeps the piped text.
     let blank = if fields::piped(&edit.append).is_empty() {
@@ -212,7 +202,7 @@ pub(crate) fn write(
     } else {
         "give the text to add"
     };
-    let mut values = fields::read_stdin(&given, blank)?;
+    let mut values = fields::read_resolved(here, &given, blank)?;
     for (field, value) in &mut values {
         if field == "description" {
             *value = mention::resolve(here, value)?;
@@ -263,6 +253,27 @@ pub(crate) fn write(
         &identity.actor,
     )?;
     Ok((output, warnings))
+}
+
+/// Refuses a write past a Claim or a changed version before piped text is
+/// read, since a refusal after would lose it; the write checks again.
+fn check_before_reading(
+    here: &Here,
+    view: &IssueView,
+    edit: &Edit,
+    actor: &Actor,
+    (based_on, reparents): (i64, bool),
+) -> Result<(), CliError> {
+    let set = fields::resolved(here, &edit.set)?;
+    let mut written = fields::written(here.store.scheme(), view, &set, &edit.unset);
+    written.extend(edit.append.iter().map(|(field, _)| field.as_str()));
+    if reparents {
+        written.push("parent");
+    }
+    here.store
+        .check_protected(actor, view.id, &written, edit.force)
+        .map_err(|err| CliError::past_claim(err, "tm edit --force"))?;
+    Ok(here.store.check_version(view.id, based_on, &written)?)
 }
 
 /// The Status changes only by `tm move`, which also releases a Claim when
@@ -454,25 +465,17 @@ fn changes(
     if let Some(wanted) = wanted
         && wanted.as_deref() != current
     {
-        let key = |id: Option<&str>| -> Result<Value, CliError> {
-            let Some(id) = id else {
-                return Ok(Value::Null);
-            };
-            let key = match Uuid::parse_str(id) {
-                Ok(uuid) => here.store.issue(uuid)?.and_then(|view| view.key),
-                Err(_) => None,
-            };
-            Ok(json!({ "id": id, "key": key }))
-        };
-        changes.push(set(
-            "parent",
-            wanted.as_deref().map_or(Value::Null, |id| json!(id)),
-        ));
+        let after = wanted.map_or(Value::Null, Value::String);
+        changes.push(set("parent", after.clone()));
         report.push(Changed {
             field: "parent".into(),
-            before: key(current)?,
-            after: key(wanted.as_deref())?,
+            before: current.map_or(Value::Null, |id| json!(id)),
+            after,
         });
+    }
+    for changed in &mut report {
+        changed.before = fields::shown_value(&here.store, &changed.field, changed.before.take())?;
+        changed.after = fields::shown_value(&here.store, &changed.field, changed.after.take())?;
     }
     Ok((changes, report))
 }
@@ -510,7 +513,7 @@ fn unsettable(store: &Store, view: &IssueView, name: &str) -> Result<(), CliErro
     Ok(())
 }
 
-/// A value as a change line shows it; a parent by Key.
+/// A value as a change line shows it; an Issue reference by Key.
 pub(crate) fn shown(value: &Value) -> String {
     match value {
         Value::Null => "(none)".to_owned(),

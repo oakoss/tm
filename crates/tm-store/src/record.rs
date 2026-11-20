@@ -8,7 +8,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tm_core::Scheme;
-use tm_core::scheme::WAITING_ON;
+use tm_core::scheme::{FieldType, WAITING_ON};
 use uuid::Uuid;
 
 use crate::StoreError;
@@ -215,7 +215,7 @@ pub(crate) fn issue_records(
         .into_iter()
         .map(|view| {
             let place = places.remove(&view.id);
-            issue_record(conn, &keys, view, place)
+            issue_record(conn, scheme, &keys, view, place)
         })
         .collect()
 }
@@ -250,8 +250,24 @@ fn project_keys(conn: &Connection) -> Result<BTreeMap<String, String>, StoreErro
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
+/// Each Issue reference among `fields` as its target's source, which an
+/// import elsewhere resolves as it does `parent`.
+fn as_sources(scheme: &Scheme, fields: &mut BTreeMap<String, Value>) {
+    for (name, value) in fields {
+        let reference = scheme
+            .field(name)
+            .is_some_and(|def| def.field_type == FieldType::IssueReference);
+        if let Some(target) = value.as_str().and_then(|id| Uuid::parse_str(id).ok())
+            && reference
+        {
+            *value = Value::String(tm_source(target));
+        }
+    }
+}
+
 fn issue_record(
     conn: &Connection,
+    scheme: &Scheme,
     keys: &BTreeMap<String, String>,
     view: IssueView,
     shortlist: Option<MemberRecord>,
@@ -295,6 +311,7 @@ fn issue_record(
     // A record carries no question, so it carries no wait on one either.
     fields.remove(WAITING_ON);
     // What is left are the Scheme fields.
+    as_sources(scheme, &mut fields);
     let labels = sets
         .remove("labels")
         .map(|set| set.into_values().collect())

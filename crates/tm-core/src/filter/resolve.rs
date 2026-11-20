@@ -339,13 +339,17 @@ fn scheme_field(def: &Field) -> Filterable {
         // nor compares.
         FieldType::Version | FieldType::Url => (Kind::Exact(value()), None),
         FieldType::FilePaths => (Kind::Exact(Target::Set(name.clone())), None),
+        // The value is an id, so matching it as written would miss a Key.
+        FieldType::IssueReference => (
+            Kind::Later("filtering by an Issue reference", Some(value())),
+            None,
+        ),
         // `add_field` refuses these for Scheme fields.
         FieldType::Key
         | FieldType::Labels
         | FieldType::IssueType
         | FieldType::Status
         | FieldType::Priority
-        | FieldType::IssueReference
         | FieldType::Shortlist
         | FieldType::Rank => (Kind::Later("this field type", Some(value())), None),
     };

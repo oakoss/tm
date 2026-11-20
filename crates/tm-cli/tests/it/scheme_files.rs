@@ -967,3 +967,177 @@ fn several_valued_fields_refuse_what_would_quietly_do_nothing() {
         "a value of a field the Scheme dropped still comes out: {removed:?}"
     );
 }
+
+#[test]
+fn an_issue_reference_field_is_given_and_shown_by_key() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    fs::write(
+        workspace_dir(&scratch, &repo).join("scheme.toml"),
+        "[fields.found_in]\ntype = \"issue_reference\"\n",
+    )
+    .unwrap();
+    let run = |args: &[&str]| tm(&scratch, &repo, args);
+    let new = |title: &str, more: &[&str]| {
+        let args = [
+            &["--json", "create", "--type", "task", "--title", title],
+            more,
+        ]
+        .concat();
+        let out = run(&args);
+        assert!(out.status.success(), "{out:?}");
+        data(&out)["id"].as_str().unwrap().to_owned()
+    };
+    let first = new("first", &[]);
+    new("second", &["--set", "found_in=tm-1"]);
+    let third = new("third", &[]);
+
+    let shown = run(&["--json", "show", "TM-2"]);
+    assert_eq!(
+        data(&shown)["fields"]["found_in"],
+        json!(first),
+        "{shown:?}"
+    );
+    let shown = String::from_utf8_lossy(&run(&["show", "TM-2"]).stdout).into_owned();
+    assert!(shown.contains("found_in: TM-1\n"), "{shown}");
+
+    let unchanged = run(&[
+        "--json",
+        "edit",
+        "TM-2",
+        "--set",
+        &format!("found_in={first}"),
+    ]);
+    assert_eq!(data(&unchanged)["changed"], json!([]), "{unchanged:?}");
+    let piped = tm_piped(
+        &scratch,
+        &repo,
+        &["--json", "edit", "TM-2", "--set", "found_in=-"],
+        "TM-3\n",
+    );
+    assert_eq!(
+        data(&piped)["changed"],
+        json!([{
+            "field": "found_in",
+            "before": {"id": first, "key": "TM-1"},
+            "after": {"id": third, "key": "TM-3"},
+        }]),
+        "{piped:?}"
+    );
+    let moved = run(&["move", "TM-2", "in_progress", "--set", "found_in=TM-1"]);
+    let moved = String::from_utf8_lossy(&moved.stdout).into_owned();
+    assert!(moved.contains("TM-2  found_in: TM-3 → TM-1"), "{moved}");
+    let history = String::from_utf8_lossy(&run(&["history", "TM-2"]).stdout).into_owned();
+    for line in [
+        "found_in: TM-1",
+        "found_in: TM-1 → TM-3",
+        "found_in: TM-3 → TM-1",
+    ] {
+        assert!(history.contains(line), "{line}: {history}");
+    }
+
+    for (args, code, message) in [
+        (
+            &["edit", "TM-2", "--set", "found_in=TM-9"][..],
+            "not_found",
+            "TM-9",
+        ),
+        (
+            &["edit", "TM-2", "--set", "found_in=TM-2"],
+            "invalid_value",
+            "cannot refer to the Issue itself",
+        ),
+        (
+            &["list", "found_in:TM-1"],
+            "unsupported",
+            "filtering by an Issue reference",
+        ),
+    ] {
+        let error = doc(&run(&[&["--json"], args].concat()));
+        assert_eq!(error["error"], code, "{args:?}: {error}");
+        assert!(
+            error["message"].as_str().unwrap().contains(message),
+            "{args:?}: {error}"
+        );
+    }
+    let found = run(&["--json", "list", "has:found_in"]);
+    assert_eq!(data(&found)["total"], 1, "{found:?}");
+}
+
+#[test]
+fn an_issue_reference_beside_piped_text_is_resolved_before_stdin_is_read() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    fs::write(
+        workspace_dir(&scratch, &repo).join("scheme.toml"),
+        "[fields.found_in]\ntype = \"issue_reference\"\n",
+    )
+    .unwrap();
+    let run = |args: &[&str]| tm(&scratch, &repo, &[&["--json"], args].concat());
+    let piped = |args: &[&str], input: &str| {
+        tm_piped(&scratch, &repo, &[&["--json"], args].concat(), input)
+    };
+    assert!(
+        run(&["create", "--type", "task", "--title", "one"])
+            .status
+            .success()
+    );
+    let created = piped(
+        &[
+            "create",
+            "--type",
+            "task",
+            "--title",
+            "two",
+            "--set",
+            "found_in=-",
+        ],
+        "TM-1\n",
+    );
+    let first = data(&run(&["show", "TM-1"]))["id"].clone();
+    assert_eq!(data(&created)["fields"]["found_in"], first, "{created:?}");
+
+    let missing = piped(
+        &[
+            "edit",
+            "TM-2",
+            "--set",
+            "found_in=TM-9",
+            "--set",
+            "description=-",
+        ],
+        "",
+    );
+    assert_eq!(doc(&missing)["error"], "not_found", "{missing:?}");
+
+    let read = data(&run(&["show", "TM-2"]))["version"].to_string();
+    assert!(
+        run(&["create", "--type", "task", "--title", "three"])
+            .status
+            .success()
+    );
+    for target in ["found_in=TM-3", "found_in=TM-1"] {
+        assert!(run(&["edit", "TM-2", "--set", target]).status.success());
+    }
+    for (args, piped_field) in [
+        (&["edit", "TM-2"][..], "description=-"),
+        (&["move", "TM-2", "in_progress"], "title=-"),
+    ] {
+        let flags = [
+            "--if-version",
+            &read,
+            "--set",
+            "found_in=TM-1",
+            "--set",
+            piped_field,
+        ];
+        let args = [args, &flags].concat();
+        let out = piped(&args, "words\n");
+        assert!(
+            out.status.success(),
+            "an unchanged reference is not stale: {out:?}"
+        );
+    }
+}

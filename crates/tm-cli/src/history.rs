@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::edit::{self, Changed};
 use crate::error::CliError;
+use crate::fields;
 use crate::here;
 use crate::identity;
 use crate::mention;
@@ -271,8 +272,10 @@ fn describe(
             value,
             value_label,
         } => {
-            let after = match (field.as_str(), value) {
-                ("parent", Value::String(parent)) => names.parent(parent)?,
+            let after = match value {
+                Value::String(id) if fields::is_reference(names.store.scheme(), field) => {
+                    names.referred(id)?
+                }
                 _ => match value_label {
                     Some(label) => Value::String(label.clone()),
                     None => value.clone(),
@@ -555,11 +558,11 @@ impl<'a> Names<'a> {
         Ok(key)
     }
 
-    /// A parent as `edit::summary` shows one, by Key where it has one.
-    fn parent(&mut self, parent: &str) -> Result<Value, CliError> {
-        Ok(match Uuid::parse_str(parent) {
-            Ok(id) => json!({ "id": parent, "key": self.key(id)? }),
-            Err(_) => Value::String(parent.to_owned()),
+    /// An Issue reference as `edit::summary` shows one, by Key where it has one.
+    fn referred(&mut self, id: &str) -> Result<Value, CliError> {
+        Ok(match Uuid::parse_str(id) {
+            Ok(issue) => json!({ "id": id, "key": self.key(issue)? }),
+            Err(_) => Value::String(id.to_owned()),
         })
     }
 }
