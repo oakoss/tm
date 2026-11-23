@@ -102,6 +102,8 @@ struct StatusSpec {
     id: Spanned<String>,
     label: Option<String>,
     category: Spanned<String>,
+    #[serde(default)]
+    requires: Vec<Spanned<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -432,7 +434,75 @@ fn merge(
     every_type_has_its_workflow(scheme, layer, source)?;
     every_parent_type_exists(scheme, layer, source)?;
     merge_fields(scheme, origins, layer, source, origin)?;
-    every_type_has_its_fields(scheme, layer, source)
+    every_type_has_its_fields(scheme, layer, source)?;
+    every_requirement_can_be_met(scheme, layer, source)
+}
+
+/// Refuses `layer` when a Status it defines requires a field twice, one no
+/// layer defines, or one a write cannot give a value, or when it removes a
+/// field a Status still requires.
+fn every_requirement_can_be_met(
+    scheme: &Scheme,
+    layer: &Layer,
+    source: Source<'_>,
+) -> Result<(), SchemeFileError> {
+    for spec in layer.workflows.values() {
+        for status in &spec.statuses {
+            let status_id = status.id.get_ref();
+            for (at, field) in status.requires.iter().enumerate() {
+                let name = field.get_ref();
+                let message = if status.requires[..at]
+                    .iter()
+                    .any(|before| before.get_ref() == name)
+                {
+                    format!("status {status_id} requires field {name} twice")
+                } else {
+                    match scheme.field(name) {
+                        None => format!(
+                            "status {status_id} requires field {name}, which neither this layer nor one below defines"
+                        ),
+                        Some(def) if !can_be_required(def) => format!(
+                            "status {status_id} requires field {name}, which no write gives a value"
+                        ),
+                        Some(_) => continue,
+                    }
+                };
+                return Err(source.error(field.span().start, message));
+            }
+        }
+    }
+    for name in &layer.remove.fields {
+        if scheme.field(name.get_ref()).is_some() {
+            continue;
+        }
+        let requiring = scheme.workflows.iter().find_map(|workflow| {
+            workflow
+                .statuses
+                .iter()
+                .find(|status| status.requires.contains(name.get_ref()))
+        });
+        if let Some(status) = requiring {
+            return Err(source.error(
+                name.span().start,
+                format!(
+                    "field {} is removed, but status {} requires it",
+                    name.get_ref(),
+                    status.id
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A field a write can give a value: not computed, not one that always holds
+/// one, and not one only its own command sets.
+fn can_be_required(field: &Field) -> bool {
+    !field.derived
+        && !matches!(
+            field.name.as_str(),
+            "archived" | "shortlist" | "shortlist_rank" | tm_core::scheme::WAITING_ON
+        )
 }
 
 /// Refuses `layer` when a type it defines lists a field twice, a fixed one,
@@ -714,6 +784,11 @@ fn workflow(
             id: status_id.clone(),
             label: status.label.clone().unwrap_or_else(|| status_id.clone()),
             category,
+            requires: status
+                .requires
+                .iter()
+                .map(|field| field.get_ref().clone())
+                .collect(),
         });
     }
     let start = spec.start.get_ref();
@@ -1238,6 +1313,52 @@ workflow = "default"
             scheme.parent_types("bug"),
             Some(&["saga".to_owned()][..]),
             "a type removed and defined again in one layer is still there to list"
+        );
+    }
+
+    #[test]
+    fn a_status_requires_only_fields_a_write_can_give() {
+        let requiring = |requires: &str| {
+            format!(
+                "[fields.area]\ntype = \"text\"\n[workflows.w]\nstart = \"a\"\nstatuses = [\n  {{ id = \"a\", category = \"todo\", requires = {requires} }},\n]\n"
+            )
+        };
+        let scheme = resolve(
+            Some(at(WORKSPACE, &requiring("[\"area\", \"priority\"]"))),
+            None,
+            &["TM"],
+            "TM",
+        )
+        .unwrap();
+        let workflow = scheme.workflows.iter().find(|w| w.name == "w").unwrap();
+        assert_eq!(workflow.statuses[0].requires, ["area", "priority"]);
+        for (requires, message) in [
+            ("[\"area\", \"area\"]", "status a requires field area twice"),
+            (
+                "[\"gone\"]",
+                "status a requires field gone, which neither this layer nor one below defines",
+            ),
+            (
+                "[\"created\"]",
+                "status a requires field created, which no write gives a value",
+            ),
+            (
+                "[\"archived\"]",
+                "status a requires field archived, which no write gives a value",
+            ),
+        ] {
+            assert_eq!(
+                fault(&requiring(requires), ""),
+                format!("{WORKSPACE}:6: {message}"),
+                "{requires}"
+            );
+        }
+        assert_eq!(
+            fault(
+                &requiring("[\"area\"]"),
+                "[projects.TM.remove]\nfields = [\"area\"]\n"
+            ),
+            format!("{REPO}:2: field area is removed, but status a requires it")
         );
     }
 

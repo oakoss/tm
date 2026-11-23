@@ -105,6 +105,8 @@ pub enum ParentOutcome {
     NoActiveStatus(String),
     /// Its Status, from which its Workflow allows no active one.
     NoActiveMove(String),
+    /// The active Status `to`, which requires `fields` it holds no value for.
+    Lacking { to: String, fields: Vec<String> },
 }
 
 /// The moves starting each of `parents` still in triage or todo, as a child
@@ -141,7 +143,15 @@ pub(crate) fn start(
         } else if let Some(holder) = held {
             ParentOutcome::Held(holder.clone())
         } else {
+            let lacking = to
+                .as_ref()
+                .map(|to| parent.lacking(scheme, &to.id))
+                .unwrap_or_default();
             match to {
+                Ok(to) if !lacking.is_empty() => ParentOutcome::Lacking {
+                    to: to.id.clone(),
+                    fields: lacking,
+                },
                 Ok(to) => {
                     drafts.push(Draft {
                         actor: actor.clone(),

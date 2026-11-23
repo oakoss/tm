@@ -1061,7 +1061,16 @@ fn workflow_lines(workflow: &tm_core::scheme::Workflow, origin: Origin) -> Vec<S
             },
             tm_core::scheme::Transitions::Any => String::new(),
         };
-        format!("  {} ({label}): {}{moves}", status.id, status.category.id())
+        let requires = if status.requires.is_empty() {
+            String::new()
+        } else {
+            format!(", requires {}", status.requires.join(", "))
+        };
+        format!(
+            "  {} ({label}): {}{moves}{requires}",
+            status.id,
+            status.category.id()
+        )
     });
     std::iter::once(format!(
         "workflow {name}, starting in {start}{}",

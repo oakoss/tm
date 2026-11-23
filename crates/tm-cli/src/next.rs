@@ -545,7 +545,9 @@ fn nothing(here: &Here, actor: &Actor, from: &Source) -> Result<Output, CliError
             if member.passed_over.contains(&PassedOver::Claimed) && mine(here, actor, member)? {
                 held.push(member.issue.key.clone().unwrap_or_default());
             }
-            if member.passed_over.contains(&PassedOver::CannotStart) {
+            if member.passed_over.contains(&PassedOver::CannotStart)
+                || member.passed_over.contains(&PassedOver::MissingFields)
+            {
                 stuck.push(&member.issue);
             }
             passed.push(json!({
@@ -574,6 +576,11 @@ fn nothing(here: &Here, actor: &Actor, from: &Source) -> Result<Output, CliError
     }
     for issue in stuck {
         let key = issue.shown_key();
+        let short = crate::start::no_way_in(here.store.scheme(), issue, &key).err();
+        if let Some(fix) = short.and_then(|err| err.fix) {
+            let _ = writeln!(text, "{key} cannot start until its fields are given: {fix}");
+            continue;
+        }
         let status = issue.fields.get("status").and_then(Value::as_str);
         let _ = writeln!(
             text,

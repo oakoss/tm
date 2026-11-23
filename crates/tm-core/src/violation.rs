@@ -8,6 +8,9 @@ use crate::scheme::{Field, Scheme};
 pub enum Violation {
     /// A field the Scheme requires holds no value.
     MissingField(String),
+    /// A field the Issue's Status requires holds no value; naming the Status
+    /// keeps it new when the Issue enters another that requires it too.
+    MissingForStatus { status: String, field: String },
     /// The Issue holds a value for a field its type does not carry.
     UncarriedField(String),
     /// The Status is not one of its type's Workflow; an unknown type has none.
@@ -15,9 +18,9 @@ pub enum Violation {
 }
 
 /// The Violations of an Issue of `issue_type` in `status` under `scheme`:
-/// missing fields, then uncarried ones, each in the Scheme's order; `holds`
-/// says whether the Issue holds a value for a field. An unset type or Status
-/// fits any Workflow.
+/// missing fields, then those its Status requires, then uncarried ones, each
+/// in the Scheme's order; `holds` says whether the Issue holds a value for a
+/// field. An unset type or Status fits any Workflow.
 #[must_use]
 pub fn violations(
     scheme: &Scheme,
@@ -30,6 +33,18 @@ pub fn violations(
         .filter(|field| field.required && !holds(field))
         .map(|field| Violation::MissingField(field.name.clone()))
         .collect();
+    if let (Some(issue_type), Some(status)) = (issue_type, status) {
+        found.extend(
+            scheme
+                .required_in(issue_type, status)
+                .into_iter()
+                .filter(|field| !field.required && !holds(field))
+                .map(|field| Violation::MissingForStatus {
+                    status: status.to_owned(),
+                    field: field.name.clone(),
+                }),
+        );
+    }
     if let Some(issue_type) = issue_type {
         found.extend(
             scheme

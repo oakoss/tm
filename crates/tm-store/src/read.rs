@@ -41,6 +41,37 @@ impl IssueView {
         shown_key(self.key.as_deref(), self.id)
     }
 
+    /// The fields its Status `status` requires that it holds no value for,
+    /// as a write's check reads them: blank text and priority `none` as none.
+    #[must_use]
+    pub fn lacking(&self, scheme: &Scheme, status: &str) -> Vec<String> {
+        let holds = |name: &str| {
+            self.sets.get(name).is_some_and(|set| !set.is_empty())
+                || match self.fields.get(name) {
+                    None | Some(Value::Null) => false,
+                    Some(Value::String(text)) => {
+                        !text.trim().is_empty() && (name != "priority" || text != "none")
+                    }
+                    Some(_) => true,
+                }
+        };
+        scheme
+            .required_in(self.issue_type().unwrap_or_default(), status)
+            .into_iter()
+            .filter(|field| !holds(&field.name))
+            .map(|field| field.name.clone())
+            .collect()
+    }
+
+    /// [`IssueView::lacking`] for starting it into `status`, which assigns
+    /// it in the same write.
+    #[must_use]
+    pub fn lacking_to_start(&self, scheme: &Scheme, status: &str) -> Vec<String> {
+        let mut lacking = self.lacking(scheme, status);
+        lacking.retain(|name| name != "assignee");
+        lacking
+    }
+
     /// The Issue's type id, as set.
     #[must_use]
     pub fn issue_type(&self) -> Option<&str> {

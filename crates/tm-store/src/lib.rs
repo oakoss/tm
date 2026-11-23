@@ -251,8 +251,17 @@ pub enum StoreError {
         claim: Uuid,
         holder: Holder,
     },
-    #[error("Issue {issue} is missing required fields: {}", fields.join(", "))]
-    MissingFields { issue: Named, fields: Vec<String> },
+    #[error(
+        "Issue {issue} is missing {}: {}",
+        target.as_ref().map_or_else(|| "required fields".to_owned(), |status| format!("fields {status} requires")),
+        fields.join(", ")
+    )]
+    MissingFields {
+        issue: Named,
+        fields: Vec<String>,
+        /// The Status that requires them, when one does.
+        target: Option<String>,
+    },
     #[error("Issue {issue} belongs to Project {expected}, not {found}")]
     ProjectMismatch {
         issue: Named,
@@ -366,9 +375,14 @@ impl StoreError {
                 refusal.parent = name(refusal.parent);
                 Self::ParentType(refusal)
             }
-            Self::MissingFields { issue, fields } => Self::MissingFields {
+            Self::MissingFields {
+                issue,
+                fields,
+                target,
+            } => Self::MissingFields {
                 issue: name(issue),
                 fields,
+                target,
             },
             Self::ImportChanged(issue) => Self::ImportChanged(name(issue)),
             Self::NotOnShortlist(issue) => Self::NotOnShortlist(name(issue)),
@@ -2058,6 +2072,9 @@ fn write_drafts(
             row.get(0)
         })?;
     let replica_id = uuid_from(&replica)?;
+    // An undo restores a state, and an import records one reached elsewhere,
+    // so neither is held to what a Status requires.
+    let recorded = undoing || drafts.iter().any(|(_, provenance)| provenance.is_some());
     let mut ops: Vec<Op> = Vec::with_capacity(drafts.len());
     // Each Issue's state before the batch is the bar it is held to after:
     // a batch may not make it worse, but an Issue that arrived incomplete
@@ -2151,7 +2168,7 @@ fn write_drafts(
         }
         ops.push(op);
     }
-    no_worse(tx, scheme, before, (&written, undoing))?;
+    no_worse(tx, scheme, before, (&written, undoing, recorded))?;
     family.allowed(tx, scheme)?;
     shortlist::check_batch(tx, &ops, &half_held)?;
     memory::check_batch(tx, &ops)?;
@@ -2173,7 +2190,7 @@ fn no_worse(
     tx: &Transaction<'_>,
     scheme: &Scheme,
     before: BTreeMap<Uuid, Vec<Violation>>,
-    (written, undoing): (&BTreeMap<Uuid, BTreeSet<String>>, bool),
+    (written, undoing, recorded): (&BTreeMap<Uuid, BTreeSet<String>>, bool, bool),
 ) -> Result<(), StoreError> {
     let none = BTreeSet::new();
     for (issue, had) in before {
@@ -2185,13 +2202,18 @@ fn no_worse(
                 !had.contains(violation)
                     || matches!(violation, Violation::UncarriedField(field) if wrote.contains(field))
             })
+            .filter(|violation| {
+                !(recorded && matches!(violation, Violation::MissingForStatus { .. }))
+            })
             .collect();
         refuse_missing(issue, &refused)?;
         let uncarried: Vec<&String> = refused
             .iter()
             .filter_map(|violation| match violation {
                 Violation::UncarriedField(field) => Some(field),
-                Violation::MissingField(_) | Violation::StatusOutsideWorkflow => None,
+                Violation::MissingField(_)
+                | Violation::MissingForStatus { .. }
+                | Violation::StatusOutsideWorkflow => None,
             })
             .collect();
         if !uncarried.is_empty() {
@@ -2207,12 +2229,18 @@ fn no_worse(
     Ok(())
 }
 
-/// Refuses the missing fields `added` names, all together.
+/// Refuses the missing fields `added` names, all together, with the Status
+/// that requires any of them.
 fn refuse_missing(issue: Uuid, added: &[Violation]) -> Result<(), StoreError> {
+    let mut target = None;
     let fields: Vec<String> = added
         .iter()
         .filter_map(|violation| match violation {
             Violation::MissingField(field) => Some(field.clone()),
+            Violation::MissingForStatus { status, field } => {
+                target = Some(status.clone());
+                Some(field.clone())
+            }
             Violation::UncarriedField(_) | Violation::StatusOutsideWorkflow => None,
         })
         .collect();
@@ -2222,6 +2250,7 @@ fn refuse_missing(issue: Uuid, added: &[Violation]) -> Result<(), StoreError> {
     Err(StoreError::MissingFields {
         issue: issue.into(),
         fields,
+        target,
     })
 }
 

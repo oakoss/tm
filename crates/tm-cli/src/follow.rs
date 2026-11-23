@@ -45,6 +45,9 @@ pub(crate) fn report(
                     printable(&from)
                 )
             }
+            ParentOutcome::Lacking { to, fields } => {
+                format!("{} requires {}", printable(&to), fields.join(", "))
+            }
         };
         output
             .warnings

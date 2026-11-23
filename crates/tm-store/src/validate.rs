@@ -593,28 +593,37 @@ pub(crate) fn violations(
     cleared: Option<&str>,
 ) -> Result<(Option<String>, Vec<Violation>), StoreError> {
     let columns = ["type", "title", "description", "status", "assignee"];
-    let row: Option<Vec<Option<String>>> = tx
+    let row: Option<(Vec<Option<String>>, bool, bool)> = tx
         .query_row(
-            "SELECT type, title, description, status, assignee, parent_id IS NOT NULL
+            "SELECT type, title, description, status, assignee, parent_id IS NOT NULL,
+                    priority > 0
              FROM issues WHERE id = ?1",
             [issue_id.as_bytes()],
             |row| {
-                let mut values: Vec<Option<String>> = (0..columns.len())
+                let values: Vec<Option<String>> = (0..columns.len())
                     .map(|i| row.get(i))
                     .collect::<Result<_, _>>()?;
-                let has_parent: bool = row.get(columns.len())?;
-                values.push(has_parent.then(String::new));
-                Ok(values)
+                Ok((values, row.get(columns.len())?, row.get(columns.len() + 1)?))
             },
         )
         .optional()?;
-    let Some(values) = row else {
+    let Some((values, has_parent, has_priority)) = row else {
         return Ok((None, Vec::new()));
     };
     let (issue_type, status) = (values[0].as_deref(), values[3].as_deref());
+    let required_in: Vec<&str> = match (issue_type, status) {
+        (Some(issue_type), Some(status)) => scheme
+            .required_in(issue_type, status)
+            .into_iter()
+            .map(|field| field.name.as_str())
+            .collect(),
+        _ => Vec::new(),
+    };
     let mut held = BTreeSet::new();
     let judged = |field: &&Field| {
-        field.required || issue_type.is_some_and(|issue_type| !scheme.carries(issue_type, field))
+        field.required
+            || required_in.contains(&field.name.as_str())
+            || issue_type.is_some_and(|issue_type| !scheme.carries(issue_type, field))
     };
     for field in scheme.fields.iter().filter(judged) {
         let name = field.name.as_str();
@@ -625,11 +634,14 @@ pub(crate) fn violations(
                 .as_deref()
                 .is_some_and(|text| !text.trim().is_empty())
         } else if name == "parent" {
-            values[columns.len()].is_some()
+            has_parent
+        } else if name == "priority" {
+            // `none` counts as unset, as filters read it.
+            has_priority
         } else if field.builtin && field.field_type.is_multi() {
             has_member(tx, issue_id, name)?
         } else if field.builtin {
-            // Priority and archived always hold a value; computed fields are not set.
+            // Archived always holds a value; computed fields are not set.
             true
         } else {
             // A Scheme field redefined between one value and several still

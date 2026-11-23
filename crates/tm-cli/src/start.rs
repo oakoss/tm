@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::claim::{self, Lasts};
 use crate::edit::{self, Changed};
 use crate::error::CliError;
-use crate::fields::set;
+use crate::fields::{self, set};
 use crate::follow;
 use crate::here::{self, Here};
 use crate::output::Output;
@@ -168,7 +168,9 @@ pub(crate) fn report(
 }
 
 /// Refuses starting an Issue in triage or todo whose Workflow has an active
-/// Status but allows none from where it is, naming the moves it does allow.
+/// Status but allows none from where it is, naming the moves it does allow,
+/// or whose first active Status requires fields it lacks, with the edit that
+/// gives them.
 pub(crate) fn no_way_in(
     scheme: &Scheme,
     view: &IssueView,
@@ -189,7 +191,27 @@ pub(crate) fn no_way_in(
         )
         .with("field", "status")
         .with("allowed", allowed)),
-        _ => Ok(()),
+        Ok(to) => {
+            let lacking = view.lacking_to_start(scheme, &to);
+            if lacking.is_empty() {
+                return Ok(());
+            }
+            let fix = ["tm", "edit", reference]
+                .map(fields::quoted)
+                .into_iter()
+                .chain(lacking.iter().map(|name| fields::placeholder(scheme, name)));
+            Err(CliError::new(
+                "missing_fields",
+                format!(
+                    "{reference} cannot start: {to} requires {}; give them, then start it again",
+                    lacking.join(", ")
+                ),
+            )
+            .with("target", to)
+            .with("fields", fields::described(scheme, &lacking))
+            .fix(fix.collect::<Vec<_>>().join(" ")))
+        }
+        Err(_) => Ok(()),
     }
 }
 

@@ -39,6 +39,8 @@ pub enum PassedOver {
     Waiting,
     /// Its Workflow has active Statuses but allows none from its Status.
     CannotStart,
+    /// Its first active Status requires fields it lacks.
+    MissingFields,
 }
 
 /// A batch that placed Issues or took them off, with the list each was on as
@@ -433,8 +435,24 @@ pub(crate) fn passed_over(
     }
     if cannot_start(scheme, view) {
         passed_over.push(PassedOver::CannotStart);
+    } else if lacks_start_fields(scheme, view) {
+        passed_over.push(PassedOver::MissingFields);
     }
     Ok(passed_over)
+}
+
+/// A todo Issue short of fields its first active Status requires, which
+/// `tm start` refuses; it stays in `tm ready`.
+fn lacks_start_fields(scheme: &Scheme, view: &IssueView) -> bool {
+    let from = view
+        .fields
+        .get("status")
+        .and_then(serde_json::Value::as_str);
+    view.category == Some(Category::Todo)
+        && view
+            .workflow(scheme)
+            .and_then(|workflow| workflow.first_move(from, Category::Active).ok())
+            .is_some_and(|to| !view.lacking_to_start(scheme, &to.id).is_empty())
 }
 
 /// A todo Issue whose Workflow has active Statuses but allows none from its

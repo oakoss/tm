@@ -398,6 +398,7 @@ fn each_status_lands_on_the_first_of_its_category_in_a_renamed_workflow() {
         id: id.into(),
         label: id.into(),
         category,
+        requires: Vec::new(),
     };
     let mut scheme = tm_core::Scheme::built_in();
     scheme.workflows = vec![Workflow {
