@@ -691,12 +691,13 @@ impl Scheme {
         else {
             return Vec::new();
         };
-        status
-            .requires
-            .iter()
-            .filter_map(|name| self.field(name))
-            .filter(|field| self.carries(issue_type, field))
-            .collect()
+        let mut required: Vec<&Field> = Vec::new();
+        for field in status.requires.iter().filter_map(|name| self.field(name)) {
+            if self.carries(issue_type, field) && !required.contains(&field) {
+                required.push(field);
+            }
+        }
+        required
     }
 
     /// The category of a type's Status; `None` when the Scheme no longer

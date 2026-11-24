@@ -795,6 +795,38 @@ fn imported(store: &mut Store, issue: Uuid, name: &str, value: Value) {
 }
 
 #[test]
+fn a_field_the_scheme_requires_is_refused_apart_from_the_status() {
+    let dir = TempDir::new();
+    let mut scheme = requiring();
+    let tier = scheme.fields.iter_mut().find(|f| f.name == "tier").unwrap();
+    tier.required = true;
+    let mut store = open(&dir.db(), &ManualClock::at(1_000)).with_scheme(scheme);
+    let issue = store
+        .create(
+            &jace(),
+            PROJECT,
+            &tm_store::NewIssue {
+                issue_type: Some("task".into()),
+                title: Some("t".into()),
+                fields: vec![("tier".into(), json!("gold"))],
+                ..tm_store::NewIssue::default()
+            },
+        )
+        .map(|(written, created)| {
+            unpassed(written);
+            created.issue
+        })
+        .unwrap();
+    let refused = store
+        .append_all(vec![
+            draft(issue, set_field("tier", Value::Null)),
+            draft(issue, set_field("status", json!("in_progress"))),
+        ])
+        .unwrap_err();
+    assert_eq!(missing(refused), (vec!["tier".to_owned()], None));
+}
+
+#[test]
 fn a_status_holds_an_issue_to_the_fields_it_requires() {
     let dir = TempDir::new();
     let mut store = open(&dir.db(), &ManualClock::at(1_000)).with_scheme(requiring());

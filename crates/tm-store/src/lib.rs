@@ -2229,21 +2229,32 @@ fn no_worse(
     Ok(())
 }
 
-/// Refuses the missing fields `added` names, all together, with the Status
-/// that requires any of them.
+/// Refuses the missing fields `added` names: those the Scheme requires first,
+/// then those the Status requires, with it as the target.
 fn refuse_missing(issue: Uuid, added: &[Violation]) -> Result<(), StoreError> {
-    let mut target = None;
-    let fields: Vec<String> = added
+    let required: Vec<String> = added
         .iter()
         .filter_map(|violation| match violation {
             Violation::MissingField(field) => Some(field.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut target = None;
+    let for_status: Vec<String> = added
+        .iter()
+        .filter_map(|violation| match violation {
             Violation::MissingForStatus { status, field } => {
                 target = Some(status.clone());
                 Some(field.clone())
             }
-            Violation::UncarriedField(_) | Violation::StatusOutsideWorkflow => None,
+            _ => None,
         })
         .collect();
+    let (fields, target) = if required.is_empty() {
+        (for_status, target)
+    } else {
+        (required, None)
+    };
     if fields.is_empty() {
         return Ok(());
     }

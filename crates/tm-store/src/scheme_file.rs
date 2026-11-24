@@ -1346,6 +1346,14 @@ workflow = "default"
                 "[\"archived\"]",
                 "status a requires field archived, which no write gives a value",
             ),
+            (
+                "[\"shortlist\"]",
+                "status a requires field shortlist, which no write gives a value",
+            ),
+            (
+                "[\"waiting_on\"]",
+                "status a requires field waiting_on, which no write gives a value",
+            ),
         ] {
             assert_eq!(
                 fault(&requiring(requires), ""),

@@ -189,10 +189,24 @@ fn refuse_entering(
     if let Some(refused) = tm_store::refused_move(workflow, from, status) {
         return Err(refused.into());
     }
-    let lacking: Vec<String> = view
+    // Judged as the Issue's type will be, since a type carries its own fields.
+    let mut moved = view.clone();
+    // A type read from stdin is judged as the Issue's current type.
+    if let Some((_, issue_type)) = given
+        .iter()
+        .find(|(field, value)| field == "type" && value != "-")
+    {
+        moved.fields.insert("type".into(), json!(issue_type));
+    }
+    let supplied = |name: &str| {
+        given.iter().any(|(field, value)| {
+            field == name && !value.trim().is_empty() && !(name == "priority" && value == "none")
+        })
+    };
+    let lacking: Vec<String> = moved
         .lacking(scheme, status)
         .into_iter()
-        .filter(|name| !given.iter().any(|(field, _)| field == name))
+        .filter(|name| !supplied(name))
         .collect();
     if lacking.is_empty() {
         Ok(())
@@ -218,6 +232,7 @@ fn short(
         let words = ["tm", "move", reference, status].map(fields::quoted);
         let set = given
             .iter()
+            .filter(|(name, _)| !lacking.contains(name))
             .map(|(name, value)| format!("--set={}", fields::quoted(&format!("{name}={value}"))));
         (
             words.into_iter().chain(set).chain(placeholders).collect(),

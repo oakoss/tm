@@ -901,6 +901,55 @@ fn a_status_refuses_an_issue_short_of_its_fields_with_the_fix() {
 }
 
 #[test]
+fn a_move_is_judged_by_the_values_and_type_it_gives() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    fs::write(
+        workspace_dir(&scratch, &repo).join("scheme.toml"),
+        REQUIRING,
+    )
+    .unwrap();
+    let run = |args: &[&str]| tm(&scratch, &repo, args);
+    let json = |args: &[&str]| doc(&run(&[&["--json"], args].concat()));
+    let new = [
+        "create",
+        "--type",
+        "chore",
+        "--title",
+        "c",
+        "--set",
+        "status=doing",
+        "--set",
+        "area=cli",
+    ];
+    assert!(run(&new).status.success());
+    let unset = json(&["move", "TM-1", "done", "--set", "priority=none"]);
+    assert_eq!(
+        unset["fix"], "tm move TM-1 done --set 'priority=<value>'",
+        "{unset}"
+    );
+    let same = json(&["move", "TM-1", "done", "--set", "type=chore"]);
+    assert_eq!(
+        same["fix"], "tm move TM-1 done --set=type=chore --set 'priority=<value>'",
+        "{same}"
+    );
+    let piped = tm_piped(
+        &scratch,
+        &repo,
+        &["--json", "move", "TM-1", "done", "--set", "type=-"],
+        "chore\n",
+    );
+    assert_eq!(
+        doc(&piped)["fix"],
+        "tm move TM-1 done --set=type=- --set 'priority=<value>'",
+        "{piped:?}"
+    );
+    let retyped = run(&["move", "TM-1", "done", "--set", "type=task"]);
+    assert!(retyped.status.success(), "{retyped:?}");
+}
+
+#[test]
 fn a_scan_leaves_an_issue_short_of_done_and_retries_once_it_is_given() {
     let scratch = Scratch::new();
     let (repo, store, _) = initialized(&scratch);
@@ -939,6 +988,13 @@ fn a_scan_leaves_an_issue_short_of_done_and_retries_once_it_is_given() {
     let scanned = json(&["git", "scan"]);
     assert_eq!(scanned["data"]["failed"][0]["key"], "TM-1", "{scanned}");
     assert_eq!(scanned["data"]["failed"][0]["error"], "missing_fields");
+    assert_eq!(scanned["data"]["failed"][0]["target"], "done", "{scanned}");
+    assert!(
+        scanned["warnings"]
+            .to_string()
+            .contains("; tm edit TM-1 --set 'priority=<value>'"),
+        "{scanned}"
+    );
     assert!(
         run(&["edit", "TM-1", "--set", "priority=high"])
             .status

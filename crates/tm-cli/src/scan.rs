@@ -68,11 +68,16 @@ struct Report {
 impl Report {
     fn fail(&mut self, closing: &Closing, err: &CliError) {
         let (key, shipped) = (&closing.key, closing.shipped());
-        let warning = format!("{key} was not moved for {shipped}: {}", err.message);
+        let mut warning = format!("{key} was not moved for {shipped}: {}", err.message);
+        if let Some(fix) = &err.fix {
+            let _ = write!(warning, "; {fix}");
+        }
         self.warnings.push(warning);
         let mut failed = json!({ "key": key, "commit": closing.commit, "error": err.code });
-        if let Some(allowed) = err.details.get("allowed") {
-            failed["allowed"] = allowed.clone();
+        for detail in ["allowed", "target", "fields"] {
+            if let Some(value) = err.details.get(detail) {
+                failed[detail] = value.clone();
+            }
         }
         if let Some(fix) = &err.fix {
             failed["fix"] = json!(fix);
