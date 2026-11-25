@@ -1030,9 +1030,9 @@ fn a_parent_short_of_its_fields_is_left_where_it_is_and_passed_over() {
     assert!(run(&child).status.success());
     let moved = doc(&run(&["--json", "move", "TM-2", "in_progress"]));
     assert!(
-        moved["warnings"]
-            .to_string()
-            .contains("TM-1 was not started: doing requires area"),
+        moved["warnings"].to_string().contains(
+            "TM-1 was not started: doing requires area; tm edit TM-1 --set 'area=<value>'"
+        ),
         "{moved}"
     );
     assert!(run(&child).status.success());
