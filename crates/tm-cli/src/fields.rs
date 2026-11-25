@@ -368,6 +368,71 @@ pub(crate) fn refused(field: &str, reason: &str) -> CliError {
         .with("reason", reason)
 }
 
+/// Each field as `missing_fields` names it, with the values the Scheme allows
+/// where it lists them.
+pub(crate) fn described(scheme: &Scheme, fields: &[String]) -> Vec<Value> {
+    fields
+        .iter()
+        .map(|name| {
+            let allowed: Vec<&str> = match scheme.field(name).map(|field| &field.field_type) {
+                Some(FieldType::IssueType) => scheme
+                    .types
+                    .iter()
+                    .map(|issue_type| issue_type.id.as_str())
+                    .collect(),
+                Some(FieldType::Priority) => scheme
+                    .priorities
+                    .iter()
+                    .map(|level| level.id.as_str())
+                    .filter(|level| *level != "none")
+                    .collect(),
+                Some(FieldType::SingleSelect | FieldType::MultiSelect) => scheme
+                    .field(name)
+                    .map(|field| {
+                        field
+                            .options
+                            .iter()
+                            .map(|choice| choice.id.as_str())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            if allowed.is_empty() {
+                json!({ "name": name })
+            } else {
+                json!({ "name": name, "allowed": allowed })
+            }
+        })
+        .collect()
+}
+
+/// The flag that gives `name` a value in a fix, the value a placeholder.
+pub(crate) fn placeholder(scheme: &Scheme, name: &str) -> String {
+    let (flag, value) = match name {
+        "type" => ("--type", "<type>".to_owned()),
+        "title" => ("--title", "<title>".to_owned()),
+        "labels" => ("--label", "<label>".to_owned()),
+        "parent" => ("--parent", "<key>".to_owned()),
+        _ if is_multi(scheme, name) => ("--add", format!("{name}=<value>")),
+        _ => ("--set", format!("{name}=<value>")),
+    };
+    format!("{flag} {}", quoted(&value))
+}
+
+/// Whether `tm move --set` can give `name` a value: one value, and not a
+/// parent, which has its own flag.
+pub(crate) fn moves_can_set(scheme: &Scheme, name: &str) -> bool {
+    name != "parent" && !is_multi(scheme, name)
+}
+
+fn is_multi(scheme: &Scheme, name: &str) -> bool {
+    name == "labels"
+        || scheme
+            .field(name)
+            .is_some_and(|field| field.field_type.is_multi())
+}
+
 /// `value` as one POSIX shell word, for a fix to run as printed. A leading
 /// `=` is quoted, since zsh expands `=cmd` to the command's path.
 pub(crate) fn quoted(value: &str) -> String {

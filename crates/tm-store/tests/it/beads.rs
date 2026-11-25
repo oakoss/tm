@@ -402,6 +402,7 @@ fn renamed_statuses() -> tm_core::Scheme {
         id: id.into(),
         label: id.into(),
         category,
+        requires: Vec::new(),
     };
     let mut scheme = tm_core::Scheme::built_in();
     scheme.workflows.push(Workflow {

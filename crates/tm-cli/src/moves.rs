@@ -5,13 +5,13 @@ use std::fmt::Write as _;
 
 use serde_json::{Value, json};
 use tm_core::op::ClaimAction;
-use tm_core::scheme::{Category, Workflow};
+use tm_core::scheme::{Category, Scheme, Workflow};
 use tm_core::{Actor, Change, Op};
 use tm_store::{Draft, IssueView, Store, StoreError, WriteOptions};
 
 use crate::edit::{self, Changed};
 use crate::error::CliError;
-use crate::fields::{set, shown_value, split_pair, typed};
+use crate::fields::{self, set, shown_value, split_pair, typed};
 use crate::follow;
 use crate::here::{self, Here};
 use crate::output::Output;
@@ -107,6 +107,7 @@ pub(crate) fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>
     let category = workflow.status(&status).map(|status| status.category);
     let finished = category.is_some_and(Category::is_closed);
     let forced = |err| CliError::past_claim(err, "tm move --force");
+    refuse_entering(&scheme, (workflow, &view), (reference, &status), fields)?;
     if !crate::fields::piped(fields).is_empty() {
         let to = (status.as_str(), finished);
         refuse_early(here, &identity.actor, &view, to, args, based_on)?;
@@ -170,6 +171,90 @@ pub(crate) fn write(here: &mut Here, args: &Move) -> Result<(Output, Vec<String>
     let shown = follow::report(&here.store, shown, starts, id)?;
     let output = here.undoable(shown, ops[0].op_id, &identity.actor)?;
     Ok((output, identity.warnings))
+}
+
+/// Refuses, before stdin is read, entering `status` by a move its Workflow
+/// does not allow or without the fields it requires and `given` does not
+/// give. An Issue already there stays editable, as the store allows.
+fn refuse_entering(
+    scheme: &Scheme,
+    (workflow, view): (&Workflow, &IssueView),
+    (reference, status): (&str, &str),
+    given: &[(String, String)],
+) -> Result<(), CliError> {
+    let from = view.fields.get("status").and_then(Value::as_str);
+    if from == Some(status) {
+        return Ok(());
+    }
+    if let Some(refused) = tm_store::refused_move(workflow, from, status) {
+        return Err(refused.into());
+    }
+    // Judged as the Issue's type will be, since a type carries its own fields.
+    let mut moved = view.clone();
+    // A type read from stdin is judged as the Issue's current type.
+    if let Some((_, issue_type)) = given
+        .iter()
+        .find(|(field, value)| field == "type" && value != "-")
+    {
+        moved.fields.insert("type".into(), json!(issue_type));
+    }
+    let supplied = |name: &str| {
+        given.iter().any(|(field, value)| {
+            field == name && !value.trim().is_empty() && !(name == "priority" && value == "none")
+        })
+    };
+    let lacking: Vec<String> = moved
+        .lacking(scheme, status)
+        .into_iter()
+        .filter(|name| !supplied(name))
+        .collect();
+    if lacking.is_empty() {
+        Ok(())
+    } else {
+        Err(short(scheme, (reference, status), given, &lacking))
+    }
+}
+
+/// `missing_fields` for a move into `status` short of `lacking`, with a fix
+/// that moves again with them given, or, when `tm move --set` cannot give
+/// one, the edit that gives them first.
+fn short(
+    scheme: &Scheme,
+    (reference, status): (&str, &str),
+    given: &[(String, String)],
+    lacking: &[String],
+) -> CliError {
+    let placeholders = lacking.iter().map(|name| fields::placeholder(scheme, name));
+    let (fix, then): (Vec<String>, &str) = if lacking
+        .iter()
+        .all(|name| fields::moves_can_set(scheme, name))
+    {
+        let words = ["tm", "move", reference, status].map(fields::quoted);
+        let set = given
+            .iter()
+            .filter(|(name, _)| !lacking.contains(name))
+            .map(|(name, value)| format!("--set={}", fields::quoted(&format!("{name}={value}"))));
+        (
+            words.into_iter().chain(set).chain(placeholders).collect(),
+            "",
+        )
+    } else {
+        let words = ["tm", "edit", reference].map(fields::quoted);
+        (
+            words.into_iter().chain(placeholders).collect(),
+            ", then move it again",
+        )
+    };
+    CliError::new(
+        "missing_fields",
+        format!(
+            "{reference} cannot enter {status} without {}; give them{then}",
+            lacking.join(", ")
+        ),
+    )
+    .with("target", status)
+    .with("fields", fields::described(scheme, lacking))
+    .fix(fix.join(" "))
 }
 
 fn unchanged(here: &Here, view: &IssueView) -> Result<Output, CliError> {

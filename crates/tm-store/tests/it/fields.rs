@@ -314,7 +314,7 @@ fn every_required_field_is_enforced() {
     let err = store
         .create_issue(&jace(), PROJECT, "task", "t")
         .unwrap_err();
-    let StoreError::MissingFields { issue, fields } = err else {
+    let StoreError::MissingFields { issue, fields, .. } = err else {
         panic!("{err}");
     };
     assert_eq!(fields, ["team"]);
@@ -759,6 +759,149 @@ fn a_move_its_workflow_does_not_list_is_refused_but_undone_and_imported() {
         .unwrap_err();
     let (_, reason, _) = refusal(unknown);
     assert_eq!(reason, "shipped is not a Status of type task");
+}
+
+/// In progress and in review require area, done requires priority, and bug
+/// carries no Scheme field.
+fn requiring() -> tm_core::Scheme {
+    let mut requiring = scheme();
+    let statuses = &mut requiring.workflows[0].statuses;
+    statuses[2].requires = vec!["area".into()];
+    statuses[3].requires = vec!["area".into()];
+    statuses[4].requires = vec!["priority".into()];
+    let bug = requiring.types.iter_mut().find(|t| t.id == "bug").unwrap();
+    bug.fields = Some(Vec::new());
+    requiring
+}
+
+fn missing(err: StoreError) -> (Vec<String>, Option<String>) {
+    match err {
+        StoreError::MissingFields { fields, target, .. } => (fields, target),
+        other => panic!("not missing fields: {other}"),
+    }
+}
+
+fn imported(store: &mut Store, issue: Uuid, name: &str, value: Value) {
+    let provenance = tm_store::Provenance {
+        source: "beads:a".into(),
+        at: tm_store::WallTime {
+            utc_ms: 1,
+            offset_min: 0,
+        },
+    };
+    store
+        .append_imported(vec![(draft(issue, set_field(name, value)), provenance)])
+        .unwrap();
+}
+
+#[test]
+fn a_field_the_scheme_requires_is_refused_apart_from_the_status() {
+    let dir = TempDir::new();
+    let mut scheme = requiring();
+    let tier = scheme.fields.iter_mut().find(|f| f.name == "tier").unwrap();
+    tier.required = true;
+    let mut store = open(&dir.db(), &ManualClock::at(1_000)).with_scheme(scheme);
+    let issue = store
+        .create(
+            &jace(),
+            PROJECT,
+            &tm_store::NewIssue {
+                issue_type: Some("task".into()),
+                title: Some("t".into()),
+                fields: vec![("tier".into(), json!("gold"))],
+                ..tm_store::NewIssue::default()
+            },
+        )
+        .map(|(written, created)| {
+            unpassed(written);
+            created.issue
+        })
+        .unwrap();
+    let refused = store
+        .append_all(vec![
+            draft(issue, set_field("tier", Value::Null)),
+            draft(issue, set_field("status", json!("in_progress"))),
+        ])
+        .unwrap_err();
+    assert_eq!(missing(refused), (vec!["tier".to_owned()], None));
+}
+
+#[test]
+fn a_status_holds_an_issue_to_the_fields_it_requires() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000)).with_scheme(requiring());
+    let issue = new_issue(&mut store);
+    let refused = set(&mut store, issue, "status", json!("in_progress")).unwrap_err();
+    assert_eq!(
+        missing(refused),
+        (vec!["area".to_owned()], Some("in_progress".to_owned()))
+    );
+    unpassed(
+        store
+            .append_all(vec![
+                draft(issue, set_field("area", json!(3))),
+                draft(issue, set_field("status", json!("in_progress"))),
+            ])
+            .unwrap(),
+    );
+    let cleared = set(&mut store, issue, "area", Value::Null).unwrap_err();
+    assert_eq!(missing(cleared).0, ["area"]);
+    let unprioritized = set(&mut store, issue, "status", json!("done")).unwrap_err();
+    assert_eq!(
+        missing(unprioritized),
+        (vec!["priority".to_owned()], Some("done".to_owned()))
+    );
+    set(&mut store, issue, "priority", json!("high")).unwrap();
+    set(&mut store, issue, "status", json!("done")).unwrap();
+
+    let bug = store.create_issue(&jace(), PROJECT, "bug", "b").unwrap().0;
+    set(&mut store, bug, "status", json!("in_progress")).unwrap();
+}
+
+#[test]
+fn an_issue_short_in_one_status_may_not_enter_another_that_requires_the_same() {
+    let dir = TempDir::new();
+    let mut store = open(&dir.db(), &ManualClock::at(1_000)).with_scheme(requiring());
+    let issue = new_issue(&mut store);
+    imported(&mut store, issue, "status", json!("in_review"));
+    assert_eq!(field(&store, issue, "status"), Some(json!("in_review")));
+    set(&mut store, issue, "title", json!("still editable")).unwrap();
+    let refused = set(&mut store, issue, "status", json!("in_progress")).unwrap_err();
+    assert_eq!(missing(refused).1.as_deref(), Some("in_progress"));
+    set(&mut store, issue, "status", json!("todo")).unwrap();
+}
+
+#[test]
+fn an_undo_is_not_held_to_a_requirement_added_since() {
+    let dir = TempDir::new();
+    let clock = ManualClock::at(1_000);
+    let mut store = open(&dir.db(), &clock);
+    let issue = new_issue(&mut store);
+    set(&mut store, issue, "status", json!("in_progress")).unwrap();
+    let back = unpassed(
+        store
+            .append(draft(issue, set_field("status", json!("todo"))))
+            .unwrap(),
+    );
+    drop(store);
+    let mut store = open(&dir.db(), &clock).with_scheme(requiring());
+    unpassed(store.undo(&jace(), back.op_id).unwrap().1);
+    assert_eq!(field(&store, issue, "status"), Some(json!("in_progress")));
+}
+
+#[test]
+fn a_new_issue_enters_its_starting_status() {
+    let dir = TempDir::new();
+    let mut starting = scheme();
+    starting.workflows[0].statuses[1].requires = vec!["tier".into()];
+    let mut store = open(&dir.db(), &ManualClock::at(1_000)).with_scheme(starting);
+    let refused = store
+        .create_issue(&jace(), PROJECT, "task", "t")
+        .unwrap_err();
+    assert_eq!(
+        missing(refused),
+        (vec!["tier".to_owned()], Some("todo".to_owned()))
+    );
 }
 
 /// A story's parent is an epic, and an epic takes none.

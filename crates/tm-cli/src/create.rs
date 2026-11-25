@@ -1,7 +1,6 @@
 //! `tm create`: a new Issue in the Project the working directory maps to.
 
-use serde_json::{Value, json};
-use tm_core::scheme::{FieldType, Scheme};
+use tm_core::scheme::Scheme;
 use tm_store::{NewIssue, StoreError};
 use uuid::Uuid;
 
@@ -78,8 +77,8 @@ fn write(here: &mut Here, mut create: Create) -> Result<(Output, Vec<String>), C
     warnings.extend(fields::entity_warnings(&new.changes(&scheme)));
     let (ops, created) = match here.store.create(&identity.actor, project, &new) {
         Ok((written, created)) => (here.passing(written), created),
-        Err(StoreError::MissingFields { fields, .. }) => {
-            return Err(missing(&scheme, create, fields));
+        Err(StoreError::MissingFields { fields, target, .. }) => {
+            return Err(missing(&scheme, create, fields, target));
         }
         Err(err) => return Err(err.into()),
     };
@@ -105,15 +104,21 @@ fn new_issue(scheme: &Scheme, create: &Create, parent: Option<Uuid>) -> NewIssue
     }
 }
 
-/// `missing_fields` with each field's allowed values. Without a type the
-/// Status cannot be given, since it follows from the type, so it is not named.
-fn missing(scheme: &Scheme, create: &Create, fields: Vec<String>) -> CliError {
+/// `missing_fields` with each field's allowed values, and the starting
+/// Status when it requires them. Without a type the Status cannot be given,
+/// since it follows from the type, so it is not named.
+fn missing(
+    scheme: &Scheme,
+    create: &Create,
+    fields: Vec<String>,
+    target: Option<String>,
+) -> CliError {
     let no_type = fields.iter().any(|name| name == "type");
     let fields: Vec<String> = fields
         .into_iter()
         .filter(|name| !(no_type && name == "status"))
         .collect();
-    let described = described(scheme, &fields);
+    let described = fields::described(scheme, &fields);
     let mut fix = vec!["tm".to_owned(), "create".to_owned()];
     // One word per flag, so a value starting with `-` is not read as a flag.
     let mut flag = |name: &str, value: &str| fix.push(format!("{name}={}", quoted(value)));
@@ -135,55 +140,15 @@ fn missing(scheme: &Scheme, create: &Create, fields: Vec<String>) -> CliError {
     if let Some(parent) = &create.parent {
         flag("--parent", parent);
     }
-    for name in &fields {
-        match name.as_str() {
-            "type" => fix.push(format!("--type {}", quoted("<type>"))),
-            "title" => fix.push(format!("--title {}", quoted("<title>"))),
-            other => fix.push(format!("--set {}", quoted(&format!("{other}=<value>")))),
-        }
-    }
-    CliError::new(
+    fix.extend(fields.iter().map(|name| fields::placeholder(scheme, name)));
+    let err = CliError::new(
         "missing_fields",
         format!("a new Issue needs {}", fields.join(", ")),
     )
     .fix(fix.join(" "))
-    .with("fields", described)
-}
-
-/// Each field as `missing_fields` names it, with the values the Scheme allows
-/// where it lists them.
-fn described(scheme: &Scheme, fields: &[String]) -> Vec<Value> {
-    fields
-        .iter()
-        .map(|name| {
-            let allowed: Vec<&str> = match scheme.field(name).map(|field| &field.field_type) {
-                Some(FieldType::IssueType) => scheme
-                    .types
-                    .iter()
-                    .map(|issue_type| issue_type.id.as_str())
-                    .collect(),
-                Some(FieldType::Priority) => scheme
-                    .priorities
-                    .iter()
-                    .map(|level| level.id.as_str())
-                    .collect(),
-                Some(FieldType::SingleSelect | FieldType::MultiSelect) => scheme
-                    .field(name)
-                    .map(|field| {
-                        field
-                            .options
-                            .iter()
-                            .map(|choice| choice.id.as_str())
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                _ => Vec::new(),
-            };
-            if allowed.is_empty() {
-                json!({ "name": name })
-            } else {
-                json!({ "name": name, "allowed": allowed })
-            }
-        })
-        .collect()
+    .with("fields", described);
+    match target {
+        Some(target) => err.with("target", target),
+        None => err,
+    }
 }

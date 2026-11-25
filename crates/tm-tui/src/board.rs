@@ -761,6 +761,7 @@ mod tests {
             id: id.into(),
             label: id.into(),
             category,
+            requires: Vec::new(),
         };
         scheme.workflows.push(Workflow {
             name: "other".into(),

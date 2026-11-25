@@ -68,11 +68,19 @@ struct Report {
 impl Report {
     fn fail(&mut self, closing: &Closing, err: &CliError) {
         let (key, shipped) = (&closing.key, closing.shipped());
-        let warning = format!("{key} was not moved for {shipped}: {}", err.message);
+        let mut warning = format!("{key} was not moved for {shipped}: {}", err.message);
+        if let Some(fix) = &err.fix {
+            let _ = write!(warning, "; {fix}");
+        }
         self.warnings.push(warning);
         let mut failed = json!({ "key": key, "commit": closing.commit, "error": err.code });
-        if let Some(allowed) = err.details.get("allowed") {
-            failed["allowed"] = allowed.clone();
+        for detail in ["allowed", "target", "fields"] {
+            if let Some(value) = err.details.get(detail) {
+                failed[detail] = value.clone();
+            }
+        }
+        if let Some(fix) = &err.fix {
+            failed["fix"] = json!(fix);
         }
         self.failed.push(failed);
     }
@@ -290,6 +298,26 @@ fn close(
             return Err(refusal);
         }
     };
+    // Checked here too, so a dry run reports the refusal the write would make.
+    let lacking = view.lacking(scheme, &done);
+    if !lacking.is_empty() {
+        let fix = ["tm", "edit", name.as_str()]
+            .map(crate::fields::quoted)
+            .into_iter()
+            .chain(
+                lacking
+                    .iter()
+                    .map(|field| crate::fields::placeholder(scheme, field)),
+            );
+        let message = format!(
+            "{done} requires {}; give them and the next scan moves it",
+            lacking.join(", ")
+        );
+        return Err(CliError::new("missing_fields", message)
+            .with("target", done)
+            .with("fields", crate::fields::described(scheme, &lacking))
+            .fix(fix.collect::<Vec<_>>().join(" ")));
+    }
     let mut record = format!("{RECORD}{}", first.with_commit(&first.commit));
     for closing in also {
         let commit = closing.with_commit(&closing.commit);

@@ -359,14 +359,26 @@ impl CliError {
             .with("allowed", allowed)
     }
 
-    fn missing_fields(message: String, issue: Named, fields: Vec<String>) -> Self {
-        Self::new("missing_fields", message).issue(issue).with(
+    fn missing_fields(message: String, err: StoreError) -> Self {
+        let StoreError::MissingFields {
+            issue,
+            fields,
+            target,
+        } = err
+        else {
+            return Self::internal(variant(&err), message);
+        };
+        let err = Self::new("missing_fields", message).issue(issue).with(
             "fields",
             fields
                 .into_iter()
                 .map(|name| json!({ "name": name }))
                 .collect::<Vec<_>>(),
-        )
+        );
+        match target {
+            Some(target) => err.with("target", target),
+            None => err,
+        }
     }
 
     /// A store, or an export, this command cannot use as it is.
@@ -513,9 +525,7 @@ impl From<StoreError> for CliError {
                 holder,
             } => Self::not_claim_holder(message, issue, claim, &holder),
             StoreError::ClaimChanged(issue) => Self::changed("claim_changed", message, issue),
-            StoreError::MissingFields { issue, fields } => {
-                Self::missing_fields(message, issue, fields)
-            }
+            err @ StoreError::MissingFields { .. } => Self::missing_fields(message, err),
             StoreError::Op(err) => Self::from(err),
             err @ (StoreError::RecordRefused { .. } | StoreError::ImportChanged(_)) => {
                 Self::import(err, message)

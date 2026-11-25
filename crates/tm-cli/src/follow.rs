@@ -45,6 +45,22 @@ pub(crate) fn report(
                     printable(&from)
                 )
             }
+            ParentOutcome::Lacking { to, fields } => {
+                let fix = ["tm", "edit", name.as_str()]
+                    .map(crate::fields::quoted)
+                    .into_iter()
+                    .chain(
+                        fields
+                            .iter()
+                            .map(|field| crate::fields::placeholder(store.scheme(), field)),
+                    );
+                format!(
+                    "{} requires {}; {}",
+                    printable(&to),
+                    fields.join(", "),
+                    fix.collect::<Vec<_>>().join(" ")
+                )
+            }
         };
         output
             .warnings

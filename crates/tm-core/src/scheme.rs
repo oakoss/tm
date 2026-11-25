@@ -191,6 +191,10 @@ pub struct Status {
     pub id: String,
     pub label: String,
     pub category: Category,
+    /// The fields an Issue must hold to enter it and while it stays, binding
+    /// only types that carry them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
 }
 
 /// Which Status changes a Workflow allows. JSON writes `"any"`, or the list
@@ -504,6 +508,7 @@ impl Scheme {
             id: id.into(),
             label: label.into(),
             category,
+            requires: Vec::new(),
         };
         let workflow = Workflow {
             name: "default".into(),
@@ -674,6 +679,25 @@ impl Scheme {
         self.workflows
             .iter()
             .find(|workflow| workflow.name == issue_type.workflow)
+    }
+
+    /// The fields an Issue of `issue_type` must hold in `status`: those the
+    /// Status requires that the type carries.
+    #[must_use]
+    pub fn required_in(&self, issue_type: &str, status: &str) -> Vec<&Field> {
+        let Some(status) = self
+            .workflow(issue_type)
+            .and_then(|workflow| workflow.status(status))
+        else {
+            return Vec::new();
+        };
+        let mut required: Vec<&Field> = Vec::new();
+        for field in status.requires.iter().filter_map(|name| self.field(name)) {
+            if self.carries(issue_type, field) && !required.contains(&field) {
+                required.push(field);
+            }
+        }
+        required
     }
 
     /// The category of a type's Status; `None` when the Scheme no longer

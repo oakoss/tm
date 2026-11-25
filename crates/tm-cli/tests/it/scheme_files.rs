@@ -787,6 +787,364 @@ workflow = "gated"
     assert!(text.contains("1 not moved; the warnings say why"), "{text}");
 }
 
+const REQUIRING: &str = r#"
+[fields.area]
+type = "single_select"
+options = [{ id = "cli" }, { id = "tui" }]
+
+[fields.tags]
+type = "multi_select"
+options = [{ id = "x" }]
+
+[workflows.gated]
+start = "todo"
+statuses = [
+  { id = "todo", category = "todo" },
+  { id = "doing", category = "active", requires = ["area"] },
+  { id = "review", category = "active", requires = ["tags"] },
+  { id = "done", category = "done", requires = ["priority"] },
+]
+
+[types.chore]
+workflow = "gated"
+"#;
+
+#[test]
+fn a_status_refuses_an_issue_short_of_its_fields_with_the_fix() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    fs::write(
+        workspace_dir(&scratch, &repo).join("scheme.toml"),
+        REQUIRING,
+    )
+    .unwrap();
+    let run = |args: &[&str]| tm(&scratch, &repo, args);
+    let json = |args: &[&str]| doc(&run(&[&["--json"], args].concat()));
+    assert!(
+        run(&["create", "--type", "chore", "--title", "c"])
+            .status
+            .success()
+    );
+    let shown = json(&["scheme", "show", "chore"]);
+    assert_eq!(
+        shown["data"]["workflow"]["statuses"][1]["requires"],
+        json!(["area"])
+    );
+    let text = String::from_utf8_lossy(&run(&["scheme", "show", "chore"]).stdout).into_owned();
+    assert!(
+        text.contains("  doing (doing): active, requires area\n"),
+        "{text}"
+    );
+    let started = json(&["start", "TM-1"]);
+    assert_eq!(started["error"], "missing_fields", "{started}");
+    assert_eq!(started["target"], "doing");
+    assert_eq!(
+        started["fields"],
+        json!([{ "name": "area", "allowed": ["cli", "tui"] }])
+    );
+    assert_eq!(started["fix"], "tm edit TM-1 --set 'area=<value>'");
+
+    // Refused before stdin is read, which would otherwise be found empty.
+    let piped = tm_piped(
+        &scratch,
+        &repo,
+        &["--json", "move", "TM-1", "doing", "--set", "description=-"],
+        "",
+    );
+    let refused = doc(&piped);
+    assert_eq!(refused["error"], "missing_fields", "{refused}");
+    let moved = json(&["move", "TM-1", "doing", "--set", "title=d"]);
+    assert_eq!(
+        moved["fix"], "tm move TM-1 doing --set=title=d --set 'area=<value>'",
+        "{moved}"
+    );
+    let placeholder = run(&[
+        "move",
+        "TM-1",
+        "doing",
+        "--set=title=d",
+        "--set",
+        "area=<value>",
+    ]);
+    assert!(!placeholder.status.success(), "{placeholder:?}");
+    let given = run(&[
+        "move",
+        "TM-1",
+        "doing",
+        "--set=title=d",
+        "--set",
+        "area=cli",
+    ]);
+    assert!(given.status.success(), "{given:?}");
+
+    let review = json(&["move", "TM-1", "review"]);
+    assert_eq!(
+        review["fix"], "tm edit TM-1 --add 'tags=<value>'",
+        "{review}"
+    );
+    assert!(
+        review["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("then move it again"),
+        "{review}"
+    );
+    let unset = json(&["edit", "TM-1", "--unset", "area"]);
+    assert_eq!(unset["error"], "missing_fields", "{unset}");
+    let done = json(&["move", "TM-1", "done"]);
+    assert_eq!(done["fix"], "tm move TM-1 done --set 'priority=<value>'");
+    assert_eq!(
+        done["fields"][0]["allowed"],
+        json!(["urgent", "high", "medium", "low"])
+    );
+}
+
+#[test]
+fn a_move_is_judged_by_the_values_and_type_it_gives() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    fs::write(
+        workspace_dir(&scratch, &repo).join("scheme.toml"),
+        REQUIRING,
+    )
+    .unwrap();
+    let run = |args: &[&str]| tm(&scratch, &repo, args);
+    let json = |args: &[&str]| doc(&run(&[&["--json"], args].concat()));
+    let new = [
+        "create",
+        "--type",
+        "chore",
+        "--title",
+        "c",
+        "--set",
+        "status=doing",
+        "--set",
+        "area=cli",
+    ];
+    assert!(run(&new).status.success());
+    let unset = json(&["move", "TM-1", "done", "--set", "priority=none"]);
+    assert_eq!(
+        unset["fix"], "tm move TM-1 done --set 'priority=<value>'",
+        "{unset}"
+    );
+    let same = json(&["move", "TM-1", "done", "--set", "type=chore"]);
+    assert_eq!(
+        same["fix"], "tm move TM-1 done --set=type=chore --set 'priority=<value>'",
+        "{same}"
+    );
+    let piped = tm_piped(
+        &scratch,
+        &repo,
+        &["--json", "move", "TM-1", "done", "--set", "type=-"],
+        "chore\n",
+    );
+    assert_eq!(
+        doc(&piped)["fix"],
+        "tm move TM-1 done --set=type=- --set 'priority=<value>'",
+        "{piped:?}"
+    );
+    let retyped = run(&["move", "TM-1", "done", "--set", "type=task"]);
+    assert!(retyped.status.success(), "{retyped:?}");
+}
+
+#[test]
+fn a_scan_leaves_an_issue_short_of_done_and_retries_once_it_is_given() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    fs::write(
+        workspace_dir(&scratch, &repo).join("scheme.toml"),
+        REQUIRING,
+    )
+    .unwrap();
+    let run = |args: &[&str]| tm(&scratch, &repo, args);
+    let json = |args: &[&str]| doc(&run(&[&["--json"], args].concat()));
+    let new = [
+        "create",
+        "--type",
+        "chore",
+        "--title",
+        "c",
+        "--set",
+        "status=doing",
+        "--set",
+        "area=cli",
+    ];
+    assert!(run(&new).status.success());
+    let message = "fix: c\n\nCloses TM-1";
+    crate::support::git(
+        &scratch,
+        &repo,
+        &["commit", "-q", "--allow-empty", "-m", message],
+    );
+    let previewed = json(&["git", "scan", "--dry-run"]);
+    assert_eq!(previewed["data"]["moved"], json!([]), "{previewed}");
+    assert_eq!(
+        previewed["data"]["failed"][0]["fix"], "tm edit TM-1 --set 'priority=<value>'",
+        "{previewed}"
+    );
+    let scanned = json(&["git", "scan"]);
+    assert_eq!(scanned["data"]["failed"][0]["key"], "TM-1", "{scanned}");
+    assert_eq!(scanned["data"]["failed"][0]["error"], "missing_fields");
+    assert_eq!(scanned["data"]["failed"][0]["target"], "done", "{scanned}");
+    assert!(
+        scanned["warnings"]
+            .to_string()
+            .contains("; tm edit TM-1 --set 'priority=<value>'"),
+        "{scanned}"
+    );
+    assert!(
+        run(&["edit", "TM-1", "--set", "priority=high"])
+            .status
+            .success()
+    );
+    let rescanned = json(&["git", "scan"]);
+    assert_eq!(
+        json(&["show", "TM-1"])["data"]["fields"]["status"],
+        "done",
+        "{rescanned}"
+    );
+}
+
+#[test]
+fn a_parent_short_of_its_fields_is_left_where_it_is_and_passed_over() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    fs::write(
+        workspace_dir(&scratch, &repo).join("scheme.toml"),
+        REQUIRING,
+    )
+    .unwrap();
+    let run = |args: &[&str]| tm(&scratch, &repo, args);
+    assert!(
+        run(&["create", "--type", "chore", "--title", "p"])
+            .status
+            .success()
+    );
+    let child = [
+        "create", "--type", "task", "--title", "c", "--parent", "TM-1",
+    ];
+    assert!(run(&child).status.success());
+    let moved = doc(&run(&["--json", "move", "TM-2", "in_progress"]));
+    assert!(
+        moved["warnings"].to_string().contains(
+            "TM-1 was not started: doing requires area; tm edit TM-1 --set 'area=<value>'"
+        ),
+        "{moved}"
+    );
+    assert!(run(&child).status.success());
+    let started = doc(&run(&["--json", "start", "TM-3"]));
+    assert!(
+        started["warnings"]
+            .to_string()
+            .contains("TM-1 was not started: doing requires area"),
+        "{started}"
+    );
+    let created = doc(&run(&[
+        "--json",
+        "create",
+        "--type",
+        "task",
+        "--title",
+        "d",
+        "--parent",
+        "TM-1",
+        "--set",
+        "status=in_progress",
+    ]));
+    assert!(
+        created["warnings"]
+            .to_string()
+            .contains("TM-1 was not started: doing requires area"),
+        "{created}"
+    );
+    let ready = doc(&run(&["--json", "ready"]));
+    assert!(ready.to_string().contains("\"TM-1\""), "{ready}");
+}
+
+#[test]
+fn next_passes_over_an_issue_short_of_its_start_fields_and_start_assigns() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    let requiring = REQUIRING.replace(
+        "requires = [\"area\"]",
+        "requires = [\"area\", \"assignee\"]",
+    );
+    fs::write(
+        workspace_dir(&scratch, &repo).join("scheme.toml"),
+        requiring,
+    )
+    .unwrap();
+    let run = |args: &[&str]| tm(&scratch, &repo, args);
+    for title in ["short", "given"] {
+        assert!(
+            run(&["create", "--type", "chore", "--title", title])
+                .status
+                .success()
+        );
+    }
+    assert!(run(&["edit", "TM-2", "--set", "area=cli"]).status.success());
+    let next = run(&["--json", "next"]);
+    assert_eq!(data(&next)["key"], "TM-2", "{next:?}");
+    assert_eq!(data(&next)["fields"]["status"], "doing", "{next:?}");
+    assert_eq!(data(&next)["fields"]["assignee"], "jace", "{next:?}");
+    let next = String::from_utf8_lossy(&run(&["next"]).stdout).into_owned();
+    assert!(
+        next.contains(
+            "TM-1 cannot start until its fields are given: tm edit TM-1 --set 'area=<value>'"
+        ),
+        "{next}"
+    );
+    assert!(run(&["edit", "TM-1", "--set", "area=tui"]).status.success());
+    let started = run(&["--json", "start", "TM-1"]);
+    assert_eq!(data(&started)["fields"]["assignee"], "jace", "{started:?}");
+}
+
+#[test]
+fn an_issue_already_short_in_its_status_stays_movable_and_creatable_only_with_its_fields() {
+    let scratch = Scratch::new();
+    let (repo, store, _) = initialized(&scratch);
+    drop(store);
+    let scheme = workspace_dir(&scratch, &repo).join("scheme.toml");
+    fs::write(&scheme, REQUIRING).unwrap();
+    let run = |args: &[&str]| tm(&scratch, &repo, args);
+    let json = |args: &[&str]| doc(&run(&[&["--json"], args].concat()));
+    let new = [
+        "create",
+        "--type",
+        "chore",
+        "--title",
+        "c",
+        "--set",
+        "status=doing",
+    ];
+    let created = json(&new);
+    assert_eq!(created["error"], "missing_fields", "{created}");
+    assert_eq!(created["target"], "doing");
+    assert_eq!(
+        created["fix"],
+        "tm create --type=chore --title=c --set=status=doing --set 'area=<value>'"
+    );
+    let given = run(&[&new[..], &["--set", "area=cli"]].concat());
+    assert!(given.status.success(), "{given:?}");
+
+    fs::write(
+        &scheme,
+        REQUIRING.replace("requires = [\"area\"]", "requires = [\"area\", \"tags\"]"),
+    )
+    .unwrap();
+    let again = json(&["move", "TM-1", "doing"]);
+    assert_eq!(again["error"], json!(null), "{again}");
+    assert_eq!(again["data"]["batch"], json!(null), "{again}");
+    let unset = json(&["edit", "TM-1", "--unset", "area"]);
+    assert_eq!(unset["error"], "missing_fields", "{unset}");
+    assert_eq!(unset["target"], "doing", "{unset}");
+}
+
 #[test]
 fn version_url_and_file_paths_fields_are_set_added_and_found_from_the_cli() {
     let scratch = Scratch::new();
